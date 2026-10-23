@@ -609,7 +609,15 @@ class TestCandidatePlanPin:
                 authors={"Author1", "Author2"},
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            # The sqlite dialect, so literals render as SQLite stores
+            # them. (`with_hint` renders nothing here either way;
+            # separate issue.)
+            sql = str(
+                stmt.compile(
+                    dialect=s.get_bind().dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
             plan = "\n".join(
                 row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
             )
@@ -619,13 +627,13 @@ class TestCandidatePlanPin:
 
 class TestCandidatePlanUnderProductionStats:
     """The pin above passes on synthetic stats where the date filter
-    is the more selective one. Production's `sqlite_stat1` says the
-    opposite: `ix_article_lists_inbox_id` looks nearly free (4001
-    rows per key claimed) and `ix_articles_date` looks like a
-    point lookup (1 row per key), so left to choose, the planner
-    drove from `article_lists` and sorted the whole lkml in a temp
-    b-tree, 4.5 to 6.8 s a render (#785). The size switch must decide,
-    not the planner."""
+    is the more selective one. Production's `sqlite_stat1`
+    (`PRODUCTION_STATS`, full-sample since #817) has `ix_articles_date`
+    looking like a point lookup (1 row per key). Before #817 the capped
+    pass also made `ix_article_lists_inbox_id` look nearly free (4001
+    rows per key claimed), and the planner drove from `article_lists`
+    and sorted the whole lkml in a temp b-tree, 4.5 to 6.8 s a render
+    (#785). The size switch must decide, not the planner."""
 
     @staticmethod
     def _plan(seeded_db, total):
@@ -634,14 +642,9 @@ class TestCandidatePlanUnderProductionStats:
 
         from mimir.models import Inbox
         from mimir.related import _candidate_select
-        from tests._helpers import _cache_total, planner_stats
+        from tests._helpers import PRODUCTION_STATS, _cache_total, planner_stats
 
-        stats = (
-            ("article_lists", "ix_article_lists_inbox_id", "29738147 4001"),
-            ("article_lists", "ix_article_lists_thread_root", "29738147 4001 4"),
-            ("articles", "ix_articles_date", "17778731 1"),
-        )
-        with planner_stats(seeded_db, stats), seeded_db() as s:
+        with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
             inbox = s.execute(
                 sa_select(Inbox).where(Inbox.name == "alpha")
             ).scalar_one()
@@ -653,7 +656,15 @@ class TestCandidatePlanUnderProductionStats:
                 authors={"Author1", "Author2"},
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
+            # The sqlite dialect, so literals render as SQLite stores
+            # them. (`with_hint` renders nothing here either way;
+            # separate issue.)
+            sql = str(
+                stmt.compile(
+                    dialect=s.get_bind().dialect,
+                    compile_kwargs={"literal_binds": True},
+                )
+            )
             return "\n".join(
                 row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
             )

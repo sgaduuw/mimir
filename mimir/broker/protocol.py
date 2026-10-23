@@ -290,15 +290,14 @@ class BackfillThreadRootsRequest(_BrokerRequest):
 
 
 class AnalyzeRequest(_BrokerRequest):
-    """Run `ANALYZE` on the broker. `full=True` overrides the
-    per-connection `analysis_limit` for this pass (no cap) so the
-    weekly safety-net catches index distributions the daily bounded
-    pass undersamples."""
+    """Run `ANALYZE` on the broker. `full=True` forces no
+    `analysis_limit` for this pass, whatever `ANALYZE_LIMIT` says; with
+    the default of 0 it changes nothing, and the scheduler still sends it
+    weekly."""
 
     op: Literal["analyze"] = "analyze"
-    # Covers the bounded daily pass (~10.8 s, measured 2026-08-04)
-    # and the weekly `full=True` pass (~25-30 s when measured at 11M
-    # rows, not re-measured at the current 28.8M) with headroom.
+    # Covers a full-sample pass (16.7 s on the production corpus,
+    # measured 2026-10-22) with headroom.
     timeout: ClassVar[float] = 600.0
     full: bool = False
 

@@ -108,8 +108,7 @@ The task service runs [scheduler.sh](scheduler.sh). Configure these on
 | `WARM_CACHE_SLOW_EVERY` | 3600 | Slow warming, including sitemap targets when configured |
 | `UPDATE_EVERY` | 300 | Discover/fetch mirrors and ingest |
 | `UPDATE_MAINLINE_EVERY` | 600 | Refresh tracked trees and MAINTAINERS |
-| `ANALYZE_EVERY` | 86400 | Bounded planner statistics refresh |
-| `ANALYZE_FULL_EVERY` | 604800 | Full statistics refresh |
+| `ANALYZE_FULL_EVERY` | 604800 | Planner statistics refresh (full sample) |
 | `VACUUM_EVERY` | 604800 | Database compaction |
 
 Successful task times persist under `/data/.last_*`, so restarts do not reset

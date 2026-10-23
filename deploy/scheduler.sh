@@ -9,8 +9,7 @@
 #   WARM_CACHE_SLOW_EVERY default 3600   ; slow tier (subsystem dashboards + rest)
 #   UPDATE_EVERY          default 300    ; sync upstream + ingest new commits
 #   UPDATE_MAINLINE_EVERY default 600    ; check every configured tree for due-ness (per-tree cadence inside the CLI)
-#   ANALYZE_EVERY         default 86400  ; refresh sqlite_stat1 (daily, bounded)
-#   ANALYZE_FULL_EVERY    default 604800 ; full-sample sqlite_stat1 (weekly)
+#   ANALYZE_FULL_EVERY    default 604800 ; refresh sqlite_stat1 (weekly, full sample)
 #   VACUUM_EVERY          default 604800 ; compact DB + collapse WAL (weekly)
 #
 # `update-mainline` is now multi-tree aware: each invocation
@@ -27,7 +26,7 @@
 # Timing is wall-clock, persisted across container restarts via
 # `/data/.last_<task>` sentinel files. Without persistence, a release
 # rollover at a cadence shorter than the slowest task (weekly VACUUM,
-# daily ANALYZE) would reset the timer on every restart and the task
+# weekly ANALYZE) would reset the timer on every restart and the task
 # would never fire (#202). Reading the sentinel mtime on boot means
 # the cadence intent survives.
 #
@@ -41,7 +40,7 @@
 # healthcheck via `depends_on` in compose.
 #
 # Ad-hoc pause: `touch /data/.scheduler-paused` quiesces the loop
-# (no warm-cache / update / update-mainline / analyze /
+# (no warm-cache / update / update-mainline /
 # analyze --full / vacuum firings) within ~10s;
 # `rm /data/.scheduler-paused` resumes. Used
 # during operator maintenance (e.g. `admin canonicals backfill`,
@@ -59,15 +58,11 @@ WARM_CACHE_EVERY=${WARM_CACHE_EVERY:-60}
 WARM_CACHE_SLOW_EVERY=${WARM_CACHE_SLOW_EVERY:-3600}
 UPDATE_EVERY=${UPDATE_EVERY:-300}
 UPDATE_MAINLINE_EVERY=${UPDATE_MAINLINE_EVERY:-600}
-ANALYZE_EVERY=${ANALYZE_EVERY:-86400}
-# Full-scan ANALYZE (no analysis_limit cap) on a weekly cadence.
-# The daily ANALYZE above uses settings.analyze_limit (default 4000
-# from 1.36.4) which is fast (~1-3 s) and accurate enough for most
-# planning, but a few tail-heavy indexes can still drift under that
-# sample. The weekly full pass (analysis_limit=0) re-samples every
-# row of every index, holding the writer lock ~25-30 s once a week
-# in exchange for guaranteed-accurate stats. Override via
-# ANALYZE_FULL_EVERY.
+# Weekly ANALYZE, the only scheduled one. Every ANALYZE reads every row
+# (settings.analyze_limit defaults to 0, #817); a capped daily pass
+# used to overwrite the full figures with "limit + 1" for every big
+# index. The pass holds the writer lock for 16.7 s on the production
+# corpus (2026-10-22). Override via ANALYZE_FULL_EVERY.
 ANALYZE_FULL_EVERY=${ANALYZE_FULL_EVERY:-604800}
 VACUUM_EVERY=${VACUUM_EVERY:-604800}
 
@@ -159,11 +154,10 @@ run "warm-cache fast (initial, backgrounded)" /data/.last_warm_fast \
 # Persisted-mtime initialisation: read each sentinel's last-touch
 # time off /data. Missing file → 0 → the next tick fires immediately
 # (recovers from a deleted /data volume, or from this being the
-# first deploy after #202). The post-migrate analyze and the two
-# (initial) runs above wrote fresh sentinels for analyze/update/
-# warm, so the in-loop ticks for those start with a fresh clock;
-# vacuum is the only one whose first run is gated by the persisted
-# mtime alone.
+# first deploy after #202). The initial warm run above wrote a fresh
+# sentinel, so its in-loop tick starts with a fresh clock; update,
+# update-mainline, analyze --full and vacuum are gated by the
+# persisted mtime alone.
 # Stamp the slow-tier sentinel at boot if missing so the slow tier
 # does NOT fire immediately on first boot. Without this, missing
 # sentinel reads as 0 and the first in-loop tick fires slow tier
@@ -180,7 +174,6 @@ last_warm_fast=$(sentinel_mtime /data/.last_warm_fast)
 last_warm_slow=$(sentinel_mtime /data/.last_warm_slow)
 last_update=$(sentinel_mtime /data/.last_update)
 last_update_mainline=$(sentinel_mtime /data/.last_update_mainline)
-last_analyze=$(sentinel_mtime /data/.last_analyze)
 last_analyze_full=$(sentinel_mtime /data/.last_analyze_full)
 last_vacuum=$(sentinel_mtime /data/.last_vacuum)
 
@@ -248,26 +241,10 @@ while true; do
         last_update_mainline=$(date +%s)
     fi
 
-    if [ $((now - last_analyze)) -ge "$ANALYZE_EVERY" ]; then
-        run "analyze" /data/.last_analyze mimir analyze
-        last_analyze=$(date +%s)
-    fi
-
-    # Weekly full ANALYZE (analysis_limit=0). The daily ANALYZE
-    # above uses the bounded analysis_limit (default 4000 from
-    # 1.36.4) which is fast and accurate enough for most planning,
-    # but a few tail-heavy indexes can drift under that sample. The
-    # full pass re-samples every row and holds the writer lock for
-    # ~25-30 s; running once a week in exchange for guaranteed-
-    # accurate plans is the safety net for distribution drift.
+    # Weekly ANALYZE, full sample (see ANALYZE_FULL_EVERY above).
     if [ $((now - last_analyze_full)) -ge "$ANALYZE_FULL_EVERY" ]; then
         run "analyze --full" /data/.last_analyze_full mimir analyze --full
         last_analyze_full=$(date +%s)
-        # Touch the daily-analyze sentinel too so the daily one
-        # doesn't fire right after a full pass that just refreshed
-        # the same stats.
-        touch /data/.last_analyze
-        last_analyze=$(date +%s)
     fi
 
     if [ $((now - last_vacuum)) -ge "$VACUUM_EVERY" ]; then

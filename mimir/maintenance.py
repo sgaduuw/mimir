@@ -7,12 +7,10 @@ wrappers, the click commands in `mimir.cli.maintenance` delegate
 here, and the Phase 2.3 broker handlers do too. Single-concern:
 "the SQLite hygiene writers, end to end."
 
-ANALYZE is bounded but no longer cheap: **10.8 s** on the production
-corpus with `analysis_limit=4000` (measured 2026-08-04 from the
-broker's own `slow write [analyze]` line; it trips that warning nightly).
-The "~1-3 s" this used to claim was measured against an 11M-row corpus
-and the corpus is now 28.8M `article_lists` rows. That matters beyond
-tidiness: the post-migrate ANALYZE runs before the broker touches its
+ANALYZE reads every row (`analysis_limit=0`, #817) and is not cheap:
+16.7 s on the production corpus (measured 2026-10-22; the bounded
+pass it replaced took 1.2 to 6.6 s). That matters beyond tidiness:
+the post-migrate ANALYZE runs before the broker touches its
 healthcheck sentinel, so it is on the startup budget. VACUUM holds an
 exclusive lock for the duration (minutes on large databases); under
 the broker that means every other broker worker pauses, so it
@@ -65,10 +63,9 @@ def run_analyze(*, full: bool = False) -> AnalyzeResult:
     """Refresh SQLite planner statistics.
 
     By default uses whatever `PRAGMA analysis_limit` the connection
-    inherited from `_sqlite_pragmas` (4000 in production). `full=True`
-    overrides that to 0 for the duration of this pass so the
-    weekly safety-net catches index distributions the default
-    bounded sample undersamples (the 1.36.4 calibration).
+    inherited from `_sqlite_pragmas`, which is 0 (every row) unless
+    `ANALYZE_LIMIT` caps it (#817). `full=True` forces 0 for this pass
+    whatever the setting, and restores the setting afterwards.
 
     Phase 6a dual-dispatch: when a broker WriterThread is active
     (steady-state `handle_analyze` RPC), submit the ANALYZE as a
