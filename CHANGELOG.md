@@ -13,6 +13,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Planner statistics are now full-sample on every ANALYZE, and the daily
+  sampled run is gone (#817). A capped `analysis_limit` is not a random
+  sample: SQLite reads the first key values and stops, so every index with
+  more rows per key than the cap recorded the cap plus one (4001), and the
+  daily pass overwrote the weekly full figures within a day. Production ran
+  on those figures six days in seven. `ANALYZE_LIMIT` now defaults to 0 (no
+  cap), so the post-migrate, post-backfill, after-ingest and `mimir analyze`
+  passes read every row, and the scheduler's daily `analyze` and
+  `ANALYZE_EVERY` are removed; the weekly `analyze --full` stays. Operator
+  note: a full pass holds the writer lock for about 17 s (16.7 s measured on
+  the production corpus, 2026-10-22; the bounded pass took 1.2 to 6.6 s), and
+  a deploy that migrates runs one before the broker serves, so budget the
+  startup for it. A release that does not migrate fires no post-migrate
+  pass: run `mimir analyze` once after deploying, or the full figures only
+  arrive with the next weekly pass. If you set `ANALYZE_LIMIT`, unset it.
+  `--full` now only matters on a deployment that sets
+  `ANALYZE_LIMIT` to a cap.
 - The crawler budget recognises Lightpanda, a headless scraper that sends
   `Lightpanda/1.0` without any of the default crawler markers (#828).
   `lightpanda` joins the default `CRAWLER_UA_MARKERS`.

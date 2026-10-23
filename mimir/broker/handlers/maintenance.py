@@ -151,9 +151,9 @@ def handle_backfill_thread_roots(req: BackfillThreadRootsRequest) -> Reply:
 
 
 def handle_analyze(req: AnalyzeRequest) -> Reply:
-    """Run ANALYZE on the broker. `full=True` triggers the no-cap
-    pass (the weekly safety-net); default is the cheap bounded
-    pass governed by `Settings.analyze_limit`."""
+    """Run ANALYZE on the broker. The sample is governed by
+    `Settings.analyze_limit` (default 0, every row); `full=True` forces
+    no cap for this pass."""
     from mimir.maintenance import run_analyze
 
     result = run_analyze(full=req.full)
