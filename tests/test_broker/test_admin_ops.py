@@ -515,7 +515,7 @@ def test_cli_admin_inbox_trackers_clear_dispatches_via_broker(
 
 def test_broker_self_bootstrap_analyze_runs_when_sentinel_missing(seeded_db, caplog):
     """On startup the broker checks for `.broker_initial_analyze`
-    in the socket's parent dir; if missing, runs a bounded ANALYZE
+    in the socket's parent dir; if missing, runs an ANALYZE
     and touches the sentinel. Subsequent restarts skip the pass."""
     import logging
 

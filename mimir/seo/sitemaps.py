@@ -650,7 +650,7 @@ def _month_root_ids(
     CURRENT month and that month is then both oversized and growing.
 
     Snapshotting also removes a subtler one. Pages computed under
-    different query plans (ANALYZE runs daily and after ingest, and
+    different query plans (ANALYZE runs weekly and after ingest, and
     per-connection plan caches go stale across it) can order ties
     differently, which review demonstrated dropping 25% of a month's
     URLs. One query, one plan, one order.

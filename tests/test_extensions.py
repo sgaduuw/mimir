@@ -90,11 +90,9 @@ def test_write_transaction_symbol_removed():
 
 def test_analyze_limit_pragma_set_on_every_connection():
     """`Settings.analyze_limit` is applied via PRAGMA on every
-    connection so ANALYZE's per-index row sample stays bounded
-    uniformly across `mimir analyze`, auto-ANALYZE-after-ingest,
-    and ad-hoc sessions. Without this, the dominant production
-    lock-holder (a 25-second ANALYZE on the 11M-row corpus) goes
-    back to its full-scan default."""
+    connection so ANALYZE's per-index row sample is the same
+    across `mimir analyze`, auto-ANALYZE-after-ingest, and ad-hoc
+    sessions."""
     assert _pragma("analysis_limit") == settings.analyze_limit
 
 
@@ -177,30 +175,28 @@ def test_pragmas_listener_does_not_set_query_only_when_broker():
     )
 
 
-def test_analyze_limit_default_is_4000():
-    """1.36.4 calibration: bumped from 400 to 4000 after the
-    production multi-inbox corpus (11M+ rows) revealed that 400-
-    sample stats produced catastrophically wrong recursive-CTE
-    plans (400 s `get_thread` for a 15-message thread; 200-1700x
-    speedups under a full ANALYZE). 4000 keeps the daily ANALYZE
-    bounded (~10.8 s at 28.8M rows, 2026-08-04; it was ~1-3 s at 11M)
-    while giving the planner enough samples to
-    estimate join cardinalities correctly at this scale. Pinning
-    so an accidental edit ("400 is what SQLite docs say") doesn't
-    silently regress production back to the bad plans."""
+def test_analyze_limit_default_is_0():
+    """#817: no cap. A cap is not a random sample: SQLite reads the
+    first key values and stops, so every index with more than N rows
+    per key records N + 1 (4001 at 4000, where production's real
+    figure for `ix_article_lists_inbox_id` is near 150k). 400 (1.35.1)
+    mis-planned `get_thread` at 400 s; 4000 (1.36.4) only hid the same
+    error in the big indexes. Pinning so an edit back to a cap does
+    not quietly return production to those figures. A full pass is
+    16.7 s of writer lock (2026-10-22)."""
     # Note: this asserts the **default** before any env override.
     # If env sets ANALYZE_LIMIT, that wins at process start;
     # `settings.analyze_limit` reflects the final value, which
     # may differ. So we read the model field's default directly.
     from mimir.config import Settings
 
-    assert Settings.model_fields["analyze_limit"].default == 4000
+    assert Settings.model_fields["analyze_limit"].default == 0
 
 
 def test_full_analyze_writeop_resets_analysis_limit(broker_active):
     """A full ANALYZE WriteOp sets analysis_limit=0 for its run, then
     must restore the default on the persistent writer connection so the
-    next scheduled (bounded) analyze is not left unbounded."""
+    next analyze, under a capped ANALYZE_LIMIT, is not left unbounded."""
     from sqlalchemy import text
 
     from mimir.broker._context import get_active_writer
