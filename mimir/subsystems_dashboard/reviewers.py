@@ -162,9 +162,7 @@ def articles_reviewed_by(
             {
                 "inbox_id": inbox.id,
                 "addr": address_normalized,
-                # Every stored role: it changes no row, but the trailer
-                # index leads with role, so without it the query walks
-                # the whole inbox (#831).
+                # Every stored role: no row changes, the index can seek (#831).
                 "roles": list(INDEXED_TRAILER_ROLES),
                 "limit": limit,
             },

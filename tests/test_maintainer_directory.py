@@ -152,20 +152,18 @@ def test_maintainer_profile_review_inboxes_seek_the_trailer_index(seeded_db):
     """Same shape as #831's reviewer query: a trailer lookup by address
     alone cannot use `ix_article_trailers_role_addr` and scans every
     trailer. Under production's statistics it must seek the index."""
-    from tests._helpers import planner_stats
-    from tests.test_subsystems.test_reviewers import (
-        _PRODUCTION_STATS,
-        _plan_of_trailer_query,
-    )
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
 
     with seeded_db() as s:
         _add_subsystem(
             s, "BCACHEFS", "Supported", maintainers=[("M", "Kent", "kent@kernel.org")]
         )
         s.commit()
-    with planner_stats(seeded_db, _PRODUCTION_STATS), seeded_db() as s:
-        plan = _plan_of_trailer_query(
-            s, lambda: maintainer_profile(s, "kent@kernel.org", force=True)
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
+        plan = plan_of(
+            s,
+            lambda: maintainer_profile(s, "kent@kernel.org", force=True),
+            "article_trailers",
         )
     # The role equality, not a skip-scan (ANY(role)) the stats allow.
     assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
