@@ -46,9 +46,15 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # Version qualifiers. `v\d+` is the conventional revision marker;
 # `RFC` and `RESEND` are version-shaped enough to surface
 # distinctly. Anything else falls back to v1 (the unmarked first
-# version is implicit). `[PATCHv2 0/9]` has no word boundary before the
-# `v`, so a `v\d` directly after `PATCH` also starts a marker (#816).
-_VERSION_RE = re.compile(r"(?:\b|(?<=PATCH)(?=v\d))(v\d+|RFC|RESEND)\b", re.IGNORECASE)
+# version is implicit). A `v\d` glued to PATCH, PATCHES, PATCHSET, RFC
+# or RESEND (`[PATCHv2`, `[RFCv9`) also starts a marker, and RFC and
+# RESEND may end at it (#816, #819). A dotted version followed by `-`
+# (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision.
+_VERSION_RE = re.compile(
+    r"(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
+    r"(v\d+(?!(?:\.\d+)+-)|RFC|RESEND)(?:\b|(?=v\d))",
+    re.IGNORECASE,
+)
 
 
 def version_number_sql(column: str) -> str:

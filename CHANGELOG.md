@@ -42,6 +42,12 @@ changes, not internal refactors. Categories: **Added**,
   article of the list, and the maintainer profile's review-inbox list no
   longer depends on planner statistics to use it (#831). On lkml one
   reviewer lookup went from about 2.5 s to under 20 ms.
+- Cover letters with a version glued to RFC, RESEND, PATCHES or PATCHSET
+  (`[RFCv4 ...]`, `[PATCH RFCv9 ...]`) are read at that version, and a
+  dotted base tree such as `v2019.04-aspeed` or `v6.12-rc1` is no longer
+  taken for the revision (#819). About 500 stored covers change, only when
+  `backfill-patch-series --reprocess` is run (then run
+  `backfill-series-chains`).
 
 ## [3.25.0] - 2026-10-22
 
