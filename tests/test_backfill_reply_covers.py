@@ -14,6 +14,7 @@ from sqlalchemy import select, text
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series, series_key
 from mimir.patch_series_chains import backfill_series_chains
+from tests._helpers import series_columns
 
 COVER = "[PATCH v2 0/2] improve foo\thandling"
 REPLY = "[PATCH v2 0/2] improve foo handling"
@@ -56,19 +57,7 @@ def _add(
         s.commit()
 
 
-def _series(seeded_db, *message_ids):
-    """message id -> (key, version, position, head) for each id."""
-    with seeded_db() as s:
-        rows = s.execute(
-            select(
-                Article.message_id,
-                Article.patch_series_key,
-                Article.patch_series_version,
-                Article.patch_series_position,
-                Article.patch_series_head_id,
-            ).where(Article.message_id.in_(message_ids))
-        ).all()
-    return {r[0]: tuple(r[1:]) for r in rows}
+_series = series_columns
 
 
 def test_reprocess_clears_a_stored_reply_cover(seeded_db, broker_active):
