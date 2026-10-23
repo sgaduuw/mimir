@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from mimir import cache
 from mimir.dashboard import ArchiveStats, _archive_stats_key
@@ -71,3 +71,40 @@ def count_steps(session):
         yield steps
     finally:
         raw.set_progress_handler(None, 0)
+
+
+def plan_of(session, call, match):
+    """EXPLAIN QUERY PLAN of the one statement containing `match` that
+    `call` really runs, so a rewrite of a query cannot slip past a copy
+    of it."""
+    seen = []
+    engine = session.get_bind()
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if match in statement:
+            seen.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        call()
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert len(seen) == 1, seen
+    statement, params = seen[0]
+    raw = session.connection().connection.driver_connection
+    return "\n".join(
+        row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)
+    )
+
+
+# Production's sqlite_stat1 rows for article_lists, article_trailers and
+# the date index (read-only, 2026-10-23), for plan tests that must see
+# the plan production gets.
+PRODUCTION_STATS = (
+    ("article_lists", "ix_article_lists_inbox_id", "29764294 4001"),
+    ("article_lists", "ix_article_lists_thread_root", "29764294 4001 4"),
+    ("article_lists", "sqlite_autoindex_article_lists_1", "29764294 2 1"),
+    ("article_trailers", "ix_article_trailers_article_id", "3561252 2"),
+    ("article_trailers", "ix_article_trailers_role_addr", "3561252 4001 23"),
+    ("articles", "ix_articles_date", "17790565 1"),
+)

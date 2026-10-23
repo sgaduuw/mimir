@@ -20,6 +20,11 @@ changes, not internal refactors. Categories: **Added**,
   `/apple-touch-icon.png`, `/search`) gets a 404 straight away, instead of a
   redirect to a trailing-slash URL that then 404s (#827). A real inbox name
   still redirects to its dashboard, query string included.
+- Reviewer pages and subsystem dashboard warms on large lists are faster:
+  the reviewer lookup now seeks the trailer index instead of walking every
+  article of the list, and the maintainer profile's review-inbox list no
+  longer depends on planner statistics to use it (#831). On lkml one
+  reviewer lookup went from about 2.5 s to under 20 ms.
 
 ## [3.25.0] - 2026-10-22
 
