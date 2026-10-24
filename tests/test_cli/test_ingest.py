@@ -544,7 +544,7 @@ def test_select_inboxes_single_name_and_unknown(seeded_db, monkeypatch):
 
 
 def test_pinned_inbox_wins_contested_list_address_on_first_ingest(
-    seeded_db, broker_active, monkeypatch
+    seeded_db, broker_active, monkeypatch, tmp_path
 ):
     """Two inboxes whose To/Cc tally is dominated by the same address:
     whichever ingests first keeps it. Pinned inboxes ingest first
@@ -562,9 +562,14 @@ def test_pinned_inbox_wins_contested_list_address_on_first_ingest(
     addr = "linux-kernel@vger.kernel.org"
     monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
     with SessionLocal() as s:
-        for ix in s.execute(
-            select(Inbox).where(Inbox.name.in_(["alpha", "beta"]))
-        ).scalars():
+        for ix in s.execute(select(Inbox)).scalars():
+            # Own, empty mirror per inbox, so the walk finds no epochs
+            # and the test does not lean on paths other tests create.
+            mirror = tmp_path / ix.name
+            mirror.mkdir()
+            ix.mirror_path = str(mirror)
+            if ix.name not in ("alpha", "beta"):
+                continue
             s.add(
                 InboxAddressObservation(
                     inbox_id=ix.id,
@@ -581,3 +586,14 @@ def test_pinned_inbox_wins_contested_list_address_on_first_ingest(
         held = dict(s.execute(select(Inbox.name, Inbox.list_address)).all())
     assert held["beta"] == addr
     assert held["alpha"] is None
+
+
+def test_pinned_first_dedupes_repeated_names():
+    """A name listed twice keeps its first position."""
+    from mimir.config import settings
+    from mimir.inboxes import pinned_first
+
+    inboxes = [Inbox(name=n) for n in ("a", "b", "c")]
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(settings, "pinned_inboxes", ["c", "a", "c"])
+        assert [ix.name for ix in pinned_first(inboxes)] == ["c", "a", "b"]

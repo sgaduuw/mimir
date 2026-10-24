@@ -16,10 +16,14 @@ changes, not internal refactors. Categories: **Added**,
 - `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
   first, in that order, then the rest by name (#766). Fresh mail and its
   after-ingest cache warm for lkml no longer wait behind every inbox that sorts
-  before it. One side effect: on a from-scratch ingest a pinned inbox now claims
-  a contested list address before an alphabetically earlier inbox does (lkml
-  gets `linux-kernel@vger` ahead of cocci). Existing deployments, where list
-  addresses are already promoted, see no change.
+  before it. One side effect, on a from-scratch ingest only: a pinned inbox now
+  claims a contested list address before an alphabetically earlier inbox does
+  (lkml gets `linux-kernel@vger` ahead of cocci), and cross-posts are linked
+  before the topical inboxes have their own address, so they pin to lkml. After
+  a from-scratch ingest, run
+  `uv run mimir admin canonicals backfill --reprocess --restart` to settle the
+  canonical pins. Existing deployments, where list addresses are already
+  promoted, see no change.
 
 ### Fixed
 

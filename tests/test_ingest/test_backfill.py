@@ -271,3 +271,49 @@ def test_backfill_reprocess_never_pins_an_unlinked_inbox(
         )
         assert links == {alpha.id}
         assert art.canonical_inbox_id == alpha.id
+
+
+def test_from_scratch_ingest_with_pinned_firehose_needs_the_backfill(
+    seeded_db, broker_active, monkeypatch, tmp_path
+):
+    """#766: with the firehose pinned, a from-scratch ingest links its
+    cross-posts before the topical inbox has promoted its own address,
+    so they pin to the demoted firehose. The documented follow-up,
+    `admin canonicals backfill --reprocess`, settles them on the
+    topical list."""
+    from mimir.cli._common import _select_inboxes
+    from mimir.config import settings
+    from mimir.ingest import ingest_all
+
+    topical = "linux-arm-kernel@lists.infradead.org"
+    firehose = "linux-kernel@vger.kernel.org"
+    # beta is the lkml stand-in: the pinned, demoted firehose.
+    monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
+    monkeypatch.setattr(settings, "canonical_demoted_inboxes", ["beta"])
+
+    cross = [_rfc5322(f"x{i}@example.com", to=firehose, cc=topical) for i in range(5)]
+    own = {
+        "alpha": [_rfc5322(f"a{i}@example.com", to=topical) for i in range(60)],
+        "beta": [_rfc5322(f"b{i}@example.com", to=firehose) for i in range(60)],
+    }
+    with seeded_db() as s:
+        for ix in s.execute(select(Inbox)).scalars():
+            mirror = tmp_path / ix.name
+            mirror.mkdir()
+            _build_pubinbox_repo(mirror / "0.git", own.get(ix.name, []) + cross)
+            ix.mirror_path = str(mirror)
+        s.commit()
+
+    ingest_all(_select_inboxes(None), workers=1)
+    backfill_canonicals(reprocess=True)
+
+    with seeded_db() as s:
+        names = {i.id: i.name for i in s.execute(select(Inbox)).scalars()}
+        held = {i.name: i.list_address for i in s.execute(select(Inbox)).scalars()}
+        pin = s.execute(
+            select(Article.canonical_inbox_id).where(
+                Article.message_id == "x0@example.com"
+            )
+        ).scalar_one()
+    assert held == {"alpha": topical, "beta": firehose}
+    assert names.get(pin) == "alpha"
