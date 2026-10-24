@@ -5,7 +5,13 @@ including the post-ingest auto-ANALYZE), and `ingest_all`
 budget). Also covers the multi-worker path and the
 parser-failure-mid-batch ordering guarantee."""
 
-from sqlalchemy import select
+import contextlib
+import logging
+import re
+from pathlib import Path
+
+import pytest
+from sqlalchemy import select, update
 
 from mimir.ingest import (
     discover_epochs,
@@ -13,10 +19,12 @@ from mimir.ingest import (
     ingest_inbox,
 )
 from mimir.models import (
+    Article,
     Inbox,
 )
 from tests.test_ingest._helpers import (
     _build_pubinbox_repo,
+    _clear_seed_articles,
     _drain_writer,
     _rfc5322,
     _setup_alpha_with_messages,
@@ -106,8 +114,6 @@ def test_ingest_inbox_skips_analyze_when_disabled(
 
 
 from datetime import UTC  # noqa: E402  (module-level setup runs above)
-
-import pytest  # noqa: E402  (kept adjacent to the parametrised test that needs it)
 
 
 @pytest.mark.parametrize(
@@ -404,6 +410,23 @@ def test_discover_epochs_returns_git_repos_only(tmp_path):
     )
 
 
+def test_discover_epochs_orders_by_number(tmp_path):
+    """Epochs run in number order. By name, lkml's 10.git to 20.git were
+    walked before 2.git, and the newest epoch was not the last one. A
+    name that is not a number (sync never clones one) goes last."""
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    for name in ("10.git", "2.git", "0.git", "stray.git"):
+        _build_pubinbox_repo(mirror / name, [_rfc5322(f"{name}@example.com")])
+
+    assert [p.name for p in discover_epochs(mirror)] == [
+        "0.git",
+        "2.git",
+        "10.git",
+        "stray.git",
+    ]
+
+
 def test_discover_epochs_empty_mirror_returns_empty(tmp_path):
     mirror = tmp_path / "mirror"
     mirror.mkdir()
@@ -492,3 +515,194 @@ def test_ingest_all_no_limit_walks_all_inboxes(seeded_db, tmp_path, broker_activ
 # and pass CI. One end-to-end run with `workers=2` is enough to
 # catch that.
 # --------------------------------------------------------------------------
+
+
+# --------------------------------------------------------------------------
+# List address detected before a first walk (#855).
+# --------------------------------------------------------------------------
+
+_TOPICAL = "linux-arm-kernel@lists.infradead.org"
+_FIREHOSE = "linux-kernel@vger.kernel.org"
+
+
+def _fresh_archive(seeded_db, tmp_path, held: dict[str, str] | None = None) -> None:
+    """A new install: alpha is a topical list, beta the firehose, and
+    five messages are cross-posted to both. The seeded articles go and
+    both inboxes are empty, with no list address unless `held` sets one."""
+    _clear_seed_articles(seeded_db)
+    cross = [_rfc5322(f"x{i}@example.com", to=_FIREHOSE, cc=_TOPICAL) for i in range(5)]
+    own = {
+        "alpha": [_rfc5322(f"a{i}@example.com", to=_TOPICAL) for i in range(60)],
+        "beta": [_rfc5322(f"b{i}@example.com", to=_FIREHOSE) for i in range(60)],
+    }
+    with seeded_db() as s:
+        inboxes = s.execute(select(Inbox)).scalars().all()
+        assert {ix.name for ix in inboxes} == set(own)
+        for ix in inboxes:
+            mirror = tmp_path / ix.name
+            mirror.mkdir()
+            _build_pubinbox_repo(mirror / "0.git", own[ix.name] + cross)
+            ix.mirror_path = str(mirror)
+            ix.last_article_date = None
+            ix.list_address = (held or {}).get(ix.name)
+        s.commit()
+
+
+def _cross_post_pins(seeded_db) -> dict[str, str | None]:
+    with seeded_db() as s:
+        names = dict(s.execute(select(Inbox.id, Inbox.name)).all())
+        pins = s.execute(
+            select(Article.message_id, Article.canonical_inbox_id).where(
+                Article.message_id.like("x%@example.com")
+            )
+        ).all()
+    return {msgid: names.get(pin) for msgid, pin in pins}
+
+
+@pytest.mark.parametrize(
+    "pinned", [["beta"], ["alpha"]], ids=["firehose-first", "topical-first"]
+)
+def test_from_scratch_ingest_pins_cross_posts_to_the_topical_inbox(
+    seeded_db, broker_active, monkeypatch, tmp_path, pinned
+):
+    """A from-scratch ingest pins every cross-post to the topical inbox,
+    whichever inbox it walks first, with no backfill afterwards. Before
+    #855 the firehose-first order (the #766 review's reproduction) left
+    the firehose's address the only one promoted when alpha linked the
+    cross-posts, so they pinned to beta."""
+    from mimir.cli._common import _select_inboxes
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "pinned_inboxes", pinned)
+    monkeypatch.setattr(settings, "canonical_demoted_inboxes", ["beta"])
+    _fresh_archive(seeded_db, tmp_path)
+    inboxes = _select_inboxes(None)
+    assert list(inboxes) == pinned + [n for n in ("alpha", "beta") if n not in pinned]
+
+    ingest_all(inboxes, workers=1)
+
+    with seeded_db() as s:
+        held = dict(s.execute(select(Inbox.name, Inbox.list_address)).all())
+    assert held == {"alpha": _TOPICAL, "beta": _FIREHOSE}
+    assert _cross_post_pins(seeded_db) == {
+        f"x{i}@example.com": "alpha" for i in range(5)
+    }
+
+
+def test_list_address_is_sampled_only_before_a_first_walk(
+    seeded_db, broker_active, monkeypatch, tmp_path, caplog
+):
+    """The sample runs only for an empty inbox with no list address, so a
+    steady-state tick, or an inbox with mail but no address, reads nothing
+    extra. A later promotion is routine, so it names no backfill."""
+    import mimir.ingest.orchestrate as orchestrate_mod
+    from mimir.cli._common import _select_inboxes
+
+    sampled: list[str] = []
+    real_sample = orchestrate_mod._sample_list_addresses
+
+    def _spy(mirror_path):
+        sampled.append(Path(mirror_path).name)
+        return real_sample(mirror_path)
+
+    monkeypatch.setattr(orchestrate_mod, "_sample_list_addresses", _spy)
+    # beta's address was set by an operator before its first ingest.
+    _fresh_archive(seeded_db, tmp_path, held={"beta": _FIREHOSE})
+
+    ingest_all(_select_inboxes(None), workers=1)
+    assert sampled == ["alpha"]
+
+    with seeded_db() as s:
+        s.execute(update(Inbox).values(list_address=None))
+        s.commit()
+    sampled.clear()
+    caplog.set_level(logging.INFO, logger="mimir.ingest.orchestrate")
+
+    ingest_all(_select_inboxes(None), workers=1)
+    assert sampled == []
+    with seeded_db() as s:
+        held = dict(s.execute(select(Inbox.name, Inbox.list_address)).all())
+    assert held == {"alpha": _TOPICAL, "beta": _FIREHOSE}
+    assert not [r for r in caplog.records if "canonicals backfill" in r.getMessage()]
+
+
+def test_late_promotion_after_a_first_walk_names_the_backfill(
+    seeded_db, broker_active, monkeypatch, tmp_path, caplog
+):
+    """When the sample is too small to promote and the full walk is not,
+    the end-of-ingest fallback promotes, and the walk's pins never saw
+    the address. The log names the per-inbox backfill that repairs them."""
+    import mimir.ingest.orchestrate as orchestrate_mod
+    from mimir.cli._common import _select_inboxes
+
+    monkeypatch.setattr(orchestrate_mod, "LIST_ADDRESS_SAMPLE", 10)
+    _fresh_archive(seeded_db, tmp_path)
+    caplog.set_level(logging.INFO, logger="mimir.ingest.orchestrate")
+
+    ingest_all(_select_inboxes(None), workers=1)
+
+    with seeded_db() as s:
+        held = dict(s.execute(select(Inbox.name, Inbox.list_address)).all())
+    assert held == {"alpha": _TOPICAL, "beta": _FIREHOSE}
+    named = [
+        m.group(1)
+        for r in caplog.records
+        if r.name == "mimir.ingest.orchestrate"
+        and (
+            m := re.search(
+                r"canonicals backfill --reprocess --inbox (\w+)", r.getMessage()
+            )
+        )
+    ]
+    assert sorted(named) == ["alpha", "beta"]
+
+
+def test_list_address_sample_reads_the_highest_epoch_first(monkeypatch, tmp_path):
+    """The sample starts at the newest epoch, the highest number, so with
+    eleven epochs it reads 10.git before 9.git."""
+    import mimir.ingest.orchestrate as orchestrate_mod
+
+    monkeypatch.setattr(orchestrate_mod, "LIST_ADDRESS_SAMPLE", 3)
+    mirror = tmp_path / "mirror"
+    mirror.mkdir()
+    for n in range(11):
+        to = _TOPICAL if n == 10 else _FIREHOSE
+        _build_pubinbox_repo(
+            mirror / f"{n}.git",
+            [_rfc5322(f"e{n}-{i}@example.com", to=to) for i in range(5)],
+        )
+
+    assert orchestrate_mod._sample_list_addresses(mirror) == {_TOPICAL: 3}
+
+
+def test_first_ingest_walks_populated_epochs_when_the_newest_is_empty(
+    seeded_db, broker_active, tmp_path
+):
+    """A mirror clone killed by sync's timeout leaves an epoch with no
+    commits, most likely the newest. The sample skips it, so the first
+    ingest still stores the epochs that have mail."""
+    _clear_seed_articles(seeded_db)
+    mirror = tmp_path / "alpha"
+    mirror.mkdir()
+    _build_pubinbox_repo(
+        mirror / "0.git", [_rfc5322(f"m{i}@example.com") for i in range(3)]
+    )
+    _build_pubinbox_repo(mirror / "1.git", [])
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        alpha.mirror_path = str(mirror)
+        alpha.last_article_date = None
+        alpha.list_address = None
+        s.commit()
+        s.refresh(alpha)
+        s.expunge(alpha)
+
+    # The walk of the empty epoch itself may still raise (older, separate).
+    with contextlib.suppress(KeyError):
+        ingest_inbox(alpha, workers=1)
+
+    with seeded_db() as s:
+        stored = s.execute(
+            select(Article.message_id).where(Article.message_id.like("m%@example.com"))
+        ).scalars()
+        assert sorted(stored) == [f"m{i}@example.com" for i in range(3)]

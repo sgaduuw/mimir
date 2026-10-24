@@ -1,12 +1,14 @@
 """Per-inbox and across-all-inboxes ingest orchestration.
 
 `discover_epochs` enumerates a mirror's epoch directories. `ingest_inbox`
-walks them one at a time and runs `ANALYZE` once enough rows have moved
+detects a new inbox's list address from a sample of its newest mail,
+walks the epochs one at a time and runs `ANALYZE` once enough rows have moved
 to invalidate the SQLite query planner's `sqlite_stat1`. `ingest_all`
 fans out across every configured inbox.
 """
 
 import logging
+from collections import Counter
 from pathlib import Path
 
 from dulwich.errors import NotGitRepository
@@ -16,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.broker._context import get_active_pool, get_active_writer
+from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.dashboard import archive_stats, daily_volume
 from mimir.extensions import SessionLocal
@@ -26,9 +29,17 @@ from mimir.ingest.epoch import (
     ingest_epoch,
 )
 from mimir.models import Inbox
+from mimir.parser import parse_message
 from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
 
 logger = logging.getLogger(__name__)
+
+# How many of a new inbox's newest messages the pre-walk sample reads
+# (#855). Promotion needs MIN_PROMOTE_OBSERVATIONS (50) list-shaped
+# addresses, and not every message carries one, so 500 leaves room.
+# Unmeasured: on a fresh archive of 203 inboxes it is about 100k parses
+# in total, expected to be small beside the walk itself.
+LIST_ADDRESS_SAMPLE = 500
 
 
 def _warm_after_ingest(session: Session, inbox: Inbox) -> None:
@@ -77,9 +88,17 @@ def _warm_after_ingest(session: Session, inbox: Inbox) -> None:
     most_active_subsystems_in_inbox(session, inbox, days=7)
 
 
+def _epoch_number(path: Path) -> tuple[bool, int, str]:
+    """Sort key: epochs by number, since by name 10.git sorts before
+    2.git. sync clones only numbered epochs, so any other name is a stray
+    and goes last, by name."""
+    n = path.name.removesuffix(".git")
+    return (not n.isdigit(), int(n) if n.isdigit() else 0, path.name)
+
+
 def discover_epochs(mirror_path: Path) -> list[Path]:
     epochs = []
-    for child in sorted(mirror_path.iterdir()):
+    for child in sorted(mirror_path.iterdir(), key=_epoch_number):
         if not child.is_dir():
             continue
         try:
@@ -88,6 +107,34 @@ def discover_epochs(mirror_path: Path) -> list[Path]:
             continue
         epochs.append(child)
     return epochs
+
+
+def _sample_list_addresses(mirror_path: Path) -> Counter[str]:
+    """Count list-shaped To/Cc addresses over the newest
+    LIST_ADDRESS_SAMPLE messages of a mirror, newest epoch first, for
+    `_submit_promote_list_address` to judge before the first walk. Reads
+    git only. A message that fails to parse is skipped here; the walk
+    records it as a parse failure."""
+    tally: Counter[str] = Counter()
+    remaining = LIST_ADDRESS_SAMPLE
+    for epoch_path in reversed(discover_epochs(mirror_path)):
+        with Repo(str(epoch_path)) as repo:
+            try:
+                head = repo.head()
+            except KeyError:  # no commits yet, as a clone killed by sync leaves
+                continue
+            walker = repo.get_walker(include=[head], max_entries=remaining)
+            for entry in walker:
+                remaining -= 1
+                try:
+                    _mode, blob_sha = repo[entry.commit.tree][b"m"]
+                    parsed = parse_message(repo[blob_sha].data)
+                except Exception:
+                    continue
+                tally.update(extract_list_addresses(parsed.headers))
+        if remaining <= 0:
+            break
+    return tally
 
 
 def ingest_inbox(
@@ -125,12 +172,26 @@ def ingest_inbox(
         # and never cleared); `inbox.mirror_path` and `inbox.name` are
         # plain column values that survive detachment. `ingest_epoch` only
         # reads `inbox.id` and `inbox.name`, so no re-attach is needed.
-        was_empty = (
-            session.execute(
-                select(Inbox.last_article_date).where(Inbox.id == inbox.id)
-            ).scalar_one()
-            is None
-        )
+        last_article_date, list_address = session.execute(
+            select(Inbox.last_article_date, Inbox.list_address).where(
+                Inbox.id == inbox.id
+            )
+        ).one()
+        was_empty = last_article_date is None
+        # Detect a new inbox's list address before its first walk (#855).
+        # The inboxes walked before this one have had their chance to
+        # promote, so its own address is the only one the walk's picks
+        # could miss. Without it, cross-posts pinned to whichever inbox
+        # promoted first, lkml since #766.
+        if was_empty and list_address is None:
+            tally = _sample_list_addresses(Path(inbox.mirror_path))
+            if tally:
+                _submit_promote_list_address(writer, inbox.id, tally).result(timeout=30)
+                # Release the read transaction, as `flush_batch` does, so
+                # each epoch's address map sees the promotion. Under the
+                # sqlite3 driver's default (legacy) transaction control a
+                # SELECT opens none, so today this is a safeguard only.
+                session.commit()
         for epoch_path in discover_epochs(Path(inbox.mirror_path)):
             if remaining is not None and remaining <= 0:
                 break
@@ -149,8 +210,19 @@ def ingest_inbox(
 
     # Promote `Inbox.list_address` if we now have enough observations.
     # Dispatched as a WriteOp through the writer (gate semantics live in
-    # `_submit_promote_list_address`).
-    _submit_promote_list_address(writer, inbox.id).result(timeout=30)
+    # `_submit_promote_list_address`). After a first walk this is the
+    # fallback for a sample that could not promote, and the walk's pins
+    # never saw the address.
+    promoted = _submit_promote_list_address(writer, inbox.id).result(timeout=30)
+    if was_empty and promoted is not None:
+        logger.info(
+            "%s: list address %s promoted after the first walk; run "
+            "`admin canonicals backfill --reprocess --inbox %s` to re-pin "
+            "its cross-posts",
+            inbox.name,
+            promoted,
+            inbox.name,
+        )
 
     # Refresh planner stats when we've moved enough rows that prior
     # `sqlite_stat1` can no longer be trusted, most importantly the

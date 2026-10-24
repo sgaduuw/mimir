@@ -68,11 +68,10 @@ the broker. `--workers 1` is useful for debugging. Checkpoints are per inbox and
 epoch; repeating an ingest resumes from the last recorded commit. Pinned inboxes
 (`PINNED_INBOXES`) go first, then the rest by name.
 
-After the first ingest of an empty database (not a routine tick), run
-`uv run mimir admin canonicals backfill --reprocess --restart` (add `--yes` if
-it refuses to discard a run with progress). Cross-posts are linked before the
-topical inboxes have promoted their own list address, so without it they pin to
-the pinned inbox (lkml) instead of their topical list.
+An inbox's first ingest reads its newest 500 messages to detect its list
+address before the walk, unless one is set, so cross-posts pin to their topical
+list from the start. If ingest logs that an inbox's address was promoted after its first walk,
+run the `admin canonicals backfill --reprocess --inbox` command it names.
 
 Each epoch summary reports:
 
