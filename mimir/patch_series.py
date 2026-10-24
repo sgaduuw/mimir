@@ -21,12 +21,14 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from email.utils import parseaddr
 
 from sqlalchemy import and_, literal_column, select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.parser import unfold
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
@@ -364,17 +366,53 @@ def reply_to_patch(
 PATCH_WALK_HOPS = 128
 
 
-def cover_of_patch(thread_parent, parent_of, posting):
+# A patch posted this long after a cover of another explicit revision
+# answers an old thread, not that cover (#862). Measured on production
+# 2026-10-24: 2,568 rows on 491 covers, 19 of 20 sampled were mislinks;
+# the same-minute pairs (cover typos, per-patch versions) stay linked.
+CROSS_REVISION_GAP = timedelta(hours=1)
+
+
+def _explicit_version(subject: str | None) -> str | None:
+    """The `vN` a cover or patch bracket names, None when it names none
+    (`_bracket_version` reads that as v1, which a bare `[PATCH]` is not
+    claiming)."""
+    bracket = patch_bracket(unfold(subject or ""))
+    versions = _VERSION_RE.findall(bracket[0]) if bracket else ()
+    return next((v.lower() for v in versions if v[0] in "vV"), None)
+
+
+def _answers_old_revision(subject, date, cover) -> bool:
+    """Whether a patch posted at `date` is a later revision than `cover`:
+    both name a version, the versions differ, and the patch is more than
+    `CROSS_REVISION_GAP` newer. A missing date is no evidence. `date` is
+    the stored article date, the git commit time of the mirror, so
+    ingest and the backfill read the same value."""
+    patch_version, cover_version = (
+        _explicit_version(subject),
+        _explicit_version(cover.subject),
+    )
+    return (
+        None not in (patch_version, cover_version, date, cover.date)
+        and patch_version != cover_version
+        and aware_utc(date) - aware_utc(cover.date) > CROSS_REVISION_GAP
+    )
+
+
+def cover_of_patch(thread_parent, parent_of, posting, subject, date):
     """The cover an in-series patch answers, or None. `posting` is the
-    patch's `_posting`, `parent_of(message_id)` a row with `message_id`,
-    `subject`, `author` and `thread_parent`, or None.
+    patch's `_posting`, `subject` and `date` its own, `parent_of(message_id)`
+    a row with `message_id`, `subject`, `author`, `date` and
+    `thread_parent`, or None.
 
     Follows parents through in-series patches with the patch's total and
     version (`git send-email --chain-reply-to` threads each patch under
     the one before) to the first cover. A patch of another total or
     version is a re-post answering the old one, so the walk stops there.
-    The cover itself is not compared: the cover a patch answers is its
-    own, as it always was. Reads subjects, never stored series columns,
+    The cover itself is not compared, as it always was, except for a
+    patch posted well after a cover of another explicit version
+    (`_answers_old_revision`): that is a later revision answering an old
+    thread, and has no cover here. Reads subjects, never stored series columns,
     so the answer does not depend on which rows were linked first."""
     seen = set()
     for _ in range(PATCH_WALK_HOPS):
@@ -386,21 +424,21 @@ def cover_of_patch(thread_parent, parent_of, posting):
         if parent is None:
             return None
         if parent[0] == 0:
-            return row
+            return None if _answers_old_revision(subject, date, row) else row
         if parent[1:3] != posting[1:3]:
             return None
         thread_parent = row.thread_parent
     return None
 
 
-def in_series_link(subject, thread_parent, parent_of) -> tuple[str, str] | None:
+def in_series_link(subject, thread_parent, parent_of, date) -> tuple[str, str] | None:
     """`(patch_series_key, patch_series_version)` for an in-series patch:
     its cover's (`cover_of_patch`), or None. A cover that is a reply to
     its own parent has no series (#820), so its patches have none."""
     posting = _posting(subject)
     if posting is None or posting[0] == 0:
         return None
-    cover = cover_of_patch(thread_parent, parent_of, posting)
+    cover = cover_of_patch(thread_parent, parent_of, posting, subject, date)
     if cover is None:
         return None
     above = parent_of(cover.thread_parent) if cover.thread_parent else None
@@ -414,7 +452,8 @@ def in_series_link(subject, thread_parent, parent_of) -> tuple[str, str] | None:
 
 def _parent(session, thread_parent):
     """The thread parent's message id, subject, author and own parent, by
-    one select on the indexed message id, or None."""
+    one select on the indexed message id, or None. The date is the
+    cover's, for `_answers_old_revision`."""
     if not thread_parent:
         return None
     return session.execute(
@@ -422,6 +461,7 @@ def _parent(session, thread_parent):
             Article.message_id,
             Article.subject,
             Article.author,
+            Article.date,
             Article.thread_parent,
         ).where(Article.message_id == thread_parent)
     ).one_or_none()
@@ -540,7 +580,10 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         return bucket("reply_patch"), pending(None, None, None)
     if in_series is not None:
         link = in_series_link(
-            subject, article.thread_parent, lambda mid: _parent(session, mid)
+            subject,
+            article.thread_parent,
+            lambda mid: _parent(session, mid),
+            article.date,
         )
         if link is not None:
             key, version = link

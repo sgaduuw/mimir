@@ -186,6 +186,7 @@ def _load_key(
             Article.message_id,
             Article.subject,
             Article.author,
+            Article.date,
             Article.thread_parent,
             Article.patch_series_head_id,
         ).where(
@@ -204,7 +205,9 @@ def _load_key(
         posting = _subject_posting(row.subject)
         if posting is None or posting[0] == 0:
             continue
-        cover = cover_of_patch(row.thread_parent, parent_of, posting)
+        cover = cover_of_patch(
+            row.thread_parent, parent_of, posting, row.subject, row.date
+        )
         if cover is None:
             continue
         titles.setdefault(cover.message_id, []).append(posting[3])
