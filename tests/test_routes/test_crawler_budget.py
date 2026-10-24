@@ -558,7 +558,7 @@ def test_default_listed_crawlers_are_classified_by_key(key, ua):
     assert _default_gate().crawler_key(ua) == key
 
 
-def test_default_list_has_the_ten_percent_crawlers():
+def test_default_crawler_list():
     assert DEFAULT_CRAWLER_UA_BUDGETS == {
         **dict.fromkeys(DEFAULT_LISTED, 10),
         **SEARCH_CRAWLERS,
@@ -583,8 +583,10 @@ def _production_shaped_gate(monkeypatch, clock):
 @pytest.mark.parametrize("ua, key", [(GOOGLEBOT, "Googlebot"), (BINGBOT, "bingbot")])
 def test_search_crawlers_are_listed_by_default(monkeypatch, ua, key):
     gate = _production_shaped_gate(monkeypatch, Clock())
-    # The listed entry, not the lowercased token an unlisted crawler gets.
     assert gate.crawler_key(ua) == key
+    # 80% of 100 over 16 workers. An unlisted crawler has no bucket, so
+    # this also fails when the key merely equals the lowercased token.
+    assert gate.ua_per_worker_per_minute(key) == 5
 
 
 def _burst(gate, clock, ua):
