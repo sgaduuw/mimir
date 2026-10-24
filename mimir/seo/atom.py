@@ -95,8 +95,7 @@ def atom_response(
         )
         # Same rule as JSON-LD `_person`: display name, else the
         # allowlisted address, else no <author> (never an invented
-        # name, never a hidden address). Local rather than shared: the
-        # JSON-LD side also needs `display` and `email` separately.
+        # name, never a hidden address).
         display = parseaddr(a.author or "")[0].strip()
         author_email = _allowlisted_email(a.author)
         if display or author_email:

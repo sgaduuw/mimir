@@ -238,7 +238,8 @@ def test_atom_feed_nameless_senders_never_named_unknown_sender(
     for key, aid in ids.items():
         assert str(aid) in by_id, f"{key} entry missing from feed"
 
-    assert "unknown sender" not in r.get_data(as_text=True)
+    body = r.get_data(as_text=True)
+    assert "unknown sender" not in body
     named = by_id[str(ids["named"])]
     assert named.findtext("a:author/a:name", namespaces=ns) == "Named Person"
     allowlisted = by_id[str(ids["allowlisted"])]
@@ -249,8 +250,8 @@ def test_atom_feed_nameless_senders_never_named_unknown_sender(
     assert by_id[str(ids["hidden"])].find("a:author", ns) is None
     assert by_id[str(ids["empty"])].find("a:author", ns) is None
     assert by_id[str(ids["blank"])].find("a:author", ns) is None
-    assert "secret@private.example" not in r.get_data(as_text=True)
-    assert "ws@private.example" not in r.get_data(as_text=True)
+    assert "secret@private.example" not in body
+    assert "ws@private.example" not in body
 
     feed_authors = root.findall("a:author", ns)
     assert len(feed_authors) == 1
