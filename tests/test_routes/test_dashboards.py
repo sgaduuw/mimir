@@ -568,14 +568,20 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
     assert "/alpha/reviewer/" not in text
 
 
-def test_subsystem_reviewer_links_respect_route_syntax_and_redaction(client, session):
+def test_subsystem_reviewer_links_respect_route_syntax_and_redaction(
+    client, session, monkeypatch
+):
     import re
     from urllib.parse import quote
 
+    from mimir.config import settings
     from mimir.models import ArticleTrailer
     from mimir.web.filters import _is_allowlisted_address_filter
     from tests.test_subsystems._helpers import _add_patch_article
 
+    # `newline@` keeps the newline row allowlisted, so it exercises the
+    # link emitter's syntax gate alone, not the allowlist.
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org", "newline@"])
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
     article_id = _add_patch_article(
         session, "reviewer-links@example.com", ["fs/bcachefs/super.c"]
@@ -586,7 +592,7 @@ def test_subsystem_reviewer_links_respect_route_syntax_and_redaction(client, ses
         ("Allowed+tag%Box@kernel.org", True, 200),
         ("apostrophe'name@kernel.org", True, 404),
         ("slash/name@kernel.org", True, 404),
-        ("newline@kernel.org\n", False, 404),
+        ("newline@kernel.org\n", True, 404),
         ("Private@elsewhere.example", False, 200),
     ]
     for i, (address, _allowlisted, _status) in enumerate(cases):
