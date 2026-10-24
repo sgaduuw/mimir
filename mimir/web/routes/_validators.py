@@ -140,6 +140,10 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # by revision number, and `backfill-patch-series --reprocess` can
     # renumber a version in place at the same count.
     series_tag = ""
+    if series is not None:
+        # A keyless row's own columns still decide the patch state card
+        # (#838), and a reprocess can clear its position alone.
+        series_tag = repr(tuple(series))
     if series is not None and series[0]:
         # Plus each revision's canonical inbox and memberships: the fold
         # links every revision (and the diff's `to` slot) through
