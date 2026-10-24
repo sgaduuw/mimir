@@ -282,10 +282,12 @@ def _safe_from_filter(author: str | None) -> str:
     name, addr = parseaddr(author)
     if not addr:
         return author  # unparseable; show as-is
+    usable = _usable_display_name(author)
     if _is_allowlisted(addr):
-        return author
-    if name:
-        return f"{name} <hidden>"
+        # A name carrying someone else's address drops to the bare address.
+        return author if usable or not name else addr
+    if usable:
+        return f"{usable} <hidden>"
     return "<hidden>"
 
 
@@ -314,10 +316,25 @@ def _display_name_filter(author: str | None) -> str:
     trailing punctuation hole."""
     if not author:
         return "unknown sender"
-    name, _ = parseaddr(author)
-    if name:
-        return name
-    return "unknown sender"
+    return _usable_display_name(author) or "unknown sender"
+
+
+_EMAIL_TOKEN_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+
+
+def _usable_display_name(author: str | None) -> str | None:
+    """The From display name, or None when it is empty or holds an
+    email-shaped token that is not allowlisted (#852). `"a@x.org"
+    <a@x.org>` and a list rewrite like `"a@x.org via list" <list@y.org>`
+    would otherwise print the address through the name. Errs towards
+    hiding: a false positive drops a name, a false negative leaks an
+    address. "John @ Company" is not email-shaped and stays."""
+    name = parseaddr(author or "")[0].strip()
+    if not name:
+        return None
+    if any(not _is_allowlisted(m) for m in _EMAIL_TOKEN_RE.findall(name)):
+        return None
+    return name
 
 
 def _allowlisted_email(author: str | None) -> str | None:
