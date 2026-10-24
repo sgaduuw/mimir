@@ -53,11 +53,12 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # or RESEND (`[PATCHv2`, `[RFCv9`) also starts a marker, and RFC and
 # RESEND may end at it (#816, #819). A dotted version followed by `-`
 # (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision, and
-# so does a parenthesised one (`(v20.08)`, #870). A dotted version
-# (`v5.10`) is the revision only when no plain `vN` follows it
-# (`_bracket_version`).
+# so does a parenthesised one (`(v20.08)`) and one after `-` or `/`
+# (`for-v6.18`, `stable/v3.2.x`, #870). A dotted version (`v5.10`) is the
+# revision only when no plain `vN` follows it (`_bracket_version`).
 _VERSION_RE = re.compile(
-    r"(?<!\()(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
+    r"(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
+    r"(?:(?<![-/])|(?!v\d+\.\d))"
     r"(v\d+(?!(?:\.\d+)+[-)])|RFC|RESEND)(?:\b|(?=v\d))",
     re.IGNORECASE,
 )
@@ -242,11 +243,11 @@ def _plain_version(inside: str) -> str | None:
     """The `vN` of a patch bracket, None when it names none. A plain `vN`
     beats a dotted one: `[PATCH v5.10 v2]` is v2 (#870)."""
     numbers = [
-        (m.group(1).lower(), inside[m.end() :])
+        (m.group(1).lower(), inside.startswith(".", m.end()))
         for m in _VERSION_RE.finditer(inside)
         if m.group(1)[0] in "vV"
     ]
-    plain = [v for v, rest in numbers if not rest.startswith(".")]
+    plain = [v for v, dotted in numbers if not dotted]
     return next(iter(plain or [v for v, _ in numbers]), None)
 
 

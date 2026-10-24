@@ -59,7 +59,9 @@ once.
 
 - A parenthesised or base-tree tag is no longer read as the series version
   (#870). `[PATCH (v20.08) v3 0/8]` is v3, not v20, and `[PATCH v5.10 v2 1/2]`
-  is v2, not v5. A lone dotted tag (`[PATCH v4.1 0/3]`) still reads as v4.
+  is v2, not v5, and a dotted tag after `-` or `/` (`for-v6.18`,
+  `stable/v3.2.x`) is a tree, not a version. A lone dotted tag
+  (`[PATCH v4.1 0/3]`) still reads as v4.
   Stored versions change on the next `backfill-patch-series --reprocess`,
   which is already required above.
 - A patch is no longer linked to a cover of another revision that it was

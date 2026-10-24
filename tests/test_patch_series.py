@@ -1,5 +1,7 @@
 """Unit tests for `mimir.patch_series`. Detection + key stability."""
 
+import time
+
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
@@ -120,6 +122,44 @@ def test_the_cross_revision_guard_reads_the_same_version():
         ("[PATCH 1/2] foo: bar", None),
     ]:
         assert _explicit_version(subject) == version, subject
+
+
+def test_a_parenthesised_marker_or_plain_version_still_counts():
+    for bracket, version in [
+        ("PATCH (RFC) 0/3", "rfc"),
+        ("PATCH (RESEND) 0/3", "resend"),
+        ("PATCH (v2) 0/3", "v2"),
+        ("PATCH 0/3 (v2)", "v2"),
+    ]:
+        assert _bracket_version(bracket) == version, bracket
+    assert _explicit_version("[PATCH (v2) 1/3] foo: bar") == "v2"
+    assert posting_flags("[PATCH v2 (RFC) 0/3] foo", "v2") == (True, False)
+    assert posting_flags("[PATCH (RFC v2) 0/3] foo", "v2") == (True, False)
+
+
+def test_the_parenthesised_base_tree_tag_is_still_skipped():
+    assert _bracket_version("PATCH (v20.08) v3 0/8") == "v3"
+    assert _bracket_version("PATCH (v20.08) 0/8") == "v1"
+
+
+def test_a_base_tree_branch_name_is_not_the_revision():
+    """`for-v6.18` and `stable/v3.2.x` name a tree (#870); `PATCH/v2`
+    and `RFC/v2` stay versions."""
+    for bracket, version in [
+        ("PATCH for-v6.18 0/3", "v1"),
+        ("PATCH stable/v3.2.x 0/3", "v1"),
+        ("PATCH stable/v3.2.x v2 0/3", "v2"),
+        ("PATCH/v2 0/3", "v2"),
+        ("RFC/v2 0/3", "v2"),
+    ]:
+        assert _bracket_version(bracket) == version, bracket
+
+
+def test_a_long_bracket_parses_in_linear_time():
+    """Reading the text after each match copied it every time (#870)."""
+    start = time.perf_counter()
+    assert _bracket_version("PATCH " + "v1 " * 300_000) == "v1"
+    assert time.perf_counter() - start < 1
 
 
 def test_unchanged_version_shapes_stay_put():
