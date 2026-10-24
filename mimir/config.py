@@ -737,7 +737,7 @@ class Settings(BaseSettings):
 
     # Crawlers that are NOT listed above are still recognised by a
     # product token: a name ending in one of these markers, followed by
-    # a slash (Googlebot/2.1, GPTBot/1.0, curl/8.5.0); a token that is
+    # a slash (AhrefsBot/7.0, GPTBot/1.0, curl/8.5.0); a token that is
     # just the marker counts. The slash keeps a browser on a device such
     # as `CUBOT X30` from being gated. Script tools (curl, wget,
     # python-requests) are markers too, so operator scripts and smoke
