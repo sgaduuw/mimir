@@ -15,8 +15,11 @@ changes, not internal refactors. Categories: **Added**,
 
 No migration. After deploying, run `backfill-patch-series --reprocess` once
 (it applies #819 and #820 to stored rows and re-chains what it changes,
-#824), then `mimir analyze` once (#817), since a release without a migration
-fires no post-migrate pass.
+#824), then `mimir analyze --full` once (#817), since a release without a
+migration fires no post-migrate pass; `--full` is right even if the
+deployment still sets `ANALYZE_LIMIT`. Rolling back to 3.25.0 is safe; after
+a rollback, run 3.25.0's `backfill-patch-series` only with
+`backfill-series-chains` after it.
 
 ### Changed
 
@@ -46,7 +49,7 @@ fires no post-migrate pass.
   dotted base tree such as `v2019.04-aspeed` or `v6.12-rc1` is no longer
   taken for the revision (#819). 514 stored covers change.
 - `backfill-patch-series` no longer leaves patch series in the wrong chain
-  (#824). It wrote each row's series head from its own read, so an ingest
+  (#824; patches threaded under another patch excepted, #840). It wrote each row's series head from its own read, so an ingest
   batch landing between the read and the write could be undone, and the
   titles it changed stayed unchained until `backfill-series-chains` ran
   again. Each batch now re-chains the titles its rows leave or join, and
