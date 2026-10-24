@@ -73,7 +73,6 @@ class _ArticleInsert:
     patch_series_key: str | None = None
     patch_series_version: str | None = None
     patch_series_position: int | None = None
-    patch_series_head_id: int | None = None
     touched_paths: list[str] = field(default_factory=list)
     trailer_rows: list[tuple[str, str, str]] = field(default_factory=list)
     repick: Callable[[frozenset[int]], int | None] | None = None
@@ -365,7 +364,6 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
                     patch_series_key=art.patch_series_key,
                     patch_series_version=art.patch_series_version,
                     patch_series_position=art.patch_series_position,
-                    patch_series_head_id=art.patch_series_head_id,
                 )
                 .on_conflict_do_nothing(index_elements=["message_id"])
                 .returning(Article.id)

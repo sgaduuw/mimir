@@ -1043,10 +1043,30 @@ order).
   batches (8 per batch at p50, 66 at most), about 25 s of writer time.
   Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
   minutes.
+- **A patch finds its cover by one walk (#840).** `git send-email
+  --chain-reply-to` threads each patch under the one before, so only 1/N
+  answers the cover. `cover_of_patch` climbs parents through in-series
+  patches of the same total and version to the first cover, capped at
+  `PATCH_WALK_HOPS` and stopped by a repeated message id. Ingest, both
+  backfill modes and `_load_key` all use it, so a patch is linked,
+  titled and headed with the same cover everywhere. It reads subjects,
+  never stored keys, so the answer does not depend on arrival order and
+  one plain run heals a chain that arrived out of order. A patch hop of
+  another version or total stops the walk (a v2 re-post answering v1's
+  patch is not part of v1); the cover hop is not compared, as before.
+  `_load_key` reads the key's rows first and the database for the rest,
+  because a patch can answer a reply #837 cleared, which has no key.
+  Ingest no longer copies a head onto a patch; the batch's re-chain
+  writes it. Known gaps: a same-sender re-post at an occupied position
+  links as a second row there (#860, #861), and the unguarded cover hop
+  can take another version's cover (#862).
 - **Operator order.** `backfill-patch-series --reprocess` first (it
   rewrites the versions the rule reads), then `backfill-series-chains`,
-  once, for history ingested before 3.25.0. After that, ingest and
-  `backfill-patch-series` keep the keys they touch chained.
+  once, for history ingested before 3.25.0, and again after #840 for
+  chain-reply patches the reprocess does not change: their rows send
+  nothing, so only a chain pass gives them their cover's head. After
+  that, ingest and `backfill-patch-series` keep the keys they touch
+  chained.
 
 ### Materialised thread roots (2026-07-28)
 
