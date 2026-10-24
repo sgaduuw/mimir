@@ -2297,3 +2297,99 @@ def test_subsystem_index_entry_is_its_canonical_dated_and_linked_back(client, tm
 
     page = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
     assert 'href="/alpha/subsystem/"' in page
+
+
+def _index_lastmods(client) -> dict[str, str | None]:
+    """`{path: <lastmod> or None}` for every child the index lists."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlsplit
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/sitemap.xml").data)
+    return {
+        urlsplit(sm.find("s:loc", ns).text).path: getattr(
+            sm.find("s:lastmod", ns), "text", None
+        )
+        for sm in root.findall("s:sitemap", ns)
+    }
+
+
+def _max_child_lastmod(client, path: str) -> str:
+    import xml.etree.ElementTree as ET
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get(path).data)
+    return max(u.find("s:lastmod", ns).text for u in root.findall("s:url", ns))
+
+
+def _drop_index_cache():
+    """Drop only the index row, so children stay cached."""
+    from mimir import cache
+    from mimir.seo.sitemaps import settings
+
+    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
+
+
+@pytest.mark.parametrize("granularity", ["year", "month"])
+def test_index_lastmod_for_archive_child_is_its_cached_max(
+    client, tmp_path, monkeypatch, granularity
+):
+    """A reply to an old thread moves the child's own `<lastmod>`; the
+    index entry for that child carries the same date once the child is
+    cached, and carries none while it is not (#847)."""
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    if granularity == "month":
+        # Two roots in 2012 over a one-page budget: the index lists months.
+        monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("old@x", None), ("reply@x", "old@x"), ("other@x", None)],
+    )
+    _set_article_date(seeded["old@x"][0], datetime(2012, 1, 5, tzinfo=UTC))
+    _set_article_date(seeded["other@x"][0], datetime(2012, 6, 1, tzinfo=UTC))
+    _set_article_date(seeded["reply@x"][0], datetime(2026, 3, 9, tzinfo=UTC))
+    child = (
+        "/alpha/2012/sitemap.xml"
+        if granularity == "year"
+        else "/alpha/2012/01/sitemap.xml"
+    )
+    _clear_sitemap_cache()
+
+    cold = _index_lastmods(client)
+    assert child in cold, "the child must be listed"
+    assert cold[child] is None, "precondition: child uncached, so no lastmod"
+
+    expected = _max_child_lastmod(client, child)  # also caches the child
+    assert expected == "2026-03-09"
+    _drop_index_cache()
+    assert _index_lastmods(client)[child] == expected
+
+
+def test_index_reads_cached_children_in_bounded_batches(client, tmp_path, monkeypatch):
+    """Cached children hold whole XML bodies, so the index must not load
+    all of them at once (#847)."""
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)  # months, not years
+    ids = [f"m{n}@x" for n in range(20)]
+    seeded = seed_thread_shape(tmp_path, "alpha", [(i, None) for i in ids])
+    for n, mid in enumerate(ids):
+        _set_article_date(
+            seeded[mid][0], datetime(2010 + n // 12, n % 12 + 1, 1, tzinfo=UTC)
+        )
+    _clear_sitemap_cache()
+    sizes = []
+    real = sm.cache.get_many
+    monkeypatch.setattr(
+        sm.cache, "get_many", lambda keys: sizes.append(len(keys)) or real(keys)
+    )
+    _index_lastmods(client)
+    assert sum(sizes) >= 20 and max(sizes) <= 16, sizes
