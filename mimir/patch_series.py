@@ -340,10 +340,10 @@ def reply_to_patch(
     parent (#837), by `_repeats_parent`, and carries no diff
     (`touches_files` is whether `extract_touched_paths` found a path).
     Whoever sends it (#860): the diff, not the sender, tells a reply
-    from a re-post. About 99% of such rows are replies (production,
-    2026-10-24); a diff marks a re-post of the patch. A re-post that
-    attaches its patch, or a reply that quotes a diff unquoted, is
-    misread either way."""
+    from a re-post. About 98% of such rows are replies (49 of 50
+    sampled, production 2026-10-24); a diff marks a re-post of the
+    patch. A re-post that attaches its patch, or a reply that quotes a
+    diff unquoted, is misread either way."""
     return (
         not touches_files
         and parse_in_series_patch_subject(unfold(subject)) is not None
