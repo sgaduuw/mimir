@@ -7,7 +7,7 @@
 (`/<inbox>/author/<sub>`).
 
 A few helpers reach back into `mimir.web` for the shared display
-filters (`_msg_url`, `_display_name_filter`, `_redact_trailer_address`).
+filters (`_msg_url`, `_redact_trailer_address`).
 Those imports are done inside the function bodies to avoid an
 import-time cycle (web imports JSON-LD builders from this module at
 module load).
@@ -179,31 +179,35 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
 BREADCRUMB_NAME_MAX = 80
 
 
-UNKNOWN_SENDER = "unknown sender"
-
-
 def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> dict:
     """schema.org `Person` for a message sender, redaction-aware.
 
     `name` is the display name only (never the `<hidden>` placeholder,
     which reads as broken data in metadata even though it is right on
-    the rendered page). `email` rides along only for allowlisted
-    senders, mirroring exactly what `_safe_from_filter` shows.
+    the rendered page). Without a display name, an allowlisted sender
+    is named by its address (public on the page already) and any other
+    sender gets no `name` at all: `author` stays present, which Google
+    requires, and nothing is invented or leaked. `email` rides along
+    only for allowlisted senders, mirroring exactly what
+    `_safe_from_filter` shows.
 
     `with_url` points at the per-inbox author view, which Google wants
     as a stable "more posts by this author" target for Discussions
     eligibility. Off for thread comments: repeating the same per-inbox
-    URL for every participant adds no signal.
+    URL for every participant adds no signal. Only for senders with a
+    display name, since the view is keyed by it.
     """
-    from mimir.web.filters import _allowlisted_email, _display_name_filter
+    from mimir.web.filters import _allowlisted_email, _usable_display_name
 
-    name = _display_name_filter(raw)
-    person: dict = {"@type": "Person", "name": name}
+    display = _usable_display_name(raw)
     email = _allowlisted_email(raw)
+    person: dict = {"@type": "Person"}
+    if display or email:
+        person["name"] = display or email
     if email:
         person["email"] = email
-    if with_url and name and name != UNKNOWN_SENDER:
-        person["url"] = f"{base}/{inbox_name}/author/{quote(name, safe='')}"
+    if with_url and display:
+        person["url"] = f"{base}/{inbox_name}/author/{quote(display, safe='')}"
     return person
 
 
@@ -283,19 +287,9 @@ def _json_ld_message(
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_display_name_filter` for `Person.name`,
-    display name only and no `<hidden>` placeholder. The placeholder
-    is a rendering decision for the visible HTML; in machine-readable
-    metadata it reads as broken data and was flagged as such in the
-    2026-05-12 review. `Person.email` is conditionally added via
-    `_allowlisted_email`: present iff the sender is in the allowlist
-    union (and therefore already on the rendered page in full),
-    omitted otherwise. Matches the redaction posture of
-    `_safe_from_filter` on the HTML side. `author.url` points at the
-    per-inbox author view so the Person has a stable target for
-    "more posts by this author"; required-by-Google for the
-    Discussions rich-result eligibility (non-critical, Search
-    Console 2026-05-14). `dateModified` mirrors `datePublished`
+    Author: see `_person`. `author.url` is required by Google for the
+    Discussions rich-result eligibility (non-critical, Search Console
+    2026-05-14). `dateModified` mirrors `datePublished`
     because mimir doesn't track edits.
 
     `text` carries a plain-text snippet of `parsed.body`, capped at

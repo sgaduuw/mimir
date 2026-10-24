@@ -1,7 +1,8 @@
 """Sitemap XML for crawlers.
 
-Four cached surfaces feeding `/sitemap.xml`, `/meta-sitemap.xml`,
-`/sitemap-maintainers.xml`, and `/<inbox>/sitemap.xml`. Cache keys are
+Cached surfaces feeding `/sitemap.xml`, `/meta-sitemap.xml`,
+`/sitemap-maintainers.xml`, `/sitemap-series-diffs-<h>.xml`,
+`/<inbox>/sitemap.xml` and the archive pages. Cache keys are
 stable; bumping `cache.NAMESPACE_VERSION` invalidates everything if a
 payload shape changes, so per-route expiry is purely about freshness.
 
@@ -24,7 +25,7 @@ from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from itertools import groupby
+from itertools import groupby, pairwise
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -38,7 +39,12 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.models import Article, ArticleList, Inbox
-from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.patch_series import series_head
+from mimir.subsystems import (
+    is_addressable_subsystem_name,
+    subsystem_index_path,
+    subsystem_path,
+)
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
@@ -697,6 +703,25 @@ def _archive_entries(session: Session, inbox: Inbox, page_ids: list[int], base: 
     return entries, newest
 
 
+def _year_pages_key(inbox_name: str, year: int) -> str:
+    return (
+        f"sitemap:yearpages:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
+    )
+
+
+def _month_page_key(inbox_name: str, year: int, month: int, page: int) -> str:
+    return (
+        f"sitemap:month:{inbox_name}:{year:04d}-{month:02d}:{page}"
+        f":{settings.thread_view_render_cap}"
+    )
+
+
+def _unpack_year_pages(packed: str) -> list[SitemapPayload]:
+    return [
+        SitemapPayload(*pair) for pair in json.loads(zlib.decompress(b64decode(packed)))
+    ]
+
+
 def _year_sitemap_xml(
     session: Session, inbox: Inbox, year: int, page: int, base: str, *, force: bool
 ) -> SitemapPayload | None:
@@ -706,16 +731,9 @@ def _year_sitemap_xml(
     check, so serving must bound actual URLs independently. Keep page bodies
     together: independently refreshed pages could drop URLs between slices.
     """
-    key = f"sitemap:yearpages:{inbox.name}:{year:04d}:{settings.thread_view_render_cap}"
+    key = _year_pages_key(inbox.name, year)
     packed = None if force else cache.get(key)
-    pages = (
-        [
-            SitemapPayload(*pair)
-            for pair in json.loads(zlib.decompress(b64decode(packed)))
-        ]
-        if packed is not None
-        else None
-    )
+    pages = _unpack_year_pages(packed) if packed is not None else None
     if pages is None:
         ids = list(session.scalars(_archive_roots_query(inbox, year, None)))
         entries = []
@@ -799,20 +817,23 @@ def archive_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}:{settings.thread_view_render_cap}",
+        _month_page_key(inbox.name, year, month, page),
         SITEMAP_TTL_SEC,
         compute,
         force=force,
     )
 
 
+_INDEX_READ_BATCH = 16
+
+
 def sitemap_index_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
     """Cached body of `/sitemap.xml`. Lists `/meta-sitemap.xml`, one
-    `/<inbox>/sitemap.xml` per configured inbox, and
-    `/sitemap-maintainers.xml`. Same cache key as the route uses
-    (`sitemap:index:<render-cap>`) so `warm-cache` can pre-populate it via
+    `/<inbox>/sitemap.xml` per configured inbox with its archive pages,
+    `/sitemap-maintainers.xml`, and the sixteen series diff pages. Same
+    cache key as the route uses (`sitemap:index:<render-cap>`) so `warm-cache` can pre-populate it via
     `force=True`. The `last_modified` field of the returned
     `SitemapPayload` is the global-max article date (max across all
     per-inbox lastmods). It is NOT projected into a `Last-Modified`
@@ -847,6 +868,8 @@ def sitemap_index_xml(
                     _month_counts(session, inbox), key=lambda row: row[0]
                 )
             }
+            # (loc, key, is_year)
+            children: list[tuple[str, str, bool]] = []
             for year, buckets in years.items():
                 if (
                     1 <= year <= 9998
@@ -854,27 +877,47 @@ def sitemap_index_xml(
                     <= SITEMAP_URLS_PER_PAGE
                     and sum(urls for _, _, _, urls in buckets) <= SITEMAP_MAX_URLS
                 ):
-                    entries.append(
-                        (f"{base}/{inbox.name}/{year:04d}/sitemap.xml", None)
+                    children.append(
+                        (
+                            f"{base}/{inbox.name}/{year:04d}/sitemap.xml",
+                            _year_pages_key(inbox.name, year),
+                            True,
+                        )
                     )
                     continue
                 for _, month, count, _ in buckets:
                     pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
                     for page in range(1, pages + 1):
                         suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
-                        # No lastmod: root dates miss replies to old threads;
-                        # computing honest activity would require a full scan.
-                        entries.append(
+                        children.append(
                             (
                                 f"{base}/{inbox.name}/{year:04d}/{month:02d}/{suffix}",
-                                None,
+                                _month_page_key(inbox.name, year, month, page),
+                                False,
                             )
                         )
+            # lastmod = the child's cached last_modified; an uncached child
+            # gets none (building it here would be a full scan). Same row, so
+            # they agree while it lives, then can differ for one more TTL.
+            # Batched: each cached child is a whole body.
+            for start in range(0, len(children), _INDEX_READ_BATCH):
+                batch = children[start : start + _INDEX_READ_BATCH]
+                cached = cache.get_many([key for _, key, _ in batch])
+                for loc, key, is_year in batch:
+                    value = cached.get(key)
+                    if value is not None and is_year:
+                        value = _unpack_year_pages(value)[0]  # `loc` is page 1
+                    entries.append((loc, value.last_modified if value else None))
         # Reuse global_latest as the maintainers urlset's lastmod: it's
         # free (already computed above) and a reasonable proxy for
         # "maintainer-relevant activity changed" without an extra
         # per-maintainer date query.
         entries.append((f"{base}/sitemap-maintainers.xml", global_latest))
+        # No lastmod: dating a page would mean building it.
+        entries.extend(
+            (f"{base}/sitemap-series-diffs-{bucket}.xml", None)
+            for bucket in SERIES_DIFF_BUCKETS
+        )
         return SitemapPayload(
             body=_build_sitemap_index_xml(entries),
             last_modified=global_latest,
@@ -972,6 +1015,117 @@ def maintainers_sitemap_xml(
     )
 
 
+# One urlset per first hex character of `patch_series_key` (a SHA-1 hex
+# digest). Measured read-only on production 2026-10-24: 193,557 adjacent
+# cover diffs, the largest bucket 12,478, so sixteen pages stay well under
+# the 50,000 cap. A bucket is a range on `ix_articles_patch_series_key`,
+# about 0.13 s warm (cold unmeasured), so pages are built on request and
+# cached, like the archive pages, with no warm target.
+SERIES_DIFF_BUCKETS = "0123456789abcdef"
+
+
+def series_diff_sitemap_xml(
+    session: Session, bucket: str, base: str, *, force: bool = False
+) -> SitemapPayload:
+    """Cached body of `/sitemap-series-diffs-<bucket>.xml` (#846): the
+    cover-letter diff between each pair of adjacent revisions of every
+    series whose key starts with `bucket`.
+
+    Adjacent follows the revisions fold (`patch_state._series_timeline`):
+    a series' covers oldest first, undated last, a resend folded into the
+    first appearance of its version (an unversioned one is dropped).
+    Covers only, because both covers must exist for the route to serve
+    the diff, and per-position diffs would be 1.47M URLs (measured
+    2026-10-24). `<lastmod>` is the newest cover in either slot: the
+    mails are immutable, so only a resend moves it.
+    """
+
+    def compute() -> SitemapPayload:
+        # Late import: a module-level one closes the `mimir.seo` <->
+        # `mimir.web` cycle (see the package docstring and
+        # `tests/test_import_graph.py`).
+        from mimir.web.urls import _canonical_inbox_names_for, _spell_series_diff_url
+
+        rows = session.execute(
+            select(
+                Article.id,
+                Article.patch_series_key,
+                series_head(),
+                Article.patch_series_version,
+                Article.date,
+            ).where(
+                Article.patch_series_key >= bucket,
+                Article.patch_series_key < chr(ord(bucket) + 1),
+                func.coalesce(Article.patch_series_position, 0) == 0,
+                # An unversioned `[PATCH RESEND 0/N]` copies a revision
+                # already listed. Dropped rather than merged into v1: the
+                # route's slots match the version string exactly, so its
+                # date would move a lastmod the page's slots do not see.
+                # SQL `!=` is never true for NULL, so this also drops covers
+                # with no version, which the route cannot serve.
+                Article.patch_series_version != "resend",
+            )
+        ).all()
+        series: dict[tuple[str, int], list] = {}
+        for art_id, key, head, version, date in rows:
+            series.setdefault((key, head), []).append((date, art_id, version))
+
+        pairs = []
+        for (key, head), covers in sorted(series.items()):
+            covers.sort(key=lambda c: (c[0] is None, c[0], c[1]))
+            slot_dates: dict[str, list] = {}
+            first_id: dict[str, int] = {}
+            for date, art_id, version in covers:
+                slot_dates.setdefault(version, []).append(date)
+                first_id[version] = min(first_id.get(version, art_id), art_id)
+            # A version with no cover is absent here, so v1, v2 (no cover),
+            # v3 pairs v1 with v3: adjacent among the revisions the route
+            # can diff, and that page exists.
+            for older, newer in pairwise(slot_dates):
+                dates = [d for v in (older, newer) for d in slot_dates[v] if d]
+                lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
+                pairs.append((key, head, older, newer, first_id[newer], lastmod))
+
+        # The page nominates the canonical inbox of the lowest-id cover in
+        # its `to` slot; this resolves the same rule for the whole bucket.
+        to_ids = [p[4] for p in pairs]
+        inbox_of: dict[int, str] = {}
+        for offset in range(0, len(to_ids), SITEMAP_URLS_PER_PAGE):
+            inbox_of.update(
+                _canonical_inbox_names_for(
+                    session, to_ids[offset : offset + SITEMAP_URLS_PER_PAGE]
+                )
+            )
+        entries = [
+            (
+                _spell_series_diff_url(
+                    inbox_of[to_id],
+                    key,
+                    older,
+                    newer,
+                    0,
+                    head_id=head or None,
+                    base=base,
+                ),
+                lastmod,
+            )
+            for key, head, older, newer, to_id, lastmod in pairs
+            if to_id in inbox_of
+        ]
+        return SitemapPayload(
+            body=_build_sitemap_xml(entries),
+            last_modified=max((d for _, d in entries if d), default=None),
+        )
+
+    return cache.get_or_compute(
+        session,
+        f"sitemap:series-diffs:{bucket}",
+        SITEMAP_TTL_SEC,
+        compute,
+        force=force,
+    )
+
+
 def inbox_sitemap_xml(
     session: Session, inbox: Inbox, base: str, *, force: bool = False
 ) -> SitemapPayload:
@@ -1042,13 +1196,14 @@ def inbox_sitemap_xml(
         # target list. A miss omits these entries for one cycle; it
         # must never turn a sitemap render into a minutes-long compute.
         seen_subsystem_locs: set[str] = set()
-        for activity in most_active_subsystems_in_inbox(
+        active = most_active_subsystems_in_inbox(
             session,
             inbox,
             days=7,
             limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
             compute_on_miss=False,
-        ):
+        )
+        for activity in active:
             # Skip names the route would refuse to serve back. The
             # emitter and the route are different modules and nothing
             # else forces them to agree, so without this the sitemap
@@ -1089,9 +1244,18 @@ def inbox_sitemap_xml(
         # path, and advertising those to crawlers is the same thin-page
         # trade this change set refuses everywhere else. It stays linked
         # from the inbox dashboard either way, so it is discoverable the
-        # moment it has something to show.
+        # moment it has something to show. Dated by the newest activity
+        # it lists, read from the same payload the page renders.
         if seen_subsystem_locs:
-            entries.append((f"{base}/{inbox.name}/subsystem/", None))
+            newest_activity = max(
+                (a.last_activity for a in active if a.last_activity), default=None
+            )
+            entries.append(
+                (
+                    base + subsystem_index_path(inbox.name),
+                    newest_activity.strftime("%Y-%m-%d") if newest_activity else None,
+                )
+            )
 
         # Recent THREADS in the inbox, one URL per thread, pointing at
         # the whole-thread view. Individual message pages canonicalise

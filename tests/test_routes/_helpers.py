@@ -194,7 +194,9 @@ def _json_ld_blocks(html: str) -> list[dict]:
     return out
 
 
-def _seed_three_message_thread(tmp_path, inbox_name):
+def _seed_three_message_thread(
+    tmp_path, inbox_name, authors=("a@b.example", "a@b.example", "a@b.example")
+):
     """Build a 3-message thread root → reply → reply-to-reply in ONE
     shared bare repo, so the inbox's mirror_path resolves blobs for
     every article (not just the last-ingested one).
@@ -205,6 +207,8 @@ def _seed_three_message_thread(tmp_path, inbox_name):
     root's commit_sha in the *reply's* mirror. This helper appends
     each message as a separate commit in the same bare repo so all
     three resolve under one mirror_path.
+
+    `authors` are the raw From: values for root, reply and nested.
 
     Returns a dict keyed by role ("root" / "reply" / "nested") with
     `(article_id, url, message_id)` tuples for each.
@@ -221,14 +225,16 @@ def _seed_three_message_thread(tmp_path, inbox_name):
     repo = Repo.init_bare(str(repo_dir), mkdir=True)
     prev_commit = None
 
-    def _add(message_id: str, subject: str, in_reply_to: str | None) -> None:
+    def _add(
+        message_id: str, subject: str, in_reply_to: str | None, author: str
+    ) -> None:
         nonlocal prev_commit
         extra = b""
         if in_reply_to is not None:
             extra += b"In-Reply-To: <" + in_reply_to.encode() + b">\r\n"
         raw = (
             b"Message-ID: <" + message_id.encode() + b">\r\n"
-            b"From: a@b.example\r\n"
+            b"From: " + author.encode() + b"\r\n"
             b"Subject: " + subject.encode() + b"\r\n"
             b"Date: Mon, 1 Jan 2024 00:00:00 +0000\r\n" + extra + b"\r\n"
             b"body"
@@ -253,9 +259,11 @@ def _seed_three_message_thread(tmp_path, inbox_name):
         _added.append(message_id)
 
     _added: list[str] = []
-    _add("fold-root@example.com", "root msg", None)
-    _add("fold-reply@example.com", "Re: root msg", "fold-root@example.com")
-    _add("fold-nested@example.com", "Re: root msg", "fold-reply@example.com")
+    _add("fold-root@example.com", "root msg", None, authors[0])
+    _add("fold-reply@example.com", "Re: root msg", "fold-root@example.com", authors[1])
+    _add(
+        "fold-nested@example.com", "Re: root msg", "fold-reply@example.com", authors[2]
+    )
     repo.refs[b"HEAD"] = prev_commit
 
     with SessionLocal() as s:

@@ -7,11 +7,13 @@ order and cuts them into chains; the first cover of every chain but the
 key's first becomes the head that tells its series apart
 (`patch_series_head_id`, read through `mimir.patch_series.same_series`).
 
-`head_updates` turns one key into the rows whose head must change.
-`rechain_keys` applies it to keys on the writer's connection, inside the
-transaction of whatever touched them: an ingest batch, a replay, or a
-batch of `backfill_series_chains`, which walks the whole archive through
-the broker as a chunked, resumable backfill.
+`head_updates` turns one key into the rows whose head must change, and
+the rows whose version must: the re-chain is the last writer of a
+posting's version (`posting_version`, #870). `rechain_keys` applies both
+to keys on the writer's connection, inside the transaction of whatever
+touched them: an ingest batch, a replay, or a batch of
+`backfill_series_chains`, which walks the whole archive through the
+broker as a chunked, resumable backfill.
 """
 
 import re
@@ -20,14 +22,18 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import aliased
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article
-from mimir.parser import unfold
-from mimir.patch_revisions import parse_in_series_patch_subject
-from mimir.patch_series import chain_version_rank, posting_flags
+from mimir.patch_series import (
+    _parent,
+    chain_version_rank,
+    cover_of_patch,
+    posting_flags,
+    posting_version,
+)
+from mimir.patch_series import _posting as _subject_posting
 
 # A cover that no rule joins to the chain starts a new one only when
 # fewer than this share of its patch titles (or of the chain's recent
@@ -144,18 +150,29 @@ class BackfillResult(BackfillCounters):
     # keys_chained and keys_split count per chunk: a key met again by a later
     # chunk of the run is counted again, so a session total can exceed the
     # number of keys.
-    keys_chained: int = 0  # keys chained afresh (more than one cover, or stale heads)
+    # keys chained afresh (more than one cover, or stale heads or versions)
+    keys_chained: int = 0
     keys_split: int = 0  # of those, keys that came out as more than one series
     heads_planned: int = 0  # cover and patch rows the read found to change
+    versions_planned: int = 0  # cover and patch rows whose version changes (#870)
     skipped: int = 0  # not a cover, a key of one cover, or a key already done
 
 
 def _load_key(
     session, key: str
-) -> tuple[list[Cover], dict[int, int | None], list[tuple]]:
-    """A key's covers, their stored heads, and its in-series patches as
-    `(id, cover message id, stored head)`. The one place that reads a
-    whole key: it must see every series on it."""
+) -> tuple[list[Cover], dict[int, int | None], list[tuple], list[tuple[int, str]]]:
+    """A key's covers, their stored heads, its in-series patches as
+    `(id, cover message id, stored head, stored version)`, and the
+    `(id, version)` of the cover and patch rows whose stored version
+    differs from their posting's (`posting_version`, #870). The one place
+    that reads a whole key: it must see every series on it. Each `Cover`
+    carries its posting's version, so `chain_series` ranks on it.
+
+    A patch belongs to the cover `cover_of_patch` finds for it, the walk
+    that linked it (#840), so a patch answering the patch before it is
+    titled and headed with its cover. The walk reads the key's own rows
+    first and the database for the rest: a patch can answer a reply that
+    #837 cleared, which carries no key."""
     cover_rows = session.execute(
         select(
             Article.id,
@@ -163,71 +180,126 @@ def _load_key(
             Article.date,
             Article.patch_series_version,
             Article.subject,
+            Article.author,
+            Article.thread_parent,
             Article.patch_series_head_id,
         ).where(
             Article.patch_series_key == key,
             func.coalesce(Article.patch_series_position, 0) == 0,
         )
     ).all()
-    patch = aliased(Article)
     patch_rows = session.execute(
-        select(patch.id, patch.thread_parent, patch.subject, patch.patch_series_head_id)
-        .join(Article, patch.thread_parent == Article.message_id)
-        .where(
+        select(
+            Article.id,
+            Article.message_id,
+            Article.subject,
+            Article.author,
+            Article.date,
+            Article.thread_parent,
+            Article.patch_series_version,
+            Article.patch_series_head_id,
+        ).where(
             Article.patch_series_key == key,
-            func.coalesce(Article.patch_series_position, 0) == 0,
-            patch.patch_series_key == key,
-            patch.patch_series_position > 0,
+            Article.patch_series_position > 0,
         )
     ).all()
+    rows = {r.message_id: r for r in (*cover_rows, *patch_rows)}
+
+    def parent_of(message_id):
+        return rows.get(message_id) or _parent(session, message_id)
+
     titles: dict[str, list[str]] = {}
+    subjects: dict[str, list[str]] = {}
     patches = []
-    for pid, parent, subject, head in patch_rows:
-        parsed = parse_in_series_patch_subject(unfold(subject or ""))
-        if parsed is not None:
-            titles.setdefault(parent, []).append(parsed.canonical_subject)
-        patches.append((pid, parent, head))
+    for row in patch_rows:
+        posting = _subject_posting(row.subject)
+        if posting is None or posting[0] == 0:
+            continue
+        cover = cover_of_patch(
+            row.thread_parent, parent_of, posting, row.subject, row.date
+        )
+        if cover is None:
+            continue
+        titles.setdefault(cover.message_id, []).append(posting[3])
+        subjects.setdefault(cover.message_id, []).append(row.subject)
+        patches.append(
+            (
+                row.id,
+                cover.message_id,
+                row.patch_series_head_id,
+                row.patch_series_version,
+            )
+        )
+    version_of = {
+        r.message_id: posting_version(
+            r.subject, subjects.get(r.message_id, ()), r.patch_series_version
+        )
+        for r in cover_rows
+    }
     covers = [
         Cover(
             id=r.id,
             message_id=r.message_id,
             date=r.date,
-            version=r.patch_series_version,
+            version=version_of[r.message_id],
             subject=r.subject,
             patch_titles=tuple(titles.get(r.message_id, ())),
         )
         for r in cover_rows
     ]
-    return covers, {r.id: r.patch_series_head_id for r in cover_rows}, patches
+    versions = [
+        (r.id, version_of[r.message_id])
+        for r in cover_rows
+        if r.patch_series_version != version_of[r.message_id]
+    ]
+    # A cover missing from `version_of` is not one of this key's covers,
+    # as in `head_updates`.
+    versions += [
+        (pid, version_of[parent])
+        for pid, parent, _head, version in patches
+        if parent in version_of and version != version_of[parent]
+    ]
+    heads = {r.id: r.patch_series_head_id for r in cover_rows}
+    return covers, heads, patches, versions
 
 
-def head_updates(session, key: str) -> tuple[list[tuple[int, int | None]], bool] | None:
-    """`(updates, split)` for one key, read whole from what `session`
-    (a Session or the writer's Connection) sees: the `(article id, head)`
-    pairs of covers and in-series patches whose stored head differs from
-    `chain_series`, and whether the key holds more than one series. None
-    when there is nothing to chain."""
-    covers, stored, patches = _load_key(session, key)
+def head_updates(
+    session, key: str
+) -> tuple[list[tuple[int, int | None]], list[tuple[int, str]], bool] | None:
+    """`(updates, versions, split)` for one key, read whole from what
+    `session` (a Session or the writer's Connection) sees: the
+    `(article id, head)` pairs of covers and in-series patches whose
+    stored head differs from `chain_series`, the `(article id, version)`
+    pairs whose stored version differs from their posting's, and whether
+    the key holds more than one series. None when there is nothing to
+    chain or write."""
+    covers, stored, patches, versions = _load_key(session, key)
     heads = chain_series(covers)
     cover_of = {c.message_id: c.id for c in covers}
     updates = [(i, h) for i, h in heads.items() if stored[i] != h]
     updates += [
         (pid, heads[cover_of[parent]])
-        for pid, parent, head in patches
-        # A parent missing from `cover_of` committed between the two
-        # reads of `_load_key`; the next run sees it.
+        for pid, parent, head, _version in patches
+        # A cover missing from `cover_of` is not one of this key's covers:
+        # a reply #820 cleared, a stale key, or a cover committed between
+        # the two reads of `_load_key`, which the next run sees.
         if parent in cover_of and head != heads[cover_of[parent]]
     ]
     # A key of one cover has nothing to split, but a head left from when
-    # it had more is still written: a lone cover chains to None.
-    if len(covers) < 2 and not updates:
+    # it had more is still written: a lone cover chains to None. So is a
+    # version, since a lone posting can have a typo.
+    if len(covers) < 2 and not updates and not versions:
         return None
-    return updates, len(set(heads.values())) > 1
+    return updates, versions, len(set(heads.values())) > 1
 
 
 def rechain_keys(conn, keys) -> int:
     """Re-chain each of `keys` from the state `conn` sees and write the
-    heads that changed; returns the rows written.
+    heads and versions that changed; returns the rows written.
+
+    It writes a posting's version last, after the subject's own that
+    ingest, replay and `backfill-patch-series` store, so the patches'
+    version wins over a cover's typo in the same transaction (#870).
 
     Called inside the WriteOps of an ingest batch, a replay and a
     backfill batch, after any inserts. A new cover and the heads it
@@ -242,12 +314,19 @@ def rechain_keys(conn, keys) -> int:
     """
     written = 0
     for key in sorted(keys):
-        changed = head_updates(conn, key)
-        for article_id, head in changed[0] if changed else ():
+        heads, versions, _split = head_updates(conn, key) or ((), (), False)
+        for article_id, head in heads:
             conn.execute(
                 update(Article)
                 .where(Article.id == article_id)
                 .values(patch_series_head_id=head)
+            )
+            written += 1
+        for article_id, version in versions:
+            conn.execute(
+                update(Article)
+                .where(Article.id == article_id)
+                .values(patch_series_version=version)
             )
             written += 1
     return written
@@ -262,8 +341,8 @@ def backfill_series_chains(
     run: Run | None = None,
 ) -> BackfillResult:
     """Chain every key that has more than one cover letter, or a head to
-    clear, and write the heads that changed, on the covers and on their
-    in-series patches.
+    clear, or a version to change, and write the heads and versions that
+    changed, on the covers and on their in-series patches.
 
     Walks articles newest-first like the other backfills. A cover's key
     is chained whole, from the database, the first time the walk meets
@@ -291,10 +370,11 @@ def backfill_series_chains(
         changed = head_updates(session, key)
         if changed is None:
             return "skipped", None
-        updates, split = changed
+        updates, versions, split = changed
         result.heads_planned += len(updates)
+        result.versions_planned += len(versions)
         bucket = ("keys_chained", "keys_split") if split else "keys_chained"
-        return bucket, _SeriesKeyPending(key) if updates else None
+        return bucket, _SeriesKeyPending(key) if updates or versions else None
 
     result.partial = walk_articles(
         result,

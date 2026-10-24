@@ -15,6 +15,7 @@ of the public surface.
 """
 
 import logging
+from collections import Counter
 from collections.abc import Callable
 from concurrent.futures import Future
 from dataclasses import dataclass, field
@@ -73,7 +74,6 @@ class _ArticleInsert:
     patch_series_key: str | None = None
     patch_series_version: str | None = None
     patch_series_position: int | None = None
-    patch_series_head_id: int | None = None
     touched_paths: list[str] = field(default_factory=list)
     trailer_rows: list[tuple[str, str, str]] = field(default_factory=list)
     repick: Callable[[frozenset[int]], int | None] | None = None
@@ -365,7 +365,6 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
                     patch_series_key=art.patch_series_key,
                     patch_series_version=art.patch_series_version,
                     patch_series_position=art.patch_series_position,
-                    patch_series_head_id=art.patch_series_head_id,
                 )
                 .on_conflict_do_nothing(index_elements=["message_id"])
                 .returning(Article.id)
@@ -580,12 +579,19 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
     )
 
 
-def _promote_list_address(conn, inbox_id: int) -> None:
+def _promote_list_address(
+    conn, inbox_id: int, tally: Counter[str] | None = None
+) -> str | None:
     """Promote an inbox's `list_address` from NULL to the modal address
     in its observations tally, if that address clears the count +
     dominance thresholds (MIN_PROMOTE_OBSERVATIONS / PROMOTE_DOMINANCE)
     and no other inbox holds it. Shared by the per-inbox WriteOp below
     and the backfill sweep, so both writers apply the same guards.
+    Returns the address it promoted, or None.
+
+    `tally` replaces the stored observations with an in-memory count,
+    for the sample taken before an inbox's first walk (#855). It is not
+    stored, so the walk does not count the sampled messages twice.
 
     A set `list_address` is never touched, so a value an operator
     wrote stays authoritative. An address another inbox holds is never
@@ -601,32 +607,40 @@ def _promote_list_address(conn, inbox_id: int) -> None:
         select(Inbox.list_address).where(Inbox.id == inbox_id)
     ).scalar_one_or_none()
     if list_address is not None:
-        return
+        return None
 
-    rows = conn.execute(
-        select(
-            InboxAddressObservation.address,
-            InboxAddressObservation.count,
-        )
-        .where(InboxAddressObservation.inbox_id == inbox_id)
-        .order_by(InboxAddressObservation.count.desc())
-        .limit(2)
-    ).all()
+    # Tie order differs from the SELECT's (first counted here, unspecified
+    # there) and never matters: a tie for the top fails the dominance gate,
+    # and only the runner-up's count is read.
+    if tally is not None:
+        rows = tally.most_common(2)
+    else:
+        rows = conn.execute(
+            select(
+                InboxAddressObservation.address,
+                InboxAddressObservation.count,
+            )
+            .where(InboxAddressObservation.inbox_id == inbox_id)
+            .order_by(InboxAddressObservation.count.desc())
+            .limit(2)
+        ).all()
     if not rows:
-        return
+        return None
 
     top_addr, top_count = rows[0]
     if top_count < MIN_PROMOTE_OBSERVATIONS:
-        return
+        return None
 
     second_count = rows[1][1] if len(rows) > 1 else 0
     if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
-        return
+        return None
 
-    # ponytail: first inbox to promote an address keeps it. A
-    # from-scratch `update` ingests inboxes alphabetically, so cocci
-    # (whose inria.fr host is not recognised) takes linux-kernel@vger
-    # before lkml, and lkml stays NULL until an operator sets both with
+    # ponytail: first inbox to promote an address keeps it. Ingest
+    # walks pinned inboxes first (#766), then the rest alphabetically,
+    # so on a from-scratch `update` lkml wins linux-kernel@vger before
+    # cocci (whose inria.fr host is not recognised) can take it. A
+    # contested address between two unpinned inboxes still goes to the
+    # alphabetically earlier one until an operator sets both with
     # `admin inbox update --list-address`. Comparing per-inbox counts
     # for the address would let the owner win.
     holder = conn.execute(
@@ -639,24 +653,28 @@ def _promote_list_address(conn, inbox_id: int) -> None:
             top_addr,
             holder,
         )
-        return
+        return None
 
     conn.execute(
         update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
     )
+    return top_addr
 
 
-def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
+def _submit_promote_list_address(
+    writer, inbox_id: int, tally: Counter[str] | None = None
+) -> WriteFuture:
     """Phase 3b of the two-pool restructure: run `_promote_list_address`
     for one inbox as a WriteOp.
 
     Returns the WriteFuture so callers can await .result() before the
-    next operation. Sub-ms execution time in practice.
+    next operation; its result is the promoted address or None.
+    Sub-ms execution time in practice.
     """
     return writer.submit(
         WriteOp(
             label=f"promote_list_address:{inbox_id}",
-            fn=lambda conn: _promote_list_address(conn, inbox_id),
+            fn=lambda conn: _promote_list_address(conn, inbox_id, tally),
         )
     )
 

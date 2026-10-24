@@ -176,28 +176,30 @@ over its budget, with no database or render work. It is off by default.
 
 The defaults are the heavy known crawlers that name themselves in the
 User-Agent, each at 10%: Applebot, Bytespider, PetalBot, meta-externalagent,
-facebookexternalhit, Slurp, msnbot and Baiduspider. `CRAWLER_UA_BUDGETS` is
-merged over them, not a replacement: `CRAWLER_UA_BUDGETS='{"Applebot": 50}'`
-changes only Applebot, and `{"Bytespider": 0}` drops Bytespider. New keys are
-added after the defaults, and an overridden default keeps its position. Each
-key is a plain case-insensitive substring of the `User-Agent` header, first
-match in that order wins, so pick distinctive names. Blank keys, and keys
-equal to a marker (`bot` would match the `CUBOT` browser), are refused at
-startup. With a global budget of 120 a minute, `{"Applebot": 10}` gives
-Applebot 12 a minute. A request needs a token in every bucket it draws on; a
-refused request spends none.
+facebookexternalhit, Slurp, msnbot and Baiduspider. Googlebot and bingbot are
+also listed, at 80% (#848): search crawlers back off on `429` and visit a few
+times a day, so a small share split over many workers refused them.
+`CRAWLER_UA_BUDGETS` is merged over them, not a replacement:
+`CRAWLER_UA_BUDGETS='{"Applebot": 50}'` changes only Applebot, and
+`{"Bytespider": 0}` drops Bytespider. New keys are added after the defaults,
+and an overridden default keeps its position. Each key is a plain
+case-insensitive substring of the `User-Agent` header, first match in that
+order wins, so pick distinctive names. Blank keys, and keys equal to a marker
+(`bot` would match the `CUBOT` browser), are refused at startup. With a global
+budget of 120 a minute, `{"Applebot": 10}` gives Applebot 12 a minute. A
+request needs a token in every bucket it draws on; a refused request spends
+none.
 
 A crawler you did not list is still recognised by a product token: a name
-ending in a marker, followed by a slash, such as `Googlebot/2.1`,
-`bingbot/2.0`, `GPTBot/1.0`, `AhrefsBot/7.0` or `curl/8.5.0`. A token that is
-just a marker (`bot/1.0`) counts too. It gets the default share, so **with the
-global budget set, every recognised crawler is held to 10% unless you give it
-its own percentage**, Googlebot and Bingbot included. The slash is required,
-so a browser on a device called `CUBOT X30` is never gated. Unlisted crawlers
+ending in a marker, followed by a slash, such as `GPTBot/1.0`,
+`AhrefsBot/7.0` or `curl/8.5.0`. A token that is just a marker (`bot/1.0`)
+counts too. It gets the default share, so **with the global budget set, every
+recognised crawler is held to 10% unless you give it its own percentage**. The
+slash is required, so a browser on a device called `CUBOT X30` is never gated. Unlisted crawlers
 also share one pool at `CRAWLER_UNLISTED_POOL_PCT` of the global budget
 (default 30%), so invented names cannot together starve real crawlers; listed
 crawlers never draw on the pool. The flip side: unlisted real crawlers
-(Googlebot, Bingbot, GPTBot) share that pool with any flood of invented names,
+(GPTBot, for example) share that pool with any flood of invented names,
 so list a crawler to protect it from a flood. Each unlisted crawler has its
 own bucket, keyed by its lowercased token; at most 256 are held, idle ones are
 dropped after ten minutes, and past 256 new names share one overflow bucket at

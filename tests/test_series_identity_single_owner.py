@@ -82,7 +82,7 @@ def test_series_key_is_compared_only_inside_the_helpers():
         for fn, line in _hits(path):
             (allowed if (rel, fn) in HELPERS else stray).append(f"{rel}:{line} {fn}")
     # Precondition: the scan sees the helpers' own spelling (one SQL,
-    # one ORM, and the three key reads in `_load_key`), so it cannot
+    # one ORM, and the two key reads in `_load_key`), so it cannot
     # pass by seeing nothing.
-    assert len(allowed) == 5, allowed
+    assert len(allowed) == 4, allowed
     assert stray == []

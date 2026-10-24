@@ -236,7 +236,7 @@ canonical resolution, rendering, or route shapes, **add a test**
 rather than relying on manual checks: a regression in those layers
 silently corrupts cached data or breaks URL contracts.
 
-Five checks that are worth more than "write a good test", because
+Six checks that are worth more than "write a good test", because
 each has caught a guard that looked fine and guarded nothing:
 
 1. **Watch it fail.** Run the assertion against the unfixed code and
@@ -252,6 +252,14 @@ each has caught a guard that looked fine and guarded nothing:
    `"remaining=5" in log` also matches `remaining=50`, and
    `"inboxes=0"` occurs inside `"split_inboxes=0"`. Use
    `re.search(r"\bfield=(\d+)")` and compare the parsed value.
+6. **EXPLAIN the statement that runs, under production statistics.**
+   A plan test must capture the SQL the function actually executes
+   (`plan_of` in `tests/_helpers.py`) and run it under
+   `planner_stats(..., PRODUCTION_STATS)`, not EXPLAIN a copy of the
+   SQL or a compiled statement. A copy cannot see a rewrite, and
+   compiling dropped an `INDEXED BY` pin SQLAlchemy never rendered on
+   SQLite (#835). Small seeded data lets the planner choose the right
+   index unaided, so assert the pin itself where one is meant to exist.
 
 Note the suite installs a broker context session-wide, so a code
 path that can only work inside the broker still passes its tests.

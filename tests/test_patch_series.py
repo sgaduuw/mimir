@@ -1,11 +1,16 @@
 """Unit tests for `mimir.patch_series`. Detection + key stability."""
 
+import time
+
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
+    _bracket_version,
+    _explicit_version,
     parse_cover_letter,
     posting_flags,
     reply_to_cover,
+    reply_to_patch,
     series_key,
 )
 
@@ -89,6 +94,84 @@ def test_a_dotted_version_in_a_branch_name_is_not_the_revision():
     ]:
         out = parse_cover_letter(subject)
         assert out is not None and out.version == version, (subject, out)
+
+
+def test_a_parenthesised_or_dotted_base_tree_tag_is_not_the_revision():
+    """`(v20.08)` and `v5.10` ahead of the real version tag a base tree;
+    the later plain `vN` wins (#870). A lone dotted `v4.1` still reads
+    as v4 (the shapes test below)."""
+    for subject, version in [
+        ("[PATCH (v20.08) v3 0/8] foo", "v3"),
+        ("[PATCH v5.10 v2 0/2] foo", "v2"),
+        ("[PATCH (v20.08) 0/8] foo", "v1"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+    patch = parse_in_series_patch_subject("[PATCH v5.10 v2 1/2] foo: bar")
+    assert patch is not None and patch.position == 1
+    assert _bracket_version("PATCH v5.10 v2 1/2") == "v2"
+
+
+def test_the_cross_revision_guard_reads_the_same_version():
+    """`_explicit_version` is what the #862 guard compares: a cover and
+    its patches agree on v3 despite the base-tree tag (#870)."""
+    for subject, version in [
+        ("[PATCH (v20.08) v3 0/8] foo", "v3"),
+        ("[PATCH v3 1/8] foo: bar", "v3"),
+        ("[PATCH v5.10 v2 1/2] foo: bar", "v2"),
+        ("[PATCH 1/2] foo: bar", None),
+    ]:
+        assert _explicit_version(subject) == version, subject
+
+
+def test_a_parenthesised_marker_or_plain_version_still_counts():
+    for bracket, version in [
+        ("PATCH (RFC) 0/3", "rfc"),
+        ("PATCH (RESEND) 0/3", "resend"),
+        ("PATCH (v2) 0/3", "v2"),
+        ("PATCH 0/3 (v2)", "v2"),
+    ]:
+        assert _bracket_version(bracket) == version, bracket
+    assert _explicit_version("[PATCH (v2) 1/3] foo: bar") == "v2"
+    assert posting_flags("[PATCH v2 (RFC) 0/3] foo", "v2") == (True, False)
+    assert posting_flags("[PATCH (RFC v2) 0/3] foo", "v2") == (True, False)
+
+
+def test_a_base_tree_branch_name_is_not_the_revision():
+    """`for-v6.18` and `stable/v3.2.x` name a tree (#870); `PATCH/v2`
+    and `RFC/v2` stay versions."""
+    for bracket, version in [
+        ("PATCH for-v6.18 0/3", "v1"),
+        ("PATCH stable/v3.2.x 0/3", "v1"),
+        ("PATCH stable/v3.2.x v2 0/3", "v2"),
+        ("PATCH for-v6.18 RFC 0/3", "rfc"),
+        ("PATCH net-v2 0/2", "v2"),
+        ("PATCH/v2 0/3", "v2"),
+        ("RFC/v2 0/3", "v2"),
+    ]:
+        assert _bracket_version(bracket) == version, bracket
+    assert _explicit_version("[PATCH stable/v3.2.x 1/2] foo: bar") is None
+
+
+def test_a_long_bracket_parses_in_linear_time():
+    """Reading the text after each match copied it every time (#870)."""
+    start = time.perf_counter()
+    assert _bracket_version("PATCH " + "v1 " * 300_000) == "v1"
+    assert _bracket_version("PATCH " + "a/v1. " * 300_000) == "v1"
+    assert time.perf_counter() - start < 5
+
+
+def test_unchanged_version_shapes_stay_put():
+    """Regressions for #870: none of these may move."""
+    for bracket, version in [
+        ("PATCH v3 1/2", "v3"),
+        ("PATCHv3 1/2", "v3"),
+        ("RFC PATCH v2 1/2", "v2"),
+        ("PATCH v2.1 1/3", "v2"),
+        ("PATCH 6.12-rc1 v2 1/2", "v2"),
+        ("PATCH net-next v4 0/5", "v4"),
+    ]:
+        assert _bracket_version(bracket) == version, bracket
 
 
 def test_shapes_the_version_rule_must_keep():
@@ -361,3 +444,62 @@ def test_reply_to_cover_table():
         assert parse_cover_letter(subject) is not None, subject
         got = reply_to_cover(subject, author, parent_subject, parent_author)
         assert got is expected, (subject, author, parent_subject)
+
+
+# reply_to_patch, an in-series subject that answers that patch (#837).
+
+PATCH = "[PATCH v2 1/3] foo: add\tbar"
+
+
+def test_reply_to_patch_table():
+    """Each row: (subject, its author, parent subject, parent author,
+    touches files, expected). A reply repeats the parent patch's posting
+    (position, total, title, version, RESEND) from any address and
+    carries no diff; a diff makes it a re-post."""
+    reply = "[PATCH v2 1/3] foo: add bar"
+    rows = [
+        (reply, "Bob <b@x>", PATCH, "Al <a@x>", False, True),
+        # A diff: a re-post of the patch, measured on production.
+        (reply, "Bob <b@x>", PATCH, "Al <a@x>", True, False),
+        # Same address, other display name: the author answering their own
+        # patch is a reply too (#860); with a diff it is a re-post.
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", False, True),
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", True, False),
+        # Another position, total, version or title.
+        ("[PATCH v2 2/3] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        ("[PATCH v2 1/4] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        ("[PATCH v3 1/3] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        ("[PATCH v2 1/3] foo: add baz", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        # A RESEND in one subject only: a re-post; in both: a reply.
+        (
+            "[RESEND PATCH v2 1/3] foo: add bar",
+            "Bob <b@x>",
+            PATCH,
+            "Al <a@x>",
+            False,
+            False,
+        ),
+        (
+            "[RESEND PATCH v2 1/3] foo: add bar",
+            "Bob <b@x>",
+            "[PATCH RESEND v2 1/3] foo: add bar",
+            "Al <a@x>",
+            False,
+            True,
+        ),
+        # Parent is a cover, a "Re:" reply, or missing.
+        (reply, "Bob <b@x>", "[PATCH v2 0/3] foo: add bar", "Al <a@x>", False, False),
+        (reply, "Bob <b@x>", "Re: " + PATCH, "Al <a@x>", False, False),
+        (reply, "Bob <b@x>", None, None, False, False),
+    ]
+    for subject, author, parent_subject, parent_author, files, expected in rows:
+        assert parse_in_series_patch_subject(subject) is not None, subject
+        got = reply_to_patch(subject, author, parent_subject, parent_author, files)
+        assert got is expected, (subject, author, parent_subject, files)
+
+
+def test_reply_to_patch_leaves_covers_to_reply_to_cover():
+    """A cover answering a cover is #820's rule, not this one."""
+    cover = "[PATCH v2 0/3] foo: add bar"
+    assert reply_to_cover(cover, "Bob <b@x>", cover, "Al <a@x>")
+    assert not reply_to_patch(cover, "Bob <b@x>", cover, "Al <a@x>", False)

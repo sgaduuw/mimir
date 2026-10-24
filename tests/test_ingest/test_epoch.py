@@ -9,6 +9,7 @@ gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
 import logging
+from collections import Counter
 from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -412,8 +413,8 @@ def test_ingest_inseries_inherits_the_cover_series_head(
     seeded_db, tmp_path, broker_active
 ):
     """#816: a patch arriving after its cover, in a later batch, lands
-    under its cover's head (copied at link time, and kept by the batch's
-    re-chain), or a split-off series would orphan its patches. The key
+    under its cover's head (written by the batch's re-chain, #840), or a
+    split-off series would orphan its patches. The key
     holds a v2 and then an unrelated v1 with disjoint patch titles, so
     the v1 is a real split-off; a hand-set head would not survive the
     re-chain."""
@@ -464,12 +465,14 @@ def test_ingest_inseries_inherits_the_cover_series_head(
     assert patch.patch_series_head_id == cover.id
 
 
-def test_inseries_inherits_the_head_of_a_cover_in_the_same_batch(seeded_db):
+def test_inseries_links_to_a_cover_in_the_same_batch(seeded_db):
     """The same-batch path: the cover is still a pending insert, so the
-    patch reads key, version and head from it, not from SQL."""
+    patch reads it from the batch, not from SQL. No head is copied: the
+    batch's re-chain writes it in the same transaction (#840)."""
     from mimir.ingest._pending import _ArticleInsert
     from mimir.ingest.epoch import _to_article_insert
     from mimir.parser import parse_message
+    from mimir.patch_series import series_key
 
     pending = _ArticleInsert(
         message_id="pcover@example.com",
@@ -479,10 +482,9 @@ def test_inseries_inherits_the_head_of_a_cover_in_the_same_batch(seeded_db):
         thread_parent=None,
         subject_normalized="thread title",
         canonical_inbox_id=None,
-        patch_series_key="k",
+        patch_series_key=series_key("thread title", "a@b.example"),
         patch_series_version="v1",
         patch_series_position=0,
-        patch_series_head_id=4242,
     )
     parsed = parse_message(_patch_reply("ppatch@example.com", "pcover@example.com"))
     with seeded_db() as s:
@@ -495,8 +497,10 @@ def test_inseries_inherits_the_head_of_a_cover_in_the_same_batch(seeded_db):
             session=s,
             pending_articles=[pending],
         )
-    assert rec.patch_series_key == "k"  # precondition: linked via pending
-    assert rec.patch_series_head_id == 4242
+    assert (rec.patch_series_key, rec.patch_series_version) == (
+        pending.patch_series_key,
+        "v1",
+    )
 
 
 def test_ingest_inseries_orphan_when_cover_not_yet_ingested(
@@ -1670,6 +1674,40 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db, writer, promot
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         assert ix.list_address == "operator-override@example.com"
+
+
+def test_promote_list_address_from_a_tally_keeps_the_gates_and_stores_nothing(
+    seeded_db, writer
+):
+    """#855: the pre-walk sample hands its tally over in memory. It
+    passes the same gates as the stored tally, and nothing is recorded,
+    so the walk that follows does not count the sampled messages twice."""
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.execute(delete(InboxAddressObservation))
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.list_address = "netdev@vger.kernel.org"
+        s.commit()
+
+    def promote(tally):
+        _submit_promote_list_address(writer, alpha.id, Counter(tally)).result(
+            timeout=10
+        )
+        with seeded_db() as s:
+            return s.execute(
+                select(Inbox.list_address).where(Inbox.id == alpha.id)
+            ).scalar_one()
+
+    fsdevel = "linux-fsdevel@vger.kernel.org"
+    assert promote({fsdevel: MIN_PROMOTE_OBSERVATIONS - 1}) is None
+    assert promote({"netdev@vger.kernel.org": MIN_PROMOTE_OBSERVATIONS * 2}) is None
+    assert promote({fsdevel: MIN_PROMOTE_OBSERVATIONS, "x@vger.kernel.org": 1}) == (
+        fsdevel
+    )
+    with seeded_db() as s:
+        assert (
+            s.execute(select(func.count(InboxAddressObservation.address))).scalar() == 0
+        )
 
 
 # Backfill canonical-inbox + observations from historical blobs

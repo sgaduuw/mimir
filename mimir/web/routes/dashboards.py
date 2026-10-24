@@ -27,7 +27,11 @@ from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
-from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.subsystems import (
+    is_addressable_subsystem_name,
+    subsystem_index_path,
+    subsystem_path,
+)
 from mimir.subsystems_dashboard import (
     MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     active_reviewers_in_subsystem,
@@ -289,7 +293,7 @@ def subsystem_index(inbox_name: str):
             inbox_name=inbox.name,
             current_inbox=inbox.name,
             subsystems=subsystems,
-            canonical_url=f"{base}/{inbox.name}/subsystem/",
+            canonical_url=base + subsystem_index_path(inbox.name),
         )
 
 
