@@ -149,16 +149,20 @@ def test_a_base_tree_branch_name_is_not_the_revision():
         ("PATCH for-v6.18 0/3", "v1"),
         ("PATCH stable/v3.2.x 0/3", "v1"),
         ("PATCH stable/v3.2.x v2 0/3", "v2"),
+        ("PATCH for-v6.18 RFC 0/3", "rfc"),
+        ("PATCH net-v2 0/2", "v2"),
         ("PATCH/v2 0/3", "v2"),
         ("RFC/v2 0/3", "v2"),
     ]:
         assert _bracket_version(bracket) == version, bracket
+    assert _explicit_version("[PATCH stable/v3.2.x 1/2] foo: bar") is None
 
 
 def test_a_long_bracket_parses_in_linear_time():
     """Reading the text after each match copied it every time (#870)."""
     start = time.perf_counter()
     assert _bracket_version("PATCH " + "v1 " * 300_000) == "v1"
+    assert _bracket_version("PATCH " + "a/v1. " * 300_000) == "v1"
     assert time.perf_counter() - start < 1
 
 
