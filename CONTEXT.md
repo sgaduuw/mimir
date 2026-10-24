@@ -1061,12 +1061,13 @@ order).
   links as a second row there (#860, #861), and the unguarded cover hop
   can take another version's cover (#862).
 - **Operator order.** `backfill-patch-series --reprocess` first (it
-  rewrites the versions the rule reads), then `backfill-series-chains`,
-  once, for history ingested before 3.25.0, and again after #840 for
-  chain-reply patches the reprocess does not change: their rows send
-  nothing, so only a chain pass gives them their cover's head. After
-  that, ingest and `backfill-patch-series` keep the keys they touch
-  chained.
+  rewrites the versions the rule reads, and since #840 links chain-reply
+  patches), then `backfill-series-chains` once. Before 3.25.0 that pass
+  chained the history; after #840 it is the repair pass for chain-reply
+  patches the reprocess left untouched: their rows do not change, so only
+  a chain pass gives them their cover's head. Its `heads_planned` counts
+  the heads it changes; on an archive with none it plans zero. After that,
+  ingest and `backfill-patch-series` keep the keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)
 
