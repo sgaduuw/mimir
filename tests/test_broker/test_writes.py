@@ -426,8 +426,8 @@ def test_writer_thread_engine_has_sqlite_pragmas_set(seeded_db):
         assert result["analysis_limit"] == settings.analyze_limit, (
             f"PRAGMA analysis_limit must match settings.analyze_limit "
             f"({settings.analyze_limit}); got {result['analysis_limit']}. "
-            "0 would mean unbounded ANALYZE scans, which held the writer "
-            "lock for ~25s on the 11M-row prod corpus before 1.36.4"
+            "the writer connection must carry the same sample as the "
+            "shared engine (0 is the default, every row)"
         )
     finally:
         writer.stop(timeout=5)

@@ -35,6 +35,7 @@ from mimir.models import (
     Subsystem,
     SubsystemMaintainer,
 )
+from mimir.trailers import INDEXED_TRAILER_ROLES
 
 # Matches mimir.subsystems.SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC's value;
 # kept as a local constant so this module has no import-time
@@ -207,7 +208,11 @@ def maintainer_profile(
                 .join(
                     ArticleTrailer, ArticleTrailer.article_id == ArticleList.article_id
                 )
-                .where(ArticleTrailer.address_normalized == address)
+                # Every stored role: no row changes, the index can seek (#831).
+                .where(
+                    ArticleTrailer.role.in_(INDEXED_TRAILER_ROLES),
+                    ArticleTrailer.address_normalized == address,
+                )
                 .distinct()
                 .order_by(Inbox.name)
             ).scalars()

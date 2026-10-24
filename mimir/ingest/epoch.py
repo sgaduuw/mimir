@@ -47,7 +47,7 @@ from mimir.models import (
 )
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_revisions import parse_in_series_patch_subject
-from mimir.patch_series import parse_cover_letter, series_key
+from mimir.patch_series import parse_cover_letter, reply_to_cover, series_key
 from mimir.patches import extract_touched_paths
 from mimir.trailers import extract_trailers
 
@@ -179,6 +179,24 @@ def _parse_iter(
         yield from pool.map(_parse_pair, items, chunksize=PARSE_CHUNKSIZE)
 
 
+def _thread_parent(session: Session, message_id: str, pending_articles: list | None):
+    """The parent article's subject, author and series columns: from the
+    current batch first, which is not committed yet, else one select on
+    the indexed message id. None when neither holds it."""
+    for art in pending_articles or ():
+        if art.message_id == message_id:
+            return art
+    return session.execute(
+        select(
+            Article.subject,
+            Article.author,
+            Article.patch_series_key,
+            Article.patch_series_version,
+            Article.patch_series_head_id,
+        ).where(Article.message_id == message_id)
+    ).one_or_none()
+
+
 def _to_article_insert(
     parsed: ParsedArticle,
     inbox_id: int,
@@ -190,16 +208,17 @@ def _to_article_insert(
     pending_articles: list | None = None,
 ) -> _ArticleInsert:
     """Build an `_ArticleInsert` record for a new article without touching
-    the ORM session (except for the optional in-series patch-parent lookup).
+    the ORM session (except for the optional thread-parent lookup).
 
     The one place a new article's `thread_parent`, `subject_normalized`,
     patch-series identity, touched paths and trailers are derived, for
     `ingest_epoch` and `.replay` alike (#755).
 
-    `session` is required only for in-series patch parent lookups;
-    replay passes None and skips them. `pending_articles` is the
-    current batch's list of already-accumulated `_ArticleInsert` objects
-    so the cover-letter in the same batch can be found without a DB query.
+    `session` is required only for the thread-parent lookup that links
+    an in-series patch to its cover and tells a reply from a cover;
+    replay passes None and skips it. `pending_articles` is the current
+    batch's list of already-accumulated `_ArticleInsert` objects so a
+    parent in the same batch can be found without a DB query.
     """
     from mimir.ingest._pending import _ArticleInsert
 
@@ -213,45 +232,31 @@ def _to_article_insert(
     # copies its cover's, so a split-off series keeps its patches.
     series_head_id: int | None = None
     cover = parse_cover_letter(parsed.subject)
+    in_series = parse_in_series_patch_subject(parsed.subject) if cover is None else None
+    # Replay has no session and a parent ingested after its child is not
+    # found: either way a reply that repeats a cover's subject is stored
+    # as a cover until the next `backfill-patch-series --reprocess` (#820).
+    parent = None
+    if (
+        session is not None
+        and thread_parent is not None
+        and (cover is not None or in_series is not None)
+    ):
+        parent = _thread_parent(session, thread_parent, pending_articles)
     if cover is not None:
-        series_key_val = series_key(cover.title, parsed.author)
-        series_version = cover.version
-        series_position = 0
-    else:
-        in_series = parse_in_series_patch_subject(parsed.subject)
-        if in_series is not None:
-            series_position = in_series.position
-            if session is not None and thread_parent is not None:
-                # Direct-reply linkage: look for the cover letter in the
-                # same batch first (same-batch pending Articles), then SQL.
-                pending_cover = None
-                if pending_articles is not None:
-                    for art in pending_articles:
-                        if (
-                            art.message_id == thread_parent
-                            and art.patch_series_key is not None
-                        ):
-                            pending_cover = art
-                            break
-                if pending_cover is not None:
-                    series_key_val = pending_cover.patch_series_key
-                    series_version = pending_cover.patch_series_version
-                    series_head_id = pending_cover.patch_series_head_id
-                else:
-                    row = session.execute(
-                        select(
-                            Article.patch_series_key,
-                            Article.patch_series_version,
-                            Article.patch_series_head_id,
-                        ).where(
-                            Article.message_id == thread_parent,
-                            Article.patch_series_key.isnot(None),
-                        )
-                    ).one_or_none()
-                    if row is not None:
-                        series_key_val = row.patch_series_key
-                        series_version = row.patch_series_version
-                        series_head_id = row.patch_series_head_id
+        if parent is None or not reply_to_cover(
+            parsed.subject, parsed.author, parent.subject, parent.author
+        ):
+            series_key_val = series_key(cover.title, parsed.author)
+            series_version = cover.version
+            series_position = 0
+    elif in_series is not None:
+        series_position = in_series.position
+        # Direct-reply linkage to the cover letter.
+        if parent is not None and parent.patch_series_key is not None:
+            series_key_val = parent.patch_series_key
+            series_version = parent.patch_series_version
+            series_head_id = parent.patch_series_head_id
 
     # Extract diff-touched paths and review-attestation trailers from
     # the body. The inserts happen later (`_submit_ingest_batch` step 1

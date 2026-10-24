@@ -117,7 +117,7 @@ def backfill_article_trailers_command(
 @backfill_options(
     reprocess_help="Re-detect for articles whose key is already set (clears "
     "stale rows that no longer parse as cover letters, and rewrites stored "
-    "versions after a parser change). Follow it with backfill-series-chains.",
+    "versions after a parser change).",
 )
 def backfill_patch_series_command(
     limit: int | None,
@@ -153,7 +153,8 @@ def backfill_patch_series_command(
         f"indexed={result.indexed} "
         f"in_series_indexed={result.in_series_indexed} "
         f"in_series_orphan={result.in_series_orphan} "
-        f"not_cover={result.not_cover} skipped={result.skipped} "
+        f"not_cover={result.not_cover} reply_cover={result.reply_cover} "
+        f"skipped={result.skipped} "
         f"subjects_unfolded={result.subjects_unfolded}"
     )
     _echo_run_summary(run)
@@ -172,8 +173,8 @@ def backfill_series_chains_command(
     verbose: int,
 ) -> None:
     """One-shot walker that splits keys holding unrelated postings under
-    one cover title, by writing `patch_series_head_id`. Run it after any
-    `backfill-patch-series` run (until #824)."""
+    one cover title, by writing `patch_series_head_id`. Needed once, for
+    history ingested before 3.25.0."""
     _configure_logging(verbose)
     _verbose_broker_hint(verbose)
     from mimir.broker.client import BrokerUnavailable, get_broker_client

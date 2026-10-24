@@ -13,7 +13,9 @@ from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series
 
 
-def _add_article(seeded_db, msgid, subject, author="A <a@x>", thread_parent=None):
+def _add_article(
+    seeded_db, msgid, subject, author="A <a@x>", thread_parent=None, when=None
+):
     """Insert a minimal Article with no series-key set, so the
     backfill has something to do. Linked to the seeded `alpha`
     inbox for the route-side compatibility shape."""
@@ -25,7 +27,7 @@ def _add_article(seeded_db, msgid, subject, author="A <a@x>", thread_parent=None
             message_id=msgid,
             subject=subject,
             author=author,
-            date=datetime(2024, 6, 1, tzinfo=UTC),
+            date=when or datetime(2024, 6, 1, tzinfo=UTC),
             thread_parent=thread_parent,
             subject_normalized=subject.lower(),
             canonical_inbox_id=inbox.id,
@@ -176,23 +178,40 @@ def test_backfill_links_in_series_via_thread_parent(seeded_db, broker_active):
 def test_backfill_in_series_patch_inherits_the_cover_series_head(
     seeded_db, broker_active, reprocess
 ):
-    """#816: a series is (key, head). A patch linked to its cover takes
-    the head too, or a series split off its key would orphan its
-    patches back into the key's first series. The cover keeps the head
-    the chain pass gave it: the backfill derives key and version from
-    the subject, never the head, in either mode."""
-    cover_id = _add_article(seeded_db, "hcover@x", "[PATCH v2 0/3] head title")
-    backfill_patch_series()
-    with seeded_db() as s:
-        s.get(Article, cover_id).patch_series_head_id = 4242
-        s.commit()
-    _add_article_with_parent(
-        seeded_db, "hpatch@x", "[PATCH v2 1/3] head title: one", "hcover@x"
+    """#816: a series is (key, head). Linking a patch to its cover changes
+    the titles the chain rule reads, so the backfill re-chains the key in
+    the same batch (#824), and a series split off its key takes its
+    patches with it. Heads come only from that re-chain, in either mode."""
+    from datetime import datetime
+
+    old, new = datetime(2024, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)
+    _add_article(seeded_db, "hc1@x", "[PATCH v2 0/1] head title", when=old)
+    _add_article(
+        seeded_db,
+        "hc1p@x",
+        "[PATCH v2 1/1] nft: add set gc",
+        thread_parent="hc1@x",
+        when=old,
     )
-    result = backfill_patch_series(reprocess=reprocess)
-    assert result.in_series_indexed == 1
-    assert _row(seeded_db, "hcover@x").patch_series_head_id == 4242
-    assert _row(seeded_db, "hpatch@x").patch_series_head_id == 4242
+    _add_article(seeded_db, "hc2@x", "[PATCH v2 0/1] head title", when=new)
+    backfill_patch_series()
+    # Precondition: the newer cover has no patch titles yet, so it joins.
+    assert _row(seeded_db, "hc2@x").patch_series_head_id is None
+    _add_article(
+        seeded_db,
+        "hc2p@x",
+        "[PATCH v2 1/1] ipvs: drop stale conn",
+        thread_parent="hc2@x",
+        when=new,
+    )
+
+    backfill_patch_series(reprocess=reprocess)
+
+    c2 = _row(seeded_db, "hc2@x")
+    assert c2.patch_series_head_id == c2.id
+    assert _row(seeded_db, "hc2p@x").patch_series_head_id == c2.id
+    assert _row(seeded_db, "hc1@x").patch_series_head_id is None
+    assert _row(seeded_db, "hc1p@x").patch_series_head_id is None
 
 
 def test_backfill_in_series_orphan_when_cover_missing(seeded_db, broker_active):

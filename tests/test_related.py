@@ -536,7 +536,7 @@ class TestCandidatePlanPin:
         from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
         from mimir.models import Inbox
         from mimir.related import _candidate_select
-        from tests._helpers import _cache_total
+        from tests._helpers import _cache_total, plan_of
 
         # Phase 1: seed the corpus and update planner statistics.
         # Committed and closed so that phase 2 gets a fresh session
@@ -609,39 +609,35 @@ class TestCandidatePlanPin:
                 authors={"Author1", "Author2"},
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-            plan = "\n".join(
-                row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
-            )
+            plan = plan_of(s, lambda: s.execute(stmt).all(), "subject_normalized")
             assert "ix_articles_date" in plan, plan
             assert "SCAN articles" not in plan, plan
 
 
 class TestCandidatePlanUnderProductionStats:
     """The pin above passes on synthetic stats where the date filter
-    is the more selective one. Production's `sqlite_stat1` says the
-    opposite: `ix_article_lists_inbox_id` looks nearly free (4001
-    rows per key claimed) and `ix_articles_date` looks like a
-    point lookup (1 row per key), so left to choose, the planner
-    drove from `article_lists` and sorted the whole lkml in a temp
-    b-tree, 4.5 to 6.8 s a render (#785). The size switch must decide,
-    not the planner."""
+    is the more selective one. Production's `sqlite_stat1`
+    (`PRODUCTION_STATS`, full-sample since #817) has `ix_articles_date`
+    looking like a point lookup (1 row per key). Before #817 the capped
+    pass also made `ix_article_lists_inbox_id` look nearly free (4001
+    rows per key claimed), and the planner drove from `article_lists`
+    and sorted the whole lkml in a temp b-tree, 4.5 to 6.8 s a render
+    (#785). The size switch must decide, not the planner."""
 
     @staticmethod
     def _plan(seeded_db, total):
         from sqlalchemy import select as sa_select
-        from sqlalchemy import text
 
         from mimir.models import Inbox
         from mimir.related import _candidate_select
-        from tests._helpers import _cache_total, planner_stats
-
-        stats = (
-            ("article_lists", "ix_article_lists_inbox_id", "29738147 4001"),
-            ("article_lists", "ix_article_lists_thread_root", "29738147 4001 4"),
-            ("articles", "ix_articles_date", "17778731 1"),
+        from tests._helpers import (
+            PRODUCTION_STATS,
+            _cache_total,
+            plan_of,
+            planner_stats,
         )
-        with planner_stats(seeded_db, stats), seeded_db() as s:
+
+        with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
             inbox = s.execute(
                 sa_select(Inbox).where(Inbox.name == "alpha")
             ).scalar_one()
@@ -653,10 +649,7 @@ class TestCandidatePlanUnderProductionStats:
                 authors={"Author1", "Author2"},
                 min_date=datetime.now(UTC) - timedelta(days=365),
             )
-            sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-            return "\n".join(
-                row[3] for row in s.execute(text(f"EXPLAIN QUERY PLAN {sql}"))
-            )
+            return plan_of(s, lambda: s.execute(stmt).all(), "subject_normalized")
 
     def test_big_inbox_walks_the_date_index(self, seeded_db):
         from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
@@ -670,3 +663,98 @@ class TestCandidatePlanUnderProductionStats:
 
         plan = self._plan(seeded_db, INBOX_FIRST_BELOW_ARTICLES - 1)
         assert plan.startswith("SEARCH article_lists"), plan
+
+
+class TestBigListCandidatePin:
+    """The big-list candidate query must carry a real `INDEXED BY
+    ix_articles_date` and hand back the same rows, typed the same way,
+    as the small-list branch. SQLAlchemy's `with_hint` renders nothing
+    on SQLite, so the #785 pin never reached it (#835)."""
+
+    @staticmethod
+    def _alpha(s, total):
+        from sqlalchemy import select as sa_select
+
+        from mimir.models import Inbox
+        from tests._helpers import _cache_total
+
+        alpha = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        _cache_total(alpha, total)
+        return alpha
+
+    @staticmethod
+    def _total(big):
+        from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES
+
+        return INBOX_FIRST_BELOW_ARTICLES if big else INBOX_FIRST_BELOW_ARTICLES - 1
+
+    def test_the_big_list_query_pins_the_date_index(self, seeded_db):
+        from mimir.related import _candidate_select
+
+        with seeded_db() as s:
+            stmt = _candidate_select(
+                self._alpha(s, self._total(True)),
+                subject_normalized="x",
+                tokens=["y"],
+                authors={"z"},
+                min_date=datetime.now(UTC),
+            )
+        assert "INDEXED BY ix_articles_date" in str(stmt), str(stmt)
+
+    @pytest.mark.parametrize("authors", [{"Carol"}, set()])
+    @pytest.mark.parametrize("big", [False, True])
+    def test_both_paths_return_the_same_typed_candidates(self, seeded_db, big, authors):
+        """Empty authors too: a bot-only thread has none, and the big path
+        declares the expanding bind only when there are some."""
+        from mimir.related import _candidates
+
+        with seeded_db() as s:
+            alpha = self._alpha(s, self._total(big))
+            hits = {
+                _seed_message(
+                    s, alpha, "p1@x", "bcachefs journal deadlock", "A", 30
+                ).id,
+                _seed_message(s, alpha, "p2@x", "fix journal replay hang", "B", 40).id,
+            }
+            by_author = _seed_message(
+                s, alpha, "p3@x", "totally unrelated words", "Carol", 50
+            ).id
+            _seed_message(s, alpha, "p4@x", "bcachefs journal deadlock", "D", 4000)
+            s.commit()
+            rows = _candidates(
+                s,
+                alpha,
+                exclude_ids=set(),
+                subject_normalized="bcachefs journal deadlock",
+                tokens=["journal"],
+                authors=authors,
+                min_date=datetime.now(UTC) - timedelta(days=365),
+            )
+        got = {r.id for r in rows}
+        assert hits <= got, rows
+        assert (by_author in got) == bool(authors), rows
+        assert all(r.message_id != "p4@x" for r in rows)
+        assert all(isinstance(r.date, datetime) for r in rows), [
+            type(r.date) for r in rows
+        ]
+
+    def test_related_discussions_on_a_big_list(self, seeded_db):
+        """End to end: the scoring compares candidate dates, so an untyped
+        row would crash here, not just return different rows."""
+        from mimir.related import related_discussions
+
+        with seeded_db() as s:
+            alpha = self._alpha(s, self._total(True))
+            root, reply, tok_root, part_root, _unrelated = (
+                TestRelatedDiscussions()._setup_corpus(s, alpha)
+            )
+            out = related_discussions(
+                s,
+                alpha,
+                root_id=root.id,
+                thread_article_ids={root.id, reply.id},
+                thread_authors={"Alice", "Bob"},
+            )
+        ids = [r.article_id for r in out]
+        assert tok_root.id in ids and part_root.id in ids, ids
+        assert all(isinstance(r.last_activity, datetime) for r in out)

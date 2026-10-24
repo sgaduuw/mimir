@@ -146,3 +146,26 @@ def test_maintainer_profile_only_role_r_is_not_a_maintainer(session):
     session.commit()
 
     assert maintainer_profile(session, "dave@kernel.org") is None
+
+
+def test_maintainer_profile_review_inboxes_seek_the_trailer_index(seeded_db):
+    """Same shape as #831's reviewer query: a trailer lookup by address
+    alone cannot use `ix_article_trailers_role_addr` and scans every
+    trailer. Under production's statistics it must seek the index."""
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    with seeded_db() as s:
+        _add_subsystem(
+            s, "BCACHEFS", "Supported", maintainers=[("M", "Kent", "kent@kernel.org")]
+        )
+        s.commit()
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
+        plan = plan_of(
+            s,
+            lambda: maintainer_profile(s, "kent@kernel.org", force=True),
+            "article_trailers",
+        )
+    # The role equality, not a skip-scan (ANY(role)) the stats allow.
+    assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
+        plan
+    )
