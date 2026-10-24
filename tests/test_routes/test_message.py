@@ -1775,15 +1775,21 @@ def test_message_json_ld_author_has_url(client, tmp_path, monkeypatch):
     assert author["url"].endswith("/alpha/author/David%20Woodhouse")
 
 
-def test_message_json_ld_author_url_omitted_for_unknown_sender(
+@pytest.mark.parametrize(
+    "author",
+    ["a@b.example", '"  " <x@hidden.example>'],
+    ids=["bare-address", "whitespace-only-name"],
+)
+def test_message_json_ld_author_url_omitted_for_nameless_sender(
     client,
     tmp_path,
     monkeypatch,
+    author,
 ):
-    """A bare address with no display name renders as
-    `unknown sender` (see `_display_name_filter`), which would
-    match no one as a substring, omit the URL so we don't ship
-    a stable link to a useless query."""
+    """A sender with no display name has no author view to link to
+    (the view is keyed by the name), so no `url` is emitted. A
+    whitespace-only name counts as no name: the author is a bare
+    `Person`."""
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", [])
@@ -1791,11 +1797,11 @@ def test_message_json_ld_author_url_omitted_for_unknown_sender(
         tmp_path,
         "alpha",
         "jsonld-author-url-bare@example.com",
-        # Bare address → parseaddr returns no display name.
+        author=author,
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
-    assert "url" not in posting["author"]
+    assert posting["author"] == {"@type": "Person"}
 
 
 def test_message_page_visible_html_redacts_non_allowlisted_from_address(
