@@ -20,14 +20,17 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
-from sqlalchemy.orm import aliased
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article
-from mimir.parser import unfold
-from mimir.patch_revisions import parse_in_series_patch_subject
-from mimir.patch_series import chain_version_rank, posting_flags
+from mimir.patch_series import (
+    _parent,
+    chain_version_rank,
+    cover_of_patch,
+    posting_flags,
+)
+from mimir.patch_series import _posting as _subject_posting
 
 # A cover that no rule joins to the chain starts a new one only when
 # fewer than this share of its patch titles (or of the chain's recent
@@ -155,7 +158,13 @@ def _load_key(
 ) -> tuple[list[Cover], dict[int, int | None], list[tuple]]:
     """A key's covers, their stored heads, and its in-series patches as
     `(id, cover message id, stored head)`. The one place that reads a
-    whole key: it must see every series on it."""
+    whole key: it must see every series on it.
+
+    A patch belongs to the cover `cover_of_patch` finds for it, the walk
+    that linked it (#840), so a patch answering the patch before it is
+    titled and headed with its cover. The walk reads the key's own rows
+    first and the database for the rest: a patch can answer a reply that
+    #837 cleared, which carries no key."""
     cover_rows = session.execute(
         select(
             Article.id,
@@ -163,30 +172,43 @@ def _load_key(
             Article.date,
             Article.patch_series_version,
             Article.subject,
+            Article.author,
+            Article.thread_parent,
             Article.patch_series_head_id,
         ).where(
             Article.patch_series_key == key,
             func.coalesce(Article.patch_series_position, 0) == 0,
         )
     ).all()
-    patch = aliased(Article)
     patch_rows = session.execute(
-        select(patch.id, patch.thread_parent, patch.subject, patch.patch_series_head_id)
-        .join(Article, patch.thread_parent == Article.message_id)
-        .where(
+        select(
+            Article.id,
+            Article.message_id,
+            Article.subject,
+            Article.author,
+            Article.thread_parent,
+            Article.patch_series_head_id,
+        ).where(
             Article.patch_series_key == key,
-            func.coalesce(Article.patch_series_position, 0) == 0,
-            patch.patch_series_key == key,
-            patch.patch_series_position > 0,
+            Article.patch_series_position > 0,
         )
     ).all()
+    rows = {r.message_id: r for r in (*cover_rows, *patch_rows)}
+
+    def parent_of(message_id):
+        return rows.get(message_id) or _parent(session, message_id)
+
     titles: dict[str, list[str]] = {}
     patches = []
-    for pid, parent, subject, head in patch_rows:
-        parsed = parse_in_series_patch_subject(unfold(subject or ""))
-        if parsed is not None:
-            titles.setdefault(parent, []).append(parsed.canonical_subject)
-        patches.append((pid, parent, head))
+    for row in patch_rows:
+        posting = _subject_posting(row.subject)
+        if posting is None or posting[0] == 0:
+            continue
+        cover = cover_of_patch(row.thread_parent, parent_of, posting)
+        if cover is None:
+            continue
+        titles.setdefault(cover.message_id, []).append(posting[3])
+        patches.append((row.id, cover.message_id, row.patch_series_head_id))
     covers = [
         Cover(
             id=r.id,
@@ -214,8 +236,9 @@ def head_updates(session, key: str) -> tuple[list[tuple[int, int | None]], bool]
     updates += [
         (pid, heads[cover_of[parent]])
         for pid, parent, head in patches
-        # A parent missing from `cover_of` committed between the two
-        # reads of `_load_key`; the next run sees it.
+        # A cover missing from `cover_of` is not one of this key's covers:
+        # a reply #820 cleared, a stale key, or a cover committed between
+        # the two reads of `_load_key`, which the next run sees.
         if parent in cover_of and head != heads[cover_of[parent]]
     ]
     # A key of one cover has nothing to split, but a head left from when

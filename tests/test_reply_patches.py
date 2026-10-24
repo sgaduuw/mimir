@@ -61,12 +61,9 @@ def test_ingest_and_reprocess_store_a_patch_reply_without_a_series(
 
     result = backfill_patch_series(reprocess=True)
 
-    reprocessed = series_columns(seeded_db, *ids)
-    # A reprocess links only through a cover parent, so it orphans the
-    # re-post ingest linked through the patch (#840); its position stays.
-    assert reprocessed["rp837@x"] == (None, None, 1, None)
-    del ingested["rp837@x"], reprocessed["rp837@x"]
-    assert reprocessed == ingested
+    # The re-post answers the patch, not the cover: both paths link it
+    # through the patch (#840).
+    assert series_columns(seeded_db, *ids) == ingested
     assert result.reply_patch == 1
 
 
