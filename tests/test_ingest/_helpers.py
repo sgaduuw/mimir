@@ -60,12 +60,16 @@ def _rfc5322(
 
 
 def _build_pubinbox_repo(
-    repo_path: Path, messages: list[bytes], *, start: int = 1700000000
+    repo_path: Path,
+    messages: list[bytes],
+    *,
+    start: int = 1700000000,
+    times: list[int] | None = None,
 ) -> Path:
     """Build a bare public-inbox v2-shaped repo: one commit per
     message, the tree carries an `m` blob with the raw RFC 5322
-    bytes. Returns the repo path. Commit `i` is timestamped `start + i`,
-    which ingest stores as `articles.date`."""
+    bytes. Returns the repo path. Commit `i` is timestamped `times[i]`, or
+    `start + i`, which ingest stores as `articles.date`."""
     repo = Repo.init_bare(str(repo_path), mkdir=True)
     parent = None
     for i, raw in enumerate(messages):
@@ -80,7 +84,7 @@ def _build_pubinbox_repo(
         commit.tree = tree.id
         commit.parents = [parent] if parent else []
         commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = start + i
+        commit.commit_time = commit.author_time = times[i] if times else start + i
         commit.commit_timezone = commit.author_timezone = 0
         commit.encoding = b"UTF-8"
         commit.message = f"add message {i}".encode()
