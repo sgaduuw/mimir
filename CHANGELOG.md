@@ -30,6 +30,12 @@ alongside another long backfill. The rule reads `article_files`, so
 
 ### Changed
 
+- `/sitemap.xml` now gives each year and month sitemap a `<lastmod>`, the
+  newest date inside that child, read from the child's cached copy (#847). A
+  reply to an old thread moves its year's date, so a crawler can tell which
+  children changed. A child that is not cached yet still has no `<lastmod>`;
+  the index builds none inline. Children are cached when a crawler fetches
+  them, and the index picks the date up on its next hourly rebuild.
 - `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
   first, then the rest by name (#766), so lkml's fresh mail and its cache warm
   no longer wait behind inboxes that sort before it. After a from-scratch
