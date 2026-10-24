@@ -250,8 +250,9 @@ def pinned_first(inboxes: list[Inbox]) -> list[Inbox]:
     """`inboxes` with the pinned ones first, in `settings.pinned_inboxes`
     order, then the rest by name. The one definition of "pinned order",
     shared by the meta-index and `warm-cache`, so the cards topping the
-    front page are also the inboxes warmed first (#763)."""
-    rank = {name: i for i, name in enumerate(settings.pinned_inboxes)}
+    front page are also the inboxes warmed first (#763). A name listed
+    twice keeps its first position."""
+    rank = {name: i for i, name in enumerate(dict.fromkeys(settings.pinned_inboxes))}
     return sorted(inboxes, key=lambda ix: (rank.get(ix.name, len(rank)), ix.name))
 
 
