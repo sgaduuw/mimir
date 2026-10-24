@@ -46,6 +46,7 @@ from mimir.patch_series import (
 )
 from mimir.patch_state import _resolve_tree_label
 from mimir.subsystems import ranked_subsystems
+from mimir.web.filters import _usable_display_name
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,7 @@ def _compute(session: Session) -> MergeWindow:
     nameless = {
         posting
         for posting in postings
-        if not parseaddr(representatives[posting][2] or "")[0]
+        if not _usable_display_name(representatives[posting][2])
     }
     votes = _commit_author_votes(
         session, [m.message_id for p in nameless for m in postings[p]]
@@ -298,7 +299,8 @@ def _compute(session: Session) -> MergeWindow:
         rep_id, subject, author, date = representatives[posting]
         if posting in nameless:
             # The commit author's name stands in for a sender with no
-            # display name; the address stays, `display_name` hides it.
+            # usable display name (empty, or an address, #864); the
+            # address stays, `display_name` hides it.
             named = sum(
                 (votes[m.message_id] for m in members if m.message_id in votes),
                 Counter(),
@@ -384,7 +386,7 @@ def _commit_author_votes(
     session: Session, message_ids: list[str]
 ) -> dict[str, Counter]:
     """Author-name votes of the linux-next commits per message-id, for
-    senders whose mail has none. The mirror is the only place the name
+    senders whose mail has no usable name. The mirror is the only place the name
     lives: mainline_commits stores no author and Signed-off-by trailers
     are not kept. Merge commits are skipped, because a merge linked to a
     series cover is the maintainer's, not the author's. A missing mirror
