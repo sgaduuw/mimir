@@ -124,8 +124,10 @@ def _curated_default_trees() -> dict[str, TreeConfig]:
 
 
 # Heavy known crawlers that name themselves in the User-Agent, each held
-# to 10% of the global budget (#761). Merged under CRAWLER_UA_BUDGETS.
-# Substring matches, so keep the names distinctive.
+# to 10% of the global budget (#761). The two search crawlers get 80%
+# instead: they back off on 429 and visit a handful of times a day, and
+# 10% over many workers refused them (#848). Merged under
+# CRAWLER_UA_BUDGETS. Substring matches, so keep the names distinctive.
 DEFAULT_CRAWLER_UA_BUDGETS: dict[str, int] = {
     "Applebot": 10,
     "Bytespider": 10,
@@ -135,6 +137,8 @@ DEFAULT_CRAWLER_UA_BUDGETS: dict[str, int] = {
     "Slurp": 10,
     "msnbot": 10,
     "Baiduspider": 10,
+    "Googlebot": 80,
+    "bingbot": 80,
 }
 
 
@@ -787,7 +791,7 @@ class Settings(BaseSettings):
 
     # Share (percentage of the global budget) for a recognised crawler
     # with no entry in CRAWLER_UA_BUDGETS. With the global budget set,
-    # Googlebot and Bingbot included are held to this unless listed.
+    # every such crawler is held to this unless listed.
     crawler_default_ua_pct: int = Field(default=10, ge=1, le=100)
 
     # Unlisted crawlers also draw on ONE shared bucket at this

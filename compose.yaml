@@ -170,9 +170,10 @@ services:
       # at budget / WORKERS.
       # CRAWLER_BUDGET_PER_MINUTE: "240"
       # CRAWLER_UA_BUDGETS: '{"Applebot": 50, "Bytespider": 0}'
-      #   merged over the default crawler list (Applebot, Bytespider, ...,
-      #   10% each): changes Applebot to 50% and drops Bytespider (0).
-      # Any other recognised crawler (Googlebot/2.1, bingbot/2.0, ...)
+      #   merged over the default crawler list (Applebot, Bytespider, ...
+      #   10% each, Googlebot and bingbot 80%): changes Applebot to 50%
+      #   and drops Bytespider (0).
+      # Any other recognised crawler (GPTBot/1.0, AhrefsBot/7.0, ...)
       # gets CRAWLER_DEFAULT_UA_PCT (10) of the global budget, and all
       # of them together are capped by CRAWLER_UNLISTED_POOL_PCT (30);
       # list a crawler to protect it from a flood of invented names.
