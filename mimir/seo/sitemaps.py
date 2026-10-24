@@ -1039,6 +1039,9 @@ def series_diff_sitemap_xml(
             for date, art_id, version in covers:
                 slot_dates.setdefault(version, []).append(date)
                 first_id[version] = min(first_id.get(version, art_id), art_id)
+            # A version with no cover is absent here, so v1, v2 (no cover),
+            # v3 pairs v1 with v3: adjacent among the revisions the route
+            # can diff, and that page exists.
             for older, newer in pairwise(slot_dates):
                 dates = [d for v in (older, newer) for d in slot_dates[v] if d]
                 lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
