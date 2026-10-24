@@ -57,6 +57,11 @@ once.
 
 ### Fixed
 
+- A parenthesised or base-tree tag is no longer read as the series version
+  (#870). `[PATCH (v20.08) v3 0/8]` is v3, not v20, and `[PATCH v5.10 v2 1/2]`
+  is v2, not v5. A lone dotted tag (`[PATCH v4.1 0/3]`) still reads as v4.
+  Stored versions change on the next `backfill-patch-series --reprocess`,
+  which is already required above.
 - An in-series patch sent as a reply to the patch before it
   (`git send-email --chain-reply-to`) is linked to its series the same way by
   ingest, a plain `backfill-patch-series` run and `--reprocess` (#840). All
