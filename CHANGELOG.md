@@ -29,6 +29,12 @@ alongside another long backfill. The rule reads `article_files`, so
 
 ### Fixed
 
+- A reply that repeats a patch or cover subject without "Re:" no longer shows
+  the patch state card on its message page (#838). The card now follows the
+  stored series columns: a cover or numbered patch subject with no position and
+  no key is a reply. A solo `[PATCH]` and a real patch keep the card. Rows
+  stored before #837's reprocess still look like patches until
+  `backfill-patch-series --reprocess` runs.
 - A reply that repeats a patch's subject without "Re:" is no longer stored as
   a patch of the series (#837). It is a reply when it answers a patch with the
   same position, patch count, title and version from another sender, both or
