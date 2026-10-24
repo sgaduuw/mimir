@@ -184,10 +184,28 @@ def _lexer_for(filename: str | None, content: str):
         return TextLexer()
 
 
+def _token_matches(token: str, address: str) -> bool:
+    """One `email_allowlist` token against a lowercased address, by
+    structure (#863): `local@` is that local part at any domain,
+    `local@domain` is the exact address, and `@domain` or a bare
+    `domain` is exactly that domain, subdomains not included. A
+    substring match let `a@kernel.org.evil.example` through."""
+    local, at, domain = address.rpartition("@")
+    if not at:
+        return False
+    token = token.lower()
+    if token.endswith("@"):
+        return local == token[:-1]
+    if "@" in token.lstrip("@"):
+        return address == token
+    return domain == token.lstrip("@")
+
+
 def _is_allowlisted(address: str) -> bool:
-    """Union check: static `Settings.email_allowlist` substring tokens
-    OR exact membership in the dynamic MAINTAINERS-derived address
-    set. Both checks operate on the lowercased address.
+    """Union check: static `Settings.email_allowlist` tokens (matched
+    by address structure, see `_token_matches`) OR exact membership in
+    the dynamic MAINTAINERS-derived address set. Both checks operate
+    on the lowercased address.
 
     Per-request memoised via `flask.g` so the MAINTAINERS set is
     fetched at most once per render (the underlying DB-backed cache
@@ -199,7 +217,7 @@ def _is_allowlisted(address: str) -> bool:
     and the cache layer's own coordination handles repeats.
     """
     addr_lower = address.lower()
-    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+    if any(_token_matches(token, addr_lower) for token in settings.email_allowlist):
         return True
     try:
         # Not `g.setdefault(key, maintainer_addresses())`: the default is
@@ -277,7 +295,7 @@ def _render_body_filter(
 @bp_web.app_template_filter("safe_from")
 def _safe_from_filter(author: str | None) -> str:
     """Return a From-line suitable for display: full address for senders
-    in the union of `settings.email_allowlist` (static substring tokens)
+    in the union of `settings.email_allowlist` (static tokens)
     and the MAINTAINERS-derived address set (exact match), otherwise
     display name + `<hidden>` to keep casual senders' addresses out of
     the archive UI."""
