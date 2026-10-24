@@ -76,3 +76,25 @@ def test_subdomain_of_allowlisted_domain_is_hidden(client, tmp_path, monkeypatch
 )
 def test_default_allowlist(address, expected):
     assert _is_allowlisted(address) is expected
+
+
+@pytest.mark.parametrize(
+    "address",
+    ['"x@evil.example"@open.example', "x@evil.example@open.example"],
+)
+def test_second_at_does_not_match_domain_token(monkeypatch, address):
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    assert _is_allowlisted(address) is False
+
+
+def test_quoted_foreign_address_in_local_part_is_hidden(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    html, graph, feed = _surfaces(
+        client, tmp_path, 'Eve <"x@evil.example"@open.example>'
+    )
+    leaked = [
+        surface
+        for surface, text in (("page", html), ("json-ld", str(graph)), ("atom", feed))
+        if "x@evil.example" in text
+    ]
+    assert leaked == []

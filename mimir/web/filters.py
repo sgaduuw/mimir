@@ -190,8 +190,8 @@ def _token_matches(token: str, address: str) -> bool:
     `local@domain` is the exact address, and `@domain` or a bare
     `domain` is exactly that domain, subdomains not included. A
     substring match let `a@kernel.org.evil.example` through."""
-    local, at, domain = address.rpartition("@")
-    if not at:
+    local, at, domain = address.partition("@")
+    if not at or "@" in domain:
         return False
     token = token.lower()
     if token.endswith("@"):

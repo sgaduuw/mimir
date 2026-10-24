@@ -252,7 +252,7 @@ def test_read_messages_on_an_empty_list_touches_neither_db_nor_disk(monkeypatch)
 # web._safe_from_filter, privacy redaction
 
 
-def test_safe_from_kernel_org_address_surfaces_in_full(monkeypatch):
+def test_safe_from_maintainers_set_address_surfaces_in_full(monkeypatch):
     from mimir import maintainer_allowlist
 
     # Allowed through the MAINTAINERS-derived set, not a default token.
