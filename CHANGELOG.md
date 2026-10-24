@@ -11,22 +11,45 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
-After deploying, run `backfill-patch-series --reprocess` once (#837). It
-walks the whole archive, writes only the rows it changes, and clears about
-168k replies on a full archive (counted on production, 2026-10-24). A plain
-run is not enough: it skips every row that already has a key before the rule
-runs, and a reply ingested since the last reprocess has one. Do not run it
-alongside another long backfill. The rule reads `article_files`: a
-`backfill-article-files` that was never completed on this archive must finish
-before the reprocess, and a completed earlier run is enough.
+## [3.27.0] - 2026-10-25
 
-The same reprocess also links the patches #840 now reaches; no second
-reprocess is needed. Then run `backfill-series-chains` once, as the repair
-pass for chain-reply patches the reprocess left untouched: their rows do not
-change, so only a chain pass is sure to give them their cover's head. Its
-`heads_planned` counts the heads it changes; on an archive with none it plans
-zero. Pages of series whose heads move get new ETags, so caches refetch them
-once.
+Upgrade steps, after deploying, in this order. Do not run them alongside
+another long backfill, such as an open `admin canonicals backfill`.
+
+1. If `backfill-article-files` never completed on this archive, finish it
+   first: the #837 and #860 reply rules read `article_files`. A completed
+   earlier run is enough. Stored patches whose diff is in quilt, `diff -u` or
+   `Index:` format have no `article_files` rows yet (#869), so the reprocess
+   below clears them as replies. That is a few dozen rows on a full archive.
+   A full `backfill-article-files --restart` beforehand avoids it, at the cost
+   of re-reading most of the archive.
+2. Run `backfill-patch-series --reprocess` once. It walks the whole archive
+   and writes only the rows it changes. A plain run is not enough: it skips
+   every row that already has a key before the rules run. It applies #837,
+   #838, #840, #860, #862 and the #870 parser fix together. The counts in
+   the entries below were measured per change on production (2026-10-24);
+   they overlap, and there is no measured total. #837 alone clears about 168k
+   replies.
+3. Run `backfill-series-chains` once. It gives chain-reply patches the
+   reprocess left untouched their cover's head (#840), and it applies #870's
+   cover-typo versions, which the reprocess does not write. It reports
+   `heads_planned` and `versions_planned`; expect `versions_planned` near
+   2,853 on a full archive, and zero on an archive with no typo covers.
+   Pages of series whose heads or versions move get new ETags, so caches
+   refetch them once.
+
+If `EMAIL_ALLOWLIST` is set, check it against the new token formats (#863,
+under Security): a token that relied on substring or subdomain matching stops
+matching. A custom list replaces the defaults, so it also does not get the
+new historical addresses.
+
+Rolling back to 3.26.0 is safe: there is no migration, and every row this
+release rewrites is valid under 3.26.0. A 3.26.0 plain run then gradually
+relinks some cleared replies and #862's unlinked patches; to return fully to
+3.26.0's answers, run 3.26.0's `backfill-patch-series --reprocess`, then
+`backfill-series-chains`. Rolling back restores the spoofable `torvalds@` and
+`gregkh@` allowlist defaults. Upgrading again means repeating the steps
+above.
 
 ### Added
 
@@ -44,8 +67,7 @@ once.
   have none until a crawler fetches them.
 - `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
   first, then the rest by name (#766), so lkml's fresh mail and its cache warm
-  no longer wait behind inboxes that sort before it. Existing deployments see
-  no change.
+  no longer wait behind inboxes that sort before it. No action needed.
 - A series diff page's title and description now name the series and the two
   versions, instead of the same generic text on every diff (#846).
 - The thread page (`/t`) shows the root's revisions fold with its diff links,
@@ -57,6 +79,12 @@ once.
 
 ### Fixed
 
+- A message page's ETag now covers its own series columns when it has no
+  series key, so the patch state card (#838) disappears from cached copies
+  once the reprocess clears a reply's position.
+- A message page's meta description names a nameless allowlisted sender by
+  their address, as JSON-LD and Atom do (#845, #850), instead of "unknown
+  sender".
 - A parenthesised or base-tree tag is no longer read as the series version
   (#870). `[PATCH (v20.08) v3 0/8]` is v3, not v20, and `[PATCH v5.10 v2 1/2]`
   is v2, not v5, and a dotted tag after `-` or `/` (`for-v6.18`,
@@ -91,9 +119,11 @@ once.
 - A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
   `+++` pair followed by a hunk header) now records the files it touches
   (#869). Before, it counted as having no diff, so #837 and #860 cleared a
-  re-post in that format as a reply. Newly ingested mail is detected; stored
-  patches keep their classification until #874 (or a full
-  `backfill-article-files --restart`) runs. No new upgrade step.
+  re-post in that format as a reply. Newly ingested mail is detected. Stored
+  patches have no `article_files` rows for such a diff, so the reprocess in
+  the upgrade steps clears those re-posts as replies unless a full
+  `backfill-article-files --restart` runs first (step 1); #874 tracks a
+  cheaper option.
 - A patch is no longer linked to a cover of another revision that it was
   posted long after (#862). When the patch and the cover each name a version
   (`v2`, `v3`), the versions differ and the patch is more than an hour newer,
@@ -121,8 +151,8 @@ once.
   #837 rule now holds whoever sends the reply: it must repeat its direct
   parent patch and touch no files. Covers keep #820's different-sender rule.
   On production (2026-10-24) it clears 7,213 rows; 49 of a 50-row sample were
-  replies, the rest a re-post whose diff is not in git format (#869). The existing `backfill-patch-series --reprocess`
-  clears them.
+  replies, the rest a re-post whose diff is not in git format (#869). The
+  existing `backfill-patch-series --reprocess` clears them.
 - The merge window now names a sender whose display name is an address after
   the commit author, as it does a sender with no name (#864).
 - A reply that repeats a patch or cover subject without "Re:" no longer shows
