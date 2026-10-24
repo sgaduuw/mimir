@@ -58,16 +58,12 @@ once.
 
 ### Fixed
 
-- A patch whose diff is in quilt or plain unified format (`--- a/path` and
-  `+++ b/path` followed by a hunk header, or an `Index:` block) now records
-  the files it touches, as a `diff --git` patch does (#869). Before, it
-  counted as having no diff, so a re-post in that format was cleared as a
-  reply by #837 and #860 (about 0.9% of re-posts in a 650-row sample). A bare
-  `---` signature separator, a quoted diff and a header pair with no hunk
-  still name nothing. Newly ingested mail is detected. Patches already stored
-  keep their current classification until #874 (or a full
-  `backfill-article-files --restart`, which re-reads most of the archive)
-  runs; no new upgrade step.
+- A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
+  `+++` pair followed by a hunk header) now records the files it touches
+  (#869). Before, it counted as having no diff, so #837 and #860 cleared a
+  re-post in that format as a reply. Newly ingested mail is detected; stored
+  patches keep their classification until #874 (or a full
+  `backfill-article-files --restart`) runs. No new upgrade step.
 - A patch is no longer linked to a cover of another revision that it was
   posted long after (#862). When the patch and the cover each name a version
   (`v2`, `v3`), the versions differ and the patch is more than an hour newer,

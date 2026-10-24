@@ -145,12 +145,7 @@ def test_extract_plain_diff_u_drops_timestamps():
         "+++ fs/bar.c\t2024-06-02 11:30:00 +0200\n"
         "@@ -5,2 +5,3 @@\n"
         " x\n+y\n"
-    )
-    assert extract_touched_paths(body) == {"new/fs/foo.c", "fs/bar.c"}
-
-
-def test_extract_index_block():
-    body = (
+        # An svn `Index:` block, read through its header pair.
         "Index: drivers/net/foo.c\n"
         "===================================================================\n"
         "--- drivers/net/foo.c\t(revision 1234)\n"
@@ -158,7 +153,11 @@ def test_extract_index_block():
         "@@ -20,6 +20,7 @@\n"
         " a\n+b\n"
     )
-    assert extract_touched_paths(body) == {"drivers/net/foo.c"}
+    assert extract_touched_paths(body) == {
+        "new/fs/foo.c",
+        "fs/bar.c",
+        "drivers/net/foo.c",
+    }
 
 
 def test_extract_unified_new_and_deleted_files():

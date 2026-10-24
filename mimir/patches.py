@@ -72,7 +72,6 @@ _UNIFIED_RE = re.compile(
     r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@",
     re.MULTILINE,
 )
-_DEV_NULL = "/dev/null"
 
 
 def _unified_path(old: str, new: str) -> str | None:
@@ -80,11 +79,11 @@ def _unified_path(old: str, new: str) -> str | None:
     it: the new side without its `b/`, and for a deleted file (`+++
     /dev/null`) the old side without its `a/`."""
     old, new = old.strip(), new.strip()
-    if new == _DEV_NULL:
+    if new == "/dev/null":
         path = old.removeprefix("a/")
     else:
         path = new.removeprefix("b/")
-    return None if path in ("", _DEV_NULL) else path
+    return None if path in ("", "/dev/null") else path
 
 
 # Hard ceiling on the number of distinct paths one patch body can
