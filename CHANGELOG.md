@@ -46,6 +46,8 @@ alongside another long backfill. The rule reads `article_files`, so
 
 ### Fixed
 
+- The merge window now names a sender whose display name is an address after
+  the commit author, as it does a sender with no name (#864).
 - A reply that repeats a patch or cover subject without "Re:" no longer shows
   the patch state card on its message page (#838). The card now follows the
   stored series columns: a cover or numbered patch subject with no position and
