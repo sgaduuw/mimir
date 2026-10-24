@@ -67,6 +67,14 @@ once.
   version or total of their patch. The series chain pass now reads these
   patches too: it gives them their cover's head and counts their titles when
   telling two postings apart.
+- A patch author's own reply to their patch, repeating its subject without
+  "Re:" and carrying no diff, is no longer stored as a second patch at that
+  position (#860). The #837 rule now holds whoever sends the reply: it must
+  repeat its direct parent patch and touch no files. Covers keep #820's
+  different-sender rule. On production (2026-10-24) it clears 7,213 rows,
+  about 98% of a 50-row sample replies; the rest are re-posts whose diff is
+  not in git format (#869). The existing `backfill-patch-series --reprocess`
+  clears them.
 - The merge window now names a sender whose display name is an address after
   the commit author, as it does a sender with no name (#864).
 - A reply that repeats a patch or cover subject without "Re:" no longer shows
