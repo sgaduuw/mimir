@@ -112,3 +112,100 @@ def test_extract_deduplicates_repeat_headers():
         "-x\n+y\n"
     )
     assert extract_touched_paths(body) == {"fs/foo/a.c"}
+
+
+# Unified diffs without git's header (#869): quilt, `diff -u`, `Index:`.
+
+
+def test_extract_quilt_patch():
+    body = (
+        "[patch v6.1] net: fix the frobnicator\n\n"
+        "Signed-off-by: Author <a@example>\n"
+        "---\n"
+        " net/core/frob.c |    2 +-\n"
+        " 1 file changed, 1 insertion(+), 1 deletion(-)\n\n"
+        "--- a/net/core/frob.c\n"
+        "+++ b/net/core/frob.c\n"
+        "@@ -10,7 +10,7 @@ static int frob(void)\n"
+        " \tint ret;\n"
+        "-\tret = 0;\n"
+        "+\tret = -EINVAL;\n"
+    )
+    assert extract_touched_paths(body) == {"net/core/frob.c"}
+
+
+def test_extract_plain_diff_u_drops_timestamps():
+    body = (
+        "diff -u old/fs/foo.c new/fs/foo.c\n"
+        "--- old/fs/foo.c\t2024-06-01 10:00:00.000000000 +0200\n"
+        "+++ new/fs/foo.c\t2024-06-02 11:30:00.000000000 +0200\n"
+        "@@ -1 +1 @@\n"
+        "-a\n+b\n"
+        "--- fs/bar.c\t2024-06-01 10:00:00 +0200\n"
+        "+++ fs/bar.c\t2024-06-02 11:30:00 +0200\n"
+        "@@ -5,2 +5,3 @@\n"
+        " x\n+y\n"
+    )
+    assert extract_touched_paths(body) == {"new/fs/foo.c", "fs/bar.c"}
+
+
+def test_extract_index_block():
+    body = (
+        "Index: drivers/net/foo.c\n"
+        "===================================================================\n"
+        "--- drivers/net/foo.c\t(revision 1234)\n"
+        "+++ drivers/net/foo.c\t(working copy)\n"
+        "@@ -20,6 +20,7 @@\n"
+        " a\n+b\n"
+    )
+    assert extract_touched_paths(body) == {"drivers/net/foo.c"}
+
+
+def test_extract_unified_new_and_deleted_files():
+    """`/dev/null` on one side: the new file's path, and for a deleted
+    file the old path, as the git branch reports a deletion."""
+    body = (
+        "--- /dev/null\n"
+        "+++ b/docs/new.rst\n"
+        "@@ -0,0 +1,2 @@\n"
+        "+one\n+two\n"
+        "--- a/docs/gone.rst\n"
+        "+++ /dev/null\n"
+        "@@ -1,2 +0,0 @@\n"
+        "-one\n-two\n"
+    )
+    assert extract_touched_paths(body) == {"docs/new.rst", "docs/gone.rst"}
+
+
+def test_extract_git_diff_counts_each_file_once():
+    """The `---` / `+++` pair inside a git diff names the path the
+    `diff --git` header already gave; a rename still reports `b/`."""
+    body = (
+        "diff --git a/old.c b/new.c\n"
+        "similarity index 90%\n"
+        "rename from old.c\n"
+        "rename to new.c\n"
+        "--- a/old.c\n"
+        "+++ b/new.c\n"
+        "@@ -1 +1 @@\n"
+        "-a\n+b\n"
+        "diff --git a/gone.c b/gone.c\n"
+        "deleted file mode 100644\n"
+        "--- a/gone.c\n"
+        "+++ /dev/null\n"
+        "@@ -1 +0,0 @@\n"
+        "-a\n"
+    )
+    assert extract_touched_paths(body) == {"new.c", "gone.c"}
+
+
+def test_extract_unified_needs_a_hunk_header_at_column_zero():
+    """A bare `---` signature separator, a header pair with no hunk, and
+    a quoted diff name no file."""
+    signature = "Thanks,\nA\n---\nfoo.c | 2 +-\n"
+    no_hunk = "--- a/foo.c\n+++ b/foo.c\nsee the thread for the rest\n"
+    quoted = (
+        "On Mon, B wrote:\n> --- a/foo.c\n> +++ b/foo.c\n> @@ -1 +1 @@\n> -a\n> +b\n"
+    )
+    for body in (signature, no_hunk, quoted):
+        assert extract_touched_paths(body) == set(), body
