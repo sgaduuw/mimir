@@ -8,7 +8,9 @@ caller (`mimir.ingest` and the backfill CLI) is responsible for
 turning the returned set into `ArticleFile` rows.
 
 Strong signal only: we match `diff --git a/<old> b/<new>` headers,
-which are machine-generated and unambiguous. Prose-shaped mentions
+which are machine-generated and unambiguous, and unified diffs without
+that header (quilt, `diff -u`, `Index:` blocks) by their `---` / `+++`
+pair plus a hunk header. Prose-shaped mentions
 ("we should touch fs/foo/") are deliberately ignored, high-noise
 and lousy precision. The cost is missing discussion-only threads in
 the per-path reverse lookup; the win is that every match is a real
@@ -57,6 +59,32 @@ _DIFF_GIT_RE = re.compile(
     re.MULTILINE,
 )
 
+# A unified diff without git's header (quilt, `diff -u`, svn's `Index:`
+# blocks): a `---` / `+++` pair at column 0 that is at once followed by
+# a hunk header (#869). The hunk header is what keeps a bare `---`
+# signature separator and a quoted or prose-shaped pair out. A path may
+# carry a tab and a timestamp after it, which is dropped; an `Index:`
+# block is read through its pair, the `Index:` and `===` lines add no
+# path of their own. A path with a tab in it is not supported.
+_UNIFIED_RE = re.compile(
+    r"^--- (?P<old>[^\t\r\n]+)(?:\t[^\r\n]*)?\r?\n"
+    r"\+\+\+ (?P<new>[^\t\r\n]+)(?:\t[^\r\n]*)?\r?\n"
+    r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@",
+    re.MULTILINE,
+)
+
+
+def _unified_path(old: str, new: str) -> str | None:
+    """The path a `---` / `+++` pair names, as the git branch reports
+    it: the new side without its `b/`, and for a deleted file (`+++
+    /dev/null`) the old side without its `a/`."""
+    old, new = old.strip(), new.strip()
+    if new == "/dev/null":
+        path = old.removeprefix("a/")
+    else:
+        path = new.removeprefix("b/")
+    return None if path in ("", "/dev/null") else path
+
 
 # Hard ceiling on the number of distinct paths one patch body can
 # contribute to `article_files`. Real-world series rarely touch more
@@ -72,7 +100,7 @@ def extract_touched_paths(body: str | None) -> set[str]:
     """Return the set of post-rename paths the patch body touches.
 
     Returns an empty set on:
-    - non-patch bodies (no `diff --git` headers)
+    - non-patch bodies (no `diff --git` header, no unified diff)
     - None / empty input
     - bodies where every `diff --git` line is inside a quoted block
       (the regex anchors at column 0; quoted lines start with `>`
@@ -94,7 +122,13 @@ def extract_touched_paths(body: str | None) -> set[str]:
     for m in _DIFF_GIT_RE.finditer(body):
         out.add(m.group("new"))
         if len(out) >= MAX_TOUCHED_PATHS:
-            break
+            return out
+    for m in _UNIFIED_RE.finditer(body):
+        path = _unified_path(m.group("old"), m.group("new"))
+        if path is not None:
+            out.add(path)
+            if len(out) >= MAX_TOUCHED_PATHS:
+                break
     return out
 
 
@@ -120,7 +154,7 @@ class BackfillResult(BackfillCounters):
 
     examined: int = 0
     indexed: int = 0  # had a patch body and one or more paths landed
-    no_diff: int = 0  # body parsed but no `diff --git` headers
+    no_diff: int = 0  # body parsed but no diff found
     skipped: int = 0  # already had rows, or unreadable
     failed: int = 0  # parse error reading the blob
 

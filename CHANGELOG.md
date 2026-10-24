@@ -16,8 +16,9 @@ walks the whole archive, writes only the rows it changes, and clears about
 168k replies on a full archive (counted on production, 2026-10-24). A plain
 run is not enough: it skips every row that already has a key before the rule
 runs, and a reply ingested since the last reprocess has one. Do not run it
-alongside another long backfill. The rule reads `article_files`, so
-`backfill-article-files` must be complete first.
+alongside another long backfill. The rule reads `article_files`: a
+`backfill-article-files` that was never completed on this archive must finish
+before the reprocess, and a completed earlier run is enough.
 
 The same reprocess also links the patches #840 now reaches; no second
 reprocess is needed. Then run `backfill-series-chains` once, as the repair
@@ -58,15 +59,22 @@ once.
 
 - An inbox's first ingest reads its newest 500 messages to detect its list
   address before the walk, unless one is set, so its cross-posts pin to it
-  instead of to an inbox ingested earlier, such as lkml (#855). A from-scratch ingest no longer needs
-  `admin canonicals backfill --reprocess` afterwards, and inboxes that already
-  hold mail are not sampled. When the sample cannot settle an address and the
-  full walk can, ingest logs the `admin canonicals backfill --reprocess
-  --inbox` command that re-pins that inbox.
+  instead of to an inbox ingested earlier, such as lkml (#855). A
+  from-scratch ingest no longer needs `admin canonicals backfill --reprocess`
+  afterwards, and inboxes that already hold mail are not sampled. When the
+  sample cannot settle an address and the full walk can, ingest logs the
+  `admin canonicals backfill --reprocess --inbox` command that re-pins that
+  inbox.
 - Ingest walks an inbox's epochs in number order. It sorted them by name, so
   epochs 10 and up came before 2 to 9. This affected a from-scratch ingest of
   an inbox with ten or more epochs, such as lkml; a steady-state tick is
   unaffected (#855).
+- A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
+  `+++` pair followed by a hunk header) now records the files it touches
+  (#869). Before, it counted as having no diff, so #837 and #860 cleared a
+  re-post in that format as a reply. Newly ingested mail is detected; stored
+  patches keep their classification until #874 (or a full
+  `backfill-article-files --restart`) runs. No new upgrade step.
 - A patch is no longer linked to a cover of another revision that it was
   posted long after (#862). When the patch and the cover each name a version
   (`v2`, `v3`), the versions differ and the patch is more than an hour newer,
