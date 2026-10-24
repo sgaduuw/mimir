@@ -2,10 +2,13 @@
 
 Uses stdlib ElementTree, no extra dep. Emits redacted authors via the
 same allowlist gate the HTML side uses so private email addresses
-don't leak via feed readers: `<author><name>` is always the display
-name, and `<author><email>` is added only for senders whose address
-is already visible on the rendered HTML page (see CONTEXT.md
-"Redaction is a display-time decision"). The `<id>` tag URI uses the
+don't leak via feed readers: `<author><name>` is the display name, and
+`<author><email>` is added only for senders whose address is already
+visible on the rendered HTML page (see CONTEXT.md "Redaction is a
+display-time decision"). Without a display name an allowlisted sender
+is named by its address; any other sender gets no entry `<author>`,
+and the feed-level `<author>` (the site name) stands in, as RFC 4287
+requires an author on every entry or on the feed. The `<id>` tag URI uses the
 canonical inbox name so cross-posted entries collapse to a single id
 across feeds (readers that key on `<id>` won't show duplicates).
 
@@ -14,10 +17,12 @@ avoid an import-time cycle.
 """
 
 from datetime import UTC, datetime
+from email.utils import parseaddr
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from flask import Response
 
+from mimir.config import settings
 from mimir.dashboard import ArticleSummary
 
 # Tag-URI host portion (RFC 4151). Constant rather than the request
@@ -49,7 +54,7 @@ def atom_response(
     as one entry, not two)."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
-    from mimir.web.filters import _allowlisted_email, _display_name_filter
+    from mimir.web.filters import _allowlisted_email
     from mimir.web.urls import _msg_url
 
     feed_updated = max(
@@ -60,6 +65,8 @@ def atom_response(
     feed = Element("feed", xmlns="http://www.w3.org/2005/Atom")
     SubElement(feed, "id").text = feed_id
     SubElement(feed, "title").text = feed_title
+    # RFC 4287: an entry without its own <author> inherits this one.
+    SubElement(SubElement(feed, "author"), "name").text = settings.site_name
     SubElement(feed, "updated").text = feed_updated.strftime("%Y-%m-%dT%H:%M:%SZ")
     SubElement(feed, "link", rel="self", type="application/atom+xml", href=self_url)
     SubElement(feed, "link", rel="alternate", type="text/html", href=alternate_url)
@@ -86,17 +93,19 @@ def atom_response(
             type="text/html",
             href=msg_base + _msg_url(a, canonical_inbox_name),
         )
-        if a.author:
+        # Same rule as JSON-LD `_person`: display name, else the
+        # allowlisted address, else no <author> (never an invented
+        # name, never a hidden address). Local rather than shared: the
+        # JSON-LD side also needs `display` and `email` separately.
+        display = parseaddr(a.author or "")[0].strip()
+        author_email = _allowlisted_email(a.author)
+        if display or author_email:
             author_el = SubElement(entry, "author")
-            # `<name>` is always display-name only; the `<hidden>`
-            # placeholder reads as broken metadata in feed readers
-            # exactly as it did in JSON-LD before the 2026-05-12 fix.
-            SubElement(author_el, "name").text = _display_name_filter(a.author)
+            SubElement(author_el, "name").text = display or author_email
             # `<email>` rides along only for allowlisted senders,
             # whose address is already on the rendered HTML page and
             # in the public git blob. Same gate as `_safe_from_filter`
             # on the visible side.
-            author_email = _allowlisted_email(a.author)
             if author_email:
                 SubElement(author_el, "email").text = author_email
 
