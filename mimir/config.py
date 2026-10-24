@@ -233,7 +233,9 @@ class Settings(BaseSettings):
     # Inboxes that should appear first on the meta-index `/`, in this
     # order, regardless of alphabetical order. The rest follow
     # alphabetically. `warm-cache` refreshes them first in the same
-    # order (#763), so pinning also sets warm priority. Override via
+    # order (#763), so pinning also sets warm priority, and `ingest` /
+    # `update` walk them first too (#766), which also gives a pinned
+    # inbox first claim on a contested list address. Override via
     # PINNED_INBOXES as a JSON array. Default pins lkml since this
     # archive treats it as the focal list; set to empty to fall back to
     # pure alphabetical.
