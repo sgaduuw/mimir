@@ -175,8 +175,9 @@ def test_patch_state_for_non_patch_returns_empty(seeded_db):
 @pytest.mark.parametrize(
     ("subject", "position", "expected"),
     [
-        # #838: ingest and the reprocess clear the position of a reply
-        # that repeats a patch or cover subject, so NULL means reply.
+        # #838: ingest and the reprocess clear position and key on a reply
+        # that repeats a patch or cover subject, so NULL position and key
+        # (the seeded key is NULL) means reply.
         ("[PATCH 1/3] foo: bar", None, False),
         ("[PATCH 0/3] foo series", None, False),
         ("[PATCH 1/3] foo: bar", 1, True),
