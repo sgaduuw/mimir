@@ -851,7 +851,17 @@ def test_a_sender_whose_name_is_an_address_gets_the_commit_author(
         mw = merge_window(s)
     assert len(_authors(mw)) == 1
     assert _shown(mw) == ["Jane Doe"]
-    assert "s@private.example" not in "".join(_shown(mw))
+
+
+def test_a_list_rewrite_name_gets_the_commit_author(seeded_db, tmp_path, monkeypatch):
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    with seeded_db() as s:
+        _article(s, "list@x").author = '"a@x.org via list" <list@y.org>'
+        _commit(s, "list@x", "linux-next", sha=shas["p"])
+        s.commit()
+        mw = merge_window(s)
+    assert len(_authors(mw)) == 1
+    assert _shown(mw) == ["Jane Doe"]
 
 
 def test_a_sender_with_a_usable_name_keeps_it(seeded_db, tmp_path, monkeypatch):
