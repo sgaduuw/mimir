@@ -32,7 +32,11 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.rendering import render_body
-from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.subsystems import (
+    is_addressable_subsystem_name,
+    subsystem_index_path,
+    subsystem_path,
+)
 from mimir.trailers import REVIEW_TRAILER_ROLES
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import (
@@ -478,6 +482,13 @@ def _subsystem_url_filter(name: str, inbox_name: str) -> str:
     """Site-relative URL for a subsystem dashboard. See
     `mimir.subsystems.subsystem_path` for why this is shared."""
     return subsystem_path(inbox_name, name)
+
+
+@bp_web.app_template_filter("subsystem_index_url")
+def _subsystem_index_url_filter(inbox_name: str) -> str:
+    """Site-relative URL for an inbox's subsystem index. See
+    `mimir.subsystems.subsystem_index_path`."""
+    return subsystem_index_path(inbox_name)
 
 
 @bp_web.app_template_filter("is_addressable_subsystem")

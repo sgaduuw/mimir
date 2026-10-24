@@ -43,6 +43,9 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 {% if synthesis %}
 <p><small>{{ synthesis }}</small></p>
 {% endif %}
+{# The root's revisions, with its links to the series diffs (#846):
+   message pages canonicalise here, so this is the copy crawlers see. #}
+{% include "_revisions_fold.html" %}
 <p>
   <small>
     {{ total_count }} message{{ '' if total_count == 1 else 's' }},

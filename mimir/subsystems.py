@@ -109,6 +109,13 @@ def subsystem_path(inbox_name: str, name: str) -> str:
     return f"/{inbox_name}/subsystem/{quote(name.lower())}/"
 
 
+def subsystem_index_path(inbox_name: str) -> str:
+    """Site-relative URL for an inbox's subsystem index. Shared by the
+    page's canonical, its sitemap entry and the links to it, for the
+    same reason as `subsystem_path`."""
+    return f"/{inbox_name}/subsystem/"
+
+
 # Snapshot cache for the full subsystems rule set. The pull is
 # expensive on a kernel-scale tree (~10k SubsystemPath rows + ~5k
 # cascaded SubsystemMaintainer rows) and the result only changes
