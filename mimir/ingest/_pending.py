@@ -578,12 +578,19 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
     )
 
 
-def _promote_list_address(conn, inbox_id: int) -> None:
+def _promote_list_address(
+    conn, inbox_id: int, tally: dict[str, int] | None = None
+) -> str | None:
     """Promote an inbox's `list_address` from NULL to the modal address
     in its observations tally, if that address clears the count +
     dominance thresholds (MIN_PROMOTE_OBSERVATIONS / PROMOTE_DOMINANCE)
     and no other inbox holds it. Shared by the per-inbox WriteOp below
     and the backfill sweep, so both writers apply the same guards.
+    Returns the address it promoted, or None.
+
+    `tally` replaces the stored observations with an in-memory count,
+    for the sample taken before an inbox's first walk (#855). It is not
+    stored, so the walk does not count the sampled messages twice.
 
     A set `list_address` is never touched, so a value an operator
     wrote stays authoritative. An address another inbox holds is never
@@ -599,27 +606,30 @@ def _promote_list_address(conn, inbox_id: int) -> None:
         select(Inbox.list_address).where(Inbox.id == inbox_id)
     ).scalar_one_or_none()
     if list_address is not None:
-        return
+        return None
 
-    rows = conn.execute(
-        select(
-            InboxAddressObservation.address,
-            InboxAddressObservation.count,
-        )
-        .where(InboxAddressObservation.inbox_id == inbox_id)
-        .order_by(InboxAddressObservation.count.desc())
-        .limit(2)
-    ).all()
+    if tally is not None:
+        rows = sorted(tally.items(), key=lambda kv: kv[1], reverse=True)[:2]
+    else:
+        rows = conn.execute(
+            select(
+                InboxAddressObservation.address,
+                InboxAddressObservation.count,
+            )
+            .where(InboxAddressObservation.inbox_id == inbox_id)
+            .order_by(InboxAddressObservation.count.desc())
+            .limit(2)
+        ).all()
     if not rows:
-        return
+        return None
 
     top_addr, top_count = rows[0]
     if top_count < MIN_PROMOTE_OBSERVATIONS:
-        return
+        return None
 
     second_count = rows[1][1] if len(rows) > 1 else 0
     if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
-        return
+        return None
 
     # ponytail: first inbox to promote an address keeps it. Ingest
     # walks pinned inboxes first (#766), then the rest alphabetically,
@@ -639,24 +649,28 @@ def _promote_list_address(conn, inbox_id: int) -> None:
             top_addr,
             holder,
         )
-        return
+        return None
 
     conn.execute(
         update(Inbox).where(Inbox.id == inbox_id).values(list_address=top_addr)
     )
+    return top_addr
 
 
-def _submit_promote_list_address(writer, inbox_id: int) -> WriteFuture:
+def _submit_promote_list_address(
+    writer, inbox_id: int, tally: dict[str, int] | None = None
+) -> WriteFuture:
     """Phase 3b of the two-pool restructure: run `_promote_list_address`
     for one inbox as a WriteOp.
 
     Returns the WriteFuture so callers can await .result() before the
-    next operation. Sub-ms execution time in practice.
+    next operation; its result is the promoted address or None.
+    Sub-ms execution time in practice.
     """
     return writer.submit(
         WriteOp(
             label=f"promote_list_address:{inbox_id}",
-            fn=lambda conn: _promote_list_address(conn, inbox_id),
+            fn=lambda conn: _promote_list_address(conn, inbox_id, tally),
         )
     )
 
