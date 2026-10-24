@@ -1039,9 +1039,13 @@ order).
   clearing a reply-cover (#820) writes key NULL, and the key it left
   has to lose the split that cover caused. A row whose key, version,
   position and subject do not change sends nothing, so its key is not
-  re-chained, except a row of a cover typo (#870), whose stored version
-  is the posting's and so differs from its subject's on every run. On
-  production (2026-10-24, read-only) a `--reprocess`
+  re-chained. The exception is a row of a cover typo (#870): its stored
+  version is the posting's, so it differs from its subject's on every
+  `--reprocess`, which rewrites it with the subject's version, and the
+  batch's re-chain restores the posting's in the same transaction. That
+  is about 2,853 rows per reprocess (production, 2026-10-24); a plain run
+  skips them as fully resolved. Before #870, on production (2026-10-24,
+  read-only) a `--reprocess`
   changes 32,603 rows on 15,974 keys: 19,302 re-chains across the
   batches (8 per batch at p50, 66 at most), about 25 s of writer time.
   Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
