@@ -7,6 +7,8 @@ replay and `backfill-patch-series` store each subject's own, and the
 one, the same way `backfill-series-chains` does.
 """
 
+from datetime import UTC, datetime
+
 import pytest
 from sqlalchemy import select, update
 
@@ -39,6 +41,9 @@ from tests.test_ingest.test_series_rechain import T2026, _arrive, _heads
         ("[RFC PATCH v2 0/2] t", ["[PATCH v3 1/2] a", "[PATCH v3 2/2] b"], "v2", "v3"),
         ("not a cover", ["[PATCH v3 1/2] a", "[PATCH v3 2/2] b"], "v2", "v2"),
         ("[PATCH v2 0/2] t", [], "v2", "v2"),
+        # The base is the parsed cover, not the stored v3 written earlier:
+        # what flips a posting back when a deviating patch arrives.
+        ("[PATCH v2 0/3] t", ["[PATCH v3 1/3] a", "[PATCH 3/3] c"], "v3", "v2"),
     ],
     ids=[
         "all_above",
@@ -50,17 +55,11 @@ from tests.test_ingest.test_series_rechain import T2026, _arrive, _heads
         "rfc_cover",
         "unparseable_cover",
         "no_children",
+        "stored_is_not_base",
     ],
 )
 def test_posting_version(cover, patches, stored, expected):
     assert posting_version(cover, patches, stored) == expected
-
-
-def test_the_base_is_the_parsed_cover_not_the_stored_version():
-    """What flips a posting back when a deviating child arrives: the
-    stored v3 written earlier is not the base."""
-    patches = ["[PATCH v3 1/3] a", "[PATCH 3/3] c"]
-    assert posting_version("[PATCH v2 0/3] t", patches, "v3") == "v2"
 
 
 # --- Ingest, the backfills and the re-chain ----------------------------------
@@ -82,6 +81,21 @@ def _typo_posting(seeded_db, tmp_path):
     """A v2 cover, then its v3 patches a minute later in another epoch."""
     _arrive(seeded_db, tmp_path, "0.git", T2026, [_cover()])
     _arrive(seeded_db, tmp_path, "1.git", T2026 + 60, [_patch(1), _patch(2)])
+
+
+def _snapshot(seeded_db, ids=None):
+    """(message id, key, version, position, head) of every row, or of `ids`."""
+    query = select(
+        Article.message_id,
+        Article.patch_series_key,
+        Article.patch_series_version,
+        Article.patch_series_position,
+        Article.patch_series_head_id,
+    ).order_by(Article.message_id)
+    if ids is not None:
+        query = query.where(Article.message_id.in_(ids))
+    with seeded_db() as s:
+        return s.execute(query).all()
 
 
 def _versions(seeded_db, *ids):
@@ -149,27 +163,13 @@ def test_a_chain_reply_patch_takes_the_resolved_version(
 
 
 def test_ingest_and_both_backfills_agree(seeded_db, tmp_path, broker_active):
-    def snapshot():
-        with seeded_db() as s:
-            return s.execute(
-                select(
-                    Article.message_id,
-                    Article.patch_series_key,
-                    Article.patch_series_version,
-                    Article.patch_series_position,
-                    Article.patch_series_head_id,
-                )
-                .where(Article.message_id.in_(IDS))
-                .order_by(Article.message_id)
-            ).all()
-
     _typo_posting(seeded_db, tmp_path)
-    before = snapshot()
+    before = _snapshot(seeded_db, IDS)
     assert {row[2] for row in before} == {"v3"}  # precondition
 
     backfill_patch_series(reprocess=True)
     assert _planned() == (0, 0)
-    assert snapshot() == before
+    assert _snapshot(seeded_db, IDS) == before
 
 
 # --- Rows stored before the fix ------------------------------------------------
@@ -207,8 +207,6 @@ def _seed_split_key(seeded_db, new_patch_version):
     patches of `new_patch_version` with reworded titles, written as the
     re-chain before the fix left them: every row v1, the new posting
     split off under its own head."""
-    from datetime import UTC, datetime
-
     old, new = datetime(2024, 1, 1, tzinfo=UTC), datetime(2024, 2, 1, tzinfo=UTC)
     with seeded_db() as s:
         _row(
@@ -299,8 +297,6 @@ def test_patches_of_the_cover_s_version_keep_the_split(seeded_db, broker_active)
 def test_a_key_of_one_cover_with_a_typo_is_written(seeded_db, broker_active):
     """A key of one cover has no heads to change, so before this the
     chain pass skipped it."""
-    from datetime import UTC, datetime
-
     when = datetime(2024, 1, 1, tzinfo=UTC)
     key = series_key("solo title", AUTHOR)
     with seeded_db() as s:
@@ -333,18 +329,6 @@ def test_rows_stored_before_the_fix_converge(seeded_db, tmp_path, broker_active)
     From Granny's review of #870."""
     day = 86400
 
-    def snapshot():
-        with seeded_db() as s:
-            return s.execute(
-                select(
-                    Article.message_id,
-                    Article.patch_series_key,
-                    Article.patch_series_version,
-                    Article.patch_series_position,
-                    Article.patch_series_head_id,
-                ).order_by(Article.message_id)
-            ).all()
-
     # An old v1 posting, a month later a v1 cover over chain-reply v2
     # patches, then a real v3, all under "generic title".
     _arrive(seeded_db, tmp_path, "0.git", T2026, _chain("old", "v1", ["a", "b"]))
@@ -361,7 +345,7 @@ def test_rows_stored_before_the_fix_converge(seeded_db, tmp_path, broker_active)
         _msg("so-p2@x", "[PATCH v5 2/2] y", "so@x"),
     ]
     _arrive(seeded_db, tmp_path, "3.git", T2026 + 61 * day, solo)
-    fixed = snapshot()
+    fixed = _snapshot(seeded_db)
     version = {row[0]: row[2] for row in fixed}
     assert {version[m] for m in ("ty@x", "ty-p1@x", "ty-p3@x")} == {"v2"}
     assert {version[m] for m in ("so@x", "so-p2@x")} == {"v5"}
@@ -380,8 +364,8 @@ def test_rows_stored_before_the_fix_converge(seeded_db, tmp_path, broker_active)
     _heads_planned, versions = _planned()
     assert versions == 7  # ty and its three patches, so and its two
     assert _planned() == (0, 0)
-    assert snapshot() == fixed
+    assert _snapshot(seeded_db) == fixed
 
     backfill_patch_series(reprocess=True)
     assert _planned() == (0, 0)
-    assert snapshot() == fixed
+    assert _snapshot(seeded_db) == fixed

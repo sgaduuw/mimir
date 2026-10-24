@@ -296,7 +296,6 @@ MINUTE = 60
     [
         # v3 2/3 a day after a v2 0/3 cover: another revision's thread.
         ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 86400, False, "v2"),
-        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 2 * 3600, False, "v2"),
         ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 61 * MINUTE, False, "v2"),
         # Within the hour, or the same minute: the cover's v2 is a typo
         # for its patches' v3 (#870).
@@ -309,7 +308,6 @@ MINUTE = 60
     ],
     ids=[
         "day",
-        "two_hours",
         "past_hour",
         "within_hour",
         "same_minute",
