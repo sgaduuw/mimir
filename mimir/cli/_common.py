@@ -13,7 +13,7 @@ import sys
 
 import click
 
-from mimir.inboxes import list_inboxes
+from mimir.inboxes import list_inboxes, pinned_first
 from mimir.models import Inbox
 
 # Public-inbox epoch directory names are always `<N>.git` for
@@ -89,7 +89,10 @@ def _select_inboxes(only: str | None) -> dict[str, Inbox]:
     write a readonly database` and the whole `update`/`ingest` tick
     aborts before any inbox gets fetched.
     """
-    inboxes = {inbox.name: inbox for inbox in list_inboxes()}
+    # Pinned first: ingest, and the warm right after each inbox, walk
+    # this order (#766). It also decides who wins a contested
+    # `list_address` on a from-scratch ingest, see `_promote_list_address`.
+    inboxes = {inbox.name: inbox for inbox in pinned_first(list_inboxes())}
     if only is None:
         return inboxes
     if only not in inboxes:
