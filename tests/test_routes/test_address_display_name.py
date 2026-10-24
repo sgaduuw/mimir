@@ -105,3 +105,13 @@ def test_allowlisted_sender_comment_does_not_print_foreign_address(
     )
     assert "ok@open.example" in html
     assert "s@private.example" not in html
+
+
+def test_display_name_check_is_linear():
+    import time
+
+    from mimir.web.filters import _EMAIL_TOKEN_RE
+
+    t = time.perf_counter()
+    _EMAIL_TOKEN_RE.findall("a" * 40_000)
+    assert time.perf_counter() - t < 0.2

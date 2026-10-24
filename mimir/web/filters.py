@@ -322,7 +322,8 @@ def _display_name_filter(author: str | None) -> str:
     return _usable_display_name(author) or "unknown sender"
 
 
-_EMAIL_TOKEN_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
+# Bounded runs keep the scan linear on a hostile, very long name.
+_EMAIL_TOKEN_RE = re.compile(r"[^\s@<>()\[\],;:\"]{1,64}@[^\s@<>()\[\],;:\"]{1,255}")
 
 
 def _usable_display_name(author: str | None) -> str | None:
