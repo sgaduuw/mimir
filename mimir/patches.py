@@ -98,6 +98,19 @@ def extract_touched_paths(body: str | None) -> set[str]:
     return out
 
 
+def has_article_files(session, article_id: int) -> bool:
+    """Whether `article_files` holds a row for the article: one seek on
+    the primary key, without pulling the rows."""
+    return (
+        session.execute(
+            select(ArticleFile.article_id)
+            .where(ArticleFile.article_id == article_id)
+            .limit(1)
+        ).first()
+        is not None
+    )
+
+
 class BackfillResult(BackfillCounters):
     """Outcome counters for `backfill_article_files`. Every article
     examined lands in exactly one bucket. `skipped` covers articles
@@ -158,17 +171,7 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
     `_ArticleFilesPending` or None for buckets that produce no writes."""
     from mimir._pending_backfill import _ArticleFilesPending
 
-    # Existing-rows check. `article.files` would also work but
-    # selectinload didn't preload it; a COUNT is cheap and avoids
-    # pulling the rows.
-    has_rows = (
-        session.execute(
-            select(ArticleFile.article_id)
-            .where(ArticleFile.article_id == article.id)
-            .limit(1)
-        ).first()
-        is not None
-    )
+    has_rows = has_article_files(session, article.id)
     if has_rows and not reprocess:
         return "skipped", None
 

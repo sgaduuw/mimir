@@ -27,9 +27,10 @@ from sqlalchemy import and_, literal_column, select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
-from mimir.models import Article, ArticleFile
+from mimir.models import Article
 from mimir.parser import unfold
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
+from mimir.patches import has_article_files
 
 logger = logging.getLogger(__name__)
 
@@ -375,14 +376,7 @@ def _reply_to_patch_in_db(session, article, subject) -> bool:
     parent = _parent(session, article.thread_parent)
     if parent is None:
         return False
-    touches_files = (
-        session.execute(
-            select(ArticleFile.article_id)
-            .where(ArticleFile.article_id == article.id)
-            .limit(1)
-        ).first()
-        is not None
-    )
+    touches_files = has_article_files(session, article.id)
     return reply_to_patch(
         subject, article.author, parent.subject, parent.author, touches_files
     )
