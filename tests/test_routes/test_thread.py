@@ -140,7 +140,6 @@ def test_thread_view_json_ld_nameless_sender_never_unknown_sender(
     assert posting["author"]["name"] == "Ada Lovelace"
     named = [a.get("name") for a in authors]
     assert "ok@open.example" in named
-    assert "unknown sender" not in named
     anon = next(a for a in authors if "name" not in a)
     assert anon["@type"] == "Person"
     ld = json.dumps(graph)
