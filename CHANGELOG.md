@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+After deploying, run `backfill-patch-series --reprocess` once (#837). It
+walks the whole archive, writes only the rows it changes, and clears about
+168k replies on a full archive (counted on production, 2026-10-24). A plain
+run is not enough: it skips every row that already has a key before the rule
+runs, and a reply ingested since the last reprocess has one. Do not run it
+alongside another long backfill. The rule reads `article_files`, so
+`backfill-article-files` must be complete first.
+
 ### Changed
 
 - `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
@@ -27,6 +35,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A reply that repeats a patch's subject without "Re:" is no longer stored as
+  a patch of the series (#837). It is a reply when it answers a patch with the
+  same position, patch count, title and version from another sender, both or
+  neither a RESEND, and carries no diff. About 99% of the rows this matches
+  are replies (production, 2026-10-24); a re-post whose patch is an
+  attachment is cleared too, and a reply that carries a diff stays a patch.
+  The backfill counts them as `reply_patch`. A reply that arrives before its
+  patch, or through replay, keeps its position until the next
+  `backfill-patch-series`.
 - Googlebot and bingbot now have their own crawler budget share, 80% of the
   global budget, instead of the 10% default plus a draw on the shared pool of
   unlisted crawlers (#848). Split over many workers, the default share refilled
@@ -37,6 +54,11 @@ changes, not internal refactors. Categories: **Added**,
 - JSON-LD no longer names a sender without a display name "unknown sender"
   (#845). An allowlisted sender is named by its address; any other gets a
   `Person` with no `name`, so no address is exposed and `author` stays present.
+- Atom feeds no longer name a sender without a display name "unknown sender"
+  (#850). An allowlisted sender is named by its address; any other gets no entry
+  `<author>`, so no address is exposed. Every feed now carries a feed-level
+  `<author>` with the site name, which entries without their own author inherit,
+  as RFC 4287 requires.
 
 ## [3.26.0] - 2026-10-24
 
