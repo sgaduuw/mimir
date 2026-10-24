@@ -223,7 +223,7 @@ class Settings(BaseSettings):
     # else's email gets hidden (display name kept). Case-insensitive, matched
     # against the address by structure, not as a substring: "@kernel.org"
     # (or bare "kernel.org") is exactly that domain, no subdomains,
-    # "torvalds@" is that local part at any domain, "a@kernel.org" is
+    # "torvalds@" is that local part at any domain (spoofable), "a@kernel.org" is
     # that exact address. Defaults cover the kernel.org domain and the
     # historical addresses of two maintainers; current ones come from
     # MAINTAINERS. Override via env as a JSON array (EMAIL_ALLOWLIST).
