@@ -274,18 +274,19 @@ def _to_article_insert(
         series_position = in_series.position
         # The cover, up through any patch this one answers (#840). No head:
         # the batch's re-chain writes it in the same transaction (#816).
-        if parent is not None:
-            link = in_series_link(
-                parsed.subject,
-                thread_parent,
-                lambda mid: (
-                    parent
-                    if mid == thread_parent
-                    else _thread_parent(session, mid, pending_articles)
-                ),
-            )
-            if link is not None:
-                series_key_val, series_version = link
+        # The first hop reuses `parent`; when that is None (replay, no
+        # parent, or one not stored yet) the walk stops before any lookup.
+        link = in_series_link(
+            parsed.subject,
+            thread_parent,
+            lambda mid: (
+                parent
+                if mid == thread_parent
+                else _thread_parent(session, mid, pending_articles)
+            ),
+        )
+        if link is not None:
+            series_key_val, series_version = link
 
     return _ArticleInsert(
         message_id=parsed.message_id,

@@ -353,7 +353,7 @@ def reply_to_patch(
 PATCH_WALK_HOPS = 128
 
 
-def cover_of_patch(thread_parent, parent_of, posting, *, max_hops=PATCH_WALK_HOPS):
+def cover_of_patch(thread_parent, parent_of, posting):
     """The cover an in-series patch answers, or None. `posting` is the
     patch's `_posting`, `parent_of(message_id)` a row with `message_id`,
     `subject`, `author` and `thread_parent`, or None.
@@ -366,7 +366,7 @@ def cover_of_patch(thread_parent, parent_of, posting, *, max_hops=PATCH_WALK_HOP
     own, as it always was. Reads subjects, never stored series columns,
     so the answer does not depend on which rows were linked first."""
     seen = set()
-    for _ in range(max_hops):
+    for _ in range(PATCH_WALK_HOPS):
         if thread_parent is None or thread_parent in seen:
             return None
         seen.add(thread_parent)
