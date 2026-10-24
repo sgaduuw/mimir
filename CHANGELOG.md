@@ -20,6 +20,9 @@ changes, not internal refactors. Categories: **Added**,
   "Googlebot" User-Agent gets the same allowance at the origin unless the CDN in
   front verifies bots; lower or drop it with `CRAWLER_UA_BUDGETS` (`0` drops a
   default).
+- JSON-LD no longer names a sender without a display name "unknown sender"
+  (#845). An allowlisted sender is named by its address; any other gets a
+  `Person` with no `name`, so no address is exposed and `author` stays present.
 
 ## [3.26.0] - 2026-10-24
 
