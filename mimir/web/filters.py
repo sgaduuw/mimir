@@ -283,13 +283,18 @@ def _safe_from_filter(author: str | None) -> str:
     the archive UI."""
     if not author:
         return ""
-    name, addr = parseaddr(author)
+    _, addr = parseaddr(author)
     if not addr:
-        return author  # unparseable; show as-is
-    if _is_allowlisted(addr):
+        # Unparseable: as-is unless it holds an address we would hide.
+        if any(not _is_allowlisted(t) for t in _EMAIL_TOKEN_RE.findall(author)):
+            return "<hidden>"
         return author
-    if name:
-        return f"{name} <hidden>"
+    usable = _usable_display_name(author)
+    if _is_allowlisted(addr):
+        # Rebuilt, never `author`: a trailing "(comment)" can hold an address.
+        return f"{usable} <{addr}>" if usable else addr
+    if usable:
+        return f"{usable} <hidden>"
     return "<hidden>"
 
 
@@ -318,10 +323,26 @@ def _display_name_filter(author: str | None) -> str:
     trailing punctuation hole."""
     if not author:
         return "unknown sender"
-    name, _ = parseaddr(author)
-    if name:
-        return name
-    return "unknown sender"
+    return _usable_display_name(author) or "unknown sender"
+
+
+# Bounded runs keep the scan linear on a hostile, very long name.
+_EMAIL_TOKEN_RE = re.compile(r"[^\s@<>()\[\],;:\"]{1,64}@[^\s@<>()\[\],;:\"]{1,255}")
+
+
+def _usable_display_name(author: str | None) -> str | None:
+    """The From display name, or None when it is empty or holds an
+    email-shaped token that is not allowlisted (#852). `"a@x.org"
+    <a@x.org>` and a list rewrite like `"a@x.org via list" <list@y.org>`
+    would otherwise print the address through the name. Errs towards
+    hiding: a false positive drops a name, a false negative leaks an
+    address. "John @ Company" is not email-shaped and stays."""
+    name = parseaddr(author or "")[0].strip()
+    if not name:
+        return None
+    if any(not _is_allowlisted(m) for m in _EMAIL_TOKEN_RE.findall(name)):
+        return None
+    return name
 
 
 def _allowlisted_email(author: str | None) -> str | None:

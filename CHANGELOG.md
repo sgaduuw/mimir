@@ -95,6 +95,13 @@ once.
   `<author>` with the site name, which entries without their own author inherit,
   as RFC 4287 requires.
 
+### Security
+
+- A sender whose display name is an address no longer exposes it (#852). A
+  non-allowlisted address in the name, its own or another (`"a@x.org via list"`),
+  now counts as no display name on the page, in JSON-LD and in Atom, and in
+  meta descriptions. An allowlisted sender stays named by its address.
+
 ## [3.26.0] - 2026-10-24
 
 No migration. After deploying, run `backfill-patch-series --reprocess` once
