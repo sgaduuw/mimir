@@ -1,11 +1,13 @@
 """Tests for mimir/web/routes/thread.py: the whole-thread view, plus
 the message page's canonical consolidation onto it."""
 
+import json
 import re
 from datetime import UTC
 
 import pytest
 
+from mimir.config import settings
 from mimir.models import Article
 from tests.test_routes._helpers import (
     _clear_sitemap_cache,
@@ -100,6 +102,49 @@ def test_thread_view_json_ld_nests_replies_under_their_parent(client, tmp_path):
     assert not any(c["@id"].endswith(nested_url) for c in top), (
         "a reply-to-a-reply is still claimed as a reply to the root"
     )
+
+
+def _comment_authors(comments):
+    """Every Comment author in a (nested) JSON-LD comment tree."""
+    for c in comments:
+        yield c["author"]
+        yield from _comment_authors(c.get("comment", []))
+
+
+def test_thread_view_json_ld_nameless_sender_never_unknown_sender(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    """A From: with no display name must not become the Person.name
+    "unknown sender" (#845). Allowlisted: the address is the name (it
+    is already public on the page). Not allowlisted: `author` stays
+    (Google requires it) with no `name`, and the address appears
+    nowhere in the JSON-LD."""
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    seeded = _seed_three_message_thread(
+        tmp_path,
+        "alpha",
+        authors=(
+            "Ada Lovelace <ada@hidden.example>",
+            "ok@open.example",
+            "secret@hidden.example",
+        ),
+    )
+    html = client.get(seeded["root"][1] + "/t").data.decode()
+    graph = _json_ld_blocks(html)[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    authors = list(_comment_authors(posting["comment"]))
+    # Precondition: both replies are really in the (nested) comment tree.
+    assert len(authors) == 2
+    assert posting["author"]["name"] == "Ada Lovelace"
+    named = [a.get("name") for a in authors]
+    assert "ok@open.example" in named
+    anon = next(a for a in authors if "name" not in a)
+    assert anon["@type"] == "Person"
+    ld = json.dumps(graph)
+    assert "unknown sender" not in ld
+    assert "secret@hidden.example" not in ld
 
 
 def test_message_pages_canonicalise_to_the_thread_view(client, tmp_path):
