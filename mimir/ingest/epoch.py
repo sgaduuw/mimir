@@ -48,6 +48,7 @@ from mimir.models import (
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
+    in_series_link,
     parse_cover_letter,
     reply_to_cover,
     reply_to_patch,
@@ -185,19 +186,18 @@ def _parse_iter(
 
 
 def _thread_parent(session: Session, message_id: str, pending_articles: list | None):
-    """The parent article's subject, author and series columns: from the
-    current batch first, which is not committed yet, else one select on
-    the indexed message id. None when neither holds it."""
+    """The parent article's message id, subject, author and own parent:
+    from the current batch first, which is not committed yet, else one
+    select on the indexed message id. None when neither holds it."""
     for art in pending_articles or ():
         if art.message_id == message_id:
             return art
     return session.execute(
         select(
+            Article.message_id,
             Article.subject,
             Article.author,
-            Article.patch_series_key,
-            Article.patch_series_version,
-            Article.patch_series_head_id,
+            Article.thread_parent,
         ).where(Article.message_id == message_id)
     ).one_or_none()
 
@@ -233,9 +233,6 @@ def _to_article_insert(
     series_key_val: str | None = None
     series_version: str | None = None
     series_position: int | None = None
-    # NULL for a new cover: the chain pass assigns heads (#816). A patch
-    # copies its cover's, so a split-off series keeps its patches.
-    series_head_id: int | None = None
     cover = parse_cover_letter(parsed.subject)
     in_series = parse_in_series_patch_subject(parsed.subject) if cover is None else None
     # Extract diff-touched paths and review-attestation trailers from
@@ -275,11 +272,20 @@ def _to_article_insert(
         )
     ):
         series_position = in_series.position
-        # Direct-reply linkage to the cover letter.
-        if parent is not None and parent.patch_series_key is not None:
-            series_key_val = parent.patch_series_key
-            series_version = parent.patch_series_version
-            series_head_id = parent.patch_series_head_id
+        # The cover, up through any patch this one answers (#840). No head:
+        # the batch's re-chain writes it in the same transaction (#816).
+        if parent is not None:
+            link = in_series_link(
+                parsed.subject,
+                thread_parent,
+                lambda mid: (
+                    parent
+                    if mid == thread_parent
+                    else _thread_parent(session, mid, pending_articles)
+                ),
+            )
+            if link is not None:
+                series_key_val, series_version = link
 
     return _ArticleInsert(
         message_id=parsed.message_id,
@@ -292,7 +298,6 @@ def _to_article_insert(
         patch_series_key=series_key_val,
         patch_series_version=series_version,
         patch_series_position=series_position,
-        patch_series_head_id=series_head_id,
         touched_paths=touched_paths,
         trailer_rows=trailer_rows,
     )

@@ -19,6 +19,12 @@ runs, and a reply ingested since the last reprocess has one. Do not run it
 alongside another long backfill. The rule reads `article_files`, so
 `backfill-article-files` must be complete first.
 
+The same reprocess also links the patches #840 now reaches; no second
+reprocess is needed. Then run `backfill-series-chains` once. It gives a
+chain-reply patch that the reprocess did not change its cover's head; on an
+archive with none it plans no heads. Pages of series whose heads move get new
+ETags, so caches refetch them once.
+
 ### Added
 
 - A sitemap of series diffs (#846): `/sitemap-series-diffs-0.xml` to
@@ -46,6 +52,16 @@ alongside another long backfill. The rule reads `article_files`, so
 
 ### Fixed
 
+- An in-series patch sent as a reply to the patch before it
+  (`git send-email --chain-reply-to`) is linked to its series the same way by
+  ingest, a plain `backfill-patch-series` run and `--reprocess` (#840). All
+  three walk up the thread through patches of the same total and version to
+  the cover. Before, `--reprocess` unlinked what ingest had linked, and a
+  plain run linked such a chain only one patch per run. On production
+  (2026-10-24) this links 55,925 rows and refuses 7,201 that answer another
+  version or total of their patch. The series chain pass now reads these
+  patches too: it gives them their cover's head and counts their titles when
+  telling two postings apart.
 - A reply that repeats a patch or cover subject without "Re:" no longer shows
   the patch state card on its message page (#838). The card now follows the
   stored series columns: a cover or numbered patch subject with no position and
