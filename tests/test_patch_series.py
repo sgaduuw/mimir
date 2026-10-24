@@ -3,6 +3,7 @@
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
+    _bracket_version,
     parse_cover_letter,
     posting_flags,
     reply_to_cover,
@@ -90,6 +91,35 @@ def test_a_dotted_version_in_a_branch_name_is_not_the_revision():
     ]:
         out = parse_cover_letter(subject)
         assert out is not None and out.version == version, (subject, out)
+
+
+def test_a_parenthesised_or_dotted_base_tree_tag_is_not_the_revision():
+    """`(v20.08)` and `v5.10` ahead of the real version tag a base tree;
+    the later plain `vN` wins (#870). A lone dotted `v4.1` still reads
+    as v4 (the shapes test below)."""
+    for subject, version in [
+        ("[PATCH (v20.08) v3 0/8] foo", "v3"),
+        ("[PATCH v5.10 v2 0/2] foo", "v2"),
+        ("[PATCH (v20.08) 0/8] foo", "v1"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+    patch = parse_in_series_patch_subject("[PATCH v5.10 v2 1/2] foo: bar")
+    assert patch is not None and patch.position == 1
+    assert _bracket_version("PATCH v5.10 v2 1/2") == "v2"
+
+
+def test_unchanged_version_shapes_stay_put():
+    """Regressions for #870: none of these may move."""
+    for bracket, version in [
+        ("PATCH v3 1/2", "v3"),
+        ("PATCHv3 1/2", "v3"),
+        ("RFC PATCH v2 1/2", "v2"),
+        ("PATCH v2.1 1/3", "v2"),
+        ("PATCH 6.12-rc1 v2 1/2", "v2"),
+        ("PATCH net-next v4 0/5", "v4"),
+    ]:
+        assert _bracket_version(bracket) == version, bracket
 
 
 def test_shapes_the_version_rule_must_keep():

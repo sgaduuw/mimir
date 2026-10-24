@@ -50,10 +50,13 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # version is implicit). A `v\d` glued to PATCH, PATCHES, PATCHSET, RFC
 # or RESEND (`[PATCHv2`, `[RFCv9`) also starts a marker, and RFC and
 # RESEND may end at it (#816, #819). A dotted version followed by `-`
-# (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision.
+# (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision, and
+# so does a parenthesised one (`(v20.08)`, #870). A dotted version
+# (`v5.10`) is the revision only when no plain `vN` follows it
+# (`_bracket_version`).
 _VERSION_RE = re.compile(
-    r"(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
-    r"(v\d+(?!(?:\.\d+)+-)|RFC|RESEND)(?:\b|(?=v\d))",
+    r"(?<!\()(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
+    r"(v\d+(?!(?:\.\d+)+[-)])|RFC|RESEND)(?:\b|(?=v\d))",
     re.IGNORECASE,
 )
 
@@ -229,11 +232,13 @@ def _bracket_version(inside: str) -> str:
     # because of `findall`'s ordering, but the precedence wasn't
     # explicit. `next()` with a v\d+ filter + a marker fallback +
     # the "v1" default makes the precedence read off the line.
-    versions = _VERSION_RE.findall(inside)
-    return next(
-        (v.lower() for v in versions if v.lower().startswith("v")),
-        versions[0].lower() if versions else "v1",
-    )
+    found = [
+        (m.group(1).lower(), inside[m.end() :]) for m in _VERSION_RE.finditer(inside)
+    ]
+    numbers = [(v, rest) for v, rest in found if v.startswith("v")]
+    # A plain `vN` beats a dotted one: `[PATCH v5.10 v2]` is v2 (#870).
+    plain = [v for v, rest in numbers if not rest.startswith(".")]
+    return next(iter(plain or [v for v, _ in numbers] or [v for v, _ in found]), "v1")
 
 
 def series_key(title: str, author: str | None) -> str:
