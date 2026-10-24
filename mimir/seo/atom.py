@@ -17,7 +17,6 @@ avoid an import-time cycle.
 """
 
 from datetime import UTC, datetime
-from email.utils import parseaddr
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from flask import Response
@@ -54,7 +53,7 @@ def atom_response(
     as one entry, not two)."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
-    from mimir.web.filters import _allowlisted_email
+    from mimir.web.filters import _allowlisted_email, _usable_display_name
     from mimir.web.urls import _msg_url
 
     feed_updated = max(
@@ -96,7 +95,7 @@ def atom_response(
         # Same rule as JSON-LD `_person`: display name, else the
         # allowlisted address, else no <author> (never an invented
         # name, never a hidden address).
-        display = parseaddr(a.author or "")[0].strip()
+        display = _usable_display_name(a.author)
         author_email = _allowlisted_email(a.author)
         if display or author_email:
             author_el = SubElement(entry, "author")

@@ -14,7 +14,6 @@ module load).
 """
 
 from collections.abc import Sequence
-from email.utils import parseaddr
 from urllib.parse import quote
 
 from mimir.config import settings
@@ -198,9 +197,9 @@ def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> d
     URL for every participant adds no signal. Only for senders with a
     display name, since the view is keyed by it.
     """
-    from mimir.web.filters import _allowlisted_email
+    from mimir.web.filters import _allowlisted_email, _usable_display_name
 
-    display = parseaddr(raw or "")[0].strip()
+    display = _usable_display_name(raw)
     email = _allowlisted_email(raw)
     person: dict = {"@type": "Person"}
     if display or email:
