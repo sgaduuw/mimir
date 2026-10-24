@@ -372,15 +372,17 @@ PATCH = "[PATCH v2 1/3] foo: add\tbar"
 def test_reply_to_patch_table():
     """Each row: (subject, its author, parent subject, parent author,
     touches files, expected). A reply repeats the parent patch's posting
-    (position, total, title, version, RESEND) from another address and
+    (position, total, title, version, RESEND) from any address and
     carries no diff; a diff makes it a re-post."""
     reply = "[PATCH v2 1/3] foo: add bar"
     rows = [
         (reply, "Bob <b@x>", PATCH, "Al <a@x>", False, True),
         # A diff: a re-post of the patch, measured on production.
         (reply, "Bob <b@x>", PATCH, "Al <a@x>", True, False),
-        # Same address, other display name: the sender's own re-post.
-        (reply, "Al W <A@x>", PATCH, "Al <a@x>", False, False),
+        # Same address, other display name: the author answering their own
+        # patch is a reply too (#860); with a diff it is a re-post.
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", False, True),
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", True, False),
         # Another position, total, version or title.
         ("[PATCH v2 2/3] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
         ("[PATCH v2 1/4] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),

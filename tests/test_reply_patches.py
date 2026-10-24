@@ -168,3 +168,73 @@ def test_the_diff_lookup_seeks_the_article_files_key(seeded_db):
         )
     assert "SEARCH article_files USING COVERING INDEX" in plan, plan
     assert "sqlite_autoindex_article_files_1 (article_id=?)" in plan, plan
+
+
+# Whoever sends it (#860): the author's own no-diff repeat is a reply.
+
+
+@pytest.mark.parametrize("batches", [1, 2])
+def test_ingest_and_reprocess_clear_a_same_sender_patch_reply(
+    seeded_db, broker_active, tmp_path, batches
+):
+    cover = _msg("c860@x", COVER)
+    patch = _with_body(_msg("p860@x", PATCH, in_reply_to="c860@x"), DIFF)
+    own = _msg("o860@x", REPLY, in_reply_to="p860@x")
+    # A reviewer answering the author's reply (parent is a cleared reply).
+    rev = _msg("v860@x", REPLY, sender="rev@b.example", in_reply_to="o860@x")
+    rev_again = _msg("w860@x", REPLY, sender="rev@b.example", in_reply_to="v860@x")
+    # Guard: the author re-posting the patch with its diff stays a patch.
+    repost = _with_body(_msg("rp860@x", REPLY, in_reply_to="p860@x"), DIFF)
+    # Guard: a cover from the cover's own sender stays a cover (#820).
+    cover_again = _msg("c2860@x", COVER, in_reply_to="c860@x")
+    msgs = [cover, patch, own, rev, rev_again, repost, cover_again]
+    if batches == 1:
+        _ingest(seeded_db, tmp_path, "0.git", msgs)
+    else:
+        _ingest(seeded_db, tmp_path, "0.git", msgs[:2])
+        _ingest(seeded_db, tmp_path, "1.git", msgs[2:])
+    ids = ("p860@x", "o860@x", "v860@x", "w860@x", "rp860@x", "c2860@x")
+
+    ingested = series_columns(seeded_db, *ids)
+    assert ingested["p860@x"] == (KEY, "v2", 1, None)
+    for cleared in ("o860@x", "v860@x", "w860@x"):
+        assert ingested[cleared] == (None, None, None, None), cleared
+    assert ingested["rp860@x"] == (KEY, "v2", 1, None)
+    assert ingested["c2860@x"][:3] == (KEY, "v2", 0)
+
+    backfill_patch_series(reprocess=True)
+
+    assert series_columns(seeded_db, *ids) == ingested
+
+
+def test_a_plain_run_and_reprocess_clear_a_stored_same_sender_reply(
+    seeded_db, broker_active
+):
+    """Stored as before the fix: position set, no key (plain run), or
+    the patch's key (reprocess)."""
+    author = "Al <a@x>"
+    key = series_key("improve foo handling", author)
+    _add(seeded_db, "c860@x", COVER, author, key=key, position=0)
+    patch = _add(
+        seeded_db, "p860@x", PATCH, author, parent="c860@x", key=key, position=1
+    )
+    _touch(seeded_db, patch)
+    _add(seeded_db, "o860@x", REPLY, author, parent="p860@x", position=1)
+    _add(seeded_db, "k860@x", REPLY, author, parent="p860@x", key=key, position=1)
+    repost = _add(
+        seeded_db, "rp860@x", REPLY, author, parent="p860@x", key=key, position=1
+    )
+    _touch(seeded_db, repost)
+
+    plain = backfill_patch_series()
+
+    assert plain.reply_patch == 1
+    assert series_columns(seeded_db, "o860@x")["o860@x"] == (None,) * 4
+    assert series_columns(seeded_db, "k860@x")["k860@x"][:3] == (key, "v2", 1)
+
+    result = backfill_patch_series(reprocess=True)
+
+    got = series_columns(seeded_db, "k860@x", "rp860@x")
+    assert got["k860@x"] == (None,) * 4
+    assert got["rp860@x"][:3] == (key, "v2", 1)
+    assert result.reply_patch == 2
