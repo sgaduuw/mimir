@@ -46,6 +46,7 @@ from mimir.patch_series import (
 )
 from mimir.patch_state import _resolve_tree_label
 from mimir.subsystems import ranked_subsystems
+from mimir.web.filters import _usable_display_name
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,7 @@ def _compute(session: Session) -> MergeWindow:
     nameless = {
         posting
         for posting in postings
-        if not parseaddr(representatives[posting][2] or "")[0]
+        if not _usable_display_name(representatives[posting][2])
     }
     votes = _commit_author_votes(
         session, [m.message_id for p in nameless for m in postings[p]]

@@ -840,6 +840,30 @@ def test_a_last_comma_first_commit_author_names_the_row(
     assert _shown(_bare_sender_page(seeded_db, shas["p"])) == ["Doe, Jane"]
 
 
+def test_a_sender_whose_name_is_an_address_gets_the_commit_author(
+    seeded_db, tmp_path, monkeypatch
+):
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    with seeded_db() as s:
+        _article(s, "addr@x").author = '"s@private.example" <s@private.example>'
+        _commit(s, "addr@x", "linux-next", sha=shas["p"])
+        s.commit()
+        mw = merge_window(s)
+    assert len(_authors(mw)) == 1
+    assert _shown(mw) == ["Jane Doe"]
+    assert "s@private.example" not in "".join(_shown(mw))
+
+
+def test_a_sender_with_a_usable_name_keeps_it(seeded_db, tmp_path, monkeypatch):
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    with seeded_db() as s:
+        _article(s, "named@x").author = "Sam Smith <s@private.example>"
+        _commit(s, "named@x", "linux-next", sha=shas["p"])
+        s.commit()
+        mw = merge_window(s)
+    assert _shown(mw) == ["Sam Smith"]
+
+
 def test_a_commit_author_name_that_is_an_address_is_not_shown(
     seeded_db, tmp_path, monkeypatch
 ):
