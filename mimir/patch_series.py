@@ -234,13 +234,20 @@ def _bracket_version(inside: str) -> str:
     # because of `findall`'s ordering, but the precedence wasn't
     # explicit. `next()` with a v\d+ filter + a marker fallback +
     # the "v1" default makes the precedence read off the line.
-    found = [
-        (m.group(1).lower(), inside[m.end() :]) for m in _VERSION_RE.finditer(inside)
+    markers = [m.group(1).lower() for m in _VERSION_RE.finditer(inside)]
+    return _plain_version(inside) or next(iter(markers), "v1")
+
+
+def _plain_version(inside: str) -> str | None:
+    """The `vN` of a patch bracket, None when it names none. A plain `vN`
+    beats a dotted one: `[PATCH v5.10 v2]` is v2 (#870)."""
+    numbers = [
+        (m.group(1).lower(), inside[m.end() :])
+        for m in _VERSION_RE.finditer(inside)
+        if m.group(1)[0] in "vV"
     ]
-    numbers = [(v, rest) for v, rest in found if v.startswith("v")]
-    # A plain `vN` beats a dotted one: `[PATCH v5.10 v2]` is v2 (#870).
     plain = [v for v, rest in numbers if not rest.startswith(".")]
-    return next(iter(plain or [v for v, _ in numbers] or [v for v, _ in found]), "v1")
+    return next(iter(plain or [v for v, _ in numbers]), None)
 
 
 def series_key(title: str, author: str | None) -> str:
@@ -378,8 +385,7 @@ def _explicit_version(subject: str | None) -> str | None:
     (`_bracket_version` reads that as v1, which a bare `[PATCH]` is not
     claiming)."""
     bracket = patch_bracket(unfold(subject or ""))
-    versions = _VERSION_RE.findall(bracket[0]) if bracket else ()
-    return next((v.lower() for v in versions if v[0] in "vV"), None)
+    return _plain_version(bracket[0]) if bracket else None
 
 
 def _answers_old_revision(subject, date, cover) -> bool:
