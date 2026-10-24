@@ -65,7 +65,7 @@
    MAINTAINERS-claimed path, and gating the link on it would orphan
    the index on exactly those, which is the defect this whole change
    set exists to close. The index page handles its own empty state. #}
-<p><small><a href="/{{ inbox_name }}/subsystem/">Browse active subsystems &rarr;</a></small></p>
+<p><small><a href="{{ inbox_name|subsystem_index_url }}">Browse active subsystems &rarr;</a></small></p>
 
 <div class="grid">
   {% if pulls %}

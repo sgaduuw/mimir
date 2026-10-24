@@ -769,7 +769,7 @@ def test_series_diff_labels_follow_a_version_rewritten_in_place(client, tmp_path
     key = _cross_list_series(tmp_path)
     first = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover")
     assert first.status_code == 200
-    assert "diff v1" in first.get_data(as_text=True)  # precondition: labelled v1
+    assert "v1→v2 diff" in first.get_data(as_text=True)  # precondition: labelled v1
     with SessionLocal() as s:
         v1 = s.execute(
             select(Article).where(Article.message_id == "v1-cv@x")
@@ -779,7 +779,33 @@ def test_series_diff_labels_follow_a_version_rewritten_in_place(client, tmp_path
     resp = client.get(f"/alpha/series/{key}/diff?from=v3&to=v2&pos=cover")
     assert resp.status_code == 200
     html = resp.get_data(as_text=True)
-    assert "diff v3" in html, "served the cached diff labelled with the old version"
+    assert "v3→v2 diff" in html, "served the cached diff labelled with the old version"
+
+
+def test_series_diff_title_and_description_name_the_series(client, tmp_path):
+    """#846: every diff page had the same generic title, so a sitemap of
+    them would publish ~195k duplicate titles. The series subject, without
+    its `[PATCH v2 0/3]` bracket, plus the versions, tells them apart."""
+    author = "Alice <a@example>"
+    key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[
+            ("c1@x", "[PATCH 0/2] improve foo handling", None, b"a\n", author)
+        ],
+        v2_messages=[
+            ("c2@x", "[PATCH v2 0/2] improve foo handling", None, b"b\n", author)
+        ],
+    )
+    out = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover").data.decode()
+    title = html_lib.unescape(re.search(r"<title>([^<]*)</title>", out).group(1))
+    desc = html_lib.unescape(
+        re.search(r'<meta name="description" content="([^"]*)"', out).group(1)
+    )
+    assert title.startswith("improve foo handling: v1→v2 diff (cover letter)"), title
+    assert "[PATCH" not in title
+    assert "improve foo handling" in desc
+    assert "v1" in desc and "v2" in desc
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------

@@ -1580,8 +1580,12 @@ afterthought:
   the meta-index). Cached 1h
   via `cache.get_or_compute`. The index is a single-level
   `<sitemapindex>` referencing urlsets only: `/meta-sitemap.xml`,
-  the per-inbox `/<inbox>/sitemap.xml`, and `/sitemap-maintainers.xml`
-  (one urlset of every `/maintainers/<address>` page). The
+  the per-inbox `/<inbox>/sitemap.xml`, `/sitemap-maintainers.xml`
+  (one urlset of every `/maintainers/<address>` page), and sixteen
+  `/sitemap-series-diffs-<h>.xml` (#846). Those list the cover-letter
+  diff between adjacent revisions only, paged by the key's first hex
+  character: 194,877 such diffs and 12,563 in the largest page, where
+  every position would be 1.47M (production, 2026-10-24). The
   maintainers layer is deliberately ONE urlset, not a nested index
   and not per-maintainer files: Google rejects a nested sitemap index
   ("Incorrect sitemap index format: Nested sitemap indexes"), so the
@@ -2202,6 +2206,10 @@ themselves.
 Maintainer profiles were the mirror image: 2,248 URLs in
 `/sitemap-maintainers.xml` with zero inbound links, because every
 place a maintainer appeared rendered as plain text.
+
+Series diffs repeated it (#846): the only links to them were in the
+revisions fold, which rendered on message pages alone, and those
+canonicalise to `/t`. `/t` now renders the root's fold too.
 
 Both are now linked, and the lesson generalises: **a canonical tag and
 a sitemap entry are assertions, an internal link is a path.** Shipping

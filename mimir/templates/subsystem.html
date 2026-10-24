@@ -3,6 +3,7 @@
 {% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|lower }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
 {% block content %}
 <section>
+  <p><small><a href="{{ inbox_name|subsystem_index_url }}">&larr; All active subsystems in {{ inbox_name }}</a></small></p>
   <h1>{{ subsystem.name|lower }}
     {% if subsystem.status %}
     <small><em>· {{ subsystem.status }}</em></small>

@@ -105,6 +105,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # at the edge just like the warmed sitemap surfaces.
     "web.archive_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
+    "web.series_diff_sitemap": "public, max-age=300",
     # Maintainer profiles change only when MAINTAINERS is reparsed or
     # a new review trailer lands, and they were the one reader-facing
     # hub with no entry here at all (so no explicit Cache-Control).

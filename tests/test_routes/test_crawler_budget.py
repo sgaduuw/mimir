@@ -134,6 +134,17 @@ def test_exempt_names_all_exist_in_url_map():
     assert EXEMPT_ENDPOINTS <= endpoints, EXEMPT_ENDPOINTS - endpoints
 
 
+def test_every_sitemap_endpoint_is_exempt_and_edge_cached():
+    """The check above catches a misspelled name, not a missing one: a new
+    sitemap route left out of both lists is budgeted like a page and sent
+    with no Cache-Control, and nothing failed (#846)."""
+    endpoints = {rule.endpoint for rule in create_app().url_map.iter_rules()}
+    sitemaps = {e for e in endpoints if "sitemap" in e}
+    assert len(sitemaps) >= 6, sitemaps  # precondition: the predicate finds them
+    assert sitemaps <= EXEMPT_ENDPOINTS, sitemaps - EXEMPT_ENDPOINTS
+    assert sitemaps <= hooks._CACHE_CONTROL_BY_ENDPOINT.keys()
+
+
 def test_defaults_gate_nothing(client):
     # The real, unpatched settings: every budget is 0.
     for _ in range(5):

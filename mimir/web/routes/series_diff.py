@@ -35,6 +35,7 @@ from mimir.patch_revisions import (
     RevisionDiff,
     compute_revision_diff,
     match_revision_position,
+    patch_bracket,
     resolve_series_patches,
 )
 from mimir.patch_series import same_series
@@ -300,6 +301,10 @@ def series_diff(inbox_name: str, series_key: str):
             fallback_inbox=inbox.name,
             base=_site_base(),
         )
+        # The title and description name the series (#846): ~195k of these
+        # pages shared one generic title.
+        bracket = patch_bracket(to_cover.subject or "")
+        series_subject = bracket[1] if bracket else to_cover.subject
 
     return render_template(
         "series_diff.html",
@@ -307,6 +312,7 @@ def series_diff(inbox_name: str, series_key: str):
         inbox_name=inbox.name,
         current_inbox=inbox.name,
         series_key=series_key,
+        series_subject=series_subject,
         diff=diff,
         position_label="cover letter" if pos == 0 else f"patch {pos}",
     )
