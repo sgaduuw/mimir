@@ -295,12 +295,22 @@ def _superseded(seeded_db):
         return {r[0] for r in rows}
 
 
+def _key_unchained(seeded_db):
+    """Key the corpus as history ingested before 3.25.0 holds it: series
+    columns set, no heads. `backfill_patch_series` chains the keys it
+    writes (#824), so its heads are cleared."""
+    backfill_patch_series()
+    with seeded_db() as s:
+        s.execute(text("UPDATE articles SET patch_series_head_id = NULL"))
+        s.commit()
+
+
 def _two_unrelated_postings(seeded_db):
     old = _posting(seeded_db, "old@x", "v2", datetime(2021, 3, 1), ["net: a", "net: b"])
     new = _posting(
         seeded_db, "new@x", "v1", datetime(2026, 8, 21), ["drm: c unlike", "drm: d"]
     )
-    backfill_patch_series()
+    _key_unchained(seeded_db)
     return old, new
 
 
@@ -448,7 +458,7 @@ def _split_corpus(seeded_db):
                 parent=mid,
                 author=author,
             )
-    backfill_patch_series()
+    _key_unchained(seeded_db)
     return ids
 
 
