@@ -222,3 +222,30 @@ def test_a_subject_rewrite_keeps_a_chain_reply_patch_s_head(seeded_db, broker_ac
         ).scalar_one()
         assert "\n" not in row.subject  # precondition: the run wrote this row
         assert row.patch_series_head_id == c2
+
+
+def test_a_patch_whose_cover_is_not_in_its_key_is_left_alone(seeded_db, broker_active):
+    """A patch still carrying the key can answer a cover that is not one of
+    the key's covers, here a reply #820 cleared. The re-chain skips it; a
+    head looked up for that cover would raise inside an ingest batch and
+    roll the batch back."""
+    from mimir.patch_series_chains import head_updates
+
+    _seed(seeded_db)
+    with seeded_db() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        _add(
+            s,
+            inbox,
+            "rc@x",
+            "[PATCH 0/2] netfilter updates",
+            None,
+            NEW,
+            "c2@x",
+            key=None,
+        )
+        _add(s, inbox, "rcp@x", "[PATCH 1/2] ipvs: x", 1, NEW, "rc@x")
+        s.commit()
+        updates, _split = head_updates(s, KEY)
+    assert _id(seeded_db, "rcp@x") not in {i for i, _ in updates}
+    assert updates  # precondition: the key's own rows were chained

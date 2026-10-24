@@ -1065,9 +1065,10 @@ order).
   patches), then `backfill-series-chains` once. Before 3.25.0 that pass
   chained the history; after #840 it is the repair pass for chain-reply
   patches the reprocess left untouched: their rows do not change, so only
-  a chain pass gives them their cover's head. Its `heads_planned` counts
-  the heads it changes; on an archive with none it plans zero. After that,
-  ingest and `backfill-patch-series` keep the keys they touch chained.
+  a chain pass is sure to give them their cover's head. Its
+  `heads_planned` counts the heads it changes; on an archive with none it
+  plans zero. After that, ingest and `backfill-patch-series` keep the
+  keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)
 

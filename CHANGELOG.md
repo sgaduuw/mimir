@@ -22,7 +22,7 @@ alongside another long backfill. The rule reads `article_files`, so
 The same reprocess also links the patches #840 now reaches; no second
 reprocess is needed. Then run `backfill-series-chains` once, as the repair
 pass for chain-reply patches the reprocess left untouched: their rows do not
-change, so only a chain pass gives them their cover's head. Its
+change, so only a chain pass is sure to give them their cover's head. Its
 `heads_planned` counts the heads it changes; on an archive with none it plans
 zero. Pages of series whose heads move get new ETags, so caches refetch them
 once.
