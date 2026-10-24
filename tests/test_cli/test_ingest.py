@@ -588,12 +588,11 @@ def test_pinned_inbox_wins_contested_list_address_on_first_ingest(
     assert held["alpha"] is None
 
 
-def test_pinned_first_dedupes_repeated_names():
+def test_pinned_first_dedupes_repeated_names(monkeypatch):
     """A name listed twice keeps its first position."""
     from mimir.config import settings
     from mimir.inboxes import pinned_first
 
     inboxes = [Inbox(name=n) for n in ("a", "b", "c")]
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(settings, "pinned_inboxes", ["c", "a", "c"])
-        assert [ix.name for ix in pinned_first(inboxes)] == ["c", "a", "b"]
+    monkeypatch.setattr(settings, "pinned_inboxes", ["c", "a", "c"])
+    assert [ix.name for ix in pinned_first(inboxes)] == ["c", "a", "b"]

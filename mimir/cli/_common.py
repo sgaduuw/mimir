@@ -89,12 +89,7 @@ def _select_inboxes(only: str | None) -> dict[str, Inbox]:
     write a readonly database` and the whole `update`/`ingest` tick
     aborts before any inbox gets fetched.
     """
-    # Pinned first: ingest, and the warm right after each inbox, walk
-    # this order (#766). It also decides who wins a contested
-    # `list_address` on a from-scratch ingest (see `_promote_list_address`),
-    # and each epoch resolves canonical pins against the address map as it
-    # stood when the epoch started, so a from-scratch ingest must be
-    # followed by `admin canonicals backfill --reprocess --restart`.
+    # Pinned first (#766); see CONTEXT.md "Canonical-inbox resolution".
     inboxes = {inbox.name: inbox for inbox in pinned_first(list_inboxes())}
     if only is None:
         return inboxes
