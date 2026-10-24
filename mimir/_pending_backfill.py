@@ -94,6 +94,12 @@ class _PatchSeriesPending:
     writer instead (#824). `old_key` is the key stored at read time,
     which a cleared or rekeyed row leaves and which must be re-chained
     too (#820).
+
+    `patch_series_version` is the subject's own (a patch carries its
+    cover's parsed version). The re-chain is the last writer of a
+    posting's version (#870), so for a cover typo it writes the patches'
+    version back in the same transaction; such a row differs from its
+    stored version on every reprocess and is sent each time.
     """
 
     article_id: int
