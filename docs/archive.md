@@ -199,9 +199,10 @@ reads `article_files`, so `backfill-article-files` must be complete first.
 Use `--help` for per-command options.
 
 `backfill-series-chains` splits a cover title that one sender reused for
-unrelated postings into separate series. Ingest and `backfill-patch-series`
-chain the titles they touch, so it is needed once, for history ingested before
-3.25.0.
+unrelated postings into separate series. It also gives a cover whose version
+is a typo its patches' version (#870), reported as `versions_planned`. Ingest
+and `backfill-patch-series` chain the titles they touch, so it is needed once,
+for history ingested before 3.25.0.
 
 These four, and `admin canonicals backfill`, resume an interrupted run. The
 broker stores each run's position, so after a deploy, a dropped session or a

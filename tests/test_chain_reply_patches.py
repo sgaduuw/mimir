@@ -292,21 +292,24 @@ MINUTE = 60
 
 
 @pytest.mark.parametrize(
-    "cover,patch,delay,linked",
+    "cover,patch,delay,linked,version",
     [
         # v3 2/3 a day after a v2 0/3 cover: another revision's thread.
-        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 86400, False),
-        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 61 * MINUTE, False),
-        # Within the hour, or the same minute (typos, per-patch versions).
-        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 59 * MINUTE, True),
-        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 5, True),
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 86400, False, "v2"),
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 2 * 3600, False, "v2"),
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 61 * MINUTE, False, "v2"),
+        # Within the hour, or the same minute: the cover's v2 is a typo
+        # for its patches' v3 (#870).
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 59 * MINUTE, True, "v3"),
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 5, True, "v3"),
         # Same version, or a side that names none, is never a mismatch.
-        ("[PATCH v2 0/3] t", "[PATCH v2 2/3] foo", 86400, True),
-        ("[PATCH v2 0/3] t", "[PATCH 2/3] foo", 86400, True),
-        ("[PATCH 0/3] t", "[PATCH v3 2/3] foo", 86400, True),
+        ("[PATCH v2 0/3] t", "[PATCH v2 2/3] foo", 86400, True, "v2"),
+        ("[PATCH v2 0/3] t", "[PATCH 2/3] foo", 86400, True, "v2"),
+        ("[PATCH 0/3] t", "[PATCH v3 2/3] foo", 86400, True, "v1"),
     ],
     ids=[
         "day",
+        "two_hours",
         "past_hour",
         "within_hour",
         "same_minute",
@@ -316,22 +319,24 @@ MINUTE = 60
     ],
 )
 def test_a_patch_posted_later_under_another_revisions_cover(
-    seeded_db, tmp_path, broker_active, cover, patch, delay, linked
+    seeded_db, tmp_path, broker_active, cover, patch, delay, linked, version
 ):
-    """Ingest, a plain run and `--reprocess` read the same stored dates."""
-    cover_version = "v2" if "v2" in cover else "v1"
+    """Ingest, a plain run and `--reprocess` read the same stored dates.
+    `version` is the posting's: an orphaned patch leaves its cover's own."""
     _arrive(seeded_db, tmp_path, "0.git", T2026, [_msg("xr@x", cover, body=b"cover")])
     _arrive(
         seeded_db, tmp_path, "1.git", T2026 + delay, [_msg("xr-p@x", patch, "xr@x")]
     )
-    expected = (
-        (series_key("t", AUTHOR), cover_version, 2) if linked else (None, None, 2)
-    )
-    assert _series(seeded_db, "xr-p@x") == {"xr-p@x": expected}
+    key = series_key("t", AUTHOR)
+    expected = {
+        "xr@x": (key, version, 0),
+        "xr-p@x": (key, version, 2) if linked else (None, None, 2),
+    }
+    assert _series(seeded_db, "xr@x", "xr-p@x") == expected
     backfill_patch_series()
-    assert _series(seeded_db, "xr-p@x") == {"xr-p@x": expected}
+    assert _series(seeded_db, "xr@x", "xr-p@x") == expected
     backfill_patch_series(reprocess=True)
-    assert _series(seeded_db, "xr-p@x") == {"xr-p@x": expected}
+    assert _series(seeded_db, "xr@x", "xr-p@x") == expected
 
 
 def test_a_stored_cross_revision_link_is_dropped_by_reprocess_and_the_rechain(
@@ -346,7 +351,8 @@ def test_a_stored_cross_revision_link_is_dropped_by_reprocess_and_the_rechain(
     ]
     _arrive(seeded_db, tmp_path, "0.git", T2026, msgs)
     key = series_key("t", AUTHOR)
-    assert _series(seeded_db, "st-p@x")["st-p@x"] == (key, "v2", 2)  # same minute
+    # Same minute, so linked, and the cover's v2 is a typo for v3 (#870).
+    assert _series(seeded_db, "st-p@x")["st-p@x"] == (key, "v3", 2)
     with seeded_db() as s:
         row = s.scalars(select(Article).where(Article.message_id == "st-p@x")).one()
         row.date = row.date + timedelta(days=1)
