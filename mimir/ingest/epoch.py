@@ -197,6 +197,7 @@ def _thread_parent(session: Session, message_id: str, pending_articles: list | N
             Article.message_id,
             Article.subject,
             Article.author,
+            Article.date,
             Article.thread_parent,
         ).where(Article.message_id == message_id)
     ).one_or_none()
@@ -284,6 +285,7 @@ def _to_article_insert(
                 if mid == thread_parent
                 else _thread_parent(session, mid, pending_articles)
             ),
+            date,
         )
         if link is not None:
             series_key_val, series_version = link
