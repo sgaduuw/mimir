@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import pytest
 from sqlalchemy import select
 
-from mimir import _pending_backfill
+from mimir import _pending_backfill, patch_series
 from mimir.models import Article
 from mimir.patch_series import (
     PATCH_WALK_HOPS,
@@ -105,7 +105,7 @@ def test_a_parent_cycle_ends_the_walk():
     assert calls == ["a@x", "b@x"]
 
 
-def test_the_walk_stops_at_its_cap():
+def test_the_walk_stops_at_its_cap(monkeypatch):
     """A chain one row longer than the cap reads exactly the cap's rows
     and gives up; the same chain links under a larger cap, so the cap is
     the only reason it does not."""
@@ -121,7 +121,8 @@ def test_the_walk_stops_at_its_cap():
     assert cover_of_patch(start, parent_of, posting) is None
     assert len(calls) == PATCH_WALK_HOPS
     calls.clear()
-    found = cover_of_patch(start, parent_of, posting, max_hops=depth)
+    monkeypatch.setattr(patch_series, "PATCH_WALK_HOPS", depth)
+    found = cover_of_patch(start, parent_of, posting)
     assert found is not None and found.message_id == "c@x"
     assert len(calls) == depth
 
