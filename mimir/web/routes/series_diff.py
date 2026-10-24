@@ -301,7 +301,7 @@ def series_diff(inbox_name: str, series_key: str):
             fallback_inbox=inbox.name,
             base=_site_base(),
         )
-        # The title and description name the series (#846): ~195k of these
+        # The title and description name the series (#846): ~194k of these
         # pages shared one generic title.
         bracket = patch_bracket(to_cover.subject or "")
         series_subject = bracket[1] if bracket else to_cover.subject

@@ -25,7 +25,7 @@ alongside another long backfill. The rule reads `article_files`, so
   `-f.xml`, listed in `/sitemap.xml`, one page per first hex character of the
   series key. Each lists the cover-letter diff between adjacent revisions of a
   series, dated by the newest cover in either revision. Measured on 2026-10-24
-  that is about 195,000 URLs, at most about 12,600 per page. Pages are built
+  that is about 194,000 URLs, at most about 12,500 per page. Pages are built
   on request and cached for an hour.
 
 ### Changed
@@ -38,9 +38,8 @@ alongside another long backfill. The rule reads `article_files`, so
 - A series diff page's title and description now name the series and the two
   versions, instead of the same generic text on every diff (#846).
 - The thread page (`/t`) shows the root's revisions fold with its diff links,
-  as the message page does (#846). Message pages in a multi-message thread
-  name `/t` as canonical, so the diffs were linked only from pages crawlers
-  are told to skip.
+  as the message page does (#846). Until now the diffs were linked only from
+  message pages, which name `/t` as canonical in a multi-message thread.
 - The subsystem index entry in `/<inbox>/sitemap.xml` carries a `<lastmod>`,
   the newest activity among the subsystems it lists, and each subsystem page
   links back to the index (#846).

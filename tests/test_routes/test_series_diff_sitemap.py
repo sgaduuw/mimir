@@ -22,36 +22,40 @@ from tests.test_routes.test_series_diff import (
 _URL_RE = re.compile(r"<url><loc>([^<]+)</loc>(?:<lastmod>([^<]+)</lastmod>)?</url>")
 
 
-def _seed_covers(key, covers, head=None):
-    """One cover letter per `(version, date)` in `covers`, filed in alpha,
-    no mirror (the sitemap reads the index only). `version` None seeds an
-    in-series patch of v2 instead, for a revision whose cover is absent."""
+def _seed_covers(key, covers):
+    """One article per `(version, date[, inbox[, position]])` in `covers`,
+    ids in list order, no mirror (the sitemap reads the index only). The
+    inbox defaults to alpha and the position to 0, a cover letter."""
     with SessionLocal() as s:
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        for i, (version, date) in enumerate(covers):
+        inbox_ids = {i.name: i.id for i in s.execute(select(Inbox)).scalars()}
+        for i, (version, date, *rest) in enumerate(covers):
+            inbox = rest[0] if rest else "alpha"
+            position = rest[1] if len(rest) > 1 else 0
             s.add(
                 Article(
                     message_id=f"{key[:8]}-{i}@x",
-                    subject=f"[PATCH {version or 'v2'} {0 if version else 1}/1] s",
+                    subject=f"[PATCH {version or ''} {position}/1] s",
                     author="Alice <a@example>",
                     date=date,
                     subject_normalized="s",
                     patch_series_key=key,
-                    patch_series_version=version or "v2",
-                    patch_series_position=0 if version else 1,
-                    patch_series_head_id=head,
+                    patch_series_version=version,
+                    patch_series_position=position,
                     lists=[
                         ArticleList(
-                            inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20
+                            inbox_id=inbox_ids[inbox],
+                            epoch="0.git",
+                            commit_sha="aa" * 20,
                         )
                     ],
                 )
             )
+            s.flush()
         s.commit()
 
 
 def _entries(client, bucket):
-    """`{(from, to): lastmod}` for every URL in one page, plus the raw locs."""
+    """`{(key, from, to): lastmod}` for every URL in one page."""
     _clear_sitemap_cache()
     r = client.get(f"/sitemap-series-diffs-{bucket}.xml")
     assert r.status_code == 200
@@ -75,7 +79,7 @@ def test_only_adjacent_cover_diffs_are_listed(client):
     three = "a" + "1" * 39
     gap = "a" + "2" * 39
     _seed_covers(three, [("v1", _d(1)), ("v2", _d(2)), ("v2", _d(3)), ("v3", _d(4))])
-    _seed_covers(gap, [("v1", _d(1)), (None, _d(2)), ("v3", _d(4))])
+    _seed_covers(gap, [("v1", _d(1)), ("v2", _d(2), "alpha", 1), ("v3", _d(4))])
 
     pairs = set(_entries(client, "a"))
     assert pairs == {
@@ -83,6 +87,41 @@ def test_only_adjacent_cover_diffs_are_listed(client):
         (three, "v2", "v3"),
         (gap, "v1", "v3"),
     }
+
+
+def test_an_unversioned_resend_folds_into_the_revision_it_resends(client):
+    """`[PATCH RESEND 0/3]` with no vN is stored as version "resend" in the
+    series of the v1 it resends. It is a copy of a revision, not a step, so
+    the pair is v1->v2, not v1->resend and resend->v2."""
+    key = "9" * 40
+    _seed_covers(key, [("v1", _d(1)), ("resend", _d(1, 20)), ("v2", _d(3))])
+    assert set(_entries(client, "9")) == {(key, "v1", "v2")}
+
+
+def test_a_null_version_cover_is_never_listed(client):
+    """The route 404s a version it cannot match, and `to=None` is one."""
+    key = "e" * 40
+    _seed_covers(key, [("v1", _d(1)), (None, _d(1, 15)), ("v2", _d(2))])
+    assert set(_entries(client, "e")) == {(key, "v1", "v2")}
+
+
+def test_an_undated_cover_sorts_last(client):
+    """The fold orders by date ascending, nulls last: an undated v1 comes
+    after a dated v2, so the pair is v2->v1."""
+    key = "f" * 40
+    _seed_covers(key, [("v1", None), ("v2", _d(2))])
+    assert set(_entries(client, "f")) == {(key, "v2", "v1")}
+
+
+def test_the_lowest_id_cover_in_the_to_slot_picks_the_inbox(client):
+    """As on the page: v2 lands first in beta, its resend (higher id) in
+    alpha, so the URL is under beta."""
+    key = "d" * 40
+    _seed_covers(key, [("v1", _d(1)), ("v2", _d(2), "beta"), ("v2", _d(3), "alpha")])
+    _clear_sitemap_cache()
+    xml = client.get("/sitemap-series-diffs-d.xml").get_data(as_text=True)
+    (loc,) = [html_lib.unescape(loc) for loc, _ in _URL_RE.findall(xml)]
+    assert f"/beta/series/{key}/diff?" in loc, loc
 
 
 def test_lastmod_is_the_newest_date_across_both_slots(client):
