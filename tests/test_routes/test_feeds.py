@@ -211,6 +211,7 @@ def test_atom_feed_nameless_senders_never_named_unknown_sender(
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    monkeypatch.setattr(settings, "site_name", "Archive Under Test")
     ids = {
         "named": _seed_author_article(
             "alpha", author="Named Person <named@x.example>", message_id="n1@x"
@@ -222,6 +223,9 @@ def test_atom_feed_nameless_senders_never_named_unknown_sender(
             "alpha", author="secret@private.example", message_id="n3@x"
         ),
         "empty": _seed_author_article("alpha", author="", message_id="n4@x"),
+        "blank": _seed_author_article(
+            "alpha", author='"   " <ws@private.example>', message_id="n5@x"
+        ),
     }
     r = client.get("/alpha/feed.atom")
     assert r.status_code == 200
@@ -244,11 +248,13 @@ def test_atom_feed_nameless_senders_never_named_unknown_sender(
     )
     assert by_id[str(ids["hidden"])].find("a:author", ns) is None
     assert by_id[str(ids["empty"])].find("a:author", ns) is None
+    assert by_id[str(ids["blank"])].find("a:author", ns) is None
     assert "secret@private.example" not in r.get_data(as_text=True)
+    assert "ws@private.example" not in r.get_data(as_text=True)
 
     feed_authors = root.findall("a:author", ns)
     assert len(feed_authors) == 1
-    assert feed_authors[0].findtext("a:name", namespaces=ns) == settings.site_name
+    assert feed_authors[0].findtext("a:name", namespaces=ns) == "Archive Under Test"
 
 
 # robots.txt / security.txt / sitemap.xml
