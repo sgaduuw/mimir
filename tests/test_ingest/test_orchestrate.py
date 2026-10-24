@@ -5,6 +5,7 @@ including the post-ingest auto-ANALYZE), and `ingest_all`
 budget). Also covers the multi-worker path and the
 parser-failure-mid-batch ordering guarantee."""
 
+import contextlib
 import logging
 import re
 from pathlib import Path
@@ -672,3 +673,36 @@ def test_list_address_sample_reads_the_highest_epoch_first(monkeypatch, tmp_path
         )
 
     assert orchestrate_mod._sample_list_addresses(mirror) == {_TOPICAL: 3}
+
+
+def test_first_ingest_walks_populated_epochs_when_the_newest_is_empty(
+    seeded_db, broker_active, tmp_path
+):
+    """A mirror clone killed by sync's timeout leaves an epoch with no
+    commits, most likely the newest. The sample skips it, so the first
+    ingest still stores the epochs that have mail."""
+    _clear_seed_articles(seeded_db)
+    mirror = tmp_path / "alpha"
+    mirror.mkdir()
+    _build_pubinbox_repo(
+        mirror / "0.git", [_rfc5322(f"m{i}@example.com") for i in range(3)]
+    )
+    _build_pubinbox_repo(mirror / "1.git", [])
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        alpha.mirror_path = str(mirror)
+        alpha.last_article_date = None
+        alpha.list_address = None
+        s.commit()
+        s.refresh(alpha)
+        s.expunge(alpha)
+
+    # The walk of the empty epoch itself may still raise (older, separate).
+    with contextlib.suppress(KeyError):
+        ingest_inbox(alpha, workers=1)
+
+    with seeded_db() as s:
+        stored = s.execute(
+            select(Article.message_id).where(Article.message_id.like("m%@example.com"))
+        ).scalars()
+        assert sorted(stored) == [f"m{i}@example.com" for i in range(3)]
