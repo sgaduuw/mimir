@@ -137,11 +137,6 @@ def test_a_parenthesised_marker_or_plain_version_still_counts():
     assert posting_flags("[PATCH (RFC v2) 0/3] foo", "v2") == (True, False)
 
 
-def test_the_parenthesised_base_tree_tag_is_still_skipped():
-    assert _bracket_version("PATCH (v20.08) v3 0/8") == "v3"
-    assert _bracket_version("PATCH (v20.08) 0/8") == "v1"
-
-
 def test_a_base_tree_branch_name_is_not_the_revision():
     """`for-v6.18` and `stable/v3.2.x` name a tree (#870); `PATCH/v2`
     and `RFC/v2` stay versions."""

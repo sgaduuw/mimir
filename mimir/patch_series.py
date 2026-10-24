@@ -229,26 +229,18 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
 def _bracket_version(inside: str) -> str:
     """The version a patch bracket names, as `parse_cover_letter` stores
     it."""
-    # Prefer the most specific version marker: explicit v\d+ over
-    # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a resent
-    # v3, not RFC-shaped. The old for/else form happened to work
-    # because of `findall`'s ordering, but the precedence wasn't
-    # explicit. `next()` with a v\d+ filter + a marker fallback +
-    # the "v1" default makes the precedence read off the line.
-    markers = [m.group(1).lower() for m in _VERSION_RE.finditer(inside)]
-    return _plain_version(inside) or next(iter(markers), "v1")
+    # A plain vN beats a dotted one, which beats RFC/RESEND, which beats the v1 default.
+    return _plain_version(inside) or next(
+        (m.group(1).lower() for m in _VERSION_RE.finditer(inside)), "v1"
+    )
 
 
 def _plain_version(inside: str) -> str | None:
     """The `vN` of a patch bracket, None when it names none. A plain `vN`
     beats a dotted one: `[PATCH v5.10 v2]` is v2 (#870)."""
-    numbers = [
-        (m.group(1).lower(), inside.startswith(".", m.end()))
-        for m in _VERSION_RE.finditer(inside)
-        if m.group(1)[0] in "vV"
-    ]
-    plain = [v for v, dotted in numbers if not dotted]
-    return next(iter(plain or [v for v, _ in numbers]), None)
+    numbers = [m for m in _VERSION_RE.finditer(inside) if m.group(1)[0] in "vV"]
+    plain = [m for m in numbers if not inside.startswith(".", m.end())]
+    return next((m.group(1).lower() for m in plain or numbers), None)
 
 
 def series_key(title: str, author: str | None) -> str:
