@@ -6,6 +6,7 @@ from mimir.patch_series import (
     parse_cover_letter,
     posting_flags,
     reply_to_cover,
+    reply_to_patch,
     series_key,
 )
 
@@ -361,3 +362,60 @@ def test_reply_to_cover_table():
         assert parse_cover_letter(subject) is not None, subject
         got = reply_to_cover(subject, author, parent_subject, parent_author)
         assert got is expected, (subject, author, parent_subject)
+
+
+# reply_to_patch, an in-series subject that answers that patch (#837).
+
+PATCH = "[PATCH v2 1/3] foo: add\tbar"
+
+
+def test_reply_to_patch_table():
+    """Each row: (subject, its author, parent subject, parent author,
+    touches files, expected). A reply repeats the parent patch's posting
+    (position, total, title, version, RESEND) from another address and
+    carries no diff; a diff makes it a re-post."""
+    reply = "[PATCH v2 1/3] foo: add bar"
+    rows = [
+        (reply, "Bob <b@x>", PATCH, "Al <a@x>", False, True),
+        # A diff: a re-post of the patch, measured on production.
+        (reply, "Bob <b@x>", PATCH, "Al <a@x>", True, False),
+        # Same address, other display name: the sender's own re-post.
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", False, False),
+        # Another position, total, version or title.
+        ("[PATCH v2 2/3] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        ("[PATCH v2 1/4] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        ("[PATCH v3 1/3] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        ("[PATCH v2 1/3] foo: add baz", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
+        # A RESEND in one subject only: a re-post; in both: a reply.
+        (
+            "[RESEND PATCH v2 1/3] foo: add bar",
+            "Bob <b@x>",
+            PATCH,
+            "Al <a@x>",
+            False,
+            False,
+        ),
+        (
+            "[RESEND PATCH v2 1/3] foo: add bar",
+            "Bob <b@x>",
+            "[PATCH RESEND v2 1/3] foo: add bar",
+            "Al <a@x>",
+            False,
+            True,
+        ),
+        # Parent is a cover, a "Re:" reply, or missing.
+        (reply, "Bob <b@x>", "[PATCH v2 0/3] foo: add bar", "Al <a@x>", False, False),
+        (reply, "Bob <b@x>", "Re: " + PATCH, "Al <a@x>", False, False),
+        (reply, "Bob <b@x>", None, None, False, False),
+    ]
+    for subject, author, parent_subject, parent_author, files, expected in rows:
+        assert parse_in_series_patch_subject(subject) is not None, subject
+        got = reply_to_patch(subject, author, parent_subject, parent_author, files)
+        assert got is expected, (subject, author, parent_subject, files)
+
+
+def test_reply_to_patch_leaves_covers_to_reply_to_cover():
+    """A cover answering a cover is #820's rule, not this one."""
+    cover = "[PATCH v2 0/3] foo: add bar"
+    assert reply_to_cover(cover, "Bob <b@x>", cover, "Al <a@x>")
+    assert not reply_to_patch(cover, "Bob <b@x>", cover, "Al <a@x>", False)
