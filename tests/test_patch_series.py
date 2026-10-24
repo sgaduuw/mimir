@@ -4,6 +4,7 @@ from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
     _bracket_version,
+    _explicit_version,
     parse_cover_letter,
     posting_flags,
     reply_to_cover,
@@ -107,6 +108,18 @@ def test_a_parenthesised_or_dotted_base_tree_tag_is_not_the_revision():
     patch = parse_in_series_patch_subject("[PATCH v5.10 v2 1/2] foo: bar")
     assert patch is not None and patch.position == 1
     assert _bracket_version("PATCH v5.10 v2 1/2") == "v2"
+
+
+def test_the_cross_revision_guard_reads_the_same_version():
+    """`_explicit_version` is what the #862 guard compares: a cover and
+    its patches agree on v3 despite the base-tree tag (#870)."""
+    for subject, version in [
+        ("[PATCH (v20.08) v3 0/8] foo", "v3"),
+        ("[PATCH v3 1/8] foo: bar", "v3"),
+        ("[PATCH v5.10 v2 1/2] foo: bar", "v2"),
+        ("[PATCH 1/2] foo: bar", None),
+    ]:
+        assert _explicit_version(subject) == version, subject
 
 
 def test_unchanged_version_shapes_stay_put():
