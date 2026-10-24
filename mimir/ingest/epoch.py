@@ -244,9 +244,7 @@ def _to_article_insert(
     # we just carry the data here. The paths also tell a patch reply
     # from a re-post (#837).
     touched_paths = sorted(extract_touched_paths(parsed.body))
-    trailer_rows = [
-        (role, name, address) for role, name, address in extract_trailers(parsed.body)
-    ]
+    trailer_rows = extract_trailers(parsed.body)
     # Replay has no session and a parent ingested after its child is not
     # found: either way a reply that repeats a cover's subject is stored
     # as a cover until the next `backfill-patch-series --reprocess` (#820),

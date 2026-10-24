@@ -27,8 +27,6 @@ REPLY = "[PATCH v2 1/2] foo: add bar"
 DIFF = "diff --git a/foo.c b/foo.c\n--- a/foo.c\n+++ b/foo.c\n@@ -1 +1 @@\n-a\n+b\n"
 KEY = series_key("improve foo handling", "a@b.example")
 
-_series = series_columns
-
 
 def _with_body(raw: bytes, body: str) -> bytes:
     return raw.replace(b"\r\n\r\nhello", b"\r\n\r\n" + body.encode())
@@ -56,14 +54,14 @@ def test_ingest_and_reprocess_store_a_patch_reply_without_a_series(
         _ingest(seeded_db, tmp_path, "1.git", [reply, repost])
     ids = ("c837@x", "p837@x", "r837@x", "rp837@x")
 
-    ingested = _series(seeded_db, *ids)
+    ingested = series_columns(seeded_db, *ids)
     assert ingested["p837@x"] == (KEY, "v2", 1, None)
     assert ingested["r837@x"] == (None, None, None, None)
     assert ingested["rp837@x"] == (KEY, "v2", 1, None)
 
     result = backfill_patch_series(reprocess=True)
 
-    reprocessed = _series(seeded_db, *ids)
+    reprocessed = series_columns(seeded_db, *ids)
     # A reprocess links only through a cover parent, so it orphans the
     # re-post ingest linked through the patch (#840); its position stays.
     assert reprocessed["rp837@x"] == (None, None, 1, None)
@@ -117,7 +115,7 @@ def test_a_plain_run_clears_a_stored_patch_reply(seeded_db, broker_active):
     first = backfill_patch_series()
     second = backfill_patch_series()
 
-    got = _series(seeded_db, "r837@x", "rp837@x")
+    got = series_columns(seeded_db, "r837@x", "rp837@x")
     assert got["r837@x"] == (None, None, None, None)
     # Guard: the re-post touches files, so it is linked as a patch.
     assert got["rp837@x"] == (key, "v2", 1, None)
@@ -142,11 +140,11 @@ def test_reprocess_clears_a_keyed_patch_reply(seeded_db, broker_active):
     plain = backfill_patch_series()
 
     assert plain.reply_patch == 0
-    assert _series(seeded_db, "r837@x")["r837@x"][:3] == (key, "v2", 1)
+    assert series_columns(seeded_db, "r837@x")["r837@x"][:3] == (key, "v2", 1)
 
     result = backfill_patch_series(reprocess=True)
 
-    got = _series(seeded_db, "c837@x", "p837@x", "r837@x")
+    got = series_columns(seeded_db, "c837@x", "p837@x", "r837@x")
     assert got["r837@x"] == (None, None, None, None)
     assert got["p837@x"][:3] == (key, "v2", 1)
     assert got["c837@x"][:3] == (key, "v2", 0)
