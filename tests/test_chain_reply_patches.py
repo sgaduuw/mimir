@@ -6,6 +6,7 @@
 the cover, and the re-chain gives it its cover's head.
 """
 
+from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -21,7 +22,7 @@ from mimir.patch_series import (
     in_series_link,
     series_key,
 )
-from mimir.patch_series_chains import backfill_series_chains
+from mimir.patch_series_chains import _load_key, backfill_series_chains
 from tests.test_ingest._helpers import _rfc5322
 from tests.test_ingest.test_series_rechain import T2021, T2026, _arrive, _heads
 
@@ -83,7 +84,9 @@ def _record_payloads(monkeypatch):
 def _rows(*specs):
     """`(message_id, subject, parent)` -> a counting `parent_of`."""
     rows = {
-        m: SimpleNamespace(message_id=m, subject=s, author=AUTHOR, thread_parent=p)
+        m: SimpleNamespace(
+            message_id=m, subject=s, author=AUTHOR, thread_parent=p, date=None
+        )
         for m, s, p in specs
     }
     calls = []
@@ -101,7 +104,12 @@ def test_a_parent_cycle_ends_the_walk():
     parent_of, calls = _rows(
         ("a@x", "[PATCH 2/3] foo", "b@x"), ("b@x", "[PATCH 1/3] foo", "a@x")
     )
-    assert cover_of_patch("a@x", parent_of, _posting("[PATCH 3/3] foo")) is None
+    assert (
+        cover_of_patch(
+            "a@x", parent_of, _posting("[PATCH 3/3] foo"), "[PATCH 3/3] foo", None
+        )
+        is None
+    )
     assert calls == ["a@x", "b@x"]
 
 
@@ -118,11 +126,11 @@ def test_the_walk_stops_at_its_cap(monkeypatch):
     parent_of, calls = _rows(*specs)
     posting = _posting("[PATCH 2/9] foo")
     start = f"p{depth - 2}@x"
-    assert cover_of_patch(start, parent_of, posting) is None
+    assert cover_of_patch(start, parent_of, posting, "[PATCH 2/9] foo", None) is None
     assert len(calls) == PATCH_WALK_HOPS
     calls.clear()
     monkeypatch.setattr(patch_series, "PATCH_WALK_HOPS", depth)
-    found = cover_of_patch(start, parent_of, posting)
+    found = cover_of_patch(start, parent_of, posting, "[PATCH 2/9] foo", None)
     assert found is not None and found.message_id == "c@x"
     assert len(calls) == depth
 
@@ -141,7 +149,7 @@ def test_a_patch_hop_needs_the_same_total_and_version(patch, middle):
     patch of v1: linking it would put v2 under v1's key and version."""
     total = middle.split("/")[1].split("]")[0]
     parent_of, _ = _rows(("c@x", f"[PATCH 0/{total}] t", None), ("m@x", middle, "c@x"))
-    assert cover_of_patch("m@x", parent_of, _posting(patch)) is None
+    assert cover_of_patch("m@x", parent_of, _posting(patch), patch, None) is None
 
 
 def test_the_cover_hop_is_not_guarded():
@@ -149,7 +157,7 @@ def test_the_cover_hop_is_not_guarded():
     cover names another version or total (2026-10-24); the cover they
     answer is theirs, as before."""
     parent_of, _ = _rows(("c@x", "[PATCH v2 0/3] t", None))
-    assert in_series_link("[PATCH 1/3] foo", "c@x", parent_of) == (
+    assert in_series_link("[PATCH 1/3] foo", "c@x", parent_of, None) == (
         series_key("t", AUTHOR),
         "v2",
     )
@@ -266,6 +274,78 @@ def test_an_unversioned_patch_under_a_v2_cover_stays_linked(
     assert _series(seeded_db, "uv-p1@x") == linked
     backfill_patch_series(reprocess=True)
     assert _series(seeded_db, "uv-p1@x") == linked
+
+
+# --- A later revision under an older cover (#862) -----------------------------
+
+MINUTE = 60
+
+
+@pytest.mark.parametrize(
+    "cover,patch,delay,linked",
+    [
+        # v3 2/3 a day after a v2 0/3 cover: another revision's thread.
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 86400, False),
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 61 * MINUTE, False),
+        # Within the hour, or the same minute (typos, per-patch versions).
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 59 * MINUTE, True),
+        ("[PATCH v2 0/3] t", "[PATCH v3 2/3] foo", 5, True),
+        # Same version, or a side that names none, is never a mismatch.
+        ("[PATCH v2 0/3] t", "[PATCH v2 2/3] foo", 86400, True),
+        ("[PATCH v2 0/3] t", "[PATCH 2/3] foo", 86400, True),
+        ("[PATCH 0/3] t", "[PATCH v3 2/3] foo", 86400, True),
+    ],
+    ids=[
+        "day",
+        "past_hour",
+        "within_hour",
+        "same_minute",
+        "same_version",
+        "patch_unversioned",
+        "cover_unversioned",
+    ],
+)
+def test_a_patch_posted_later_under_another_revisions_cover(
+    seeded_db, tmp_path, broker_active, cover, patch, delay, linked
+):
+    """Ingest, a plain run and `--reprocess` read the same stored dates."""
+    cover_version = "v2" if "v2" in cover else "v1"
+    _arrive(seeded_db, tmp_path, "0.git", T2026, [_msg("xr@x", cover, body=b"cover")])
+    _arrive(
+        seeded_db, tmp_path, "1.git", T2026 + delay, [_msg("xr-p@x", patch, "xr@x")]
+    )
+    expected = (
+        (series_key("t", AUTHOR), cover_version, 2) if linked else (None, None, 2)
+    )
+    assert _series(seeded_db, "xr-p@x") == {"xr-p@x": expected}
+    backfill_patch_series()
+    assert _series(seeded_db, "xr-p@x") == {"xr-p@x": expected}
+    backfill_patch_series(reprocess=True)
+    assert _series(seeded_db, "xr-p@x") == {"xr-p@x": expected}
+
+
+def test_a_stored_cross_revision_link_is_dropped_by_reprocess_and_the_rechain(
+    seeded_db, tmp_path, broker_active
+):
+    """Stored as before the fix: the v3 patch carries the v2 cover's key.
+    `_load_key` no longer counts it as that cover's patch, and
+    `--reprocess` clears it."""
+    msgs = [
+        _msg("st@x", "[PATCH v2 0/3] t", body=b"cover"),
+        _msg("st-p@x", "[PATCH v3 2/3] foo", "st@x"),
+    ]
+    _arrive(seeded_db, tmp_path, "0.git", T2026, msgs)
+    key = series_key("t", AUTHOR)
+    assert _series(seeded_db, "st-p@x")["st-p@x"] == (key, "v2", 2)  # same minute
+    with seeded_db() as s:
+        row = s.scalars(select(Article).where(Article.message_id == "st-p@x")).one()
+        row.date = row.date + timedelta(days=1)
+        s.commit()
+        assert _load_key(s, key)[2] == []
+
+    backfill_patch_series(reprocess=True)
+
+    assert _series(seeded_db, "st-p@x") == {"st-p@x": (None, None, 2)}
 
 
 # --- Heads under a split key --------------------------------------------------
