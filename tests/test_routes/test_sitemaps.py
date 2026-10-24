@@ -2238,3 +2238,62 @@ def test_sitemap_index_cache_tracks_thread_render_cap(client, tmp_path, monkeypa
         assert {url for url in locs if "/alpha/2012/" in url} == {
             f"http://localhost/alpha/{bucket}/sitemap.xml"
         }
+
+
+def test_subsystem_index_entry_is_its_canonical_dated_and_linked_back(client, tmp_path):
+    """#846: the index's sitemap `<loc>` and its page's canonical come
+    from one helper, its `<lastmod>` is the newest activity among the
+    subsystems it lists, and each subsystem page links back to it."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    for name, path in (("BCACHEFS", "fs/bcachefs/"), ("BTRFS", "fs/btrfs/")):
+        _seed_subsystem(name, "Maintained", files=[path])
+    for mid, path in (("ix1@x", "bcachefs"), ("ix2@x", "bcachefs"), ("ix3@x", "btrfs")):
+        (tmp_path / mid).mkdir()
+        _ingest_one_article(
+            tmp_path / mid,
+            "alpha",
+            mid,
+            body=f"diff --git a/fs/{path}/a.c b/fs/{path}/a.c\n@@ -1 +1 @@\n-x\n+y\n".encode(),
+        )
+    # bcachefs is busier but older, so it leads the payload and a
+    # first-entry date would differ from the newest.
+    with SessionLocal() as s:
+        s.execute(
+            update(Article)
+            .where(Article.message_id.in_(["ix1@x", "ix2@x"]))
+            .values(date=datetime.now(UTC) - timedelta(days=3))
+        )
+        s.commit()
+    activity = warm_subsystem_activity("alpha")
+    assert [a.name for a in activity] == ["BCACHEFS", "BTRFS"]  # precondition
+    first, newest = (
+        d.strftime("%Y-%m-%d")
+        for d in (activity[0].last_activity, max(a.last_activity for a in activity))
+    )
+    assert first != newest  # precondition
+
+    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    entry = re.search(
+        r"<url><loc>([^<]*/alpha/subsystem/)</loc><lastmod>([^<]+)</lastmod></url>",
+        xml,
+    )
+    assert entry, "the subsystem index is listed without a <lastmod>"
+    assert entry.group(2) == newest
+
+    index = client.get("/alpha/subsystem/").get_data(as_text=True)
+    canonical = re.search(r'<link rel="canonical" href="([^"]+)"', index).group(1)
+    assert canonical == entry.group(1)
+
+    page = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+    assert 'href="/alpha/subsystem/"' in page

@@ -1,10 +1,11 @@
 """`/sitemap.xml`, `/meta-sitemap.xml`, `/sitemap-maintainers.xml`,
-and `/<inbox>/sitemap.xml`.
+`/sitemap-series-diffs-<h>.xml`, and `/<inbox>/sitemap.xml`.
 
 `/sitemap.xml` is a `<sitemapindex>` pointing at `/meta-sitemap.xml`
 (a urlset for `/` and `/merge-window`), one `/<inbox>/sitemap.xml` per configured
-inbox, and `/sitemap-maintainers.xml` (a urlset of every maintainer
-profile page). Crawlers fetch the sub-sitemaps independently and
+inbox, `/sitemap-maintainers.xml` (a urlset of every maintainer
+profile page), and sixteen `/sitemap-series-diffs-<h>.xml` (the series
+cover diffs, one page per first hex character of the key). Crawlers fetch the sub-sitemaps independently and
 skip unchanged inboxes via each entry's `<lastmod>`. The index/meta
 split (issue #10) replaced the earlier single monolithic urlset;
 cross-posted articles now appear in each linked inbox's sitemap
@@ -35,9 +36,10 @@ from mimir.seo import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
+    series_diff_sitemap_xml,
     sitemap_index_xml,
 )
-from mimir.seo.sitemaps import SitemapPayload
+from mimir.seo.sitemaps import SERIES_DIFF_BUCKETS, SitemapPayload
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _get_inbox_or_404, _site_base
 
@@ -58,8 +60,8 @@ def _sitemap_response(payload: SitemapPayload) -> Response:
 @bp_web.route("/sitemap.xml")
 def sitemap() -> Response:
     """Sitemap index. Lists `/meta-sitemap.xml`, one
-    `/<inbox>/sitemap.xml` per configured inbox, and
-    `/sitemap-maintainers.xml`. Crawlers fetch sub-sitemaps
+    `/<inbox>/sitemap.xml` per configured inbox,
+    `/sitemap-maintainers.xml`, and the series diff pages. Crawlers fetch sub-sitemaps
     independently and can skip unchanged inboxes between visits via
     the per-entry `<lastmod>`. Cached for SITEMAP_TTL_SEC."""
     with SessionLocal() as session:
@@ -86,6 +88,19 @@ def maintainers_sitemap() -> Response:
     response never carries `Last-Modified`."""
     with SessionLocal() as session:
         payload = maintainers_sitemap_xml(session, _site_base())
+    return _sitemap_response(payload)
+
+
+@bp_web.route("/sitemap-series-diffs-<bucket>.xml")
+def series_diff_sitemap(bucket: str) -> Response:
+    """Urlset of the cover-letter diffs between adjacent revisions, for
+    the series whose key starts with `bucket` (one lowercase hex
+    character). Built on request and cached; see
+    `series_diff_sitemap_xml`."""
+    if len(bucket) != 1 or bucket not in SERIES_DIFF_BUCKETS:
+        abort(404)
+    with SessionLocal() as session:
+        payload = series_diff_sitemap_xml(session, bucket, _site_base())
     return _sitemap_response(payload)
 
 

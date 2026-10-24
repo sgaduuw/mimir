@@ -11,6 +11,27 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- A sitemap of series diffs (#846): `/sitemap-series-diffs-0.xml` to
+  `-f.xml`, listed in `/sitemap.xml`, one page per first hex character of the
+  series key. Each lists the cover-letter diff between adjacent revisions of a
+  series, dated by the newest cover in either revision. Measured on 2026-10-24
+  that is about 195,000 URLs, at most about 12,600 per page. Pages are built
+  on request and cached for an hour.
+
+### Changed
+
+- A series diff page's title and description now name the series and the two
+  versions, instead of the same generic text on every diff (#846).
+- The thread page (`/t`) shows the root's revisions fold with its diff links,
+  as the message page does (#846). Message pages in a multi-message thread
+  name `/t` as canonical, so the diffs were linked only from pages crawlers
+  are told to skip.
+- The subsystem index entry in `/<inbox>/sitemap.xml` carries a `<lastmod>`,
+  the newest activity among the subsystems it lists, and each subsystem page
+  links back to the index (#846).
+
 ### Fixed
 
 - Googlebot and bingbot now have their own crawler budget share, 80% of the

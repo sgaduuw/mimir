@@ -1,7 +1,8 @@
 """SEO output, split across three submodules:
 
-- `sitemaps`: `/sitemap.xml`, `/meta-sitemap.xml`, `/<inbox>/sitemap.xml`
-  (XML rendering + per-inbox-latest helper).
+- `sitemaps`: `/sitemap.xml`, `/meta-sitemap.xml`, `/<inbox>/sitemap.xml`,
+  `/sitemap-maintainers.xml`, `/sitemap-series-diffs-<h>.xml` and the
+  archive pages (XML rendering + per-inbox-latest helper).
 - `json_ld`: schema.org payload builders, one per page shape (index,
   inbox, message, search, author).
 - `atom`: Atom 1.0 feed renderer used by per-inbox and per-author feeds.
@@ -35,6 +36,7 @@ from mimir.seo.sitemaps import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
+    series_diff_sitemap_xml,
     sitemap_index_xml,
 )
 
@@ -54,5 +56,6 @@ __all__ = [
     "inbox_sitemap_xml",
     "maintainers_sitemap_xml",
     "meta_sitemap_xml",
+    "series_diff_sitemap_xml",
     "sitemap_index_xml",
 ]
