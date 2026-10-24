@@ -20,7 +20,7 @@ the relevant service's `environment` block.
 | `SITE_NAME` | Displayed site name; default `mimir` |
 | `SITE_BASE_URL` | Canonical public origin, including scheme; also needed for sitemap warming |
 | `INBOXES` | JSON map of names to `mirror_path` and `upstream_url`, used at bootstrap |
-| `EMAIL_ALLOWLIST` | JSON array of tokens whose email addresses may display in full: `@domain` (or bare `domain`) is exactly that domain (no subdomains), `local@` is that local part at any domain, `local@domain` is that exact address; case-insensitive |
+| `EMAIL_ALLOWLIST` | JSON array of tokens whose email addresses may display in full: `@domain` (or bare `domain`) is exactly that domain (no subdomains), `local@` is that local part at any domain (spoofable: anyone can send as that local part from their own domain), `local@domain` is that exact address; case-insensitive |
 | `SECURITY_CONTACT` | Enables `/security.txt`, for example `mailto:security@example.com` |
 | `TRUSTED_PROXY_HOPS` | Number of trusted proxies; zero for direct access |
 | `CRAWLER_BUDGET_PER_MINUTE`, `CRAWLER_UA_BUDGETS`, `CRAWLER_DEFAULT_UA_PCT`, `CRAWLER_UNLISTED_POOL_PCT`, `CRAWLER_UA_MARKERS`, `CRAWLER_RETRY_AFTER_SEC` | Optional `429` throttle for crawlers (the global budget is the master switch, per-crawler values are percentages merged over a default crawler list, unlisted recognised crawlers get the default percentage and share a pool), off by default; see [deploy/README.md](../deploy/README.md#crawler-budgets) |
