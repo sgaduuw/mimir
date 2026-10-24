@@ -287,11 +287,13 @@ def _repeats_parent(
     author: str | None,
     parent_subject: str | None,
     parent_author: str | None,
+    *,
+    any_sender: bool = False,
 ) -> bool:
-    """Whether `subject` repeats its thread parent's posting from another
-    address: the same position, patch total, version and title, both or
-    neither a RESEND. Another total or a RESEND on one side only is a
-    re-post of the series.
+    """Whether `subject` repeats its thread parent's posting, from another
+    address unless `any_sender`: the same position, patch total, version
+    and title, both or neither a RESEND. Another total or a RESEND on one
+    side only is a re-post of the series.
 
     Reads the parent's subject and sender, never its stored series
     columns, so the answer does not depend on which of the two was
@@ -307,7 +309,7 @@ def _repeats_parent(
         return False
     address, title = _series_identity(posting[3], author)
     parent_address, parent_title = _series_identity(parent[3], parent_author)
-    return title == parent_title and address != parent_address
+    return title == parent_title and (any_sender or address != parent_address)
 
 
 def reply_to_cover(
@@ -337,13 +339,17 @@ def reply_to_patch(
     """Whether an in-series `subject` is really a reply to its thread
     parent (#837), by `_repeats_parent`, and carries no diff
     (`touches_files` is whether `extract_touched_paths` found a path).
-    About 99% of such rows are replies (production, 2026-10-24); a diff
-    marks a re-post of the patch. A re-post that attaches its patch, or
-    a reply that quotes a diff unquoted, is misread either way."""
+    Whoever sends it (#860): the diff, not the sender, tells a reply
+    from a re-post. About 99% of such rows are replies (production,
+    2026-10-24); a diff marks a re-post of the patch. A re-post that
+    attaches its patch, or a reply that quotes a diff unquoted, is
+    misread either way."""
     return (
         not touches_files
         and parse_in_series_patch_subject(unfold(subject)) is not None
-        and _repeats_parent(subject, author, parent_subject, parent_author)
+        and _repeats_parent(
+            subject, author, parent_subject, parent_author, any_sender=True
+        )
     )
 
 

@@ -379,8 +379,10 @@ def test_reply_to_patch_table():
         (reply, "Bob <b@x>", PATCH, "Al <a@x>", False, True),
         # A diff: a re-post of the patch, measured on production.
         (reply, "Bob <b@x>", PATCH, "Al <a@x>", True, False),
-        # Same address, other display name: the sender's own re-post.
-        (reply, "Al W <A@x>", PATCH, "Al <a@x>", False, False),
+        # Same address, other display name: the author answering their own
+        # patch is a reply too (#860); with a diff it is a re-post.
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", False, True),
+        (reply, "Al W <A@x>", PATCH, "Al <a@x>", True, False),
         # Another position, total, version or title.
         ("[PATCH v2 2/3] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
         ("[PATCH v2 1/4] foo: add bar", "Bob <b@x>", PATCH, "Al <a@x>", False, False),
@@ -419,3 +421,9 @@ def test_reply_to_patch_leaves_covers_to_reply_to_cover():
     cover = "[PATCH v2 0/3] foo: add bar"
     assert reply_to_cover(cover, "Bob <b@x>", cover, "Al <a@x>")
     assert not reply_to_patch(cover, "Bob <b@x>", cover, "Al <a@x>", False)
+
+
+def test_a_cover_from_the_parents_own_address_is_still_a_cover():
+    """#860 widens patches only: #820's different-sender rule stands."""
+    cover = "[PATCH v2 0/3] foo: add bar"
+    assert not reply_to_cover(cover, "Al <a@x>", cover, "Al <a@x>")

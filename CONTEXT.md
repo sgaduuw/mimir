@@ -1059,7 +1059,7 @@ order).
   because a patch can answer a reply #837 cleared, which has no key.
   Ingest no longer copies a head onto a patch; the batch's re-chain
   writes it. Known gaps: a same-sender re-post at an occupied position
-  links as a second row there (#860, #861), and the unguarded cover hop
+  links as a second row there (#861), and the unguarded cover hop
   can take another version's cover (#862).
 - **Operator order.** `backfill-patch-series --reprocess` first (it
   rewrites the versions the rule reads, and since #840 links chain-reply
