@@ -9,6 +9,7 @@ gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
 import logging
+from collections import Counter
 from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -1673,6 +1674,40 @@ def test_promote_list_address_already_set_no_overwrite(seeded_db, writer, promot
     with seeded_db() as s:
         ix = s.execute(select(Inbox).where(Inbox.id == alpha.id)).scalar_one()
         assert ix.list_address == "operator-override@example.com"
+
+
+def test_promote_list_address_from_a_tally_keeps_the_gates_and_stores_nothing(
+    seeded_db, writer
+):
+    """#855: the pre-walk sample hands its tally over in memory. It
+    passes the same gates as the stored tally, and nothing is recorded,
+    so the walk that follows does not count the sampled messages twice."""
+    alpha = _alpha(seeded_db)
+    with seeded_db() as s:
+        s.execute(delete(InboxAddressObservation))
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.list_address = "netdev@vger.kernel.org"
+        s.commit()
+
+    def promote(tally):
+        _submit_promote_list_address(writer, alpha.id, Counter(tally)).result(
+            timeout=10
+        )
+        with seeded_db() as s:
+            return s.execute(
+                select(Inbox.list_address).where(Inbox.id == alpha.id)
+            ).scalar_one()
+
+    fsdevel = "linux-fsdevel@vger.kernel.org"
+    assert promote({fsdevel: MIN_PROMOTE_OBSERVATIONS - 1}) is None
+    assert promote({"netdev@vger.kernel.org": MIN_PROMOTE_OBSERVATIONS * 2}) is None
+    assert promote({fsdevel: MIN_PROMOTE_OBSERVATIONS, "x@vger.kernel.org": 1}) == (
+        fsdevel
+    )
+    with seeded_db() as s:
+        assert (
+            s.execute(select(func.count(InboxAddressObservation.address))).scalar() == 0
+        )
 
 
 # Backfill canonical-inbox + observations from historical blobs

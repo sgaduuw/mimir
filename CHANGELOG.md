@@ -44,9 +44,8 @@ once.
   have none until a crawler fetches them.
 - `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
   first, then the rest by name (#766), so lkml's fresh mail and its cache warm
-  no longer wait behind inboxes that sort before it. After a from-scratch
-  ingest, run `uv run mimir admin canonicals backfill --reprocess --restart`.
-  Existing deployments see no change.
+  no longer wait behind inboxes that sort before it. Existing deployments see
+  no change.
 - A series diff page's title and description now name the series and the two
   versions, instead of the same generic text on every diff (#846).
 - The thread page (`/t`) shows the root's revisions fold with its diff links,
@@ -65,6 +64,18 @@ once.
   (`[PATCH v4.1 0/3]`) still reads as v4, but `[PATCH-v4.1 0/3]` now reads as v1.
   Stored versions change on the next `backfill-patch-series --reprocess`,
   which is already required above.
+- An inbox's first ingest reads its newest 500 messages to detect its list
+  address before the walk, unless one is set, so its cross-posts pin to it
+  instead of to an inbox ingested earlier, such as lkml (#855). A
+  from-scratch ingest no longer needs `admin canonicals backfill --reprocess`
+  afterwards, and inboxes that already hold mail are not sampled. When the
+  sample cannot settle an address and the full walk can, ingest logs the
+  `admin canonicals backfill --reprocess --inbox` command that re-pins that
+  inbox.
+- Ingest walks an inbox's epochs in number order. It sorted them by name, so
+  epochs 10 and up came before 2 to 9. This affected a from-scratch ingest of
+  an inbox with ten or more epochs, such as lkml; a steady-state tick is
+  unaffected (#855).
 - A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
   `+++` pair followed by a hunk header) now records the files it touches
   (#869). Before, it counted as having no diff, so #837 and #860 cleared a
