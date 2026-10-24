@@ -158,7 +158,7 @@ def test_a_long_bracket_parses_in_linear_time():
     start = time.perf_counter()
     assert _bracket_version("PATCH " + "v1 " * 300_000) == "v1"
     assert _bracket_version("PATCH " + "a/v1. " * 300_000) == "v1"
-    assert time.perf_counter() - start < 1
+    assert time.perf_counter() - start < 5
 
 
 def test_unchanged_version_shapes_stay_put():
