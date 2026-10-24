@@ -72,10 +72,11 @@ once.
   (2026-10-24, read-only) that is 420 postings: 420 cover rows and 2,433
   patch rows. About 2,323 patch rows of earlier postings now show as
   superseded in lifecycle views, and 64 postings share a version with another
-  posting of their series. The `--reprocess` and `backfill-series-chains`
-  above apply it; the chain pass reports `versions_planned`, expected near
-  2,853, with heads moving in 2 keys. Every later `--reprocess` rewrites these
-  rows and re-chains them back to the same values, so its counts include them.
+  posting of their series. `backfill-series-chains` above applies it (the
+  `--reprocess` only where it re-chains a key for another reason); the chain
+  pass reports `versions_planned`, expected near 2,853, with heads moving in 2
+  keys. Every later `--reprocess` rewrites these rows and re-chains them back
+  to the same values, so its counts include them.
 - A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
   `+++` pair followed by a hunk header) now records the files it touches
   (#869). Before, it counted as having no diff, so #837 and #860 cleared a

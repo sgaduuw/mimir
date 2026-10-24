@@ -1045,11 +1045,10 @@ order).
   batch's re-chain restores the posting's in the same transaction. That
   is about 2,853 rows per reprocess (production, 2026-10-24); a plain run
   skips them as fully resolved. Before #870, on production (2026-10-24,
-  read-only) a `--reprocess`
-  changes 32,603 rows on 15,974 keys: 19,302 re-chains across the
-  batches (8 per batch at p50, 66 at most), about 25 s of writer time.
-  Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
-  minutes.
+  read-only) a `--reprocess` changes 32,603 rows on 15,974 keys: 19,302
+  re-chains across the batches (8 per batch at p50, 66 at most), about
+  25 s of writer time. Re-chaining every row it walks would be 439,478
+  re-chains, 8 to 10 minutes.
 - **A patch finds its cover by one walk (#840).** `git send-email
   --chain-reply-to` threads each patch under the one before, so only 1/N
   answers the cover. `cover_of_patch` climbs parents through in-series
@@ -1091,8 +1090,8 @@ order).
   patches the reprocess left untouched: their rows do not change, so only
   a chain pass is sure to give them their cover's head. Its
   `heads_planned` counts the heads it changes and `versions_planned` the
-  versions; on an archive with none to change it plans zero. After that, ingest and `backfill-patch-series` keep the
-  keys they touch chained.
+  versions; on an archive with none to change it plans zero. After that,
+  ingest and `backfill-patch-series` keep the keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)
 
