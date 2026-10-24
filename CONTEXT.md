@@ -147,8 +147,9 @@ special-cased "redact-on-download" code path to maintain. See
 The allowlist that drives `safe_from`, `_redact_trailer_address`,
 and the per-reviewer link-generation check is the **union** of:
 
-- `Settings.email_allowlist` (env-tunable substring tokens; the
-  static defaults are `torvalds@`, `gregkh@`, `@kernel.org`).
+- `Settings.email_allowlist` (env-tunable tokens matched by address
+  structure, not substring, #863; `@domain` is that exact domain. The
+  static defaults are `@kernel.org` plus three historical full addresses).
 - The set of `M:`/`R:` addresses parsed from the kernel tree's
   `MAINTAINERS` file, lowercased and exact-matched. Lives in the
   `subsystem_maintainers` table; the lookup is cached in the

@@ -626,9 +626,7 @@ def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
     def keep_if_kernel(email):
         # Domain-suffix check (rather than substring) to keep CodeQL's
         # `py/incomplete-url-substring-sanitization` rule quiet on this
-        # test helper. Production redactor uses substring matching via
-        # email_allowlist tokens by design; that's an intentional
-        # looseness handled elsewhere.
+        # test helper.
         return f"<{email}>" if email.lower().endswith("@kernel.org") else "<redacted>"
 
     body = (

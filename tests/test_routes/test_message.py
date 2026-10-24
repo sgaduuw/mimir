@@ -1615,7 +1615,7 @@ def test_message_json_ld_author_includes_email_for_maintainers_derived_address(
     A regression that read the static allowlist only (skipping the
     MAINTAINERS-derived union) would silently drop `Person.email`
     for every maintainer who isn't also covered by a static
-    `email_allowlist` substring token.
+    `email_allowlist` token.
     """
     from mimir import maintainer_allowlist
     from mimir.config import settings
