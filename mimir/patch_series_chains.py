@@ -163,11 +163,10 @@ def _load_key(
 ) -> tuple[list[Cover], dict[int, int | None], list[tuple], list[tuple[int, str]]]:
     """A key's covers, their stored heads, its in-series patches as
     `(id, cover message id, stored head, stored version)`, and the
-    `(id, version)` of the
-    cover and patch rows whose stored version differs from their
-    posting's (`posting_version`, #870). The one place that reads a whole
-    key: it must see every series on it. Each `Cover` carries its
-    posting's version, so `chain_series` ranks on it.
+    `(id, version)` of the cover and patch rows whose stored version
+    differs from their posting's (`posting_version`, #870). The one place
+    that reads a whole key: it must see every series on it. Each `Cover`
+    carries its posting's version, so `chain_series` ranks on it.
 
     A patch belongs to the cover `cover_of_patch` finds for it, the walk
     that linked it (#840), so a patch answering the patch before it is
