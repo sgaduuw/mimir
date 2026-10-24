@@ -238,3 +238,16 @@ def test_a_plain_run_and_reprocess_clear_a_stored_same_sender_reply(
     assert got["k860@x"] == (None,) * 4
     assert got["rp860@x"][:3] == (key, "v2", 1)
     assert result.reply_patch == 2
+
+
+def test_a_repost_with_a_quilt_diff_is_not_a_reply(seeded_db, broker_active, tmp_path):
+    """#869: a diff without git's header still makes it a patch."""
+    quilt = "--- a/foo.c\n+++ b/foo.c\n@@ -1 +1 @@\n-a\n+b\n"
+    cover = _msg("c869@x", COVER)
+    patch = _with_body(_msg("p869@x", PATCH, in_reply_to="c869@x"), DIFF)
+    repost = _with_body(_msg("rp869@x", REPLY, in_reply_to="p869@x"), quilt)
+    _ingest(seeded_db, tmp_path, "0.git", [cover, patch, repost])
+
+    assert series_columns(seeded_db, "rp869@x")["rp869@x"] == (KEY, "v2", 1, None)
+    backfill_patch_series(reprocess=True)
+    assert series_columns(seeded_db, "rp869@x")["rp869@x"] == (KEY, "v2", 1, None)
