@@ -784,7 +784,7 @@ def test_series_diff_labels_follow_a_version_rewritten_in_place(client, tmp_path
 
 def test_series_diff_title_and_description_name_the_series(client, tmp_path):
     """#846: every diff page had the same generic title, so a sitemap of
-    them would publish ~195k duplicate titles. The series subject, without
+    them would publish ~194k duplicate titles. The series subject, without
     its `[PATCH v2 0/3]` bracket, plus the versions, tells them apart."""
     author = "Alice <a@example>"
     key = _ingest_series_pair(

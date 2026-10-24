@@ -984,11 +984,11 @@ def maintainers_sitemap_xml(
 
 
 # One urlset per first hex character of `patch_series_key` (a SHA-1 hex
-# digest). Measured read-only on production 2026-10-24: 194,877 adjacent
-# cover diffs, the largest bucket 12,563, so sixteen pages stay well under
+# digest). Measured read-only on production 2026-10-24: 193,557 adjacent
+# cover diffs, the largest bucket 12,478, so sixteen pages stay well under
 # the 50,000 cap. A bucket is a range on `ix_articles_patch_series_key`,
-# about 0.1 s cold, so pages are built on request and cached, like the
-# archive pages, with no warm target.
+# about 0.13 s warm (cold unmeasured), so pages are built on request and
+# cached, like the archive pages, with no warm target.
 SERIES_DIFF_BUCKETS = "0123456789abcdef"
 
 
@@ -1001,10 +1001,11 @@ def series_diff_sitemap_xml(
 
     Adjacent follows the revisions fold (`patch_state._series_timeline`):
     a series' covers oldest first, undated last, a resend folded into the
-    first appearance of its version. Covers only, because both covers must
-    exist for the route to serve the diff, and per-position diffs would
-    be 1.47M URLs (measured 2026-10-24). `<lastmod>` is the newest cover
-    in either slot: the mails are immutable, so only a resend moves it.
+    first appearance of its version (an unversioned one is dropped).
+    Covers only, because both covers must exist for the route to serve
+    the diff, and per-position diffs would be 1.47M URLs (measured
+    2026-10-24). `<lastmod>` is the newest cover in either slot: the
+    mails are immutable, so only a resend moves it.
     """
 
     def compute() -> SitemapPayload:
@@ -1024,7 +1025,13 @@ def series_diff_sitemap_xml(
                 Article.patch_series_key >= bucket,
                 Article.patch_series_key < chr(ord(bucket) + 1),
                 func.coalesce(Article.patch_series_position, 0) == 0,
-                Article.patch_series_version.is_not(None),
+                # An unversioned `[PATCH RESEND 0/N]` copies a revision
+                # already listed. Dropped rather than merged into v1: the
+                # route's slots match the version string exactly, so its
+                # date would move a lastmod the page's slots do not see.
+                # SQL `!=` is never true for NULL, so this also drops covers
+                # with no version, which the route cannot serve.
+                Article.patch_series_version != "resend",
             )
         ).all()
         series: dict[tuple[str, int], list] = {}
