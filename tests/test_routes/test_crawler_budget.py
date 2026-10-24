@@ -134,6 +134,17 @@ def test_exempt_names_all_exist_in_url_map():
     assert EXEMPT_ENDPOINTS <= endpoints, EXEMPT_ENDPOINTS - endpoints
 
 
+def test_every_sitemap_endpoint_is_exempt_and_edge_cached():
+    """The check above catches a misspelled name, not a missing one: a new
+    sitemap route left out of both lists is budgeted like a page and sent
+    with no Cache-Control, and nothing failed (#846)."""
+    endpoints = {rule.endpoint for rule in create_app().url_map.iter_rules()}
+    sitemaps = {e for e in endpoints if "sitemap" in e}
+    assert len(sitemaps) >= 6, sitemaps  # precondition: the predicate finds them
+    assert sitemaps <= EXEMPT_ENDPOINTS, sitemaps - EXEMPT_ENDPOINTS
+    assert sitemaps <= hooks._CACHE_CONTROL_BY_ENDPOINT.keys()
+
+
 def test_defaults_gate_nothing(client):
     # The real, unpatched settings: every budget is 0.
     for _ in range(5):
@@ -557,9 +568,53 @@ def test_default_listed_crawlers_are_classified_by_key(key, ua):
     assert _default_gate().crawler_key(ua) == key
 
 
-def test_default_list_has_the_ten_percent_crawlers():
-    assert DEFAULT_CRAWLER_UA_BUDGETS == dict.fromkeys(DEFAULT_LISTED, 10)
+def test_default_crawler_list():
+    assert DEFAULT_CRAWLER_UA_BUDGETS == {
+        **dict.fromkeys(DEFAULT_LISTED, 10),
+        "Googlebot": 80,
+        "bingbot": 80,
+    }
     assert "ChatGPT-User" not in DEFAULT_CRAWLER_UA_BUDGETS
+
+
+def _production_shaped_gate(clock):
+    """Default budgets, global 100 a minute over 16 workers (#848). The
+    gate is one worker's view: its buckets hold 1/16 of every share."""
+    return CrawlerBudget(100, DEFAULT_CRAWLER_UA_BUDGETS, 16, 120, clock)
+
+
+@pytest.mark.parametrize("ua, key", [(GOOGLEBOT, "Googlebot"), (BINGBOT, "bingbot")])
+def test_search_crawlers_are_listed_by_default(ua, key):
+    gate = _production_shaped_gate(Clock())
+    assert gate.crawler_key(ua) == key
+    # 80% of 100 over 16 workers. An unlisted crawler has no bucket, so
+    # this also fails when the key merely equals the lowercased token.
+    assert gate.ua_per_worker_per_minute(key) == 5
+
+
+def _burst(gate, clock, ua):
+    """Three requests 20 s apart, all landing on this one worker."""
+    answers = []
+    for _ in range(3):
+        answers.append(gate.check(ua))
+        clock.now += 20
+    return answers
+
+
+def test_search_crawler_burst_over_sixteen_workers_is_admitted():
+    clock = Clock()
+    gate = _production_shaped_gate(clock)
+    # 80% of 100 over 16 workers = 5 a minute, one token every 12 s.
+    assert _burst(gate, clock, GOOGLEBOT) == [None, None, None]
+    assert _burst(gate, clock, BINGBOT) == [None, None, None]
+
+
+def test_default_share_crawler_is_still_throttled_by_the_same_burst():
+    clock = Clock()
+    gate = _production_shaped_gate(clock)
+    # 10% of 100 over 16 workers = 0.625 a minute: the second request
+    # inside 96 s is refused. Keeps the gate on.
+    assert _burst(gate, clock, APPLEBOT) == [None, "Applebot", "Applebot"]
 
 
 @pytest.mark.parametrize("ua", HUMAN_UAS)

@@ -65,7 +65,13 @@ uv run mimir show 'message-id@example.com' --inbox lkml --body-chars -1
 
 Ingest parses messages in worker processes and sends database writes through
 the broker. `--workers 1` is useful for debugging. Checkpoints are per inbox and
-epoch; repeating an ingest resumes from the last recorded commit.
+epoch; repeating an ingest resumes from the last recorded commit. Pinned inboxes
+(`PINNED_INBOXES`) go first, then the rest by name.
+
+An inbox's first ingest reads its newest 500 messages to detect its list
+address before the walk, unless one is set, so cross-posts pin to their topical
+list from the start. If ingest logs that an inbox's address was promoted after its first walk,
+run the `admin canonicals backfill --reprocess --inbox` command it names.
 
 Each epoch summary reports:
 
@@ -183,13 +189,19 @@ The first three accept `--reprocess` to revisit already processed articles.
 File and trailer extraction read message bodies from the mirrors; patch-series
 extraction uses indexed headers. `backfill-patch-series` also rewrites a
 stored subject that still carries header folding (a line break), in every
-mode, and reports how many as `subjects_unfolded`. Use `--help` for
-per-command options.
+mode, and reports how many as `subjects_unfolded`. It also clears the series
+of a reply that repeats its parent's subject without "Re:": a cover answering
+that cover (`reply_cover`, #820) and a patch answering that patch with no diff
+of its own (`reply_patch`, #837). A plain run skips rows that already have a
+key, so only `--reprocess` clears a reply stored with one. The patch rule
+reads `article_files`, so `backfill-article-files` must be complete first.
+Use `--help` for per-command options.
 
 `backfill-series-chains` splits a cover title that one sender reused for
-unrelated postings into separate series. Ingest and `backfill-patch-series`
-chain the titles they touch, so it is needed once, for history ingested before
-3.25.0.
+unrelated postings into separate series. It also gives a posting whose cover
+version is a typo its patches' version, on the cover and its patches (#870),
+reported as `versions_planned`. Ingest and `backfill-patch-series` chain the
+titles they touch, so it is needed once, for history ingested before 3.25.0.
 
 These four, and `admin canonicals backfill`, resume an interrupted run. The
 broker stores each run's position, so after a deploy, a dropped session or a

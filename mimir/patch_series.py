@@ -21,15 +21,18 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from email.utils import parseaddr
 
 from sqlalchemy import and_, literal_column, select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
+from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.parser import unfold
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
+from mimir.patches import has_article_files
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +52,14 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # version is implicit). A `v\d` glued to PATCH, PATCHES, PATCHSET, RFC
 # or RESEND (`[PATCHv2`, `[RFCv9`) also starts a marker, and RFC and
 # RESEND may end at it (#816, #819). A dotted version followed by `-`
-# (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision.
+# (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision, and
+# so does a parenthesised one (`(v20.08)`) and one after `-` or `/`
+# (`for-v6.18`, `stable/v3.2.x`, #870). A dotted version (`v5.10`) is the
+# revision only when no plain `vN` follows it (`_bracket_version`).
 _VERSION_RE = re.compile(
     r"(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
-    r"(v\d+(?!(?:\.\d+)+-)|RFC|RESEND)(?:\b|(?=v\d))",
+    r"(?:(?<![-/])|(?!v\d+\.\d))"
+    r"(v\d+(?!(?:\.\d+)+[-)])|RFC|RESEND)(?:\b|(?=v\d))",
     re.IGNORECASE,
 )
 
@@ -216,18 +223,24 @@ def parse_cover_letter(subject: str | None) -> CoverLetter | None:
         total = int(zero_of.group(0).split("/")[1].strip())
     except ValueError, IndexError:
         return None
-    # Prefer the most specific version marker: explicit v\d+ over
-    # RFC/RESEND. A subject like `[PATCH RESEND v3 0/3]` is a resent
-    # v3, not RFC-shaped. The old for/else form happened to work
-    # because of `findall`'s ordering, but the precedence wasn't
-    # explicit. `next()` with a v\d+ filter + a marker fallback +
-    # the "v1" default makes the precedence read off the line.
-    versions = _VERSION_RE.findall(inside)
-    version = next(
-        (v.lower() for v in versions if v.lower().startswith("v")),
-        versions[0].lower() if versions else "v1",
+    return CoverLetter(version=_bracket_version(inside), total=total, title=title)
+
+
+def _bracket_version(inside: str) -> str:
+    """The version a patch bracket names, as `parse_cover_letter` stores
+    it."""
+    # A plain vN beats a dotted one, which beats RFC/RESEND, which beats the v1 default.
+    return _plain_version(inside) or next(
+        (m.group(1).lower() for m in _VERSION_RE.finditer(inside)), "v1"
     )
-    return CoverLetter(version=version, total=total, title=title)
+
+
+def _plain_version(inside: str) -> str | None:
+    """The `vN` of a patch bracket, None when it names none. A plain `vN`
+    beats a dotted one: `[PATCH v5.10 v2]` is v2 (#870)."""
+    numbers = [m for m in _VERSION_RE.finditer(inside) if m.group(1)[0] in "vV"]
+    plain = [m for m in numbers if not inside.startswith(".", m.end())]
+    return next((m.group(1).lower() for m in plain or numbers), None)
 
 
 def series_key(title: str, author: str | None) -> str:
@@ -251,7 +264,7 @@ def series_key(title: str, author: str | None) -> str:
 
 def _series_identity(title: str, author: str | None) -> tuple[str, str]:
     """`(address, title)` as `series_key` hashes them, so
-    `reply_to_cover` compares exactly what the key does."""
+    `_repeats_parent` compares exactly what the key does."""
     # Strip the author's display name; we want the email-address
     # half so renames don't break linkage.
     _name, address = parseaddr(author or "")
@@ -262,6 +275,50 @@ def _series_identity(title: str, author: str | None) -> tuple[str, str]:
     return address.lower().strip(), " ".join(title.lower().split())
 
 
+def _posting(subject: str | None) -> tuple[int, int, str, str] | None:
+    """`(position, total, version, title)` of a cover or in-series patch
+    subject, None for any other subject."""
+    subject = unfold(subject)
+    cover = parse_cover_letter(subject)
+    if cover is not None:
+        return 0, cover.total, cover.version, cover.title
+    patch = parse_in_series_patch_subject(subject)
+    if patch is None:
+        return None
+    version = _bracket_version(patch_bracket(subject)[0])
+    return patch.position, patch.total, version, patch.canonical_subject
+
+
+def _repeats_parent(
+    subject: str | None,
+    author: str | None,
+    parent_subject: str | None,
+    parent_author: str | None,
+    *,
+    any_sender: bool = False,
+) -> bool:
+    """Whether `subject` repeats its thread parent's posting, from another
+    address unless `any_sender`: the same position, patch total, version
+    and title, both or neither a RESEND. Another total or a RESEND on one
+    side only is a re-post of the series.
+
+    Reads the parent's subject and sender, never its stored series
+    columns, so the answer does not depend on which of the two was
+    stored first, and a reply to such a reply is caught too."""
+    posting, parent = _posting(subject), _posting(parent_subject)
+    if (
+        posting is None
+        or parent is None
+        or posting[:3] != parent[:3]
+        or posting_flags(parent_subject, parent[2])[1]
+        != posting_flags(subject, posting[2])[1]
+    ):
+        return False
+    address, title = _series_identity(posting[3], author)
+    parent_address, parent_title = _series_identity(parent[3], parent_author)
+    return title == parent_title and (any_sender or address != parent_address)
+
+
 def reply_to_cover(
     subject: str | None,
     author: str | None,
@@ -269,45 +326,189 @@ def reply_to_cover(
     parent_author: str | None,
 ) -> bool:
     """Whether a cover-shaped `subject` is really a reply to its thread
-    parent (#820): the parent's subject is a cover of the same title,
-    version and patch total, both or neither a RESEND, sent from
-    another address. Reviewers on some lists answer with the cover's
-    subject as is, without "Re:". Another total or a RESEND on one side
-    only is a re-post of the series, so a cover.
+    parent (#820), by `_repeats_parent`. Reviewers on some lists answer
+    with the cover's subject as is, without "Re:". A reply from the
+    cover's own address is left a cover: telling it from a re-post of
+    the series needs the patches actually posted, which nothing here
+    can see."""
+    return parse_cover_letter(unfold(subject)) is not None and _repeats_parent(
+        subject, author, parent_subject, parent_author
+    )
 
-    Reads the parent's subject and sender, never its stored series
-    columns, so the answer does not depend on which of the two was
-    stored first, and a reply to such a reply is caught too. A reply
-    from the cover's own address is left a cover: telling it from a
-    re-post of the series needs the patches actually posted, which
-    nothing here can see."""
-    cover = parse_cover_letter(unfold(subject))
-    parent = parse_cover_letter(unfold(parent_subject))
-    if (
-        cover is None
-        or parent is None
-        or (parent.version, parent.total) != (cover.version, cover.total)
-        or posting_flags(parent_subject, parent.version)[1]
-        != posting_flags(subject, cover.version)[1]
+
+def reply_to_patch(
+    subject: str | None,
+    author: str | None,
+    parent_subject: str | None,
+    parent_author: str | None,
+    touches_files: bool,
+) -> bool:
+    """Whether an in-series `subject` is really a reply to its thread
+    parent (#837), by `_repeats_parent`, and carries no diff
+    (`touches_files` is whether `extract_touched_paths` found a path).
+    Whoever sends it (#860): the diff, not the sender, tells a reply
+    from a re-post. About 98% of such rows are replies (49 of 50
+    sampled, production 2026-10-24); a diff marks a re-post of the
+    patch. A re-post that attaches its patch, or a reply that quotes a
+    diff unquoted, is misread either way."""
+    return (
+        not touches_files
+        and parse_in_series_patch_subject(unfold(subject)) is not None
+        and _repeats_parent(
+            subject, author, parent_subject, parent_author, any_sender=True
+        )
+    )
+
+
+# Parents a patch may climb to find its cover. Measured on production
+# 2026-10-24 (read-only): the deepest chain is 99 hops, 95 among rows
+# only this walk links, and 122 rows sit deeper than 64.
+PATCH_WALK_HOPS = 128
+
+
+# A patch posted this long after a cover of another explicit revision
+# answers an old thread, not that cover (#862). Measured on production
+# 2026-10-24: 2,568 rows on 491 covers, 19 of 20 sampled were mislinks;
+# the same-minute pairs (cover typos, per-patch versions) stay linked.
+CROSS_REVISION_GAP = timedelta(hours=1)
+
+
+def _explicit_version(subject: str | None) -> str | None:
+    """The `vN` a cover or patch bracket names, None when it names none
+    (`_bracket_version` reads that as v1, which a bare `[PATCH]` is not
+    claiming)."""
+    bracket = patch_bracket(unfold(subject or ""))
+    return _plain_version(bracket[0]) if bracket else None
+
+
+def _answers_old_revision(subject, date, cover) -> bool:
+    """Whether a patch posted at `date` is a later revision than `cover`:
+    both name a version, the versions differ, and the patch is more than
+    `CROSS_REVISION_GAP` newer. A missing date is no evidence. `date` is
+    the stored article date, the git commit time of the mirror, so
+    ingest and the backfill read the same value."""
+    patch_version, cover_version = (
+        _explicit_version(subject),
+        _explicit_version(cover.subject),
+    )
+    return (
+        None not in (patch_version, cover_version, date, cover.date)
+        and patch_version != cover_version
+        and aware_utc(date) - aware_utc(cover.date) > CROSS_REVISION_GAP
+    )
+
+
+def posting_version(cover_subject, patch_subjects, stored=None) -> str | None:
+    """The version of a posting: its cover's, unless every patch linked to
+    the cover names one explicit version higher than the cover's own, in
+    which case the cover's is a typo and the patches' wins (#870).
+    Measured on production 2026-10-24 (read-only): 420 postings, 2,433
+    patch rows and 420 cover rows; 50 of 56 hand-labelled were right.
+
+    A cover naming no version (`[PATCH 0/N]`) is excluded on purpose, as
+    unmeasured. The base is the cover's parsed version, never the stored
+    one, so a later patch that disagrees turns the posting back. `stored`
+    is used only when the cover no longer parses. There is no window
+    check: `cover_of_patch` already refuses a later patch of another
+    version (#862), so every linked patch is inside it."""
+    cover = parse_cover_letter(unfold(cover_subject or ""))
+    base = cover.version if cover is not None else stored
+    mine = _explicit_version(cover_subject)
+    theirs = {_explicit_version(s) for s in patch_subjects}
+    if mine is None or len(theirs) != 1 or None in theirs:
+        return base
+    (version,) = theirs
+    return version if int(version[1:]) > int(mine[1:]) else base
+
+
+def cover_of_patch(thread_parent, parent_of, posting, subject, date):
+    """The cover an in-series patch answers, or None. `posting` is the
+    patch's `_posting`, `subject` and `date` its own, `parent_of(message_id)`
+    a row with `message_id`, `subject`, `author`, `date` and
+    `thread_parent`, or None.
+
+    Follows parents through in-series patches with the patch's total and
+    version (`git send-email --chain-reply-to` threads each patch under
+    the one before) to the first cover. A patch of another total or
+    version is a re-post answering the old one, so the walk stops there.
+    The cover itself is not compared, as it always was, except for a
+    patch posted well after a cover of another explicit version
+    (`_answers_old_revision`): that is a later revision answering an old
+    thread, and has no cover here. Reads subjects, never stored series columns,
+    so the answer does not depend on which rows were linked first."""
+    seen = set()
+    for _ in range(PATCH_WALK_HOPS):
+        if thread_parent is None or thread_parent in seen:
+            return None
+        seen.add(thread_parent)
+        row = parent_of(thread_parent)
+        parent = None if row is None else _posting(row.subject)
+        if parent is None:
+            return None
+        if parent[0] == 0:
+            return None if _answers_old_revision(subject, date, row) else row
+        if parent[1:3] != posting[1:3]:
+            return None
+        thread_parent = row.thread_parent
+    return None
+
+
+def in_series_link(subject, thread_parent, parent_of, date) -> tuple[str, str] | None:
+    """`(patch_series_key, patch_series_version)` for an in-series patch:
+    its cover's (`cover_of_patch`), or None. A cover that is a reply to
+    its own parent has no series (#820), so its patches have none."""
+    posting = _posting(subject)
+    if posting is None or posting[0] == 0:
+        return None
+    cover = cover_of_patch(thread_parent, parent_of, posting, subject, date)
+    if cover is None:
+        return None
+    above = parent_of(cover.thread_parent) if cover.thread_parent else None
+    if above is not None and reply_to_cover(
+        cover.subject, cover.author, above.subject, above.author
     ):
-        return False
-    address, title = _series_identity(cover.title, author)
-    parent_address, parent_title = _series_identity(parent.title, parent_author)
-    return title == parent_title and address != parent_address
+        return None
+    parsed = parse_cover_letter(unfold(cover.subject))
+    return series_key(parsed.title, cover.author), parsed.version
+
+
+def _parent(session, thread_parent):
+    """The thread parent's message id, subject, author and own parent, by
+    one select on the indexed message id, or None. The date is the
+    cover's, for `_answers_old_revision`."""
+    if not thread_parent:
+        return None
+    return session.execute(
+        select(
+            Article.message_id,
+            Article.subject,
+            Article.author,
+            Article.date,
+            Article.thread_parent,
+        ).where(Article.message_id == thread_parent)
+    ).one_or_none()
 
 
 def _reply_to_cover_in_db(session, subject, author, thread_parent) -> bool:
-    """`reply_to_cover` for a stored article, its parent read by one
-    select on the indexed message id."""
-    if not thread_parent:
-        return False
-    parent = session.execute(
-        select(Article.subject, Article.author).where(
-            Article.message_id == thread_parent
-        )
-    ).one_or_none()
+    """`reply_to_cover` for a stored article."""
+    parent = _parent(session, thread_parent)
     return parent is not None and reply_to_cover(
         subject, author, parent.subject, parent.author
+    )
+
+
+def _reply_to_patch_in_db(session, article, subject) -> bool:
+    """`reply_to_patch` for a stored article. Its diff is whether
+    `article_files` holds a row for it: ingest writes those rows from
+    the same `extract_touched_paths` it decides by, and
+    `backfill-article-files` fills them for history, so both paths
+    agree once that backfill is complete."""
+    parent = _parent(session, article.thread_parent)
+    if parent is None:
+        return False
+    touches_files = has_article_files(session, article.id)
+    return reply_to_patch(
+        subject, article.author, parent.subject, parent.author, touches_files
     )
 
 
@@ -316,64 +517,13 @@ class BackfillResult(BackfillCounters):
 
     examined: int = 0
     indexed: int = 0  # cover letter detected, key + version + pos=0 written
-    in_series_indexed: int = 0  # in-series patch linked to its cover via thread parent
+    in_series_indexed: int = 0  # in-series patch linked to its cover (`in_series_link`)
     in_series_orphan: int = 0  # in-series patch, position set, cover not in DB
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
     reply_cover: int = 0  # cover-shaped reply to a cover, series cleared (#820)
+    reply_patch: int = 0  # patch-shaped reply to that patch, series cleared (#837)
     skipped: int = 0  # already fully resolved (idempotent re-run)
     subjects_unfolded: int = 0  # stored folded subject rewritten (#710)
-
-
-def _resolve_in_series_link(
-    session,
-    article,
-    reprocess: bool,
-) -> tuple[str, str] | None:
-    """Look up `(patch_series_key, patch_series_version)` from the
-    article's thread parent. Depth-1 walk: `git send-email --thread`
-    posts in-series patches as direct children of the cover, which
-    is the modal shape. Deeper chains (patch resent as a reply to
-    a reply) fall through to the orphan bucket; if they become
-    common we'll lift the depth, but for now the cost of a recursive
-    walker isn't worth the rare hit.
-
-    Two-step resolve so a single backfill pass is order-independent:
-    if the parent is already keyed, use those values (unless
-    `reprocess`, which always recomputes); otherwise
-    compute the key + version from the parent's subject locally
-    (without writing). When the walker later visits the parent and
-    runs the cover-letter path, it writes the same `series_key()`
-    output, so the in-series patch and cover converge on the same
-    key without ordering constraints. The head is not looked up: the
-    batch re-chains the key on the writer (#824).
-    """
-    if not article.thread_parent:
-        return None
-    parent = session.execute(
-        select(
-            Article.subject,
-            Article.author,
-            Article.patch_series_key,
-            Article.patch_series_version,
-            Article.thread_parent,
-        ).where(Article.message_id == article.thread_parent)
-    ).one_or_none()
-    if parent is None:
-        return None
-    # A reprocess reparses the parent: its stored version may be the one
-    # being rewritten, and the walk reaches the children first (#816).
-    if parent.patch_series_key is not None and not reprocess:
-        # Under a non-cover parent the re-chain cannot reach this row, so
-        # any backfill write leaves its head NULL until #840.
-        return parent.patch_series_key, parent.patch_series_version
-    cover = parse_cover_letter(unfold(parent.subject))
-    # A reply stored as a cover has no series (#820), so its patches are
-    # orphans rather than linked to a key with no cover.
-    if cover is None or _reply_to_cover_in_db(
-        session, parent.subject, parent.author, parent.thread_parent
-    ):
-        return None
-    return series_key(cover.title, parent.author), cover.version
 
 
 def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
@@ -446,8 +596,17 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         )
 
     in_series = parse_in_series_patch_subject(subject)
+    if in_series is not None and _reply_to_patch_in_db(session, article, subject):
+        # Like a reply cover: never "fully resolved", so re-checked by
+        # every plain run, and its old key goes to the re-chain (#824).
+        return bucket("reply_patch"), pending(None, None, None)
     if in_series is not None:
-        link = _resolve_in_series_link(session, article, reprocess)
+        link = in_series_link(
+            subject,
+            article.thread_parent,
+            lambda mid: _parent(session, mid),
+            article.date,
+        )
         if link is not None:
             key, version = link
             return bucket("in_series_indexed"), pending(
@@ -519,5 +678,6 @@ __all__ = [
     "backfill_patch_series",
     "parse_cover_letter",
     "reply_to_cover",
+    "reply_to_patch",
     "series_key",
 ]

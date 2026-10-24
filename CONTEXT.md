@@ -147,8 +147,9 @@ special-cased "redact-on-download" code path to maintain. See
 The allowlist that drives `safe_from`, `_redact_trailer_address`,
 and the per-reviewer link-generation check is the **union** of:
 
-- `Settings.email_allowlist` (env-tunable substring tokens; the
-  static defaults are `torvalds@`, `gregkh@`, `@kernel.org`).
+- `Settings.email_allowlist` (env-tunable tokens matched by address
+  structure, not substring, #863; `@domain` is that exact domain. The
+  static defaults are `@kernel.org` plus three historical full addresses).
 - The set of `M:`/`R:` addresses parsed from the kernel tree's
   `MAINTAINERS` file, lowercased and exact-matched. Lives in the
   `subsystem_maintainers` table; the lookup is cached in the
@@ -1038,15 +1039,59 @@ order).
   clearing a reply-cover (#820) writes key NULL, and the key it left
   has to lose the split that cover caused. A row whose key, version,
   position and subject do not change sends nothing, so its key is not
-  re-chained. On production (2026-10-24, read-only) a `--reprocess`
-  changes 32,603 rows on 15,974 keys: 19,302 re-chains across the
-  batches (8 per batch at p50, 66 at most), about 25 s of writer time.
-  Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
-  minutes.
+  re-chained. The exception is a row of a cover typo (#870): its stored
+  version is the posting's, so it differs from its subject's on every
+  `--reprocess`, which rewrites it with the subject's version, and the
+  batch's re-chain restores the posting's in the same transaction. That
+  is about 2,853 rows per reprocess (production, 2026-10-24); a plain run
+  skips them as fully resolved. Before #870, on production (2026-10-24,
+  read-only) a `--reprocess` changes 32,603 rows on 15,974 keys: 19,302
+  re-chains across the batches (8 per batch at p50, 66 at most), about
+  25 s of writer time. Re-chaining every row it walks would be 439,478
+  re-chains, 8 to 10 minutes.
+- **A patch finds its cover by one walk (#840).** `git send-email
+  --chain-reply-to` threads each patch under the one before, so only 1/N
+  answers the cover. `cover_of_patch` climbs parents through in-series
+  patches of the same total and version to the first cover, capped at
+  `PATCH_WALK_HOPS` and stopped by a repeated message id. Ingest, both
+  backfill modes and `_load_key` all use it, so a patch is linked,
+  titled and headed with the same cover everywhere. It reads subjects,
+  never stored keys, so the answer does not depend on arrival order and
+  one plain run heals a chain that arrived out of order. A patch hop of
+  another version or total stops the walk (a v2 re-post answering v1's
+  patch is not part of v1); the cover hop is not compared, as before.
+  `_load_key` reads the key's rows first and the database for the rest,
+  because a patch can answer a reply #837 cleared, which has no key.
+  Ingest no longer copies a head onto a patch; the batch's re-chain
+  writes it. Known gaps: a same-sender re-post at an occupied position
+  links as a second row there (#861). The cover hop is guarded only
+  against a later revision: a patch of another explicit version posted
+  over an hour after its cover is orphaned (#862); closer pairs stay
+  linked, a cover typo takes its patches' version (#870), and a patch is
+  not re-keyed to its own revision (#871).
+- **The re-chain is the last writer of a posting's version (#870).**
+  Ingest, replay and `backfill-patch-series` write the subject's own
+  version (a patch, its cover's); the `rechain_keys` that ends each of
+  their transactions writes the posting's, from `posting_version` in
+  `_load_key`. When every patch linked to a cover names one explicit
+  version higher than the cover's, the cover's is a typo and the
+  patches' wins, on the cover and on every patch the walk links to it.
+  The base is the cover's parsed version, not the stored one, so a later
+  patch that disagrees turns the posting back. `chain_series` ranks on
+  the resolved version, which joins postings that a typo split. No
+  window check: `cover_of_patch` already orphans a later patch of
+  another version. `head_updates` returns the version changes as a list
+  of their own, so `heads_planned` keeps its meaning, and a key of one
+  cover is still written when only its version changes.
 - **Operator order.** `backfill-patch-series --reprocess` first (it
-  rewrites the versions the rule reads), then `backfill-series-chains`,
-  once, for history ingested before 3.25.0. After that, ingest and
-  `backfill-patch-series` keep the keys they touch chained.
+  rewrites the versions the rule reads, and since #840 links chain-reply
+  patches), then `backfill-series-chains` once. Before 3.25.0 that pass
+  chained the history; after #840 it is the repair pass for chain-reply
+  patches the reprocess left untouched: their rows do not change, so only
+  a chain pass is sure to give them their cover's head. Its
+  `heads_planned` counts the heads it changes and `versions_planned` the
+  versions; on an archive with none to change it plans zero. After that,
+  ingest and `backfill-patch-series` keep the keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)
 
@@ -1494,9 +1539,19 @@ data:
    warm-up. Operator can override via `admin inbox update`.
    Promotion skips an address another inbox already holds, because a
    small list's To/Cc is often dominated by cross-posts to a bigger
-   one (#647). The first inbox to promote an address keeps it, so on
-   a from-scratch ingest (alphabetical) cocci can take lkml's address
-   before lkml does; an operator corrects that with `--list-address`.
+   one (#647). The first inbox to promote an address keeps it. Ingest
+   walks pinned inboxes first (#766), so on a from-scratch ingest lkml
+   takes its address before cocci can; two unpinned inboxes still go
+   alphabetically, and an operator corrects that with `--list-address`.
+   An inbox's first ingest promotes from a sample of its newest 500
+   messages before the walk (#855), because each epoch reads the
+   address map once, at its start. The inboxes walked earlier have had
+   their chance to promote, so the walking inbox's own address is the
+   only one its picks could miss; without the sample, its cross-posts
+   pinned to whichever inbox promoted first, lkml since #766. The tally
+   promotion after the walk stays as the fallback, and when it fires on
+   a first ingest it logs the `admin canonicals backfill --reprocess
+   --inbox` run that re-pins that inbox.
 3. **Per-article pinning.** With `Inbox.list_address` populated,
    `pick_canonical_inbox_id` walks the message's To/Cc addresses
    in order and returns the first inbox whose `list_address`
@@ -1580,8 +1635,12 @@ afterthought:
   the meta-index). Cached 1h
   via `cache.get_or_compute`. The index is a single-level
   `<sitemapindex>` referencing urlsets only: `/meta-sitemap.xml`,
-  the per-inbox `/<inbox>/sitemap.xml`, and `/sitemap-maintainers.xml`
-  (one urlset of every `/maintainers/<address>` page). The
+  the per-inbox `/<inbox>/sitemap.xml`, `/sitemap-maintainers.xml`
+  (one urlset of every `/maintainers/<address>` page), and sixteen
+  `/sitemap-series-diffs-<h>.xml` (#846). Those list the cover-letter
+  diff between adjacent revisions only, paged by the key's first hex
+  character: 193,557 such diffs and 12,478 in the largest page, where
+  every position would be 1.47M (production, 2026-10-24). The
   maintainers layer is deliberately ONE urlset, not a nested index
   and not per-maintainer files: Google rejects a nested sitemap index
   ("Incorrect sitemap index format: Nested sitemap indexes"), so the
@@ -2202,6 +2261,10 @@ themselves.
 Maintainer profiles were the mirror image: 2,248 URLs in
 `/sitemap-maintainers.xml` with zero inbound links, because every
 place a maintainer appeared rendered as plain text.
+
+Series diffs repeated it (#846): the only links to them were in the
+revisions fold, which rendered on message pages alone, and those
+canonicalise to `/t`. `/t` now renders the root's fold too.
 
 Both are now linked, and the lesson generalises: **a canonical tag and
 a sitemap entry are assertions, an internal link is a path.** Shipping

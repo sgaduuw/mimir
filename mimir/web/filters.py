@@ -32,7 +32,11 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.rendering import render_body
-from mimir.subsystems import is_addressable_subsystem_name, subsystem_path
+from mimir.subsystems import (
+    is_addressable_subsystem_name,
+    subsystem_index_path,
+    subsystem_path,
+)
 from mimir.trailers import REVIEW_TRAILER_ROLES
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import (
@@ -180,10 +184,28 @@ def _lexer_for(filename: str | None, content: str):
         return TextLexer()
 
 
+def _token_matches(token: str, address: str) -> bool:
+    """One `email_allowlist` token against a lowercased address, by
+    structure (#863): `local@` is that local part at any domain,
+    `local@domain` is the exact address, and `@domain` or a bare
+    `domain` is exactly that domain, subdomains not included. A
+    substring match let `a@kernel.org.evil.example` through."""
+    local, at, domain = address.partition("@")
+    if not at or "@" in domain:
+        return False
+    token = token.lower()
+    if token.endswith("@"):
+        return local == token[:-1]
+    if "@" in token.lstrip("@"):
+        return address == token
+    return domain == token.lstrip("@")
+
+
 def _is_allowlisted(address: str) -> bool:
-    """Union check: static `Settings.email_allowlist` substring tokens
-    OR exact membership in the dynamic MAINTAINERS-derived address
-    set. Both checks operate on the lowercased address.
+    """Union check: static `Settings.email_allowlist` tokens (matched
+    by address structure, see `_token_matches`) OR exact membership in
+    the dynamic MAINTAINERS-derived address set. Both checks operate
+    on the lowercased address.
 
     Per-request memoised via `flask.g` so the MAINTAINERS set is
     fetched at most once per render (the underlying DB-backed cache
@@ -195,7 +217,7 @@ def _is_allowlisted(address: str) -> bool:
     and the cache layer's own coordination handles repeats.
     """
     addr_lower = address.lower()
-    if any(token.lower() in addr_lower for token in settings.email_allowlist):
+    if any(_token_matches(token, addr_lower) for token in settings.email_allowlist):
         return True
     try:
         # Not `g.setdefault(key, maintainer_addresses())`: the default is
@@ -273,19 +295,24 @@ def _render_body_filter(
 @bp_web.app_template_filter("safe_from")
 def _safe_from_filter(author: str | None) -> str:
     """Return a From-line suitable for display: full address for senders
-    in the union of `settings.email_allowlist` (static substring tokens)
+    in the union of `settings.email_allowlist` (static tokens)
     and the MAINTAINERS-derived address set (exact match), otherwise
     display name + `<hidden>` to keep casual senders' addresses out of
     the archive UI."""
     if not author:
         return ""
-    name, addr = parseaddr(author)
+    _, addr = parseaddr(author)
     if not addr:
-        return author  # unparseable; show as-is
-    if _is_allowlisted(addr):
+        # Unparseable: as-is unless it holds an address we would hide.
+        if any(not _is_allowlisted(t) for t in _EMAIL_TOKEN_RE.findall(author)):
+            return "<hidden>"
         return author
-    if name:
-        return f"{name} <hidden>"
+    usable = _usable_display_name(author)
+    if _is_allowlisted(addr):
+        # Rebuilt, never `author`: a trailing "(comment)" can hold an address.
+        return f"{usable} <{addr}>" if usable else addr
+    if usable:
+        return f"{usable} <hidden>"
     return "<hidden>"
 
 
@@ -314,10 +341,30 @@ def _display_name_filter(author: str | None) -> str:
     trailing punctuation hole."""
     if not author:
         return "unknown sender"
-    name, _ = parseaddr(author)
-    if name:
-        return name
-    return "unknown sender"
+    # An allowlisted address is already public, and JSON-LD and Atom
+    # name a nameless allowlisted sender by it (#845, #850).
+    return (
+        _usable_display_name(author) or _allowlisted_email(author) or "unknown sender"
+    )
+
+
+# Bounded runs keep the scan linear on a hostile, very long name.
+_EMAIL_TOKEN_RE = re.compile(r"[^\s@<>()\[\],;:\"]{1,64}@[^\s@<>()\[\],;:\"]{1,255}")
+
+
+def _usable_display_name(author: str | None) -> str | None:
+    """The From display name, or None when it is empty or holds an
+    email-shaped token that is not allowlisted (#852). `"a@x.org"
+    <a@x.org>` and a list rewrite like `"a@x.org via list" <list@y.org>`
+    would otherwise print the address through the name. Errs towards
+    hiding: a false positive drops a name, a false negative leaks an
+    address. "John @ Company" is not email-shaped and stays."""
+    name = parseaddr(author or "")[0].strip()
+    if not name:
+        return None
+    if any(not _is_allowlisted(m) for m in _EMAIL_TOKEN_RE.findall(name)):
+        return None
+    return name
 
 
 def _allowlisted_email(author: str | None) -> str | None:
@@ -478,6 +525,13 @@ def _subsystem_url_filter(name: str, inbox_name: str) -> str:
     """Site-relative URL for a subsystem dashboard. See
     `mimir.subsystems.subsystem_path` for why this is shared."""
     return subsystem_path(inbox_name, name)
+
+
+@bp_web.app_template_filter("subsystem_index_url")
+def _subsystem_index_url_filter(inbox_name: str) -> str:
+    """Site-relative URL for an inbox's subsystem index. See
+    `mimir.subsystems.subsystem_index_path`."""
+    return subsystem_index_path(inbox_name)
 
 
 @bp_web.app_template_filter("is_addressable_subsystem")

@@ -11,6 +11,201 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.27.0] - 2026-10-25
+
+Upgrade steps, after deploying, in this order. Do not run them alongside
+another long backfill, such as an open `admin canonicals backfill`.
+
+1. If `backfill-article-files` never completed on this archive, finish it
+   first: the #837 and #860 reply rules read `article_files`. A completed
+   earlier run is enough. Stored patches whose diff is in quilt, `diff -u` or
+   `Index:` format have no `article_files` rows yet (#869), so the reprocess
+   below clears them as replies. That is a few dozen rows on a full archive.
+   A full `backfill-article-files --restart` beforehand avoids it, at the cost
+   of re-reading most of the archive.
+2. Run `backfill-patch-series --reprocess` once. It walks the whole archive
+   and writes only the rows it changes. A plain run is not enough: it skips
+   every row that already has a key before the rules run. It applies #837,
+   #838, #840, #860, #862 and the #870 parser fix together. The counts in
+   the entries below were measured per change on production (2026-10-24);
+   they overlap, and there is no measured total. #837 alone clears about 168k
+   replies.
+3. Run `backfill-series-chains` once. It gives chain-reply patches the
+   reprocess left untouched their cover's head (#840), and it applies #870's
+   cover-typo versions, which the reprocess does not write. It reports
+   `heads_planned` and `versions_planned`; expect `versions_planned` near
+   2,853 on a full archive, and zero on an archive with no typo covers.
+   Pages of series whose heads or versions move get new ETags, so caches
+   refetch them once.
+
+If `EMAIL_ALLOWLIST` is set, check it against the new token formats (#863,
+under Security): a token that relied on substring or subdomain matching stops
+matching. A custom list replaces the defaults, so it also does not get the
+new historical addresses.
+
+Rolling back to 3.26.0 is safe: there is no migration, and every row this
+release rewrites is valid under 3.26.0. A 3.26.0 plain run then gradually
+relinks some cleared replies and #862's unlinked patches; to return fully to
+3.26.0's answers, run 3.26.0's `backfill-patch-series --reprocess`, then
+`backfill-series-chains`. Rolling back restores the spoofable `torvalds@` and
+`gregkh@` allowlist defaults. Upgrading again means repeating the steps
+above.
+
+### Added
+
+- A sitemap of series diffs (#846): `/sitemap-series-diffs-0.xml` to
+  `-f.xml`, listed in `/sitemap.xml`, one page per first hex character of the
+  series key. Each lists the cover-letter diff between adjacent revisions of a
+  series, dated by the newest cover in either revision. Measured on 2026-10-24
+  that is about 194,000 URLs, at most about 12,500 per page. Pages are built
+  on request and cached for an hour.
+
+### Changed
+
+- `/sitemap.xml` year and month entries now carry `<lastmod>` from the child's
+  cached copy, so replies to old threads show up (#847). Uncached children
+  have none until a crawler fetches them.
+- `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
+  first, then the rest by name (#766), so lkml's fresh mail and its cache warm
+  no longer wait behind inboxes that sort before it. No action needed.
+- A series diff page's title and description now name the series and the two
+  versions, instead of the same generic text on every diff (#846).
+- The thread page (`/t`) shows the root's revisions fold with its diff links,
+  as the message page does (#846). Until now the diffs were linked only from
+  message pages, which name `/t` as canonical in a multi-message thread.
+- The subsystem index entry in `/<inbox>/sitemap.xml` carries a `<lastmod>`,
+  the newest activity among the subsystems it lists, and each subsystem page
+  links back to the index (#846).
+
+### Fixed
+
+- A message page's ETag now covers its own series columns when it has no
+  series key, so the patch state card (#838) disappears from cached copies
+  once the reprocess clears a reply's position.
+- A message page's meta description names a nameless allowlisted sender by
+  their address, as JSON-LD and Atom do (#845, #850), instead of "unknown
+  sender".
+- A parenthesised or base-tree tag is no longer read as the series version
+  (#870). `[PATCH (v20.08) v3 0/8]` is v3, not v20, and `[PATCH v5.10 v2 1/2]`
+  is v2, not v5, and a dotted tag after `-` or `/` (`for-v6.18`,
+  `stable/v3.2.x`) is a tree, not a version. A lone dotted tag
+  (`[PATCH v4.1 0/3]`) still reads as v4, but `[PATCH-v4.1 0/3]` now reads as v1.
+  Stored versions change on the next `backfill-patch-series --reprocess`,
+  which is already required above.
+- A cover whose version is a typo takes its patches' version (#870). When
+  every patch of a posting names one explicit version higher than the
+  cover's, such as a v2 cover over v3 patches, the posting is that version. A
+  cover naming no version (`[PATCH 0/N]`) keeps v1. On production
+  (2026-10-24, read-only) that is 420 postings: 420 cover rows and 2,433
+  patch rows. About 2,323 patch rows of earlier postings now show as
+  superseded in lifecycle views, and 64 postings share a version with another
+  posting of their series. `backfill-series-chains` above applies it (the
+  `--reprocess` only where it re-chains a key for another reason); the chain
+  pass reports `versions_planned`, expected near 2,853, with heads moving in 2
+  keys. Every later `--reprocess` rewrites these rows and re-chains them back
+  to the same values, so its counts include them.
+- An inbox's first ingest reads its newest 500 messages to detect its list
+  address before the walk, unless one is set, so its cross-posts pin to it
+  instead of to an inbox ingested earlier, such as lkml (#855). A
+  from-scratch ingest no longer needs `admin canonicals backfill --reprocess`
+  afterwards, and inboxes that already hold mail are not sampled. When the
+  sample cannot settle an address and the full walk can, ingest logs the
+  `admin canonicals backfill --reprocess --inbox` command that re-pins that
+  inbox.
+- Ingest walks an inbox's epochs in number order. It sorted them by name, so
+  epochs 10 and up came before 2 to 9. This affected a from-scratch ingest of
+  an inbox with ten or more epochs, such as lkml; a steady-state tick is
+  unaffected (#855).
+- A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
+  `+++` pair followed by a hunk header) now records the files it touches
+  (#869). Before, it counted as having no diff, so #837 and #860 cleared a
+  re-post in that format as a reply. Newly ingested mail is detected. Stored
+  patches have no `article_files` rows for such a diff, so the reprocess in
+  the upgrade steps clears those re-posts as replies unless a full
+  `backfill-article-files --restart` runs first (step 1); #874 tracks a
+  cheaper option.
+- A patch is no longer linked to a cover of another revision that it was
+  posted long after (#862). When the patch and the cover each name a version
+  (`v2`, `v3`), the versions differ and the patch is more than an hour newer,
+  it is a later revision answering an old thread, so it gets no series, as
+  any other non-link does. On production (2026-10-24) this affects 2,568 rows
+  on 491 covers; 19 of 20 sampled were real mislinks. The existing
+  `backfill-patch-series --reprocess` unlinks them. The dates compared are
+  the archive's, the mirror's git commit time stored in `articles.date`, not
+  the `Date` header. A pair posted within the hour stays linked, which keeps
+  covers with a typo in the version and per-patch versions (#870); giving the
+  patch its own revision's series is #871.
+- An in-series patch sent as a reply to the patch before it
+  (`git send-email --chain-reply-to`) is linked to its series the same way by
+  ingest, a plain `backfill-patch-series` run and `--reprocess` (#840). All
+  three walk up the thread through patches of the same total and version to
+  the cover. Before, `--reprocess` unlinked what ingest had linked, and a
+  plain run linked such a chain only one patch per run. On production
+  (2026-10-24) this links 55,925 rows and refuses 7,201 that answer another
+  version or total of their patch. The series chain pass now reads these
+  patches too: it gives them their cover's head and counts their titles when
+  telling two postings apart.
+- A no-diff reply that repeats its parent patch's subject from the parent's
+  own sender (a maintainer's "Applied" note, a reviewer following up their own
+  reply) is no longer stored as a second patch at that position (#860). The
+  #837 rule now holds whoever sends the reply: it must repeat its direct
+  parent patch and touch no files. Covers keep #820's different-sender rule.
+  On production (2026-10-24) it clears 7,213 rows; 49 of a 50-row sample were
+  replies, the rest a re-post whose diff is not in git format (#869). The
+  existing `backfill-patch-series --reprocess` clears them.
+- The merge window now names a sender whose display name is an address after
+  the commit author, as it does a sender with no name (#864).
+- A reply that repeats a patch or cover subject without "Re:" no longer shows
+  the patch state card on its message page (#838). The card now follows the
+  stored series columns: a cover or numbered patch subject with no position and
+  no key is a reply. A solo `[PATCH]` and a real patch keep the card. Rows
+  stored before #837's reprocess still look like patches until
+  `backfill-patch-series --reprocess` runs.
+- A reply that repeats a patch's subject without "Re:" is no longer stored as
+  a patch of the series (#837). It is a reply when it answers a patch with the
+  same position, patch count, title and version from another sender, both or
+  neither a RESEND, and carries no diff. About 99% of the rows this matches
+  are replies (production, 2026-10-24); a re-post whose patch is an
+  attachment is cleared too, and a reply that carries a diff stays a patch.
+  The backfill counts them as `reply_patch`. A reply that arrives before its
+  patch, or through replay, keeps its position until the next
+  `backfill-patch-series`.
+- Googlebot and bingbot now have their own crawler budget share, 80% of the
+  global budget, instead of the 10% default plus a draw on the shared pool of
+  unlisted crawlers (#848). Split over many workers, the default share refilled
+  too slowly, so a search crawler visiting a few times a day got `429`. A fake
+  "Googlebot" User-Agent gets the same allowance at the origin unless the CDN in
+  front verifies bots; lower or drop it with `CRAWLER_UA_BUDGETS` (`0` drops a
+  default).
+- JSON-LD no longer names a sender without a display name "unknown sender"
+  (#845). An allowlisted sender is named by its address; any other gets a
+  `Person` with no `name`, so no address is exposed and `author` stays present.
+- Atom feeds no longer name a sender without a display name "unknown sender"
+  (#850). An allowlisted sender is named by its address; any other gets no entry
+  `<author>`, so no address is exposed. Every feed now carries a feed-level
+  `<author>` with the site name, which entries without their own author inherit,
+  as RFC 4287 requires.
+
+### Security
+
+- A sender whose display name is an address no longer exposes it (#852). A
+  non-allowlisted address in the name, its own or another (`"a@x.org via list"`),
+  now counts as no display name on the page, in JSON-LD and in Atom, and in
+  meta descriptions. An allowlisted sender stays named by its address.
+- `EMAIL_ALLOWLIST` tokens now match an address by structure, not as a
+  substring (#863). `@kernel.org` allowed `a@kernel.org.evil.example`, so anyone
+  could opt out of redaction. Now `@domain` (or a bare `domain`) is exactly that
+  domain. Subdomains are not included: they would newly show addresses the old
+  rule hid, while every visible kernel.org address is exactly `kernel.org`.
+  `local@` is that local part at any domain (spoofable, avoid it), and
+  `local@domain` is that exact address. The defaults drop `torvalds@` and
+  `gregkh@`, which matched any domain and so showed spoofed addresses; the
+  current addresses of both come from MAINTAINERS, and `gregkh@suse.de`,
+  `torvalds@osdl.org` and `torvalds@transmeta.com` are added for their
+  historical mail. Operators with custom tokens should check them against these
+  formats: a token that relied on substring or subdomain matching stops
+  matching.
+
 ## [3.26.0] - 2026-10-24
 
 No migration. After deploying, run `backfill-patch-series --reprocess` once

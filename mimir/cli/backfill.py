@@ -154,6 +154,7 @@ def backfill_patch_series_command(
         f"in_series_indexed={result.in_series_indexed} "
         f"in_series_orphan={result.in_series_orphan} "
         f"not_cover={result.not_cover} reply_cover={result.reply_cover} "
+        f"reply_patch={result.reply_patch} "
         f"skipped={result.skipped} "
         f"subjects_unfolded={result.subjects_unfolded}"
     )
@@ -197,7 +198,8 @@ def backfill_series_chains_command(
     click.echo(
         f"this session: examined={result.examined} "
         f"keys_chained={result.keys_chained} keys_split={result.keys_split} "
-        f"heads_planned={result.heads_planned} skipped={result.skipped}"
+        f"heads_planned={result.heads_planned} "
+        f"versions_planned={result.versions_planned} skipped={result.skipped}"
     )
     _echo_run_summary(run)
 
