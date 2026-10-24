@@ -57,6 +57,13 @@ once.
 
 ### Fixed
 
+- A parenthesised or base-tree tag is no longer read as the series version
+  (#870). `[PATCH (v20.08) v3 0/8]` is v3, not v20, and `[PATCH v5.10 v2 1/2]`
+  is v2, not v5, and a dotted tag after `-` or `/` (`for-v6.18`,
+  `stable/v3.2.x`) is a tree, not a version. A lone dotted tag
+  (`[PATCH v4.1 0/3]`) still reads as v4, but `[PATCH-v4.1 0/3]` now reads as v1.
+  Stored versions change on the next `backfill-patch-series --reprocess`,
+  which is already required above.
 - An inbox's first ingest reads its newest 500 messages to detect its list
   address before the walk, unless one is set, so its cross-posts pin to it
   instead of to an inbox ingested earlier, such as lkml (#855). A
