@@ -179,16 +179,16 @@ User-Agent, each at 10%: Applebot, Bytespider, PetalBot, meta-externalagent,
 facebookexternalhit, Slurp, msnbot and Baiduspider. Googlebot and bingbot are
 also listed, at 80% (#848): search crawlers back off on `429` and visit a few
 times a day, so a small share split over many workers refused them.
-`CRAWLER_UA_BUDGETS` is
-merged over them, not a replacement: `CRAWLER_UA_BUDGETS='{"Applebot": 50}'`
-changes only Applebot, and `{"Bytespider": 0}` drops Bytespider. New keys are
-added after the defaults, and an overridden default keeps its position. Each
-key is a plain case-insensitive substring of the `User-Agent` header, first
-match in that order wins, so pick distinctive names. Blank keys, and keys
-equal to a marker (`bot` would match the `CUBOT` browser), are refused at
-startup. With a global budget of 120 a minute, `{"Applebot": 10}` gives
-Applebot 12 a minute. A request needs a token in every bucket it draws on; a
-refused request spends none.
+`CRAWLER_UA_BUDGETS` is merged over them, not a replacement:
+`CRAWLER_UA_BUDGETS='{"Applebot": 50}'` changes only Applebot, and
+`{"Bytespider": 0}` drops Bytespider. New keys are added after the defaults,
+and an overridden default keeps its position. Each key is a plain
+case-insensitive substring of the `User-Agent` header, first match in that
+order wins, so pick distinctive names. Blank keys, and keys equal to a marker
+(`bot` would match the `CUBOT` browser), are refused at startup. With a global
+budget of 120 a minute, `{"Applebot": 10}` gives Applebot 12 a minute. A
+request needs a token in every bucket it draws on; a refused request spends
+none.
 
 A crawler you did not list is still recognised by a product token: a name
 ending in a marker, followed by a slash, such as `GPTBot/1.0`,
