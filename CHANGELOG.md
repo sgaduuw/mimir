@@ -20,10 +20,12 @@ alongside another long backfill. The rule reads `article_files`, so
 `backfill-article-files` must be complete first.
 
 The same reprocess also links the patches #840 now reaches; no second
-reprocess is needed. Then run `backfill-series-chains` once. It gives a
-chain-reply patch that the reprocess did not change its cover's head; on an
-archive with none it plans no heads. Pages of series whose heads move get new
-ETags, so caches refetch them once.
+reprocess is needed. Then run `backfill-series-chains` once, as the repair
+pass for chain-reply patches the reprocess left untouched: their rows do not
+change, so only a chain pass gives them their cover's head. Its
+`heads_planned` counts the heads it changes; on an archive with none it plans
+zero. Pages of series whose heads move get new ETags, so caches refetch them
+once.
 
 ### Added
 
