@@ -183,8 +183,13 @@ The first three accept `--reprocess` to revisit already processed articles.
 File and trailer extraction read message bodies from the mirrors; patch-series
 extraction uses indexed headers. `backfill-patch-series` also rewrites a
 stored subject that still carries header folding (a line break), in every
-mode, and reports how many as `subjects_unfolded`. Use `--help` for
-per-command options.
+mode, and reports how many as `subjects_unfolded`. It also clears the series
+of a reply that repeats its parent's subject without "Re:": a cover answering
+that cover (`reply_cover`, #820) and a patch answering that patch with no diff
+of its own (`reply_patch`, #837). A plain run skips rows that already have a
+key, so only `--reprocess` clears a reply stored with one. The patch rule
+reads `article_files`, so `backfill-article-files` must be complete first.
+Use `--help` for per-command options.
 
 `backfill-series-chains` splits a cover title that one sender reused for
 unrelated postings into separate series. Ingest and `backfill-patch-series`

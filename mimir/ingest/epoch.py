@@ -47,7 +47,12 @@ from mimir.models import (
 )
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_revisions import parse_in_series_patch_subject
-from mimir.patch_series import parse_cover_letter, reply_to_cover, series_key
+from mimir.patch_series import (
+    parse_cover_letter,
+    reply_to_cover,
+    reply_to_patch,
+    series_key,
+)
 from mimir.patches import extract_touched_paths
 from mimir.trailers import extract_trailers
 
@@ -233,9 +238,20 @@ def _to_article_insert(
     series_head_id: int | None = None
     cover = parse_cover_letter(parsed.subject)
     in_series = parse_in_series_patch_subject(parsed.subject) if cover is None else None
+    # Extract diff-touched paths and review-attestation trailers from
+    # the body. The inserts happen later (`_submit_ingest_batch` step 1
+    # for ingest, inline for replay) using the returned article id;
+    # we just carry the data here. The paths also tell a patch reply
+    # from a re-post (#837).
+    touched_paths = sorted(extract_touched_paths(parsed.body))
+    trailer_rows = [
+        (role, name, address) for role, name, address in extract_trailers(parsed.body)
+    ]
     # Replay has no session and a parent ingested after its child is not
     # found: either way a reply that repeats a cover's subject is stored
-    # as a cover until the next `backfill-patch-series --reprocess` (#820).
+    # as a cover until the next `backfill-patch-series --reprocess` (#820),
+    # and one that repeats a patch's subject keeps its position until the
+    # next `backfill-patch-series` (#837).
     parent = None
     if (
         session is not None
@@ -250,22 +266,22 @@ def _to_article_insert(
             series_key_val = series_key(cover.title, parsed.author)
             series_version = cover.version
             series_position = 0
-    elif in_series is not None:
+    elif in_series is not None and (
+        parent is None
+        or not reply_to_patch(
+            parsed.subject,
+            parsed.author,
+            parent.subject,
+            parent.author,
+            bool(touched_paths),
+        )
+    ):
         series_position = in_series.position
         # Direct-reply linkage to the cover letter.
         if parent is not None and parent.patch_series_key is not None:
             series_key_val = parent.patch_series_key
             series_version = parent.patch_series_version
             series_head_id = parent.patch_series_head_id
-
-    # Extract diff-touched paths and review-attestation trailers from
-    # the body. The inserts happen later (`_submit_ingest_batch` step 1
-    # for ingest, inline for replay) using the returned article id;
-    # we just carry the data here.
-    touched_paths = sorted(extract_touched_paths(parsed.body))
-    trailer_rows = [
-        (role, name, address) for role, name, address in extract_trailers(parsed.body)
-    ]
 
     return _ArticleInsert(
         message_id=parsed.message_id,
