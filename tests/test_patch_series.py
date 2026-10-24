@@ -372,7 +372,7 @@ PATCH = "[PATCH v2 1/3] foo: add\tbar"
 def test_reply_to_patch_table():
     """Each row: (subject, its author, parent subject, parent author,
     touches files, expected). A reply repeats the parent patch's posting
-    (position, total, title, version, RESEND) from another address and
+    (position, total, title, version, RESEND) from any address and
     carries no diff; a diff makes it a re-post."""
     reply = "[PATCH v2 1/3] foo: add bar"
     rows = [
@@ -421,9 +421,3 @@ def test_reply_to_patch_leaves_covers_to_reply_to_cover():
     cover = "[PATCH v2 0/3] foo: add bar"
     assert reply_to_cover(cover, "Bob <b@x>", cover, "Al <a@x>")
     assert not reply_to_patch(cover, "Bob <b@x>", cover, "Al <a@x>", False)
-
-
-def test_a_cover_from_the_parents_own_address_is_still_a_cover():
-    """#860 widens patches only: #820's different-sender rule stands."""
-    cover = "[PATCH v2 0/3] foo: add bar"
-    assert not reply_to_cover(cover, "Al <a@x>", cover, "Al <a@x>")

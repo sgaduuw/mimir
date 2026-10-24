@@ -220,9 +220,7 @@ def test_a_plain_run_and_reprocess_clear_a_stored_same_sender_reply(
     )
     _touch(seeded_db, patch)
     _add(seeded_db, "o860@x", REPLY, author, parent="p860@x", position=1)
-    keyed = _add(
-        seeded_db, "k860@x", REPLY, author, parent="p860@x", key=key, position=1
-    )
+    _add(seeded_db, "k860@x", REPLY, author, parent="p860@x", key=key, position=1)
     repost = _add(
         seeded_db, "rp860@x", REPLY, author, parent="p860@x", key=key, position=1
     )
@@ -240,4 +238,3 @@ def test_a_plain_run_and_reprocess_clear_a_stored_same_sender_reply(
     assert got["k860@x"] == (None,) * 4
     assert got["rp860@x"][:3] == (key, "v2", 1)
     assert result.reply_patch == 2
-    assert keyed
