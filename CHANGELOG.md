@@ -68,6 +68,17 @@ once.
   keep their current classification until #874 (or a full
   `backfill-article-files --restart`, which re-reads most of the archive)
   runs; no new upgrade step.
+- A patch is no longer linked to a cover of another revision that it was
+  posted long after (#862). When the patch and the cover each name a version
+  (`v2`, `v3`), the versions differ and the patch is more than an hour newer,
+  it is a later revision answering an old thread, so it gets no series, as
+  any other non-link does. On production (2026-10-24) this affects 2,568 rows
+  on 491 covers; 19 of 20 sampled were real mislinks. The existing
+  `backfill-patch-series --reprocess` unlinks them. The dates compared are
+  the archive's, the mirror's git commit time stored in `articles.date`, not
+  the `Date` header. A pair posted within the hour stays linked, which keeps
+  covers with a typo in the version and per-patch versions (#870); giving the
+  patch its own revision's series is #871.
 - An in-series patch sent as a reply to the patch before it
   (`git send-email --chain-reply-to`) is linked to its series the same way by
   ingest, a plain `backfill-patch-series` run and `--reprocess` (#840). All
