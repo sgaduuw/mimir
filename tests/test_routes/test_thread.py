@@ -2200,3 +2200,36 @@ def test_fold_diff_link_resolves_for_a_null_position_cover(
     links = re.findall(r'href="([^"]*/series/[^"]*)"', page)
     assert len(links) == 1, links  # precondition: the fold links v2
     assert client.get(htmllib.unescape(links[0])).status_code == 200
+
+
+def test_thread_view_links_the_series_diff_through_the_revisions_fold(client, tmp_path):
+    """#846: a message page in a multi-message thread canonicalises to
+    `/t`, and the fold that links the series diffs was only on the
+    message page, so crawlers that follow the canonical never saw a diff
+    link. `/t` already computes the root's patch state; it renders the
+    same fold, and its link resolves."""
+    import html as htmllib
+
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("v1@x", None), ("v2@x", None), ("re@x", "v2@x")]
+    )
+    with SessionLocal() as s:
+        for mid, version in (("v1@x", "v1"), ("v2@x", "v2")):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = f"[PATCH {version} 0/1] foo: bar"
+            a.patch_series_key = "tfoldkey"
+            a.patch_series_version = version
+            a.patch_series_position = 0
+        s.commit()
+    page = client.get(seeded["v2@x"][1] + "/t")
+    assert page.status_code == 200
+    html = page.get_data(as_text=True)
+    assert 'class="revisions-fold"' in html
+    links = re.findall(r'href="([^"]*/series/[^"]*/diff\?[^"]*)"', html)
+    assert len(links) == 1, links
+    link = htmllib.unescape(links[0])
+    assert "from=v1&to=v2&pos=cover" in link
+    assert client.get(link).status_code == 200

@@ -88,6 +88,7 @@ the root message URL until their membership can be determined.
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread URLs |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread URLs |
 | `/sitemap-maintainers.xml` | Supported maintainer profiles |
+| `/sitemap-series-diffs-<h>.xml` | Cover-letter diffs between adjacent revisions of each series whose key starts with `<h>` (`0` to `f`) |
 
 Archive sitemaps can use `sitemap-2.xml` and later pages. The index chooses a
 yearly bucket only when its root count and expanded thread-page count fit the

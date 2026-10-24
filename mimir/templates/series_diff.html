@@ -1,6 +1,6 @@
 {% extends "base.html" %}
-{% block title %}diff {{ diff.from_version }}{{ '→' }}{{ diff.to_version }} ({{ position_label }}) | series | {{ site_name }}{% endblock %}
-{% block meta_description %}Inter-revision diff of {{ position_label }} between {{ diff.from_version }} and {{ diff.to_version }} of a patch series on the {{ inbox_name }} archive.{% endblock %}
+{% block title %}{{ series_subject|clean_subject }}: {{ diff.from_version }}{{ '→' }}{{ diff.to_version }} diff ({{ position_label }}) | series | {{ site_name }}{% endblock %}
+{% block meta_description %}{{ series_subject|clean_subject }}: what changed in the {{ position_label }} between {{ diff.from_version }} and {{ diff.to_version }}, on the {{ inbox_name }} archive.{% endblock %}
 {% block content %}
 <article>
   <header>

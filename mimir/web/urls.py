@@ -231,6 +231,30 @@ def _series_diff_url(
         inbox_name = _canonical_inbox_name(
             art, [(al.inbox_id, al.inbox.name) for al in art.lists]
         )
+    return _spell_series_diff_url(
+        inbox_name or fallback_inbox,
+        series_key,
+        from_version,
+        to_version,
+        pos,
+        head_id=head_id,
+        base=base,
+    )
+
+
+def _spell_series_diff_url(
+    inbox_name: str,
+    series_key: str,
+    from_version: str,
+    to_version: str,
+    pos: int | None,
+    *,
+    head_id: int | None,
+    base: str = "",
+) -> str:
+    """The spelling half of `_series_diff_url`, for the diff sitemap,
+    which picks the inbox in bulk with `_canonical_inbox_names_for` (the
+    same rule) instead of loading every slot's `.lists`."""
     params = {
         "from": from_version,
         "to": to_version,
@@ -239,7 +263,7 @@ def _series_diff_url(
     if head_id is not None:
         params["s"] = str(head_id)
     query = urlencode(params)
-    return f"{base}/{inbox_name or fallback_inbox}/series/{series_key}/diff?{query}"
+    return f"{base}/{inbox_name}/series/{series_key}/diff?{query}"
 
 
 def _canonical_inbox_names_for(
