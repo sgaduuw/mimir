@@ -127,9 +127,8 @@ def test_atom_feed_author_name_is_display_name_only(
     assert target == "David Woodhouse"
     # Belt-and-braces: across all entries, no placeholder, no `@`
     # in any byline (<name> is name-only; addresses ride in <email>).
-    # The seeded `a@b.example` corpus has no display name and falls
-    # through to the neutral fallback rather than leaking the bare
-    # address.
+    # The seeded `a@b.example` corpus has no display name and gets no
+    # entry <author> rather than leaking the bare address.
     for n in names:
         assert "<hidden>" not in n
         assert "@" not in n
@@ -196,6 +195,67 @@ def test_atom_feed_author_omits_email_when_not_allowlisted(
         if e.findtext("a:author/a:name", default="", namespaces=ns) == "Casual Sender"
     )
     assert entry.find("a:author/a:email", namespaces=ns) is None
+
+
+def test_atom_feed_nameless_senders_never_named_unknown_sender(
+    client,
+    monkeypatch,
+):
+    """RFC 4287 wants an author on every entry or on the feed. A sender
+    without a display name is named by its address when allowlisted,
+    and otherwise gets no entry `<author>` at all (the feed-level one,
+    the site name, covers it). "unknown sender" is never an author, and
+    a non-allowlisted address never appears anywhere in the feed."""
+    import xml.etree.ElementTree as ET
+
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    monkeypatch.setattr(settings, "site_name", "Archive Under Test")
+    ids = {
+        "named": _seed_author_article(
+            "alpha", author="Named Person <named@x.example>", message_id="n1@x"
+        ),
+        "allowlisted": _seed_author_article(
+            "alpha", author="open@open.example", message_id="n2@x"
+        ),
+        "hidden": _seed_author_article(
+            "alpha", author="secret@private.example", message_id="n3@x"
+        ),
+        "empty": _seed_author_article("alpha", author="", message_id="n4@x"),
+        "blank": _seed_author_article(
+            "alpha", author='"   " <ws@private.example>', message_id="n5@x"
+        ),
+    }
+    r = client.get("/alpha/feed.atom")
+    assert r.status_code == 200
+    root = ET.fromstring(r.get_data())
+    ns = {"a": "http://www.w3.org/2005/Atom"}
+    by_id = {
+        e.findtext("a:id", namespaces=ns).rsplit("/", 1)[1]: e
+        for e in root.findall("a:entry", ns)
+    }
+    for key, aid in ids.items():
+        assert str(aid) in by_id, f"{key} entry missing from feed"
+
+    body = r.get_data(as_text=True)
+    assert "unknown sender" not in body
+    named = by_id[str(ids["named"])]
+    assert named.findtext("a:author/a:name", namespaces=ns) == "Named Person"
+    allowlisted = by_id[str(ids["allowlisted"])]
+    assert allowlisted.findtext("a:author/a:name", namespaces=ns) == "open@open.example"
+    assert (
+        allowlisted.findtext("a:author/a:email", namespaces=ns) == "open@open.example"
+    )
+    assert by_id[str(ids["hidden"])].find("a:author", ns) is None
+    assert by_id[str(ids["empty"])].find("a:author", ns) is None
+    assert by_id[str(ids["blank"])].find("a:author", ns) is None
+    assert "secret@private.example" not in body
+    assert "ws@private.example" not in body
+
+    feed_authors = root.findall("a:author", ns)
+    assert len(feed_authors) == 1
+    assert feed_authors[0].findtext("a:name", namespaces=ns) == "Archive Under Test"
 
 
 # robots.txt / security.txt / sitemap.xml
