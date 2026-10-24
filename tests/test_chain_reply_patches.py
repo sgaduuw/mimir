@@ -10,14 +10,11 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
-from dulwich.objects import Blob, Commit, Tree
-from dulwich.repo import Repo
 from sqlalchemy import select
 
 from mimir import _pending_backfill, patch_series
 from mimir.ingest import epoch as epoch_mod
-from mimir.ingest.epoch import ingest_epoch
-from mimir.models import Article, Inbox
+from mimir.models import Article
 from mimir.patch_series import (
     PATCH_WALK_HOPS,
     _posting,
@@ -364,36 +361,6 @@ def test_a_stored_cross_revision_link_is_dropped_by_reprocess_and_the_rechain(
 HOUR = 3600
 
 
-def _arrive_at(seeded_db, tmp_path, epoch, timed):
-    """One epoch, one ingest call: `(commit_time, raw)` per commit."""
-    mirror = tmp_path / "mirror"
-    mirror.mkdir(exist_ok=True)
-    repo = Repo.init_bare(str(mirror / epoch), mkdir=True)
-    parent = None
-    for i, (when, raw) in enumerate(timed):
-        blob = Blob.from_string(raw)
-        repo.object_store.add_object(blob)
-        tree = Tree()
-        tree.add(b"m", 0o100644, blob.id)
-        repo.object_store.add_object(tree)
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [parent] if parent else []
-        commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = when
-        commit.commit_timezone = commit.author_timezone = 0
-        commit.encoding = b"UTF-8"
-        commit.message = f"add message {i}".encode()
-        repo.object_store.add_object(commit)
-        parent = commit.id
-    repo.refs[b"HEAD"] = parent
-    with seeded_db() as s:
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        alpha.mirror_path = str(mirror)
-        s.commit()
-        ingest_epoch(s, alpha, epoch, mirror / epoch, workers=1)
-
-
 def test_in_batch_chain_reply_under_an_old_cover_is_orphaned(
     seeded_db, tmp_path, broker_active, monkeypatch
 ):
@@ -409,15 +376,17 @@ def test_in_batch_chain_reply_under_an_old_cover_is_orphaned(
         return row
 
     monkeypatch.setattr(epoch_mod, "_thread_parent", spy)
-    _arrive_at(
+    _arrive(
         seeded_db,
         tmp_path,
         "0.git",
+        T2026,
         [
-            (T2026, _msg("ib@x", "[PATCH v2 0/2] t", body=b"cover")),
-            (T2026 + 2 * HOUR, _msg("ib-p1@x", "[PATCH v3 1/2] a", "ib@x")),
-            (T2026 + 2 * HOUR + 1, _msg("ib-p2@x", "[PATCH v3 2/2] b", "ib-p1@x")),
+            _msg("ib@x", "[PATCH v2 0/2] t", body=b"cover"),
+            _msg("ib-p1@x", "[PATCH v3 1/2] a", "ib@x"),
+            _msg("ib-p2@x", "[PATCH v3 2/2] b", "ib-p1@x"),
         ],
+        times=[T2026, T2026 + 2 * HOUR, T2026 + 2 * HOUR + 1],
     )
     assert ("ib@x", "_ArticleInsert") in pending_hits
     assert _series(seeded_db, "ib-p1@x", "ib-p2@x") == {

@@ -57,11 +57,12 @@ NEW_IDS = [f"{t}{s}@x" for t in ("new1", "new2") for s in ("", "-p1", "-p2")]
 SPLIT = {m: None for m in OLD_IDS} | {m: "new1@x" for m in NEW_IDS}
 
 
-def _arrive(seeded_db, tmp_path, epoch, start, messages):
-    """Ingest `messages` as epoch `epoch`, commit `i` dated `start + i`."""
+def _arrive(seeded_db, tmp_path, epoch, start, messages, times=None):
+    """Ingest `messages` as epoch `epoch`, commit `i` dated `times[i]` or
+    `start + i`."""
     mirror = tmp_path / "mirror"
     mirror.mkdir(exist_ok=True)
-    _build_pubinbox_repo(mirror / epoch, messages, start=start)
+    _build_pubinbox_repo(mirror / epoch, messages, start=start, times=times)
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         alpha.mirror_path = str(mirror)

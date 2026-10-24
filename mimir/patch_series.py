@@ -388,11 +388,8 @@ def _answers_old_revision(subject, date, cover) -> bool:
         _explicit_version(cover.subject),
     )
     return (
-        patch_version is not None
-        and cover_version is not None
+        None not in (patch_version, cover_version, date, cover.date)
         and patch_version != cover_version
-        and date is not None
-        and cover.date is not None
         and aware_utc(date) - aware_utc(cover.date) > CROSS_REVISION_GAP
     )
 
