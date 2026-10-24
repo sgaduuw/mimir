@@ -71,3 +71,37 @@ def test_name_that_is_not_an_address_is_unchanged(client, tmp_path, monkeypatch,
     assert f"{name} &lt;hidden&gt;" in html
     entry = ET.fromstring(feed).find("a:entry", NS)
     assert entry.findtext("a:author/a:name", namespaces=NS) == name
+
+
+@pytest.mark.parametrize(
+    "author",
+    [
+        # Unparseable by the strict parseaddr: no address at all.
+        "s@private.example <s@private.example>",
+        "=?utf-8?q?s=40private.example?= <s@private.example>",
+        "=?utf-8?q?Doe=2C_J=C3=BCrgen?= <s@private.example>",
+        "Jane s@private.example <s@private.example>",
+        # Parseable, with an address in a trailing comment.
+        '"Jane" <s@private.example> (s@private.example)',
+    ],
+)
+def test_odd_from_headers_leak_nowhere(client, tmp_path, monkeypatch, author):
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    html, graph, feed = _surfaces(client, tmp_path, author)
+    leaked = [
+        surface
+        for surface, text in (("page", html), ("json-ld", str(graph)), ("atom", feed))
+        if "s@private.example" in text
+    ]
+    assert leaked == []
+
+
+def test_allowlisted_sender_comment_does_not_print_foreign_address(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    html, _, _ = _surfaces(
+        client, tmp_path, '"Jane" <ok@open.example> (s@private.example)'
+    )
+    assert "ok@open.example" in html
+    assert "s@private.example" not in html
