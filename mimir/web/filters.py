@@ -341,7 +341,11 @@ def _display_name_filter(author: str | None) -> str:
     trailing punctuation hole."""
     if not author:
         return "unknown sender"
-    return _usable_display_name(author) or "unknown sender"
+    # An allowlisted address is already public, and JSON-LD and Atom
+    # name a nameless allowlisted sender by it (#845, #850).
+    return (
+        _usable_display_name(author) or _allowlisted_email(author) or "unknown sender"
+    )
 
 
 # Bounded runs keep the scan linear on a hostile, very long name.
