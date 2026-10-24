@@ -131,6 +131,8 @@ def _add_alpha_article(s, message_id, subject, *, trailers=(), date=None, paths=
         date=date or datetime(2024, 6, 1, 12, 0, tzinfo=UTC),
         thread_parent=None,
         subject_normalized=subject.lower(),
+        # A stored in-series patch has its position; NULL marks a reply (#838).
+        patch_series_position=1,
         lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20)],
         files=[ArticleFile(path=p) for p in paths],
         trailers=[
@@ -168,6 +170,38 @@ def test_patch_state_for_non_patch_returns_empty(seeded_db):
     assert state.mainline_landings == []
     assert state.series == []
     assert state.days_since_last_reply is None
+
+
+@pytest.mark.parametrize(
+    ("subject", "position", "expected"),
+    [
+        # #838: ingest and the reprocess clear the position of a reply
+        # that repeats a patch or cover subject, so NULL means reply.
+        ("[PATCH 1/3] foo: bar", None, False),
+        ("[PATCH 0/3] foo series", None, False),
+        ("[PATCH 1/3] foo: bar", 1, True),
+        ("[PATCH 0/3] foo series", 0, True),
+        # A solo patch never has a position; the subject decides.
+        ("[PATCH] foo: bar", None, True),
+    ],
+)
+def test_patch_state_card_follows_stored_position(
+    seeded_db, subject, position, expected
+):
+    with seeded_db() as s:
+        art = _add_alpha_article(s, "card@x", subject)
+        art.patch_series_position = position
+        s.commit()
+        state = patch_state_for_article(
+            s,
+            art,
+            thread_dates=[art.date],
+            subsystem_ids=[],
+            inbox_name="alpha",
+            state_key="t",
+            force=True,
+        )
+    assert state.is_patch is expected
 
 
 def test_patch_state_trailer_roll_up_groups_by_role(seeded_db):
