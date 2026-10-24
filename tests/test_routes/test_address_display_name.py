@@ -115,3 +115,14 @@ def test_display_name_check_is_linear():
     t = time.perf_counter()
     _EMAIL_TOKEN_RE.findall("a" * 40_000)
     assert time.perf_counter() - t < 0.2
+
+
+def test_allowlisted_sender_with_foreign_address_in_name_shows_only_its_own(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    html, _, _ = _surfaces(
+        client, tmp_path, '"s@private.example via list" <ok@open.example>'
+    )
+    assert "ok@open.example" in html
+    assert "s@private.example" not in html
