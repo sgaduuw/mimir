@@ -8,7 +8,7 @@ one, the same way `backfill-series-chains` does.
 """
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, update
 
 from mimir.broker._context import get_active_writer
 from mimir.broker.writes import WriteOp
@@ -323,3 +323,65 @@ def test_a_key_of_one_cover_with_a_typo_is_written(seeded_db, broker_active):
     ids = ("so@x", "so-p1@x", "so-p2@x")
     assert _versions(seeded_db, *ids) == dict.fromkeys(ids, "v3")
     assert _planned() == (0, 0)
+
+
+def test_rows_stored_before_the_fix_converge(seeded_db, tmp_path, broker_active):
+    """Production's starting state: every row of a posting carries its
+    cover's parsed version. The reprocess finds nothing to change on those
+    rows, so the first chain pass writes the versions, on a key of several
+    postings and on a key of one, and every later pass plans nothing.
+    From Granny's review of #870."""
+    day = 86400
+
+    def snapshot():
+        with seeded_db() as s:
+            return s.execute(
+                select(
+                    Article.message_id,
+                    Article.patch_series_key,
+                    Article.patch_series_version,
+                    Article.patch_series_position,
+                    Article.patch_series_head_id,
+                ).order_by(Article.message_id)
+            ).all()
+
+    # An old v1 posting, a month later a v1 cover over chain-reply v2
+    # patches, then a real v3, all under "generic title".
+    _arrive(seeded_db, tmp_path, "0.git", T2026, _chain("old", "v1", ["a", "b"]))
+    typo = _chain("ty", "v2", ["c", "d", "e"])
+    typo[0] = _msg("ty@x", "[PATCH v1 0/3] generic title", body=b"cover")
+    _arrive(seeded_db, tmp_path, "1.git", T2026 + 30 * day, typo)
+    _arrive(
+        seeded_db, tmp_path, "2.git", T2026 + 60 * day, _chain("v3", "v3", ["c", "d"])
+    )
+    # A key of one cover with a typo, its patches flat under the cover.
+    solo = [
+        _msg("so@x", "[PATCH v4 0/2] solo", body=b"cover"),
+        _msg("so-p1@x", "[PATCH v5 1/2] x", "so@x"),
+        _msg("so-p2@x", "[PATCH v5 2/2] y", "so@x"),
+    ]
+    _arrive(seeded_db, tmp_path, "3.git", T2026 + 61 * day, solo)
+    fixed = snapshot()
+    version = {row[0]: row[2] for row in fixed}
+    assert {version[m] for m in ("ty@x", "ty-p1@x", "ty-p3@x")} == {"v2"}
+    assert {version[m] for m in ("so@x", "so-p2@x")} == {"v5"}
+
+    with seeded_db() as s:
+        for tag, cover_version in (("ty", "v1"), ("so", "v4")):
+            s.execute(
+                update(Article)
+                .where(Article.message_id.like(f"{tag}%"))
+                .values(patch_series_version=cover_version)
+            )
+        s.execute(update(Article).values(patch_series_head_id=None))
+        s.commit()
+
+    backfill_patch_series(reprocess=True)
+    _heads_planned, versions = _planned()
+    assert versions == 7  # ty and its three patches, so and its two
+    assert _planned() == (0, 0)
+    assert snapshot() == fixed
+
+    backfill_patch_series(reprocess=True)
+    assert _planned() == (0, 0)
+    assert snapshot() == fixed
