@@ -7,7 +7,7 @@
 (`/<inbox>/author/<sub>`).
 
 A few helpers reach back into `mimir.web` for the shared display
-filters (`_msg_url`, `_display_name_filter`, `_redact_trailer_address`).
+filters (`_msg_url`, `_redact_trailer_address`).
 Those imports are done inside the function bodies to avoid an
 import-time cycle (web imports JSON-LD builders from this module at
 module load).
@@ -200,7 +200,7 @@ def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> d
     """
     from mimir.web.filters import _allowlisted_email
 
-    display, _ = parseaddr(raw or "")
+    display = parseaddr(raw or "")[0].strip()
     email = _allowlisted_email(raw)
     person: dict = {"@type": "Person"}
     if display or email:
@@ -288,15 +288,17 @@ def _json_ld_message(
     rich-result section) and BreadcrumbList (surfaces the
     Site → Inbox → Subject chain in SERPs).
 
-    Author goes through `_display_name_filter` for `Person.name`,
-    display name only and no `<hidden>` placeholder. The placeholder
+    Author goes through `_person` for `Person.name`: the display name
+    only, else the address of an allowlisted sender, else no name at
+    all, and never the `<hidden>` placeholder. The placeholder
     is a rendering decision for the visible HTML; in machine-readable
     metadata it reads as broken data and was flagged as such in the
     2026-05-12 review. `Person.email` is conditionally added via
     `_allowlisted_email`: present iff the sender is in the allowlist
     union (and therefore already on the rendered page in full),
     omitted otherwise. Matches the redaction posture of
-    `_safe_from_filter` on the HTML side. `author.url` points at the
+    `_safe_from_filter` on the HTML side. `author.url`, for a sender with a
+    display name, points at the
     per-inbox author view so the Person has a stable target for
     "more posts by this author"; required-by-Google for the
     Discussions rich-result eligibility (non-critical, Search
