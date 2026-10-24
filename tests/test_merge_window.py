@@ -840,6 +840,27 @@ def test_a_last_comma_first_commit_author_names_the_row(
     assert _shown(_bare_sender_page(seeded_db, shas["p"])) == ["Doe, Jane"]
 
 
+@pytest.mark.parametrize(
+    ("author", "shown"),
+    [
+        ('"s@private.example" <s@private.example>', "Jane Doe"),
+        ('"a@x.org via list" <list@y.org>', "Jane Doe"),
+        ("Sam Smith <s@private.example>", "Sam Smith"),
+    ],
+)
+def test_only_a_usable_sender_name_beats_the_commit_author(
+    seeded_db, tmp_path, monkeypatch, author, shown
+):
+    shas = _next_repo(tmp_path, monkeypatch, {"p": ("Jane Doe <jane@example.com>", [])})
+    with seeded_db() as s:
+        _article(s, "sender@x").author = author
+        _commit(s, "sender@x", "linux-next", sha=shas["p"])
+        s.commit()
+        mw = merge_window(s)
+    assert _shown(mw) == [shown]
+    assert "@" not in "".join(_shown(mw))
+
+
 def test_a_commit_author_name_that_is_an_address_is_not_shown(
     seeded_db, tmp_path, monkeypatch
 ):
