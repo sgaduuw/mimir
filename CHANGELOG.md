@@ -19,6 +19,14 @@ runs, and a reply ingested since the last reprocess has one. Do not run it
 alongside another long backfill. The rule reads `article_files`, so
 `backfill-article-files` must be complete first.
 
+### Changed
+
+- `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
+  first, then the rest by name (#766), so lkml's fresh mail and its cache warm
+  no longer wait behind inboxes that sort before it. After a from-scratch
+  ingest, run `uv run mimir admin canonicals backfill --reprocess --restart`.
+  Existing deployments see no change.
+
 ### Fixed
 
 - A reply that repeats a patch's subject without "Re:" is no longer stored as

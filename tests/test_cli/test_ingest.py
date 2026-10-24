@@ -500,3 +500,99 @@ def test_reindex_connection_stays_open_until_all_replies_finish(
         # Drain queued work even when the idle-close assertion fails.
         for done in finished.values():
             assert done.wait(timeout=5), "queued reindex did not finish"
+
+
+def _add_inbox(name):
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        s.add(
+            Inbox(
+                name=name,
+                mirror_path=f"/nonexistent/{name}",
+                upstream_url=f"https://example.invalid/{name}",
+            )
+        )
+        s.commit()
+
+
+def test_select_inboxes_orders_pinned_first(seeded_db, monkeypatch):
+    """Ingest, and its after-ingest warm, walk the inboxes in
+    `_select_inboxes` order, so pinned inboxes come first (#766): an
+    inbox sorting before the pinned one must not go ahead of it."""
+    from mimir.cli._common import _select_inboxes
+    from mimir.config import settings
+
+    _add_inbox("zz-pin")
+    monkeypatch.setattr(settings, "pinned_inboxes", ["zz-pin"])
+    names = list(_select_inboxes(None))
+    assert names[0] == "zz-pin"
+    assert names[1:] == sorted(names[1:])
+    assert "alpha" in names[1:]
+
+
+def test_select_inboxes_single_name_and_unknown(seeded_db, monkeypatch):
+    import click
+
+    from mimir.cli._common import _select_inboxes
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "pinned_inboxes", ["alpha"])
+    assert list(_select_inboxes("beta")) == ["beta"]
+    with pytest.raises(click.ClickException, match="unknown inbox"):
+        _select_inboxes("no-such-inbox")
+
+
+def test_pinned_inbox_wins_contested_list_address_on_first_ingest(
+    seeded_db, broker_active, monkeypatch, tmp_path
+):
+    """Two inboxes whose To/Cc tally is dominated by the same address:
+    whichever ingests first keeps it. Pinned inboxes ingest first
+    (#766), so the pinned one wins even though an inbox sorting before
+    it is also eligible (the lkml-over-cocci case)."""
+    from datetime import datetime
+
+    from mimir.cli._common import _select_inboxes
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.ingest import ingest_all
+    from mimir.ingest.epoch import MIN_PROMOTE_OBSERVATIONS
+    from mimir.models import InboxAddressObservation
+
+    addr = "linux-kernel@vger.kernel.org"
+    monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
+    with SessionLocal() as s:
+        for ix in s.execute(select(Inbox)).scalars():
+            # Own, empty mirror per inbox, so the walk finds no epochs
+            # and the test does not lean on paths other tests create.
+            mirror = tmp_path / ix.name
+            mirror.mkdir()
+            ix.mirror_path = str(mirror)
+            if ix.name not in ("alpha", "beta"):
+                continue
+            s.add(
+                InboxAddressObservation(
+                    inbox_id=ix.id,
+                    address=addr,
+                    count=MIN_PROMOTE_OBSERVATIONS * 2,
+                    last_seen=datetime(2024, 1, 1),
+                )
+            )
+        s.commit()
+
+    ingest_all(_select_inboxes(None))
+
+    with SessionLocal() as s:
+        held = dict(s.execute(select(Inbox.name, Inbox.list_address)).all())
+    assert held["beta"] == addr
+    assert held["alpha"] is None
+
+
+def test_pinned_first_dedupes_repeated_names(monkeypatch):
+    """A name listed twice keeps its first position."""
+    from mimir.config import settings
+    from mimir.inboxes import pinned_first
+
+    inboxes = [Inbox(name=n) for n in ("a", "b", "c")]
+    monkeypatch.setattr(settings, "pinned_inboxes", ["c", "a", "c"])
+    assert [ix.name for ix in pinned_first(inboxes)] == ["c", "a", "b"]
