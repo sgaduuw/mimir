@@ -38,6 +38,9 @@ once.
 
 ### Changed
 
+- `/sitemap.xml` year and month entries now carry `<lastmod>` from the child's
+  cached copy, so replies to old threads show up (#847). Uncached children
+  have none until a crawler fetches them.
 - `mimir ingest` and `mimir update` now handle pinned inboxes (`PINNED_INBOXES`)
   first, then the rest by name (#766), so lkml's fresh mail and its cache warm
   no longer wait behind inboxes that sort before it. After a from-scratch

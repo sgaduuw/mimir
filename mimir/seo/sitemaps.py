@@ -703,6 +703,25 @@ def _archive_entries(session: Session, inbox: Inbox, page_ids: list[int], base: 
     return entries, newest
 
 
+def _year_pages_key(inbox_name: str, year: int) -> str:
+    return (
+        f"sitemap:yearpages:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
+    )
+
+
+def _month_page_key(inbox_name: str, year: int, month: int, page: int) -> str:
+    return (
+        f"sitemap:month:{inbox_name}:{year:04d}-{month:02d}:{page}"
+        f":{settings.thread_view_render_cap}"
+    )
+
+
+def _unpack_year_pages(packed: str) -> list[SitemapPayload]:
+    return [
+        SitemapPayload(*pair) for pair in json.loads(zlib.decompress(b64decode(packed)))
+    ]
+
+
 def _year_sitemap_xml(
     session: Session, inbox: Inbox, year: int, page: int, base: str, *, force: bool
 ) -> SitemapPayload | None:
@@ -712,16 +731,9 @@ def _year_sitemap_xml(
     check, so serving must bound actual URLs independently. Keep page bodies
     together: independently refreshed pages could drop URLs between slices.
     """
-    key = f"sitemap:yearpages:{inbox.name}:{year:04d}:{settings.thread_view_render_cap}"
+    key = _year_pages_key(inbox.name, year)
     packed = None if force else cache.get(key)
-    pages = (
-        [
-            SitemapPayload(*pair)
-            for pair in json.loads(zlib.decompress(b64decode(packed)))
-        ]
-        if packed is not None
-        else None
-    )
+    pages = _unpack_year_pages(packed) if packed is not None else None
     if pages is None:
         ids = list(session.scalars(_archive_roots_query(inbox, year, None)))
         entries = []
@@ -805,11 +817,14 @@ def archive_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:month:{inbox.name}:{year:04d}-{month:02d}:{page}:{settings.thread_view_render_cap}",
+        _month_page_key(inbox.name, year, month, page),
         SITEMAP_TTL_SEC,
         compute,
         force=force,
     )
+
+
+_INDEX_READ_BATCH = 16
 
 
 def sitemap_index_xml(
@@ -853,6 +868,8 @@ def sitemap_index_xml(
                     _month_counts(session, inbox), key=lambda row: row[0]
                 )
             }
+            # (loc, key, is_year)
+            children: list[tuple[str, str, bool]] = []
             for year, buckets in years.items():
                 if (
                     1 <= year <= 9998
@@ -860,22 +877,37 @@ def sitemap_index_xml(
                     <= SITEMAP_URLS_PER_PAGE
                     and sum(urls for _, _, _, urls in buckets) <= SITEMAP_MAX_URLS
                 ):
-                    entries.append(
-                        (f"{base}/{inbox.name}/{year:04d}/sitemap.xml", None)
+                    children.append(
+                        (
+                            f"{base}/{inbox.name}/{year:04d}/sitemap.xml",
+                            _year_pages_key(inbox.name, year),
+                            True,
+                        )
                     )
                     continue
                 for _, month, count, _ in buckets:
                     pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
                     for page in range(1, pages + 1):
                         suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
-                        # No lastmod: root dates miss replies to old threads;
-                        # computing honest activity would require a full scan.
-                        entries.append(
+                        children.append(
                             (
                                 f"{base}/{inbox.name}/{year:04d}/{month:02d}/{suffix}",
-                                None,
+                                _month_page_key(inbox.name, year, month, page),
+                                False,
                             )
                         )
+            # lastmod = the child's cached last_modified; an uncached child
+            # gets none (building it here would be a full scan). Same row, so
+            # they agree while it lives, then can differ for one more TTL.
+            # Batched: each cached child is a whole body.
+            for start in range(0, len(children), _INDEX_READ_BATCH):
+                batch = children[start : start + _INDEX_READ_BATCH]
+                cached = cache.get_many([key for _, key, _ in batch])
+                for loc, key, is_year in batch:
+                    value = cached.get(key)
+                    if value is not None and is_year:
+                        value = _unpack_year_pages(value)[0]  # `loc` is page 1
+                    entries.append((loc, value.last_modified if value else None))
         # Reuse global_latest as the maintainers urlset's lastmod: it's
         # free (already computed above) and a reasonable proxy for
         # "maintainer-relevant activity changed" without an extra
