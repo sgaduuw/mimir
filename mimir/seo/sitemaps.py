@@ -868,8 +868,7 @@ def sitemap_index_xml(
                     _month_counts(session, inbox), key=lambda row: row[0]
                 )
             }
-            # (path, cache key, is_year) for every year or month child this inbox
-            # lists, so one read answers "which are cached" for all of them.
+            # (loc, key, is_year)
             children: list[tuple[str, str, bool]] = []
             for year, buckets in years.items():
                 if (
@@ -897,14 +896,10 @@ def sitemap_index_xml(
                                 False,
                             )
                         )
-            # `<lastmod>` is the child's own cached `last_modified`, the
-            # max over its entries. Both read the same row, so they agree
-            # while it lives; after the child is rebuilt they can differ
-            # for at most one more TTL, as the index shares the children's
-            # TTL. Root dates would miss replies to old threads, and
-            # dating an uncached child means building it, so that child
-            # gets none until a crawl or a refresh caches it.
-            # Batched because a cached child is a whole XML body.
+            # lastmod = the child's cached last_modified; an uncached child
+            # gets none (building it here would be a full scan). Same row, so
+            # they agree while it lives, then can differ for one more TTL.
+            # Batched: each cached child is a whole body.
             for start in range(0, len(children), _INDEX_READ_BATCH):
                 batch = children[start : start + _INDEX_READ_BATCH]
                 cached = cache.get_many([key for _, key, _ in batch])
