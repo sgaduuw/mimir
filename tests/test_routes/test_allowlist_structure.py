@@ -16,6 +16,8 @@ from tests.test_routes.test_address_display_name import _surfaces
         (["@open.example"], "a@open.example.evil.example", False),
         (["@open.example"], "a@xopen.example", False),
         (["@open.example"], "open.example@evil.example", False),
+        (["@open.example"], '"x@evil.example"@open.example', False),
+        (["@open.example"], "x@evil.example@open.example", False),
         # A token without "@" is a domain, same as "@token".
         (["open.example"], "a@open.example", True),
         (["open.example"], "a@sub.open.example", False),
@@ -39,27 +41,32 @@ def test_token_matches_by_structure(monkeypatch, tokens, address, expected):
     assert _is_allowlisted(address) is expected
 
 
-def test_lookalike_domain_is_hidden_everywhere(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
-    html, graph, feed = _surfaces(client, tmp_path, "Eve <a@open.example.evil.example>")
-    leaked = [
-        surface
-        for surface, text in (("page", html), ("json-ld", str(graph)), ("atom", feed))
-        if "a@open.example.evil.example" in text
-    ]
-    assert leaked == []
-
-
 def test_allowlisted_domain_is_visible(client, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
     html, _, _ = _surfaces(client, tmp_path, "Ann <a@open.example>")
     assert "a@open.example" in html
 
 
-def test_subdomain_of_allowlisted_domain_is_hidden(client, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("author", "needle"),
+    [
+        ("Eve <a@open.example.evil.example>", "a@open.example.evil.example"),
+        ("Bob <b@sub.open.example>", "b@sub.open.example"),
+        ('Eve <"x@evil.example"@open.example>', "x@evil.example"),
+    ],
+    ids=["lookalike", "subdomain", "quoted-local-part"],
+)
+def test_non_matching_address_is_hidden_everywhere(
+    client, tmp_path, monkeypatch, author, needle
+):
     monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
-    html, _, _ = _surfaces(client, tmp_path, "Bob <b@sub.open.example>")
-    assert "b@sub.open.example" not in html
+    html, graph, feed = _surfaces(client, tmp_path, author)
+    leaked = [
+        surface
+        for surface, text in (("page", html), ("json-ld", str(graph)), ("atom", feed))
+        if needle in text
+    ]
+    assert leaked == []
 
 
 @pytest.mark.parametrize(
@@ -76,25 +83,3 @@ def test_subdomain_of_allowlisted_domain_is_hidden(client, tmp_path, monkeypatch
 )
 def test_default_allowlist(address, expected):
     assert _is_allowlisted(address) is expected
-
-
-@pytest.mark.parametrize(
-    "address",
-    ['"x@evil.example"@open.example', "x@evil.example@open.example"],
-)
-def test_second_at_does_not_match_domain_token(monkeypatch, address):
-    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
-    assert _is_allowlisted(address) is False
-
-
-def test_quoted_foreign_address_in_local_part_is_hidden(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
-    html, graph, feed = _surfaces(
-        client, tmp_path, 'Eve <"x@evil.example"@open.example>'
-    )
-    leaked = [
-        surface
-        for surface, text in (("page", html), ("json-ld", str(graph)), ("atom", feed))
-        if "x@evil.example" in text
-    ]
-    assert leaked == []
