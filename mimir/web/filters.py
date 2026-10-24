@@ -279,13 +279,16 @@ def _safe_from_filter(author: str | None) -> str:
     the archive UI."""
     if not author:
         return ""
-    name, addr = parseaddr(author)
+    _, addr = parseaddr(author)
     if not addr:
-        return author  # unparseable; show as-is
+        # Unparseable: as-is unless it holds an address we would hide.
+        if any(not _is_allowlisted(t) for t in _EMAIL_TOKEN_RE.findall(author)):
+            return "<hidden>"
+        return author
     usable = _usable_display_name(author)
     if _is_allowlisted(addr):
-        # A name carrying someone else's address drops to the bare address.
-        return author if usable or not name else addr
+        # Rebuilt, never `author`: a trailing "(comment)" can hold an address.
+        return f"{usable} <{addr}>" if usable else addr
     if usable:
         return f"{usable} <hidden>"
     return "<hidden>"
