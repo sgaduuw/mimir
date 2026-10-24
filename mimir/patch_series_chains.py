@@ -198,7 +198,6 @@ def _load_key(
     def parent_of(message_id):
         return rows.get(message_id) or _parent(session, message_id)
 
-    cover_ids = {r.message_id for r in cover_rows}
     titles: dict[str, list[str]] = {}
     patches = []
     for row in patch_rows:
@@ -206,7 +205,7 @@ def _load_key(
         if posting is None or posting[0] == 0:
             continue
         cover = cover_of_patch(row.thread_parent, parent_of, posting)
-        if cover is None or cover.message_id not in cover_ids:
+        if cover is None:
             continue
         titles.setdefault(cover.message_id, []).append(posting[3])
         patches.append((row.id, cover.message_id, row.patch_series_head_id))
@@ -237,8 +236,9 @@ def head_updates(session, key: str) -> tuple[list[tuple[int, int | None]], bool]
     updates += [
         (pid, heads[cover_of[parent]])
         for pid, parent, head in patches
-        # A parent missing from `cover_of` committed between the two
-        # reads of `_load_key`; the next run sees it.
+        # A cover missing from `cover_of` is not one of this key's covers:
+        # a reply #820 cleared, a stale key, or a cover committed between
+        # the two reads of `_load_key`, which the next run sees.
         if parent in cover_of and head != heads[cover_of[parent]]
     ]
     # A key of one cover has nothing to split, but a head left from when
