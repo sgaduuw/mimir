@@ -57,6 +57,16 @@ once.
 
 ### Fixed
 
+- A patch whose diff is in quilt or plain unified format (`--- a/path` and
+  `+++ b/path` followed by a hunk header, or an `Index:` block) now records
+  the files it touches, as a `diff --git` patch does (#869). Before, it
+  counted as having no diff, so a re-post in that format was cleared as a
+  reply by #837 and #860 (about 0.9% of re-posts in a 650-row sample). A bare
+  `---` signature separator, a quoted diff and a header pair with no hunk
+  still name nothing. Existing patches have no `article_files` rows yet, so a
+  plain `backfill-article-files` fills them; `--reprocess` is not needed. Run
+  it before the `backfill-patch-series --reprocess` listed above, because
+  that rule reads `article_files`.
 - An in-series patch sent as a reply to the patch before it
   (`git send-email --chain-reply-to`) is linked to its series the same way by
   ingest, a plain `backfill-patch-series` run and `--reprocess` (#840). All
