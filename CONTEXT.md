@@ -1523,9 +1523,15 @@ data:
    walks pinned inboxes first (#766), so on a from-scratch ingest lkml
    takes its address before cocci can; two unpinned inboxes still go
    alphabetically, and an operator corrects that with `--list-address`.
-   Canonical pins made during a from-scratch ingest used the address map
-   as it stood at each epoch's start, so run
-   `admin canonicals backfill --reprocess --restart` afterwards.
+   An inbox's first ingest promotes from a sample of its newest 500
+   messages before the walk (#855), because each epoch reads the
+   address map once, at its start. The inboxes walked earlier have had
+   their chance to promote, so the walking inbox's own address is the
+   only one its picks could miss; without the sample, its cross-posts
+   pinned to whichever inbox promoted first, lkml since #766. The tally
+   promotion after the walk stays as the fallback, and when it fires on
+   a first ingest it logs the `admin canonicals backfill --reprocess
+   --inbox` run that re-pins that inbox.
 3. **Per-article pinning.** With `Inbox.list_address` populated,
    `pick_canonical_inbox_id` walks the message's To/Cc addresses
    in order and returns the first inbox whose `list_address`
