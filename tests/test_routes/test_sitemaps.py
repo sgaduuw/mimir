@@ -2368,3 +2368,28 @@ def test_index_lastmod_for_archive_child_is_its_cached_max(
     assert expected == "2026-03-09"
     _drop_index_cache()
     assert _index_lastmods(client)[child] == expected
+
+
+def test_index_reads_cached_children_in_bounded_batches(client, tmp_path, monkeypatch):
+    """Cached children hold whole XML bodies, so the index must not load
+    all of them at once (#847)."""
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)  # months, not years
+    ids = [f"m{n}@x" for n in range(20)]
+    seeded = seed_thread_shape(tmp_path, "alpha", [(i, None) for i in ids])
+    for n, mid in enumerate(ids):
+        _set_article_date(
+            seeded[mid][0], datetime(2010 + n // 12, n % 12 + 1, 1, tzinfo=UTC)
+        )
+    _clear_sitemap_cache()
+    sizes = []
+    real = sm.cache.get_many
+    monkeypatch.setattr(
+        sm.cache, "get_many", lambda keys: sizes.append(len(keys)) or real(keys)
+    )
+    _index_lastmods(client)
+    assert sum(sizes) >= 20 and max(sizes) <= 16, sizes

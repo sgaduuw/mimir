@@ -824,6 +824,9 @@ def archive_sitemap_xml(
     )
 
 
+_INDEX_READ_BATCH = 16
+
+
 def sitemap_index_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
@@ -865,7 +868,7 @@ def sitemap_index_xml(
                     _month_counts(session, inbox), key=lambda row: row[0]
                 )
             }
-            # (path, cache key) for every year or month child this inbox
+            # (path, cache key, is_year) for every year or month child this inbox
             # lists, so one read answers "which are cached" for all of them.
             children: list[tuple[str, str, bool]] = []
             for year, buckets in years.items():
@@ -895,17 +898,21 @@ def sitemap_index_xml(
                             )
                         )
             # `<lastmod>` is the child's own cached `last_modified`, the
-            # max over its entries, so the two cannot drift. Root dates
-            # would miss replies to old threads, and dating an uncached
-            # child means building it, so that child gets none until a
-            # crawl or a refresh caches it. The index shares the
-            # children's TTL, so a date can lag by at most one more TTL.
-            cached = cache.get_many([key for _, key, _ in children])
-            for loc, key, is_year in children:
-                value = cached.get(key)
-                if value is not None and is_year:
-                    value = _unpack_year_pages(value)[0]  # `loc` is page 1
-                entries.append((loc, value.last_modified if value else None))
+            # max over its entries. Both read the same row, so they agree
+            # while it lives; after the child is rebuilt they can differ
+            # for at most one more TTL, as the index shares the children's
+            # TTL. Root dates would miss replies to old threads, and
+            # dating an uncached child means building it, so that child
+            # gets none until a crawl or a refresh caches it.
+            # Batched because a cached child is a whole XML body.
+            for start in range(0, len(children), _INDEX_READ_BATCH):
+                batch = children[start : start + _INDEX_READ_BATCH]
+                cached = cache.get_many([key for _, key, _ in batch])
+                for loc, key, is_year in batch:
+                    value = cached.get(key)
+                    if value is not None and is_year:
+                        value = _unpack_year_pages(value)[0]  # `loc` is page 1
+                    entries.append((loc, value.last_modified if value else None))
         # Reuse global_latest as the maintainers urlset's lastmod: it's
         # free (already computed above) and a reasonable proxy for
         # "maintainer-relevant activity changed" without an extra
