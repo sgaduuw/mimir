@@ -187,9 +187,9 @@ mode, and reports how many as `subjects_unfolded`. Use `--help` for
 per-command options.
 
 `backfill-series-chains` splits a cover title that one sender reused for
-unrelated postings into separate series. Run it after any
-`backfill-patch-series` run (until #824). Ingest chains new postings as they
-land, so it is otherwise needed once, for the archived history.
+unrelated postings into separate series. Ingest and `backfill-patch-series`
+chain the titles they touch, so it is needed once, for history ingested before
+3.25.0.
 
 These four, and `admin canonicals backfill`, resume an interrupted run. The
 broker stores each run's position, so after a deploy, a dropped session or a
