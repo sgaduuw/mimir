@@ -108,8 +108,7 @@ The task service runs [scheduler.sh](scheduler.sh). Configure these on
 | `WARM_CACHE_SLOW_EVERY` | 3600 | Slow warming, including sitemap targets when configured |
 | `UPDATE_EVERY` | 300 | Discover/fetch mirrors and ingest |
 | `UPDATE_MAINLINE_EVERY` | 600 | Refresh tracked trees and MAINTAINERS |
-| `ANALYZE_EVERY` | 86400 | Bounded planner statistics refresh |
-| `ANALYZE_FULL_EVERY` | 604800 | Full statistics refresh |
+| `ANALYZE_FULL_EVERY` | 604800 | Planner statistics refresh (full sample) |
 | `VACUUM_EVERY` | 604800 | Database compaction |
 
 Successful task times persist under `/data/.last_*`, so restarts do not reset
@@ -172,7 +171,7 @@ over its budget, with no database or render work. It is off by default.
 | `CRAWLER_UA_BUDGETS` | `{}` (defaults below) | JSON map of crawler name to a percentage (1 to 100) of the global budget, merged over the defaults; `0` drops a default |
 | `CRAWLER_DEFAULT_UA_PCT` | `10` | Share for a recognised crawler with no entry in `CRAWLER_UA_BUDGETS` |
 | `CRAWLER_UNLISTED_POOL_PCT` | `30` | Percentage of the global budget that all unlisted crawlers share between them, on top of their own share |
-| `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
+| `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests", "lightpanda"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
 | `CRAWLER_RETRY_AFTER_SEC` | `120` | Seconds sent in `Retry-After` |
 
 The defaults are the heavy known crawlers that name themselves in the

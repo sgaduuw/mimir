@@ -436,3 +436,13 @@ def test_submit_analyze_runs_via_writer(writer, seeded_db):
     future = _submit_analyze(writer, "alpha")
     # Must complete without raising.
     future.result(timeout=30)
+
+
+def test_submit_analyze_is_full_sample(writer, seeded_db):
+    """The after-ingest ANALYZE reads every row too (#817)."""
+    from mimir.ingest._pending import _submit_analyze
+    from tests._helpers import analyze_probe
+
+    with analyze_probe(seeded_db) as stat:
+        _submit_analyze(writer, "alpha").result(timeout=30)
+        assert stat() == "10000 5000"

@@ -1399,3 +1399,40 @@ def test_subsystem_dashboard_folds_a_series_into_one_triage_row(client, tmp_path
     quiet = text.split("Quiet for", 1)[1]
     assert quiet.count("bcachefs: fold") == 1, quiet
     assert re.search(r"fold 1</a>\s*<small>\+2 more in this series</small>", quiet)
+
+
+def test_an_unknown_root_segment_404s_without_a_redirect(client, seeded_db):
+    """The trailing-slash redirect only sends a client to an inbox that
+    exists; an unknown name 404s on the path it asked for (#827)."""
+    from sqlalchemy import select
+
+    from mimir.models import Inbox
+
+    names = ["no-such-inbox", "llms.txt", "apple-touch-icon.png", "search"]
+    with seeded_db() as s:
+        known = set(s.execute(select(Inbox.name)).scalars())
+    assert not known & set(names), known & set(names)
+    for name in names:
+        r = client.get(f"/{name}")
+        assert r.status_code == 404, (name, r.status_code)
+        assert "Location" not in r.headers, name
+
+
+def test_a_known_inbox_still_redirects_to_its_slash_form(client, inbox_name):
+    from flask import url_for
+
+    r = client.get(f"/{inbox_name}")
+    assert r.status_code == 308
+    with client.application.test_request_context():
+        want = url_for("web.inbox_dashboard", inbox_name=inbox_name)
+    assert r.headers["Location"].endswith(want), r.headers["Location"]
+    assert client.get(r.headers["Location"]).status_code == 200
+    # The query string survives, as it did under Werkzeug's own redirect.
+    r = client.get(f"/{inbox_name}?page=2")
+    assert r.headers["Location"].endswith(f"{want}?page=2"), r.headers["Location"]
+
+
+def test_root_files_still_serve_beside_the_bare_inbox_route(client):
+    assert client.get("/robots.txt").status_code == 200
+    assert client.get("/favicon.svg").status_code == 200
+    assert client.get("/favicon.ico").status_code == 301

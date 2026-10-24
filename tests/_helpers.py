@@ -3,7 +3,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
-from sqlalchemy import text
+from sqlalchemy import event, select, text
 
 from mimir import cache
 from mimir.dashboard import ArchiveStats, _archive_stats_key
@@ -56,6 +56,37 @@ def planner_stats(session_factory, rows=()):
 
 
 @contextmanager
+def analyze_probe(session_factory):
+    """A table with one index holding 2 keys x 5,000 rows, dropped after
+    (which also drops its `sqlite_stat1` row). Yields a function that
+    reads the index's recorded stat. A full-sample ANALYZE records
+    "10000 5000"; one capped at 4000 records "10000 4001"."""
+    with session_factory() as s:
+        s.execute(text("CREATE TABLE analyze_probe (k INTEGER, v INTEGER)"))
+        s.execute(text("CREATE INDEX ix_analyze_probe_k ON analyze_probe (k)"))
+        s.execute(
+            text(
+                "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n"
+                " WHERE i < 10000) INSERT INTO analyze_probe SELECT i % 2, i FROM n"
+            )
+        )
+        s.commit()
+
+    def stat():
+        with session_factory() as s:
+            return s.execute(
+                text("SELECT stat FROM sqlite_stat1 WHERE idx = 'ix_analyze_probe_k'")
+            ).scalar()
+
+    try:
+        yield stat
+    finally:
+        with session_factory() as s:
+            s.execute(text("DROP TABLE analyze_probe"))
+            s.commit()
+
+
+@contextmanager
 def count_steps(session):
     """Count SQLite VM steps run on `session`'s connection, to the
     nearest thousand, as `.count`. Steps do not depend on the machine's
@@ -71,3 +102,59 @@ def count_steps(session):
         yield steps
     finally:
         raw.set_progress_handler(None, 0)
+
+
+def plan_of(session, call, match):
+    """EXPLAIN QUERY PLAN of the one statement containing `match` that
+    `call` really runs, so a rewrite of a query cannot slip past a copy
+    of it."""
+    seen = []
+    engine = session.get_bind()
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if match in statement:
+            seen.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        call()
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert len(seen) == 1, seen
+    statement, params = seen[0]
+    raw = session.connection().connection.driver_connection
+    return "\n".join(
+        row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)
+    )
+
+
+# Production's sqlite_stat1 rows for article_lists, article_trailers and
+# the date index, for plan tests that must see the plan production gets.
+# Full-sample figures (ANALYZE with no analysis_limit, #817), measured
+# read-only 2026-10-23. A capped pass would read 4001 where these read
+# 146622, 146622 and 508750.
+PRODUCTION_STATS = (
+    ("article_lists", "ix_article_lists_inbox_id", "29764294 146622"),
+    ("article_lists", "ix_article_lists_thread_root", "29764294 146622 5"),
+    ("article_lists", "sqlite_autoindex_article_lists_1", "29764294 2 1"),
+    ("article_trailers", "ix_article_trailers_article_id", "3561252 2"),
+    ("article_trailers", "ix_article_trailers_role_addr", "3561252 508750 40"),
+    ("articles", "ix_articles_date", "17790565 1"),
+)
+
+
+def series_columns(session_factory, *message_ids):
+    """message id -> (key, version, position, head) for each id."""
+    from mimir.models import Article
+
+    with session_factory() as s:
+        rows = s.execute(
+            select(
+                Article.message_id,
+                Article.patch_series_key,
+                Article.patch_series_version,
+                Article.patch_series_position,
+                Article.patch_series_head_id,
+            ).where(Article.message_id.in_(message_ids))
+        ).all()
+    return {r[0]: tuple(r[1:]) for r in rows}

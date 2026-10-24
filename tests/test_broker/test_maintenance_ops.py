@@ -411,6 +411,20 @@ def test_run_analyze_full_resets_analysis_limit_on_shared_engine_fallback(seeded
     )
 
 
+def test_run_analyze_default_is_full_sample(seeded_db):
+    """The default pass reads every row: #817. A cap of 4000 records
+    4001 rows per key for any index with more, whichever ANALYZE ran
+    last."""
+    from mimir.broker import _context
+    from mimir.maintenance import run_analyze
+    from tests._helpers import analyze_probe
+
+    _context.clear_active()
+    with analyze_probe(seeded_db) as stat:
+        run_analyze()
+        assert stat() == "10000 5000"
+
+
 # ----- load_maintainers ---------------------------------------------------
 
 

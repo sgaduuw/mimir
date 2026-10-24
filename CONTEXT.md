@@ -1022,23 +1022,31 @@ order).
   Inside the transaction, not after it, so there is no window in which a
   reader sees the new cover in the wrong series and no crash gap that a
   later pass has to repair. `rechain_keys` is the one write path the
-  backfill, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
+  two backfills, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
   database (laptop, warm cache, one key of 280 covers in 56 series): 4 ms
   per batch at 3 patches per cover, 12 ms at 10, 49 ms at 30, for one
   new cover on an already chained key; a key never chained writes all
-  its heads on first touch, 50 to 387 ms at the same sizes. Unmeasured
-  on production.
+  its heads on first touch, 50 to 387 ms at the same sizes. On
+  production (2026-10-24, read-only, 17.8M articles), `head_updates`
+  took 1.1 ms per key at p50 and 1.9 ms at p99 over 15,872 keys, and 25
+  to 39 ms for the three largest (126 to 280 covers).
+- **`backfill-patch-series` re-chains what it writes (#824).** It never
+  writes a head from its read: an ingest batch can re-chain the key
+  between the read and the write. Each batch writes NULL heads on the
+  rows it changes, then re-chains every such row's old and new key on
+  the writer, before the cursor advance. The old key matters because
+  clearing a reply-cover (#820) writes key NULL, and the key it left
+  has to lose the split that cover caused. A row whose key, version,
+  position and subject do not change sends nothing, so its key is not
+  re-chained. On production (2026-10-24, read-only) a `--reprocess`
+  changes 32,603 rows on 15,974 keys: 19,302 re-chains across the
+  batches (8 per batch at p50, 66 at most), about 25 s of writer time.
+  Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
+  minutes.
 - **Operator order.** `backfill-patch-series --reprocess` first (it
   rewrites the versions the rule reads), then `backfill-series-chains`,
-  once, for the archived history. After that, ingest keeps keys
-  chained, but any later `backfill-patch-series` run needs the chain
-  backfill again, `--reprocess` or not: a plain run links orphaned
-  patches to their covers, which changes the titles the rule reads
-  without re-chaining the key. It also still writes heads from its own
-  read (on covers it rewrites and patches it links), so an ingest
-  re-chain between that read and the write can be undone; the chain
-  backfill after it repairs that too. Temporary: #824 has
-  `backfill-patch-series` re-chain the keys it writes.
+  once, for history ingested before 3.25.0. After that, ingest and
+  `backfill-patch-series` keep the keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)
 
@@ -1723,9 +1731,9 @@ Decisions specific to that shape:
 - **Post-migrate ANALYZE lives on the broker.** Migrations can
   introduce new indexes whose `sqlite_stat1` entries don't get
   populated as a side effect. After `alembic upgrade head` and
-  `bootstrap_inboxes`, the broker runs a bounded ANALYZE
-  (`analysis_limit=4000`, ~10.8 s on the production corpus as measured
-  2026-08-04; it was ~1-3 s when the corpus was 11M rows)
+  `bootstrap_inboxes`, the broker runs a full-sample ANALYZE
+  (`analysis_limit=0`, ~16.7 s on the production corpus as measured
+  2026-10-22)
   gated on a `/data/.broker_initial_analyze` sentinel so
   subsequent restarts skip it. Web tier doesn't start serving
   until the broker's healthcheck flips green, the right
@@ -1821,12 +1829,16 @@ ingest. The default is conservative (fires ANALYZE more often than
 strictly needed) on the principle that a planner stat refresh is
 cheap and a wrong-index recursive-CTE choice is multi-minute pain.
 
-## ANALYZE sample size: 4000 is calibrated for production, not just defaulted
+## ANALYZE sample size: 0 (every row), because a cap is not a sample
 
-`settings.analyze_limit` (default 4000) is `PRAGMA analysis_limit`
-applied on every SQLite connection. ANALYZE samples at most this
-many rows per index to estimate the per-key distribution that the
-query planner reads from `sqlite_stat1`.
+`settings.analyze_limit` (default 0, #817) is `PRAGMA analysis_limit`
+applied on every SQLite connection. A non-zero value makes ANALYZE
+stop after about that many rows per index when it estimates the
+per-key distribution the query planner reads from `sqlite_stat1`.
+It is not a random sample: SQLite reads the first key values and
+stops, so every index with more than N rows per key records N + 1.
+Items 1 to 3 below are the history that led to the cap; item 4 is why
+it is gone.
 
 The history of this knob matters:
 
@@ -1864,6 +1876,19 @@ The history of this knob matters:
    scheduler tick is the safety net for distribution drift in
    long-tail indexes that the 4000-row sample might miss.
 
+4. **#817**: the default went back to 0. Production's
+   `ix_article_lists_inbox_id` read `29738147 4001` (4001 per inbox
+   against a real average near 150k) six days in seven, because the
+   daily bounded pass overwrote the weekly full figures. With full
+   figures 474 of 476 captured statements kept their plan and the
+   other two improved. The daily pass is gone; the weekly one stays.
+   A full pass holds the writer lock 16.7 s (production, 2026-10-22),
+   against 1.2 to 6.6 s bounded. The 4000-row claim in item 3 that it
+   "produces the same plans as a full scan" was wrong for the big
+   indexes. This SQLite build has no stat4, so the planner still
+   cannot see one huge list among small ones; queries that matter pin
+   their shape (`_inbox_first`).
+
 The takeaway when this knob comes back up: 400 is **not** "what
 SQLite recommends." 400 is what SQLite docs call appropriate for
 "typical workloads," which does not include 11M-row multi-tenant
@@ -1874,8 +1899,8 @@ docs defaults as production-ready at scale.
 ## Scheduler-loop timers persist across restarts; post-migrate ANALYZE
 
 `deploy/scheduler.sh` runs `warm-cache`/`update`/`update-mainline`/
-`analyze`/`vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
-`UPDATE_EVERY`, `UPDATE_MAINLINE_EVERY`, `ANALYZE_EVERY`,
+`analyze --full`/`vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
+`UPDATE_EVERY`, `UPDATE_MAINLINE_EVERY`, `ANALYZE_FULL_EVERY`,
 `VACUUM_EVERY`). `update-mainline` short-circuits cheaply when the
 fetched mainline HEAD hasn't moved (the MAINTAINERS reparse early-
 returns on unchanged `state.last_commit_sha`; the Link-trailer walk
@@ -1884,7 +1909,7 @@ subsystem rename or a new MAINTAINERS section reach the From-line
 allowlist within one rebase cycle without making the sidecar chatty
 against mainline.kernel.org. The original shape initialised
 `last_<task>` to container start time, which silently broke the
-slower cadences (daily ANALYZE, weekly VACUUM) the moment release
+slower cadences (daily ANALYZE then, weekly VACUUM) the moment release
 rollover frequency dipped below the cadence: every restart pushed
 the next firing out by another full interval and the task never
 fired. With recent release cadence the daily ANALYZE on the prod
@@ -1901,17 +1926,15 @@ carrying the change. Sentinels are only touched on successful runs
 so a transient failure doesn't push the next retry out by a full
 cadence.
 
-Companion: the broker runs a bounded `ANALYZE`
-(`analysis_limit=4000`) immediately after `alembic upgrade head`
+Companion: the broker runs a full-sample `ANALYZE`
+(`analysis_limit=0`) immediately after `alembic upgrade head`
 and `bootstrap_inboxes`, before touching the `/data/.migrated`
 healthcheck sentinel, gated on `/data/.broker_initial_analyze` so
 subsequent restarts skip it (it's a one-shot per schema). The
 v2.0.0 broker owns this; through v1.x it lived in scheduler.sh.
 Migrations can introduce new indexes whose `sqlite_stat1` entries
 don't get populated as a side effect; the post-migrate pass closes
-that gap and is bounded (~10.8 s as of 2026-08-04, vs the ~25-30 s
-unbounded
-pass that earlier shipped). Web tier gates on the broker's
+that gap (~16.7 s as of 2026-10-22). Web tier gates on the broker's
 healthcheck so gunicorn doesn't start serving until the
 post-migrate ANALYZE finishes, the right ordering: serve queries
 against the schema only once the planner has stats for the schema.

@@ -462,43 +462,32 @@ class Settings(BaseSettings):
     mimir_deploy: bool = False
 
     # SQLite `PRAGMA analysis_limit` (max rows sampled per index by
-    # ANALYZE). Default 0 means "no limit" and ANALYZE scans every
-    # row of every index, which on the 11M-row prod corpus holds
-    # the writer lock for ~25 s. SQLite's docs hint at "1000 or
-    # 1500 for very large databases"; **4000** is a 10x margin on
-    # that (set when the corpus was 11M rows; it is 28.8M
-    # `article_lists` as of 2026-08-04) and produces accurate-enough
-    # stats
-    # for the recursive-CTE shapes the read path leans on (thread
-    # walk via `ix_articles_thread_parent`, the per-inbox
-    # `(article_id, inbox_id)` covering index on `article_lists`,
-    # etc.). ANALYZE wall time scales roughly linearly in the
-    # limit; 4000 measures at **10.8 s** on this corpus (2026-08-04,
-    # read off the broker's nightly `slow write [analyze]` line), which
-    # is still far better than an unbounded scan but is NOT the "~1-3 s"
-    # this comment claimed for three releases after the corpus tripled.
-    # It is also on the broker's pre-healthcheck startup path, so
-    # re-measure it whenever the startup budget is reviewed. The pragma is set on every
-    # connection in `mimir.extensions._sqlite_pragmas`, so it
-    # applies uniformly to `mimir analyze`, auto-ANALYZE-after-
-    # ingest, and any ad-hoc session running ANALYZE.
+    # ANALYZE). 0 means "no limit": ANALYZE reads every row of every
+    # index. That is the default since #817.
     #
-    # **1.36.4 history**: 1.35.1 shipped this at 400 on the basis
-    # that SQLite docs called 400 "appropriate for typical
-    # workloads." It produced catastrophically wrong plans on the
-    # production multi-inbox corpus, e.g. `get_thread` for a 15-
-    # message thread on lkml took 400 s instead of milliseconds
-    # because the planner mis-estimated the recursive CTE's join
-    # cardinality from undersampled `article_lists` /
-    # `thread_parent` stats. A full ANALYZE (`analysis_limit=0`)
-    # restored 200-1700x speedups instantly. 4000 keeps the post-
-    # migrate ANALYZE fast at boot while giving the planner the
-    # samples it needs at this scale. The weekly full ANALYZE on
-    # the scheduler tick is the safety net for distribution drift.
+    # A non-zero limit is not a random sample. SQLite reads about that
+    # many rows from the first key values and stops, so every index
+    # with more rows per key than the limit records limit + 1 (4001 at
+    # 4000) however large the real figure is. On production that put
+    # `ix_article_lists_inbox_id` at 4001 per inbox against a real
+    # average near 150k, and the daily bounded pass overwrote the
+    # weekly full figures within a day. Full figures kept 474 of 476
+    # captured statements on their plan and improved the other two.
     #
-    # Set to 0 to restore full-scan stats (slow but exact).
-    # Override via ANALYZE_LIMIT.
-    analyze_limit: int = 4000
+    # Cost, measured on the production corpus: a full pass holds the
+    # writer lock for 16.7 s (2026-10-22); the bounded pass took 1.2
+    # to 6.6 s. The pragma is set on every connection in
+    # `mimir.extensions._sqlite_pragmas`, so the 0 applies to every
+    # ANALYZE: post-migrate (before the broker serves, so on the
+    # startup budget), after ingest, and `mimir analyze`.
+    #
+    # History: 400 (1.35.1) mis-planned the recursive CTEs badly (a
+    # 15-message `get_thread` took 400 s); 4000 (1.36.4) was the
+    # compromise until the cap itself was found to be the problem.
+    #
+    # Set to a positive number to cap the sample again (faster,
+    # inexact). Override via ANALYZE_LIMIT.
+    analyze_limit: int = 0
 
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
@@ -757,6 +746,7 @@ class Settings(BaseSettings):
         "curl",
         "wget",
         "python-requests",
+        "lightpanda",
     ]
 
     @property

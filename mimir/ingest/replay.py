@@ -121,8 +121,9 @@ def _replay_loop(
         ).scalar_one_or_none()
         if existing_id is None:
             # session=None: replay is single-row on a raw connection, so no
-            # in-series parent lookup; the backfill command closes any gap
-            # in patch_series_key + patch_series_version later.
+            # thread-parent lookup; the backfill command closes any gap
+            # in patch_series_key + patch_series_version later, and
+            # `--reprocess` clears a reply stored as a cover (#820).
             rec = _to_article_insert(
                 parsed,
                 inbox_id,

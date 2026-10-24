@@ -4,6 +4,8 @@ from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
     parse_cover_letter,
+    posting_flags,
+    reply_to_cover,
     series_key,
 )
 
@@ -55,14 +57,63 @@ def test_glued_version_with_leading_bracket_or_tag():
         assert out is not None and out.version == "v2", subject
 
 
+def test_version_glued_to_rfc_resend_or_patches():
+    """A `vN` glued to RFC, RESEND, PATCHES or PATCHSET is the version,
+    as after PATCH (#819), and RFC and RESEND still count as markers."""
+    for subject, version in [
+        ("[PATCH RFCv9 0/4] foo", "v9"),
+        ("[RFCv4 PATCH 0/6] foo", "v4"),
+        ("[RFCv2 0/5] foo", "v2"),
+        ("[RESENDv2 PATCH 0/3] foo", "v2"),
+        ("[PATCHESv2 0/3] foo", "v2"),
+        ("[PATCHSETv3 0/3] foo", "v3"),
+        ("[PATCH rfcv3 0/2] foo", "v3"),
+        ("[RESEND RFCv2 0/1] foo", "v2"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+    assert posting_flags("[PATCH RFCv9 0/4] foo", "v9") == (True, False)
+    assert posting_flags("[RESENDv2 PATCH 0/3] foo", "v2") == (False, True)
+    assert posting_flags("[RESEND RFCv2 0/1] foo", "v2") == (True, True)
+    # A glued marker only counts at the start of its word.
+    assert parse_cover_letter("[PATCH xRFCv2 0/3] foo").version == "v1"
+
+
+def test_a_dotted_version_in_a_branch_name_is_not_the_revision():
+    """`v2019.04-aspeed-openbmc` or `v6.12-rc1` names a base tree, not a
+    revision; the real `vN`, or the RFC beside it, wins (#819)."""
+    for subject, version in [
+        ("[PATCH u-boot v2019.04-aspeed-openbmc v2 0/4] foo", "v2"),
+        ("[PATCH mpam/v6.10-rc1 RFC 0/4] foo", "rfc"),
+        ("[AUFS PATCH v2.6.26-rc2-mm1 00/39] foo", "v1"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+
+
+def test_shapes_the_version_rule_must_keep():
+    """Measured on production before #819: these parsed right and must
+    keep doing so."""
+    for subject, version in [
+        ("[PATCH/RFC 0/4] foo", "rfc"),
+        ("[PATCHv9-rebased 00/37] foo", "v9"),
+        ("[PATCHv2-next 0/3] foo", "v2"),
+        ("[PATCH v4.1 0/3] foo", "v4"),
+        ("[PATCH v6-resend 00/17] foo", "v6"),
+    ]:
+        out = parse_cover_letter(subject)
+        assert out is not None and out.version == version, (subject, out)
+
+
 def test_glued_version_in_series_patch_is_detected():
     out = parse_in_series_patch_subject("[U-Boot] [PATCHv2 1/3] foo: add bar")
     assert out is not None and out.position == 1
 
 
 def test_v_inside_another_word_is_not_a_version():
-    """Only `PATCH` may sit directly before `v\\d+`; a `v2` buried in
-    another token stays v1."""
+    """Only PATCH, PATCHES, PATCHSET, RFC or RESEND may sit directly
+    before `v\\d+`; a `v2` buried in another token stays v1, and RFC
+    glued to PATCH is not a marker."""
     for subject in [
         "[PATCH nv2 0/3] foo",
         "[PATCH drv2 0/3] foo",
@@ -252,3 +303,61 @@ def test_series_key_handles_missing_author():
     # Garbage input is its own bucket, won't collide with the
     # None/empty bucket.
     assert series_key("foo", "garbage") != series_key("foo", None)
+
+
+# reply_to_cover, a cover-shaped subject that answers a cover (#820).
+
+COVER = "[PATCH v2 0/3] improve foo\thandling"
+
+
+def test_reply_to_cover_table():
+    """Each row: (subject, its author, parent subject, parent author,
+    expected). A reply repeats the parent cover's posting (title and
+    version) from another address; a re-post from the same address
+    stays a cover."""
+    rows = [
+        # Reviewer retyped the folded tab as a space: a reply.
+        ("[PATCH v2 0/3] improve foo handling", "Bob <b@x>", COVER, "Al <a@x>", True),
+        # Same address, other display name: the sender's own re-post.
+        ("[PATCH v2 0/3] improve foo handling", "Al W <A@x>", COVER, "Al <a@x>", False),
+        # The next revision In-Reply-To the last one.
+        ("[PATCH v3 0/3] improve foo handling", "Bob <b@x>", COVER, "Al <a@x>", False),
+        # Its own parent (a self-referencing In-Reply-To).
+        (COVER, "Al <a@x>", COVER, "Al <a@x>", False),
+        # Parent is a patch, a reply, or missing.
+        (COVER, "Bob <b@x>", "[PATCH v2 1/3] foo: add bar", "Al <a@x>", False),
+        (COVER, "Bob <b@x>", "Re: " + COVER, "Al <a@x>", False),
+        (COVER, "Bob <b@x>", None, None, False),
+        # Another title.
+        ("[PATCH v2 0/3] improve bar", "Bob <b@x>", COVER, "Al <a@x>", False),
+        # RFC answering RFC.
+        (
+            "[RFC 0/2] explore foo",
+            "Bob <b@x>",
+            "[RFC 0/2] explore foo",
+            "Al <a@x>",
+            True,
+        ),
+        # Another patch count: a re-post, measured on production.
+        ("[PATCH v2 0/4] improve foo handling", "Bob <b@x>", COVER, "Al <a@x>", False),
+        # A RESEND in one subject only: a re-post; in both: a reply.
+        (
+            "[RESEND PATCH v2 0/3] improve foo handling",
+            "Bob <b@x>",
+            COVER,
+            "Al <a@x>",
+            False,
+        ),
+        (COVER, "Bob <b@x>", "[RESEND PATCH v2 0/3] improve foo", "Al <a@x>", False),
+        (
+            "[RESEND PATCH v2 0/3] improve foo",
+            "Bob <b@x>",
+            "[PATCH RESEND v2 0/3] improve foo",
+            "Al <a@x>",
+            True,
+        ),
+    ]
+    for subject, author, parent_subject, parent_author, expected in rows:
+        assert parse_cover_letter(subject) is not None, subject
+        got = reply_to_cover(subject, author, parent_subject, parent_author)
+        assert got is expected, (subject, author, parent_subject)

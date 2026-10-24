@@ -11,6 +11,69 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.26.0] - 2026-10-24
+
+No migration. After deploying, run `backfill-patch-series --reprocess` once
+(it applies #819 and #820 to stored rows and re-chains what it changes,
+#824), then `mimir analyze --full` once (#817), since a release without a
+migration fires no post-migrate pass; `--full` is right even if the
+deployment still sets `ANALYZE_LIMIT`. Rolling back to 3.25.0 is safe; after
+a rollback, run 3.25.0's `backfill-patch-series` only with
+`backfill-series-chains` after it.
+
+### Changed
+
+- Planner statistics are now full-sample on every ANALYZE, and the daily
+  sampled run is gone (#817). A capped `analysis_limit` is not a random
+  sample: SQLite reads the first key values and stops, so every index with
+  more rows per key than the cap recorded the cap plus one (4001), and the
+  daily pass overwrote the weekly full figures within a day. `ANALYZE_LIMIT`
+  now defaults to 0 (no cap), and the scheduler's daily `analyze` and
+  `ANALYZE_EVERY` are removed; the weekly `analyze --full` stays. A full pass
+  holds the writer lock for about 17 s (16.7 s measured on the production
+  corpus, 2026-10-22), and a deploy that migrates runs one before the broker
+  serves. If you set `ANALYZE_LIMIT`, unset it.
+
+### Fixed
+
+- A reviewer's reply that repeats a cover letter's subject without "Re:" is
+  no longer stored as a separate patch series (#820). It is a reply when it
+  answers a cover with the same title, version and patch count from another
+  sender, and both or neither are a RESEND. 26,673 stored covers are such
+  replies (counted on production, 2026-10-23), and 112 patches sent under
+  28 of them lose their series. The reprocess counts them as `reply_cover`.
+  A reply that arrives before its cover, or through replay, stays a cover
+  until the next reprocess.
+- Cover letters with a version glued to RFC, RESEND, PATCHES or PATCHSET
+  (`[RFCv4 ...]`, `[PATCH RFCv9 ...]`) are read at that version, and a
+  dotted base tree such as `v2019.04-aspeed` or `v6.12-rc1` is no longer
+  taken for the revision (#819). 514 stored covers change.
+- `backfill-patch-series` no longer leaves patch series in the wrong chain
+  (#824; patches threaded under another patch excepted, #840). It wrote each row's series head from its own read, so an ingest
+  batch landing between the read and the write could be undone, and the
+  titles it changed stayed unchained until `backfill-series-chains` ran
+  again. Each batch now re-chains the titles its rows leave or join, and
+  rows that do not change are no longer rewritten. `backfill-series-chains`
+  is needed only once, for history ingested before 3.25.0. A `--reprocess`
+  spends about 25 s re-chaining, estimated from a read-only measurement on
+  production data (2026-10-24).
+- Reviewer pages and subsystem dashboard warms on large lists are faster:
+  the reviewer lookup now seeks the trailer index instead of walking every
+  article of the list, and the maintainer profile's review-inbox list no
+  longer depends on planner statistics to use it (#831). On lkml one
+  reviewer lookup went from about 2.5 s to under 20 ms.
+- Related discussions on large lists really pin the date walk now (#835).
+  The pin added in #785 used SQLAlchemy's `with_hint`, which renders
+  nothing on SQLite, so the fast plan depended on the planner's choice;
+  the query now carries `INDEXED BY ix_articles_date` itself.
+- The crawler budget recognises Lightpanda, a headless scraper that sends
+  `Lightpanda/1.0` without any of the default crawler markers (#828).
+  `lightpanda` joins the default `CRAWLER_UA_MARKERS`.
+- A request for an unknown name at the site root (`/llms.txt`,
+  `/apple-touch-icon.png`, `/search`) gets a 404 straight away, instead of a
+  redirect to a trailing-slash URL that then 404s (#827). A real inbox name
+  still redirects to its dashboard, query string included.
+
 ## [3.25.0] - 2026-10-22
 
 ### Added

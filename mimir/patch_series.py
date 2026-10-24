@@ -46,9 +46,15 @@ _ZERO_OF_N_RE = re.compile(r"\b0+\s*/\s*\d+\b")
 # Version qualifiers. `v\d+` is the conventional revision marker;
 # `RFC` and `RESEND` are version-shaped enough to surface
 # distinctly. Anything else falls back to v1 (the unmarked first
-# version is implicit). `[PATCHv2 0/9]` has no word boundary before the
-# `v`, so a `v\d` directly after `PATCH` also starts a marker (#816).
-_VERSION_RE = re.compile(r"(?:\b|(?<=PATCH)(?=v\d))(v\d+|RFC|RESEND)\b", re.IGNORECASE)
+# version is implicit). A `v\d` glued to PATCH, PATCHES, PATCHSET, RFC
+# or RESEND (`[PATCHv2`, `[RFCv9`) also starts a marker, and RFC and
+# RESEND may end at it (#816, #819). A dotted version followed by `-`
+# (`v2019.04-aspeed`, `v6.12-rc1`) names a base tree, not a revision.
+_VERSION_RE = re.compile(
+    r"(?:\b|(?:(?<=\bPATCH)|(?<=\bPATCHES)|(?<=\bPATCHSET)|(?<=\bRFC)|(?<=\bRESEND))(?=v\d))"
+    r"(v\d+(?!(?:\.\d+)+-)|RFC|RESEND)(?:\b|(?=v\d))",
+    re.IGNORECASE,
+)
 
 
 def version_number_sql(column: str) -> str:
@@ -238,17 +244,71 @@ def series_key(title: str, author: str | None) -> str:
     the rest of the app maintains for non-allowlisted senders. The
     SHA is opaque, machine-readable only, and joins cheaply.
     """
+    address, norm_title = _series_identity(title, author)
+    payload = f"{address}|{norm_title}".encode()
+    return hashlib.sha1(payload).hexdigest()
+
+
+def _series_identity(title: str, author: str | None) -> tuple[str, str]:
+    """`(address, title)` as `series_key` hashes them, so
+    `reply_to_cover` compares exactly what the key does."""
     # Strip the author's display name; we want the email-address
     # half so renames don't break linkage.
     _name, address = parseaddr(author or "")
-    address = address.lower().strip()
     # Title normalisation: lowercase + whitespace collapse. We
     # don't strip bracketed tags because the cover-letter parser
     # already chopped them off, the title arg is the post-bracket
     # text. Just normalise for case + whitespace drift.
-    norm_title = " ".join(title.lower().split())
-    payload = f"{address}|{norm_title}".encode()
-    return hashlib.sha1(payload).hexdigest()
+    return address.lower().strip(), " ".join(title.lower().split())
+
+
+def reply_to_cover(
+    subject: str | None,
+    author: str | None,
+    parent_subject: str | None,
+    parent_author: str | None,
+) -> bool:
+    """Whether a cover-shaped `subject` is really a reply to its thread
+    parent (#820): the parent's subject is a cover of the same title,
+    version and patch total, both or neither a RESEND, sent from
+    another address. Reviewers on some lists answer with the cover's
+    subject as is, without "Re:". Another total or a RESEND on one side
+    only is a re-post of the series, so a cover.
+
+    Reads the parent's subject and sender, never its stored series
+    columns, so the answer does not depend on which of the two was
+    stored first, and a reply to such a reply is caught too. A reply
+    from the cover's own address is left a cover: telling it from a
+    re-post of the series needs the patches actually posted, which
+    nothing here can see."""
+    cover = parse_cover_letter(unfold(subject))
+    parent = parse_cover_letter(unfold(parent_subject))
+    if (
+        cover is None
+        or parent is None
+        or (parent.version, parent.total) != (cover.version, cover.total)
+        or posting_flags(parent_subject, parent.version)[1]
+        != posting_flags(subject, cover.version)[1]
+    ):
+        return False
+    address, title = _series_identity(cover.title, author)
+    parent_address, parent_title = _series_identity(parent.title, parent_author)
+    return title == parent_title and address != parent_address
+
+
+def _reply_to_cover_in_db(session, subject, author, thread_parent) -> bool:
+    """`reply_to_cover` for a stored article, its parent read by one
+    select on the indexed message id."""
+    if not thread_parent:
+        return False
+    parent = session.execute(
+        select(Article.subject, Article.author).where(
+            Article.message_id == thread_parent
+        )
+    ).one_or_none()
+    return parent is not None and reply_to_cover(
+        subject, author, parent.subject, parent.author
+    )
 
 
 class BackfillResult(BackfillCounters):
@@ -259,6 +319,7 @@ class BackfillResult(BackfillCounters):
     in_series_indexed: int = 0  # in-series patch linked to its cover via thread parent
     in_series_orphan: int = 0  # in-series patch, position set, cover not in DB
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
+    reply_cover: int = 0  # cover-shaped reply to a cover, series cleared (#820)
     skipped: int = 0  # already fully resolved (idempotent re-run)
     subjects_unfolded: int = 0  # stored folded subject rewritten (#710)
 
@@ -267,9 +328,9 @@ def _resolve_in_series_link(
     session,
     article,
     reprocess: bool,
-) -> tuple[str, str, int | None] | None:
-    """Look up `(patch_series_key, patch_series_version,
-    patch_series_head_id)` from the article's thread parent. Depth-1 walk: `git send-email --thread`
+) -> tuple[str, str] | None:
+    """Look up `(patch_series_key, patch_series_version)` from the
+    article's thread parent. Depth-1 walk: `git send-email --thread`
     posts in-series patches as direct children of the cover, which
     is the modal shape. Deeper chains (patch resent as a reply to
     a reply) fall through to the orphan bucket; if they become
@@ -283,8 +344,8 @@ def _resolve_in_series_link(
     (without writing). When the walker later visits the parent and
     runs the cover-letter path, it writes the same `series_key()`
     output, so the in-series patch and cover converge on the same
-    key without ordering constraints. The head is the parent's either
-    way: this walker never writes a cover's head (#816).
+    key without ordering constraints. The head is not looked up: the
+    batch re-chains the key on the writer (#824).
     """
     if not article.thread_parent:
         return None
@@ -294,7 +355,7 @@ def _resolve_in_series_link(
             Article.author,
             Article.patch_series_key,
             Article.patch_series_version,
-            Article.patch_series_head_id,
+            Article.thread_parent,
         ).where(Article.message_id == article.thread_parent)
     ).one_or_none()
     if parent is None:
@@ -302,26 +363,25 @@ def _resolve_in_series_link(
     # A reprocess reparses the parent: its stored version may be the one
     # being rewritten, and the walk reaches the children first (#816).
     if parent.patch_series_key is not None and not reprocess:
-        return (
-            parent.patch_series_key,
-            parent.patch_series_version,
-            parent.patch_series_head_id,
-        )
+        # Under a non-cover parent the re-chain cannot reach this row, so
+        # any backfill write leaves its head NULL until #840.
+        return parent.patch_series_key, parent.patch_series_version
     cover = parse_cover_letter(unfold(parent.subject))
-    if cover is None:
+    # A reply stored as a cover has no series (#820), so its patches are
+    # orphans rather than linked to a key with no cover.
+    if cover is None or _reply_to_cover_in_db(
+        session, parent.subject, parent.author, parent.thread_parent
+    ):
         return None
-    return (
-        series_key(cover.title, parent.author),
-        cover.version,
-        parent.patch_series_head_id,
-    )
+    return series_key(cover.title, parent.author), cover.version
 
 
 def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     """Per-article work for `backfill_patch_series`. Returns
     `(bucket, pending_payload)`; `pending_payload` is None when the
-    article is already fully-resolved (bucket="skipped") so no UPDATE
-    needs to fire. Otherwise it's a `_PatchSeriesPending` instance.
+    row's series columns and subject would not change, so no UPDATE
+    fires and its key is not re-chained (#824). Otherwise it's a
+    `_PatchSeriesPending` instance.
 
     Idempotency: an article is "fully resolved" when its
     `patch_series_position` is set AND (it's a cover with key, OR
@@ -341,17 +401,27 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     # otherwise skipped.
     subject = unfold(article.subject)
     rewrite = subject if subject != article.subject else None
+    stored = (
+        article.patch_series_key,
+        article.patch_series_version,
+        article.patch_series_position,
+    )
 
     def bucket(name: str):
         return (name, "subjects_unfolded") if rewrite is not None else name
 
-    def keep_series() -> _PatchSeriesPending:
+    def pending(key, version, position) -> _PatchSeriesPending | None:
+        # Correctness does not need this skip, since every payload's keys
+        # are re-chained; cost does: a reprocess writes and re-chains only
+        # the rows it changes, not every row it walks.
+        if rewrite is None and (key, version, position) == stored:
+            return None
         return _PatchSeriesPending(
             article_id=article.id,
-            patch_series_key=article.patch_series_key,
-            patch_series_version=article.patch_series_version,
-            patch_series_position=article.patch_series_position,
-            patch_series_head_id=article.patch_series_head_id,
+            old_key=article.patch_series_key,
+            patch_series_key=key,
+            patch_series_version=version,
+            patch_series_position=position,
             subject=rewrite,
         )
 
@@ -360,58 +430,37 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         or (article.patch_series_position > 0 and article.patch_series_key is not None)
     )
     if is_fully_resolved and not reprocess:
-        return bucket("skipped"), keep_series() if rewrite is not None else None
+        return bucket("skipped"), pending(*stored)
 
     cover = parse_cover_letter(subject)
+    if cover is not None and _reply_to_cover_in_db(
+        session, subject, article.author, article.thread_parent
+    ):
+        # An already cleared reply is never "fully resolved", so every
+        # plain run meets it again, and writes nothing unless the
+        # subject needs it.
+        return bucket("reply_cover"), pending(None, None, None)
     if cover is not None:
-        return bucket("indexed"), _PatchSeriesPending(
-            article_id=article.id,
-            patch_series_key=series_key(cover.title, article.author),
-            patch_series_version=cover.version,
-            patch_series_position=0,
-            # Heads are the chain pass's (#816); the subject cannot
-            # say which chain a cover is in, so keep what it wrote.
-            patch_series_head_id=article.patch_series_head_id,
-            subject=rewrite,
+        return bucket("indexed"), pending(
+            series_key(cover.title, article.author), cover.version, 0
         )
 
     in_series = parse_in_series_patch_subject(subject)
     if in_series is not None:
         link = _resolve_in_series_link(session, article, reprocess)
         if link is not None:
-            key, version, head_id = link
-            return bucket("in_series_indexed"), _PatchSeriesPending(
-                article_id=article.id,
-                patch_series_key=key,
-                patch_series_version=version,
-                patch_series_position=in_series.position,
-                patch_series_head_id=head_id,
-                subject=rewrite,
+            key, version = link
+            return bucket("in_series_indexed"), pending(
+                key, version, in_series.position
             )
         # Orphan: clear key/version on reprocess; keep position.
-        return bucket("in_series_orphan"), _PatchSeriesPending(
-            article_id=article.id,
-            patch_series_key=None if reprocess else article.patch_series_key,
-            patch_series_version=(None if reprocess else article.patch_series_version),
-            patch_series_position=in_series.position,
-            patch_series_head_id=(None if reprocess else article.patch_series_head_id),
-            subject=rewrite,
-        )
+        kept = (None, None) if reprocess else stored[:2]
+        return bucket("in_series_orphan"), pending(*kept, in_series.position)
 
     # Neither cover nor in-series. On reprocess, clear any prior series row.
-    if reprocess and (
-        article.patch_series_key is not None
-        or article.patch_series_position is not None
-    ):
-        return bucket("not_cover"), _PatchSeriesPending(
-            article_id=article.id,
-            patch_series_key=None,
-            patch_series_version=None,
-            patch_series_position=None,
-            patch_series_head_id=None,
-            subject=rewrite,
-        )
-    return bucket("not_cover"), keep_series() if rewrite is not None else None
+    if reprocess:
+        return bucket("not_cover"), pending(None, None, None)
+    return bucket("not_cover"), pending(*stored)
 
 
 def backfill_patch_series(
@@ -469,5 +518,6 @@ __all__ = [
     "CoverLetter",
     "backfill_patch_series",
     "parse_cover_letter",
+    "reply_to_cover",
     "series_key",
 ]

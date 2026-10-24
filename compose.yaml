@@ -81,10 +81,11 @@ services:
       # start_period has to cover everything the broker does BEFORE it
       # accepts RPCs, on the one deploy that introduces a schema change:
       # alembic upgrade (the thread_root_id migration rebuilds the whole
-      # article_lists table) + bootstrap_inboxes + bounded post-migrate
-      # ANALYZE + the one-time thread-root backfill + a second bounded
-      # ANALYZE. See `mimir.thread_roots` for the measured per-row cost
-      # AND the real corpus size; on the corpus measured 2026-07-28
+      # article_lists table) + bootstrap_inboxes + post-migrate
+      # ANALYZE + the one-time thread-root backfill + a second
+      # ANALYZE (each ~17 s full-sample, 2026-10-22). See
+      # `mimir.thread_roots` for the measured per-row cost AND the real
+      # corpus size; on the corpus measured 2026-07-28
       # (28.8M article_lists rows) the backfill alone extrapolates to
       # ~4.6 MINUTES, and that extrapolation is a floor.
       #
@@ -202,7 +203,7 @@ services:
   # cron / systemd timers. Shares the same /data volume; no port
   # exposure. See deploy/scheduler.sh for the loop body and the
   # env-overridable cadence knobs (WARM_CACHE_EVERY, UPDATE_EVERY,
-  # UPDATE_MAINLINE_EVERY, ANALYZE_EVERY, VACUUM_EVERY, all in seconds).
+  # UPDATE_MAINLINE_EVERY, ANALYZE_FULL_EVERY, VACUUM_EVERY, all in seconds).
   #
   # 2.0.0: this container does no direct SQLite writes. Every
   # scheduled task dispatches an RPC at the broker; the broker

@@ -81,9 +81,13 @@ uv run mimir analyze --full
 uv run mimir vacuum
 ```
 
-`analyze` refreshes query-planner statistics with a bounded sample; `--full`
-scans all index entries. The broker also analyzes after schema changes. The
-scheduler defaults to daily bounded analysis and weekly full analysis.
+`analyze` refreshes query-planner statistics from every index entry; about 17 s
+of writer lock on the production corpus (2026-10-22). `ANALYZE_LIMIT` defaults to
+0, meaning no cap. A cap records the cap plus one for every index with more rows
+per key, which misleads the planner, so leave it at 0. `--full` forces 0 for one
+pass on a deployment that set a cap. The broker also analyzes after schema
+changes, and a deploy that migrates runs a full pass before the broker serves.
+The scheduler runs a full analysis weekly.
 
 `vacuum` compacts the database and attempts a WAL checkpoint. Schedule it during
 quiet periods: it occupies the writer and needs substantial temporary disk space.
