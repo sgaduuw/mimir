@@ -119,7 +119,11 @@ def _sample_list_addresses(mirror_path: Path) -> dict[str, int]:
     remaining = LIST_ADDRESS_SAMPLE
     for epoch_path in reversed(discover_epochs(mirror_path)):
         with Repo(str(epoch_path)) as repo:
-            walker = repo.get_walker(include=[repo.head()], max_entries=remaining)
+            try:
+                head = repo.head()
+            except KeyError:  # no commits yet, as a clone killed by sync leaves
+                continue
+            walker = repo.get_walker(include=[head], max_entries=remaining)
             for entry in walker:
                 remaining -= 1
                 try:
