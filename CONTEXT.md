@@ -1494,9 +1494,13 @@ data:
    warm-up. Operator can override via `admin inbox update`.
    Promotion skips an address another inbox already holds, because a
    small list's To/Cc is often dominated by cross-posts to a bigger
-   one (#647). The first inbox to promote an address keeps it, so on
-   a from-scratch ingest (alphabetical) cocci can take lkml's address
-   before lkml does; an operator corrects that with `--list-address`.
+   one (#647). The first inbox to promote an address keeps it. Ingest
+   walks pinned inboxes first (#766), so on a from-scratch ingest lkml
+   takes its address before cocci can; two unpinned inboxes still go
+   alphabetically, and an operator corrects that with `--list-address`.
+   Canonical pins made during a from-scratch ingest used the address map
+   as it stood at each epoch's start, so run
+   `admin canonicals backfill --reprocess --restart` afterwards.
 3. **Per-article pinning.** With `Inbox.list_address` populated,
    `pick_canonical_inbox_id` walks the message's To/Cc addresses
    in order and returns the first inbox whose `list_address`
