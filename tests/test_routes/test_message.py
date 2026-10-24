@@ -1508,9 +1508,10 @@ def test_message_json_ld_author_no_email_leak_for_bare_address(
     tmp_path,
     monkeypatch,
 ):
-    """A From: line with only a bare address falls back to a neutral
-    string in JSON-LD, not the email itself, which would defeat the
-    visible HTML redaction the page already applied."""
+    """A From: line with only a bare address gets no `name` in JSON-LD
+    (and no "unknown sender" placeholder, #845), never the email itself,
+    which would defeat the visible HTML redaction the page already
+    applied."""
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "email_allowlist", [])
@@ -1523,8 +1524,22 @@ def test_message_json_ld_author_no_email_leak_for_bare_address(
     )
     graph = _json_ld_blocks(client.get(url).data.decode())[0]["@graph"]
     posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
-    assert "<hidden>" not in posting["author"]["name"]
-    assert "@" not in posting["author"]["name"]
+    assert posting["author"] == {"@type": "Person"}
+
+
+def test_message_json_ld_root_nameless_allowlisted_sender_named_by_address(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "email_allowlist", ["@open.example"])
+    seeded = _seed_three_message_thread(
+        tmp_path, "alpha", authors=("ok@open.example",) * 3
+    )
+    graph = _json_ld_blocks(client.get(seeded["root"][1]).data.decode())[0]["@graph"]
+    posting = next(g for g in graph if g["@type"] == "DiscussionForumPosting")
+    assert posting["author"]["name"] == "ok@open.example"
+    assert "url" not in posting["author"]
 
 
 def test_message_json_ld_author_includes_email_when_allowlisted(

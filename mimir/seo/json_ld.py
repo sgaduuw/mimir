@@ -14,6 +14,7 @@ module load).
 """
 
 from collections.abc import Sequence
+from email.utils import parseaddr
 from urllib.parse import quote
 
 from mimir.config import settings
@@ -179,31 +180,35 @@ def _json_ld_text_snippet(body: str | None) -> str | None:
 BREADCRUMB_NAME_MAX = 80
 
 
-UNKNOWN_SENDER = "unknown sender"
-
-
 def _person(raw: str | None, *, base: str, inbox_name: str, with_url: bool) -> dict:
     """schema.org `Person` for a message sender, redaction-aware.
 
     `name` is the display name only (never the `<hidden>` placeholder,
     which reads as broken data in metadata even though it is right on
-    the rendered page). `email` rides along only for allowlisted
-    senders, mirroring exactly what `_safe_from_filter` shows.
+    the rendered page). Without a display name, an allowlisted sender
+    is named by its address (public on the page already) and any other
+    sender gets no `name` at all: `author` stays present, which Google
+    requires, and nothing is invented or leaked. `email` rides along
+    only for allowlisted senders, mirroring exactly what
+    `_safe_from_filter` shows.
 
     `with_url` points at the per-inbox author view, which Google wants
     as a stable "more posts by this author" target for Discussions
     eligibility. Off for thread comments: repeating the same per-inbox
-    URL for every participant adds no signal.
+    URL for every participant adds no signal. Only for senders with a
+    display name, since the view is keyed by it.
     """
-    from mimir.web.filters import _allowlisted_email, _display_name_filter
+    from mimir.web.filters import _allowlisted_email
 
-    name = _display_name_filter(raw)
-    person: dict = {"@type": "Person", "name": name}
+    display, _ = parseaddr(raw or "")
     email = _allowlisted_email(raw)
+    person: dict = {"@type": "Person"}
+    if display or email:
+        person["name"] = display or email
     if email:
         person["email"] = email
-    if with_url and name and name != UNKNOWN_SENDER:
-        person["url"] = f"{base}/{inbox_name}/author/{quote(name, safe='')}"
+    if with_url and display:
+        person["url"] = f"{base}/{inbox_name}/author/{quote(display, safe='')}"
     return person
 
 
