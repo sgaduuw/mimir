@@ -623,10 +623,12 @@ def _promote_list_address(conn, inbox_id: int) -> None:
     if top_count / max(top_count + second_count, 1) < PROMOTE_DOMINANCE:
         return
 
-    # ponytail: first inbox to promote an address keeps it. A
-    # from-scratch `update` ingests inboxes alphabetically, so cocci
-    # (whose inria.fr host is not recognised) takes linux-kernel@vger
-    # before lkml, and lkml stays NULL until an operator sets both with
+    # ponytail: first inbox to promote an address keeps it. Ingest
+    # walks pinned inboxes first (#766), then the rest alphabetically,
+    # so on a from-scratch `update` lkml wins linux-kernel@vger before
+    # cocci (whose inria.fr host is not recognised) can take it. A
+    # contested address between two unpinned inboxes still goes to the
+    # alphabetically earlier one until an operator sets both with
     # `admin inbox update --list-address`. Comparing per-inbox counts
     # for the address would let the owner win.
     holder = conn.execute(
