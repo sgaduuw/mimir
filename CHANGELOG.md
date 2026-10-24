@@ -23,6 +23,11 @@ changes, not internal refactors. Categories: **Added**,
 - JSON-LD no longer names a sender without a display name "unknown sender"
   (#845). An allowlisted sender is named by its address; any other gets a
   `Person` with no `name`, so no address is exposed and `author` stays present.
+- Atom feeds no longer name a sender without a display name "unknown sender"
+  (#850). An allowlisted sender is named by its address; any other gets no entry
+  `<author>`, so no address is exposed. Every feed now carries a feed-level
+  `<author>` with the site name, which entries without their own author inherit,
+  as RFC 4287 requires.
 
 ## [3.26.0] - 2026-10-24
 
