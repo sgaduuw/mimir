@@ -10,10 +10,14 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 import pytest
+from dulwich.objects import Blob, Commit, Tree
+from dulwich.repo import Repo
 from sqlalchemy import select
 
 from mimir import _pending_backfill, patch_series
-from mimir.models import Article
+from mimir.ingest import epoch as epoch_mod
+from mimir.ingest.epoch import ingest_epoch
+from mimir.models import Article, Inbox
 from mimir.patch_series import (
     PATCH_WALK_HOPS,
     _posting,
@@ -152,12 +156,21 @@ def test_a_patch_hop_needs_the_same_total_and_version(patch, middle):
     assert cover_of_patch("m@x", parent_of, _posting(patch), patch, None) is None
 
 
-def test_the_cover_hop_is_not_guarded():
+def test_an_unversioned_patch_keeps_another_versions_cover():
     """Production holds 110,294 mostly genuine direct children whose
     cover names another version or total (2026-10-24); the cover they
     answer is theirs, as before."""
     parent_of, _ = _rows(("c@x", "[PATCH v2 0/3] t", None))
     assert in_series_link("[PATCH 1/3] foo", "c@x", parent_of, None) == (
+        series_key("t", AUTHOR),
+        "v2",
+    )
+
+
+def test_a_missing_date_keeps_the_cross_revision_link():
+    """No date on the patch is no evidence: the cover's link stands."""
+    parent_of, _ = _rows(("c@x", "[PATCH v2 0/3] t", None))
+    assert in_series_link("[PATCH v3 1/3] foo", "c@x", parent_of, None) == (
         series_key("t", AUTHOR),
         "v2",
     )
@@ -346,6 +359,113 @@ def test_a_stored_cross_revision_link_is_dropped_by_reprocess_and_the_rechain(
     backfill_patch_series(reprocess=True)
 
     assert _series(seeded_db, "st-p@x") == {"st-p@x": (None, None, 2)}
+
+
+HOUR = 3600
+
+
+def _arrive_at(seeded_db, tmp_path, epoch, timed):
+    """One epoch, one ingest call: `(commit_time, raw)` per commit."""
+    mirror = tmp_path / "mirror"
+    mirror.mkdir(exist_ok=True)
+    repo = Repo.init_bare(str(mirror / epoch), mkdir=True)
+    parent = None
+    for i, (when, raw) in enumerate(timed):
+        blob = Blob.from_string(raw)
+        repo.object_store.add_object(blob)
+        tree = Tree()
+        tree.add(b"m", 0o100644, blob.id)
+        repo.object_store.add_object(tree)
+        commit = Commit()
+        commit.tree = tree.id
+        commit.parents = [parent] if parent else []
+        commit.author = commit.committer = b"test <t@x>"
+        commit.commit_time = commit.author_time = when
+        commit.commit_timezone = commit.author_timezone = 0
+        commit.encoding = b"UTF-8"
+        commit.message = f"add message {i}".encode()
+        repo.object_store.add_object(commit)
+        parent = commit.id
+    repo.refs[b"HEAD"] = parent
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        alpha.mirror_path = str(mirror)
+        s.commit()
+        ingest_epoch(s, alpha, epoch, mirror / epoch, workers=1)
+
+
+def test_in_batch_chain_reply_under_an_old_cover_is_orphaned(
+    seeded_db, tmp_path, broker_active, monkeypatch
+):
+    """Cover and a later v3 chain arrive in one batch: the cover is a
+    pending row, not yet in the database. Both patches walk to it and
+    compare their own date with the cover's, so neither is linked."""
+    pending_hits = []
+    real = epoch_mod._thread_parent
+
+    def spy(session, mid, pending):
+        row = real(session, mid, pending)
+        pending_hits.append((mid, type(row).__name__))
+        return row
+
+    monkeypatch.setattr(epoch_mod, "_thread_parent", spy)
+    _arrive_at(
+        seeded_db,
+        tmp_path,
+        "0.git",
+        [
+            (T2026, _msg("ib@x", "[PATCH v2 0/2] t", body=b"cover")),
+            (T2026 + 2 * HOUR, _msg("ib-p1@x", "[PATCH v3 1/2] a", "ib@x")),
+            (T2026 + 2 * HOUR + 1, _msg("ib-p2@x", "[PATCH v3 2/2] b", "ib-p1@x")),
+        ],
+    )
+    assert ("ib@x", "_ArticleInsert") in pending_hits
+    assert _series(seeded_db, "ib-p1@x", "ib-p2@x") == {
+        "ib-p1@x": (None, None, 1),
+        "ib-p2@x": (None, None, 2),
+    }
+    backfill_patch_series(reprocess=True)
+    assert _series(seeded_db, "ib-p1@x", "ib-p2@x") == {
+        "ib-p1@x": (None, None, 1),
+        "ib-p2@x": (None, None, 2),
+    }
+
+
+def test_reprocess_clears_the_head_of_a_dropped_link(
+    seeded_db, tmp_path, broker_active
+):
+    """A split key: the 2026 posting heads its own series. Its stale v3
+    patch, stored with that head, loses key and head on `--reprocess`, and
+    the 2026 posting keeps its head (the re-chain of the old key, #824)."""
+    old = _chain("old", "v2", ["net: fix the frobnicator", "net: add a knob"])
+    _arrive(seeded_db, tmp_path, "0.git", T2021, old)
+    _arrive(
+        seeded_db,
+        tmp_path,
+        "1.git",
+        T2026,
+        [
+            _msg("nw@x", "[PATCH v2 0/2] generic title", body=b"cover"),
+            _msg("nw-p1@x", "[PATCH v2 1/2] drm: rework the scheduler", "nw@x"),
+            _msg("nw-p2@x", "[PATCH v3 2/2] drm: drop the lock", "nw@x"),
+        ],
+    )
+    before = _heads(seeded_db)
+    assert before["nw@x"] == before["nw-p2@x"] == "nw@x"  # the key split
+    with seeded_db() as s:
+        row = s.scalars(select(Article).where(Article.message_id == "nw-p2@x")).one()
+        row.date = row.date.replace(year=row.date.year + 1)
+        s.commit()
+    backfill_patch_series(reprocess=True)
+    after = _heads(seeded_db)
+    assert after["nw@x"] == after["nw-p1@x"] == "nw@x"
+    with seeded_db() as s:
+        row = s.execute(
+            select(Article.patch_series_key, Article.patch_series_head_id).where(
+                Article.message_id == "nw-p2@x"
+            )
+        ).one()
+    assert tuple(row) == (None, None)
 
 
 # --- Heads under a split key --------------------------------------------------
