@@ -124,6 +124,35 @@ def test_a_plain_run_clears_a_stored_patch_reply(seeded_db, broker_active):
     assert (first.reply_patch, second.reply_patch) == (1, 1)
 
 
+def test_reprocess_clears_a_keyed_patch_reply(seeded_db, broker_active):
+    """The upgrade path: a reply ingested before this fix carries its
+    patch's key. A plain run skips it as resolved; `--reprocess` clears
+    it, and the patch and cover keep their key."""
+    author = "Al <a@x>"
+    key = series_key("improve foo handling", author)
+    _add(seeded_db, "c837@x", COVER, author, key=key, position=0)
+    patch = _add(
+        seeded_db, "p837@x", PATCH, author, parent="c837@x", key=key, position=1
+    )
+    _touch(seeded_db, patch)
+    _add(
+        seeded_db, "r837@x", REPLY, "Rev <rev@x>", parent="p837@x", key=key, position=1
+    )
+
+    plain = backfill_patch_series()
+
+    assert plain.reply_patch == 0
+    assert _series(seeded_db, "r837@x")["r837@x"][:3] == (key, "v2", 1)
+
+    result = backfill_patch_series(reprocess=True)
+
+    got = _series(seeded_db, "c837@x", "p837@x", "r837@x")
+    assert got["r837@x"] == (None, None, None, None)
+    assert got["p837@x"][:3] == (key, "v2", 1)
+    assert got["c837@x"][:3] == (key, "v2", 0)
+    assert result.reply_patch == 1
+
+
 def test_the_diff_lookup_seeks_the_article_files_key(seeded_db):
     """The backfill asks once per in-series row whether it touches files;
     on a full archive that must seek the primary key, not scan."""
