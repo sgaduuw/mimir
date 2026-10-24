@@ -192,12 +192,12 @@ ending in a marker, followed by a slash, such as `Googlebot/2.1`,
 `bingbot/2.0`, `GPTBot/1.0`, `AhrefsBot/7.0` or `curl/8.5.0`. A token that is
 just a marker (`bot/1.0`) counts too. It gets the default share, so **with the
 global budget set, every recognised crawler is held to 10% unless you give it
-its own percentage**, Googlebot and Bingbot included. The slash is required,
+its own percentage**. Googlebot and bingbot are listed by default at 80%. The slash is required,
 so a browser on a device called `CUBOT X30` is never gated. Unlisted crawlers
 also share one pool at `CRAWLER_UNLISTED_POOL_PCT` of the global budget
 (default 30%), so invented names cannot together starve real crawlers; listed
 crawlers never draw on the pool. The flip side: unlisted real crawlers
-(Googlebot, Bingbot, GPTBot) share that pool with any flood of invented names,
+(GPTBot, for example) share that pool with any flood of invented names,
 so list a crawler to protect it from a flood. Each unlisted crawler has its
 own bucket, keyed by its lowercased token; at most 256 are held, idle ones are
 dropped after ten minutes, and past 256 new names share one overflow bucket at

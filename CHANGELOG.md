@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Googlebot and bingbot now have their own crawler budget share, 80% of the
+  global budget, instead of the 10% default plus a draw on the shared pool of
+  unlisted crawlers (#848). Split over many workers, the default share refilled
+  too slowly, so a search crawler visiting a few times a day got `429`. A fake
+  "Googlebot" User-Agent gets the same allowance at the origin unless the CDN in
+  front verifies bots; lower or drop it with `CRAWLER_UA_BUDGETS` (`0` drops a
+  default).
+
 ## [3.26.0] - 2026-10-24
 
 No migration. After deploying, run `backfill-patch-series --reprocess` once

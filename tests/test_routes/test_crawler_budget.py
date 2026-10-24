@@ -525,6 +525,7 @@ def test_listed_key_checked_against_configured_markers(monkeypatch):
         Settings()
 
 
+SEARCH_CRAWLERS = {"Googlebot": 80, "bingbot": 80}
 DEFAULT_LISTED = {
     "Bytespider": "Mozilla/5.0 (Linux; Android 5.0) AppleWebKit/537.36 (KHTML, like Gecko) Mobile Safari/537.36 (compatible; Bytespider; spider-feedback@bytedance.com)",
     "PetalBot": "Mozilla/5.0 (compatible;PetalBot;+https://webmaster.petalsearch.com/site/petalbot)",
@@ -558,8 +559,57 @@ def test_default_listed_crawlers_are_classified_by_key(key, ua):
 
 
 def test_default_list_has_the_ten_percent_crawlers():
-    assert DEFAULT_CRAWLER_UA_BUDGETS == dict.fromkeys(DEFAULT_LISTED, 10)
+    assert DEFAULT_CRAWLER_UA_BUDGETS == {
+        **dict.fromkeys(DEFAULT_LISTED, 10),
+        **SEARCH_CRAWLERS,
+    }
     assert "ChatGPT-User" not in DEFAULT_CRAWLER_UA_BUDGETS
+
+
+def _production_shaped_gate(monkeypatch, clock):
+    """Default settings, global 100 a minute over 16 workers (#848). The
+    gate is one worker's view: its buckets hold 1/16 of every share."""
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "100")
+    monkeypatch.setenv("WORKERS", "16")
+    return CrawlerBudget(
+        100,
+        Settings().effective_crawler_ua_budgets,
+        16,
+        120,
+        clock,
+    )
+
+
+@pytest.mark.parametrize("ua, key", [(GOOGLEBOT, "Googlebot"), (BINGBOT, "bingbot")])
+def test_search_crawlers_are_listed_by_default(monkeypatch, ua, key):
+    gate = _production_shaped_gate(monkeypatch, Clock())
+    # The listed entry, not the lowercased token an unlisted crawler gets.
+    assert gate.crawler_key(ua) == key
+
+
+def _burst(gate, clock, ua):
+    """Three requests 20 s apart, all landing on this one worker."""
+    answers = []
+    for _ in range(3):
+        answers.append(gate.check(ua))
+        clock.now += 20
+    return answers
+
+
+def test_search_crawler_burst_over_sixteen_workers_is_admitted(monkeypatch):
+    clock = Clock()
+    gate = _production_shaped_gate(monkeypatch, clock)
+    # 80% of 100 over 16 workers = 5 a minute, one token every 12 s.
+    assert _burst(gate, clock, GOOGLEBOT) == [None, None, None]
+    assert _burst(gate, clock, BINGBOT) == [None, None, None]
+
+
+def test_default_share_crawler_is_still_throttled_by_the_same_burst(monkeypatch):
+    clock = Clock()
+    gate = _production_shaped_gate(monkeypatch, clock)
+    # 10% of 100 over 16 workers = 0.625 a minute: the second request
+    # inside 96 s is refused. Keeps the gate on.
+    assert _burst(gate, clock, APPLEBOT) == [None, "Applebot", "Applebot"]
 
 
 @pytest.mark.parametrize("ua", HUMAN_UAS)
