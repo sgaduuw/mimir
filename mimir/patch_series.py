@@ -347,15 +347,72 @@ def reply_to_patch(
     )
 
 
+# Parents a patch may climb to find its cover. Measured on production
+# 2026-10-24 (read-only): the deepest chain is 99 hops, 95 among rows
+# only this walk links, and 122 rows sit deeper than 64.
+PATCH_WALK_HOPS = 128
+
+
+def cover_of_patch(thread_parent, parent_of, posting):
+    """The cover an in-series patch answers, or None. `posting` is the
+    patch's `_posting`, `parent_of(message_id)` a row with `message_id`,
+    `subject`, `author` and `thread_parent`, or None.
+
+    Follows parents through in-series patches with the patch's total and
+    version (`git send-email --chain-reply-to` threads each patch under
+    the one before) to the first cover. A patch of another total or
+    version is a re-post answering the old one, so the walk stops there.
+    The cover itself is not compared: the cover a patch answers is its
+    own, as it always was. Reads subjects, never stored series columns,
+    so the answer does not depend on which rows were linked first."""
+    seen = set()
+    for _ in range(PATCH_WALK_HOPS):
+        if thread_parent is None or thread_parent in seen:
+            return None
+        seen.add(thread_parent)
+        row = parent_of(thread_parent)
+        parent = None if row is None else _posting(row.subject)
+        if parent is None:
+            return None
+        if parent[0] == 0:
+            return row
+        if parent[1:3] != posting[1:3]:
+            return None
+        thread_parent = row.thread_parent
+    return None
+
+
+def in_series_link(subject, thread_parent, parent_of) -> tuple[str, str] | None:
+    """`(patch_series_key, patch_series_version)` for an in-series patch:
+    its cover's (`cover_of_patch`), or None. A cover that is a reply to
+    its own parent has no series (#820), so its patches have none."""
+    posting = _posting(subject)
+    if posting is None or posting[0] == 0:
+        return None
+    cover = cover_of_patch(thread_parent, parent_of, posting)
+    if cover is None:
+        return None
+    above = parent_of(cover.thread_parent) if cover.thread_parent else None
+    if above is not None and reply_to_cover(
+        cover.subject, cover.author, above.subject, above.author
+    ):
+        return None
+    parsed = parse_cover_letter(unfold(cover.subject))
+    return series_key(parsed.title, cover.author), parsed.version
+
+
 def _parent(session, thread_parent):
-    """The thread parent's subject and author, by one select on the
-    indexed message id, or None."""
+    """The thread parent's message id, subject, author and own parent, by
+    one select on the indexed message id, or None."""
     if not thread_parent:
         return None
     return session.execute(
-        select(Article.subject, Article.author).where(
-            Article.message_id == thread_parent
-        )
+        select(
+            Article.message_id,
+            Article.subject,
+            Article.author,
+            Article.thread_parent,
+        ).where(Article.message_id == thread_parent)
     ).one_or_none()
 
 
@@ -387,65 +444,13 @@ class BackfillResult(BackfillCounters):
 
     examined: int = 0
     indexed: int = 0  # cover letter detected, key + version + pos=0 written
-    in_series_indexed: int = 0  # in-series patch linked to its cover via thread parent
+    in_series_indexed: int = 0  # in-series patch linked to its cover (`in_series_link`)
     in_series_orphan: int = 0  # in-series patch, position set, cover not in DB
     not_cover: int = 0  # non-series-shaped subject (prose, replies, solo [PATCH])
     reply_cover: int = 0  # cover-shaped reply to a cover, series cleared (#820)
     reply_patch: int = 0  # patch-shaped reply to that patch, series cleared (#837)
     skipped: int = 0  # already fully resolved (idempotent re-run)
     subjects_unfolded: int = 0  # stored folded subject rewritten (#710)
-
-
-def _resolve_in_series_link(
-    session,
-    article,
-    reprocess: bool,
-) -> tuple[str, str] | None:
-    """Look up `(patch_series_key, patch_series_version)` from the
-    article's thread parent. Depth-1 walk: `git send-email --thread`
-    posts in-series patches as direct children of the cover, which
-    is the modal shape. Deeper chains (patch resent as a reply to
-    a reply) fall through to the orphan bucket; if they become
-    common we'll lift the depth, but for now the cost of a recursive
-    walker isn't worth the rare hit.
-
-    Two-step resolve so a single backfill pass is order-independent:
-    if the parent is already keyed, use those values (unless
-    `reprocess`, which always recomputes); otherwise
-    compute the key + version from the parent's subject locally
-    (without writing). When the walker later visits the parent and
-    runs the cover-letter path, it writes the same `series_key()`
-    output, so the in-series patch and cover converge on the same
-    key without ordering constraints. The head is not looked up: the
-    batch re-chains the key on the writer (#824).
-    """
-    if not article.thread_parent:
-        return None
-    parent = session.execute(
-        select(
-            Article.subject,
-            Article.author,
-            Article.patch_series_key,
-            Article.patch_series_version,
-            Article.thread_parent,
-        ).where(Article.message_id == article.thread_parent)
-    ).one_or_none()
-    if parent is None:
-        return None
-    # A reprocess reparses the parent: its stored version may be the one
-    # being rewritten, and the walk reaches the children first (#816).
-    if parent.patch_series_key is not None and not reprocess:
-        # Under a non-cover parent the re-chain cannot reach this row, so
-        # any backfill write leaves its head NULL until #840.
-        return parent.patch_series_key, parent.patch_series_version
-    cover = parse_cover_letter(unfold(parent.subject))
-    # A reply stored as a cover has no series (#820), so its patches are
-    # orphans rather than linked to a key with no cover.
-    if cover is None or _reply_to_cover_in_db(
-        session, parent.subject, parent.author, parent.thread_parent
-    ):
-        return None
-    return series_key(cover.title, parent.author), cover.version
 
 
 def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
@@ -523,7 +528,9 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         # every plain run, and its old key goes to the re-chain (#824).
         return bucket("reply_patch"), pending(None, None, None)
     if in_series is not None:
-        link = _resolve_in_series_link(session, article, reprocess)
+        link = in_series_link(
+            subject, article.thread_parent, lambda mid: _parent(session, mid)
+        )
         if link is not None:
             key, version = link
             return bucket("in_series_indexed"), pending(
