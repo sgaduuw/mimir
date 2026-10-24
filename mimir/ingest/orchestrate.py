@@ -109,7 +109,7 @@ def discover_epochs(mirror_path: Path) -> list[Path]:
     return epochs
 
 
-def _sample_list_addresses(mirror_path: Path) -> dict[str, int]:
+def _sample_list_addresses(mirror_path: Path) -> Counter[str]:
     """Count list-shaped To/Cc addresses over the newest
     LIST_ADDRESS_SAMPLE messages of a mirror, newest epoch first, for
     `_submit_promote_list_address` to judge before the first walk. Reads
@@ -134,7 +134,7 @@ def _sample_list_addresses(mirror_path: Path) -> dict[str, int]:
                 tally.update(extract_list_addresses(parsed.headers))
         if remaining <= 0:
             break
-    return dict(tally)
+    return tally
 
 
 def ingest_inbox(

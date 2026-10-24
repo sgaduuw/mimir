@@ -9,6 +9,7 @@ gate), the kept-headers filter, and the tz-aware UTC normalisation for
 `-0000`-dated messages."""
 
 import logging
+from collections import Counter
 from concurrent.futures import Future
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -1689,7 +1690,9 @@ def test_promote_list_address_from_a_tally_keeps_the_gates_and_stores_nothing(
         s.commit()
 
     def promote(tally):
-        _submit_promote_list_address(writer, alpha.id, tally).result(timeout=10)
+        _submit_promote_list_address(writer, alpha.id, Counter(tally)).result(
+            timeout=10
+        )
         with seeded_db() as s:
             return s.execute(
                 select(Inbox.list_address).where(Inbox.id == alpha.id)
