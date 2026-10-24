@@ -67,8 +67,8 @@ _DIFF_GIT_RE = re.compile(
 # block is read through its pair, the `Index:` and `===` lines add no
 # path of their own. A path with a tab in it is not supported.
 _UNIFIED_RE = re.compile(
-    r"^--- (?P<old>[^\t\r\n]+)[^\r\n]*\r?\n"
-    r"\+\+\+ (?P<new>[^\t\r\n]+)[^\r\n]*\r?\n"
+    r"^--- (?P<old>[^\t\r\n]+)(?:\t[^\r\n]*)?\r?\n"
+    r"\+\+\+ (?P<new>[^\t\r\n]+)(?:\t[^\r\n]*)?\r?\n"
     r"@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@",
     re.MULTILINE,
 )

@@ -209,3 +209,22 @@ def test_extract_unified_needs_a_hunk_header_at_column_zero():
     )
     for body in (signature, no_hunk, quoted):
         assert extract_touched_paths(body) == set(), body
+
+
+def test_extract_unified_is_linear_on_a_long_header_pair_without_a_hunk():
+    """A hostile sender must not stall ingest: the header regex used to
+    backtrack cubically on a long `---` / `+++` pair that no hunk header
+    follows."""
+    import time
+
+    body = "--- " + "x" * 100_000 + "\n+++ " + "y" * 100_000 + "\nno hunk\n"
+    started = time.monotonic()
+    assert extract_touched_paths(body) == set()
+    assert time.monotonic() - started < 1.0
+
+
+def test_extract_unified_paths_with_spaces_and_crlf():
+    spaced = "--- a/dir/my file.c\n+++ b/dir/my file.c\n@@ -1 +1 @@\n-a\n+b\n"
+    crlf = "--- a/x.c\r\n+++ b/x.c\r\n@@ -1 +1 @@\r\n-a\r\n+b\r\n"
+    assert extract_touched_paths(spaced) == {"dir/my file.c"}
+    assert extract_touched_paths(crlf) == {"x.c"}
