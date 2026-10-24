@@ -1039,7 +1039,9 @@ order).
   clearing a reply-cover (#820) writes key NULL, and the key it left
   has to lose the split that cover caused. A row whose key, version,
   position and subject do not change sends nothing, so its key is not
-  re-chained. On production (2026-10-24, read-only) a `--reprocess`
+  re-chained, except a row of a cover typo (#870), whose stored version
+  is the posting's and so differs from its subject's on every run. On
+  production (2026-10-24, read-only) a `--reprocess`
   changes 32,603 rows on 15,974 keys: 19,302 re-chains across the
   batches (8 per batch at p50, 66 at most), about 25 s of writer time.
   Re-chaining every row it walks would be 439,478 re-chains, 8 to 10
@@ -1062,15 +1064,30 @@ order).
   links as a second row there (#861). The cover hop is guarded only
   against a later revision: a patch of another explicit version posted
   over an hour after its cover is orphaned (#862); closer pairs stay
-  linked (#870) and are not re-keyed to their own revision (#871).
+  linked, a cover typo takes its patches' version (#870), and a patch is
+  not re-keyed to its own revision (#871).
+- **The re-chain is the last writer of a posting's version (#870).**
+  Ingest, replay and `backfill-patch-series` write the subject's own
+  version (a patch, its cover's); the `rechain_keys` that ends each of
+  their transactions writes the posting's, from `posting_version` in
+  `_load_key`. When every patch linked to a cover names one explicit
+  version higher than the cover's, the cover's is a typo and the
+  patches' wins, on the cover and on every patch the walk links to it.
+  The base is the cover's parsed version, not the stored one, so a later
+  patch that disagrees turns the posting back. `chain_series` ranks on
+  the resolved version, which joins postings that a typo split. No
+  window check: `cover_of_patch` already orphans a later patch of
+  another version. `head_updates` returns the version changes as a list
+  of their own, so `heads_planned` keeps its meaning, and a key of one
+  cover is still written when only its version changes.
 - **Operator order.** `backfill-patch-series --reprocess` first (it
   rewrites the versions the rule reads, and since #840 links chain-reply
   patches), then `backfill-series-chains` once. Before 3.25.0 that pass
   chained the history; after #840 it is the repair pass for chain-reply
   patches the reprocess left untouched: their rows do not change, so only
   a chain pass is sure to give them their cover's head. Its
-  `heads_planned` counts the heads it changes; on an archive with none it
-  plans zero. After that, ingest and `backfill-patch-series` keep the
+  `heads_planned` counts the heads it changes and `versions_planned` the
+  versions; on an archive with none to change it plans zero. After that, ingest and `backfill-patch-series` keep the
   keys they touch chained.
 
 ### Materialised thread roots (2026-07-28)

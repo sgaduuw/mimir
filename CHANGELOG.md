@@ -65,6 +65,17 @@ once.
   (`[PATCH v4.1 0/3]`) still reads as v4, but `[PATCH-v4.1 0/3]` now reads as v1.
   Stored versions change on the next `backfill-patch-series --reprocess`,
   which is already required above.
+- A cover whose version is a typo takes its patches' version (#870). When
+  every patch of a posting names one explicit version higher than the
+  cover's, such as a v2 cover over v3 patches, the posting is that version. A
+  cover naming no version (`[PATCH 0/N]`) keeps v1. On production
+  (2026-10-24, read-only) that is 420 postings: 420 cover rows and 2,433
+  patch rows. About 2,323 patch rows of earlier postings now show as
+  superseded in lifecycle views, and 64 postings share a version with another
+  posting of their series. The `--reprocess` and `backfill-series-chains`
+  above apply it; the chain pass reports `versions_planned`, expected near
+  2,853, with heads moving in 2 keys. Every later `--reprocess` rewrites these
+  rows and re-chains them back to the same values, so its counts include them.
 - A patch whose diff is in quilt, `diff -u` or `Index:` format (a `---` and
   `+++` pair followed by a hunk header) now records the files it touches
   (#869). Before, it counted as having no diff, so #837 and #860 cleared a

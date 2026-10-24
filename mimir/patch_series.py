@@ -398,6 +398,29 @@ def _answers_old_revision(subject, date, cover) -> bool:
     )
 
 
+def posting_version(cover_subject, patch_subjects, stored=None) -> str | None:
+    """The version of a posting: its cover's, unless every patch linked to
+    the cover names one explicit version higher than the cover's own, in
+    which case the cover's is a typo and the patches' wins (#870).
+    Measured on production 2026-10-24 (read-only): 420 postings, 2,433
+    patch rows and 420 cover rows; 50 of 56 hand-labelled were right.
+
+    A cover naming no version (`[PATCH 0/N]`) is excluded on purpose, as
+    unmeasured. The base is the cover's parsed version, never the stored
+    one, so a later patch that disagrees turns the posting back. `stored`
+    is used only when the cover no longer parses. There is no window
+    check: `cover_of_patch` already refuses a later patch of another
+    version (#862), so every linked patch is inside it."""
+    cover = parse_cover_letter(unfold(cover_subject or ""))
+    base = cover.version if cover is not None else stored
+    mine = _explicit_version(cover_subject)
+    theirs = {_explicit_version(s) for s in patch_subjects}
+    if mine is None or len(theirs) != 1 or None in theirs:
+        return base
+    (version,) = theirs
+    return version if int(version[1:]) > int(mine[1:]) else base
+
+
 def cover_of_patch(thread_parent, parent_of, posting, subject, date):
     """The cover an in-series patch answers, or None. `posting` is the
     patch's `_posting`, `subject` and `date` its own, `parent_of(message_id)`

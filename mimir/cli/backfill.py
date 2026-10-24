@@ -198,7 +198,8 @@ def backfill_series_chains_command(
     click.echo(
         f"this session: examined={result.examined} "
         f"keys_chained={result.keys_chained} keys_split={result.keys_split} "
-        f"heads_planned={result.heads_planned} skipped={result.skipped}"
+        f"heads_planned={result.heads_planned} "
+        f"versions_planned={result.versions_planned} skipped={result.skipped}"
     )
     _echo_run_summary(run)
 
