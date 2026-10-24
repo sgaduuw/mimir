@@ -220,14 +220,22 @@ class Settings(BaseSettings):
         return v
 
     # Senders whose email address is shown in full in the UI. Everyone
-    # else's email gets hidden (display name kept). Substring match against
-    # the address part, case-insensitive. Defaults cover well-known kernel
-    # maintainers and the kernel.org domain. Override via env as a JSON
-    # array (EMAIL_ALLOWLIST).
+    # else's email gets hidden (display name kept). Case-insensitive, matched
+    # against the address by structure, not as a substring: "@kernel.org"
+    # (or bare "kernel.org") is exactly that domain, no subdomains,
+    # "torvalds@" is that local part at any domain (spoofable), "a@kernel.org" is
+    # that exact address. Defaults cover the kernel.org domain and the
+    # historical addresses of two maintainers; current ones come from
+    # MAINTAINERS. Override via env as a JSON array (EMAIL_ALLOWLIST).
     email_allowlist: list[str] = [
-        "torvalds@",
-        "gregkh@",
         "@kernel.org",
+        # Historical addresses of the two people the old `torvalds@` and
+        # `gregkh@` tokens covered. Those matched any domain, so a spoofed
+        # torvalds@<anydomain> showed in full; their current addresses
+        # come from MAINTAINERS.
+        "gregkh@suse.de",
+        "torvalds@osdl.org",
+        "torvalds@transmeta.com",
     ]
 
     # Inboxes that should appear first on the meta-index `/`, in this

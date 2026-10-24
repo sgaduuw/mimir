@@ -64,6 +64,8 @@ once.
   version or total of their patch. The series chain pass now reads these
   patches too: it gives them their cover's head and counts their titles when
   telling two postings apart.
+- The merge window now names a sender whose display name is an address after
+  the commit author, as it does a sender with no name (#864).
 - A reply that repeats a patch or cover subject without "Re:" no longer shows
   the patch state card on its message page (#838). The card now follows the
   stored series columns: a cover or numbered patch subject with no position and
@@ -101,6 +103,19 @@ once.
   non-allowlisted address in the name, its own or another (`"a@x.org via list"`),
   now counts as no display name on the page, in JSON-LD and in Atom, and in
   meta descriptions. An allowlisted sender stays named by its address.
+- `EMAIL_ALLOWLIST` tokens now match an address by structure, not as a
+  substring (#863). `@kernel.org` allowed `a@kernel.org.evil.example`, so anyone
+  could opt out of redaction. Now `@domain` (or a bare `domain`) is exactly that
+  domain. Subdomains are not included: they would newly show addresses the old
+  rule hid, while every visible kernel.org address is exactly `kernel.org`.
+  `local@` is that local part at any domain (spoofable, avoid it), and
+  `local@domain` is that exact address. The defaults drop `torvalds@` and
+  `gregkh@`, which matched any domain and so showed spoofed addresses; the
+  current addresses of both come from MAINTAINERS, and `gregkh@suse.de`,
+  `torvalds@osdl.org` and `torvalds@transmeta.com` are added for their
+  historical mail. Operators with custom tokens should check them against these
+  formats: a token that relied on substring or subdomain matching stops
+  matching.
 
 ## [3.26.0] - 2026-10-24
 

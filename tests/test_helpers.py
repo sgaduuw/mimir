@@ -252,9 +252,16 @@ def test_read_messages_on_an_empty_list_touches_neither_db_nor_disk(monkeypatch)
 # web._safe_from_filter, privacy redaction
 
 
-def test_safe_from_kernel_org_address_surfaces_in_full():
+def test_safe_from_maintainers_set_address_surfaces_in_full(monkeypatch):
+    from mimir import maintainer_allowlist
+
+    # Allowed through the MAINTAINERS-derived set, not a default token.
+    monkeypatch.setattr(
+        maintainer_allowlist,
+        "maintainer_addresses",
+        lambda: {"torvalds@linux-foundation.org"},
+    )
     out = _safe_from_filter("Linus Torvalds <torvalds@linux-foundation.org>")
-    # Default email_allowlist contains "torvalds@", full surfaces.
     assert "torvalds@linux-foundation.org" in out
 
 
@@ -411,22 +418,19 @@ def test_canonical_inbox_names_empty_input_returns_empty(seeded_db):
         assert _canonical_inbox_names_for(s, []) == {}
 
 
-def test_redact_trailer_address_substring_match_is_intentionally_loose(monkeypatch):
-    """The allowlist uses substring matching, by design (see CONTEXT.md
-    , an allowlist token matches any address containing that substring).
-     This is intentional looseness for ergonomics; pin it here so a
-     future tightening is a conscious decision, not a silent drift."""
+def test_redact_trailer_address_lookalike_domain_is_redacted(monkeypatch):
+    """Allowlist tokens match by address structure (#863): a host that
+    merely starts with an allowlisted domain is not that domain."""
     from mimir.config import settings
 
     # Set an explicit token to make the assertion deterministic, the
     # default allowlist contains the same token but pinning it here
     # keeps the test independent of the default's evolution.
     monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
-    out = _redact_trailer_address("attacker@kernel.org.evil.example")
-    # Substring `@kernel.org` matches at position 8 in the address,
-    # even though the actual host is `kernel.org.evil.example`. The
-    # redactor returns the allowlisted form.
-    assert out == "<attacker@kernel.org.evil.example>"
+    assert "attacker@" not in _redact_trailer_address(
+        "attacker@kernel.org.evil.example"
+    )
+    assert _redact_trailer_address("a@kernel.org") == "<a@kernel.org>"
 
 
 # web.filters._patch_synthesis_filter (SEO W3b synthesis prose)
