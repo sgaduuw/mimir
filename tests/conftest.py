@@ -231,6 +231,19 @@ def broker_active(seeded_db):
             _context.clear_active()
 
 
+@pytest.fixture
+def writer():
+    """Function-scoped WriterThread against the test DB, stopped after the
+    test. The autouse `_reset_db` fixture seeds the DB before this fixture
+    is entered, so writes against the seeded rows are safe."""
+    from mimir.broker.writes import WriterThread
+
+    wt = WriterThread.from_settings()
+    wt.start()
+    yield wt
+    wt.stop(timeout=10)
+
+
 @pytest.fixture(autouse=True)
 def _ensure_session_broker_context(_session_broker):
     """Re-register the session broker's pool + writer in `_context`
