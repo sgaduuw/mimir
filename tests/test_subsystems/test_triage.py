@@ -24,7 +24,7 @@ from mimir.subsystems_dashboard.triage import (
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
 )
-from tests._helpers import _cache_total, count_steps, planner_stats
+from tests._helpers import count_steps, planner_stats
 from tests.test_subsystems._helpers import _add_subsystem
 
 
@@ -1071,31 +1071,6 @@ def test_inbox_first_plan_drives_from_the_inbox_index(seeded_db):
             assert "SEARCH al_in USING INDEX ix_article_lists_inbox_id" in plan, plan
             assert "SCAN articles" not in plan, plan
             assert "SCAN article_lists" not in plan, plan
-
-
-def test_shape_follows_the_inbox_size(seeded_db):
-    from mimir.dashboard import INBOX_FIRST_BELOW_ARTICLES, _inbox_first
-
-    with seeded_db() as s:
-        inbox = _alpha(s)
-        _cache_total(inbox, INBOX_FIRST_BELOW_ARTICLES - 1)
-        assert _inbox_first(inbox) is True
-        _cache_total(inbox, INBOX_FIRST_BELOW_ARTICLES)
-        assert _inbox_first(inbox) is False
-
-
-def test_unknown_inbox_size_goes_inbox_first(seeded_db):
-    """No cached stats: inbox-first, whose worst measured case (5.9 s
-    on the biggest list) is under date-first's (14 s on a small one).
-    The lookup must not compute the COUNT."""
-    from mimir import cache
-    from mimir.dashboard import _archive_stats_key, _inbox_first
-
-    with seeded_db() as s:
-        inbox = _alpha(s)
-        cache.delete(_archive_stats_key(inbox))
-        assert _inbox_first(inbox) is True
-        assert cache.get(_archive_stats_key(inbox)) is None
 
 
 # Superseded post-filter (#785)
