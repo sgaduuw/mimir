@@ -6,7 +6,7 @@ from click.testing import CliRunner
 from dulwich.repo import Repo
 from sqlalchemy import select
 
-from mimir.cli import (
+from mimir.cli.admin.failures import (
     admin_failures_list_command,
     admin_failures_replay_command,
 )

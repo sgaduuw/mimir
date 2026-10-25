@@ -6,7 +6,7 @@ the backfill walker's idempotence + the bucket counters."""
 from click.testing import CliRunner
 from sqlalchemy import select
 
-from mimir.cli import backfill_article_files_command
+from mimir.cli.backfill import backfill_article_files_command
 from mimir.ingest import ingest_epoch
 from mimir.models import Article, ArticleFile, Inbox
 from mimir.patches import backfill_article_files

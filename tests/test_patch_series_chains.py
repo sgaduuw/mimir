@@ -13,7 +13,7 @@ import pytest
 from sqlalchemy import select, text
 
 from mimir import backfill_runs
-from mimir.cli import backfill_series_chains_command
+from mimir.cli.backfill import backfill_series_chains_command
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series, newer_revision_sql
 from mimir.patch_series_chains import Cover, backfill_series_chains, chain_series

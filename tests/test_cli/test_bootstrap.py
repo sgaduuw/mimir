@@ -7,7 +7,7 @@ regression in either surfaces in CI.
 
 from click.testing import CliRunner
 
-from mimir.cli import bootstrap_inboxes_command
+from mimir.cli.bootstrap import bootstrap_inboxes_command
 
 
 def test_bootstrap_inboxes_via_broker(seeded_db, monkeypatch):
