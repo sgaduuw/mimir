@@ -13,8 +13,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [3.29.0] - 2026-10-25
 
-No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`
-or run `mimir analyze --full`, both removed (see Removed).
+No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`,
+run `mimir analyze --full`, or run `mimir init-db`, all removed (see Removed).
+
+Known gap: a review trailer whose address has a character such as `=` before
+the `@` is still split at ingest (`Alice <alice.smith=` / `lkml@example.com`),
+so the review tooltip and the thread `.md` status line can show that name
+fragment although the trailer line itself now hides the address. 3.28.0 showed
+the whole address. #913 fixes the parsing, followed by a trailer backfill.
 
 ### Added
 
@@ -38,7 +44,8 @@ or run `mimir analyze --full`, both removed (see Removed).
   `Link: rel="canonical"` header naming the HTML page's canonical, and the
   sitemaps do not list `.md` URLs. The crawler budget applies to them as to
   the HTML pages; a user-initiated agent such as `Claude-User` is not a
-  recognised crawler and is not gated on either.
+  recognised crawler and is not gated by its `User-Agent` on either; the
+  impossible-headers bucket (#903) still applies.
 - `/llms.txt`, for AI agents: what the site is, the page URL shapes with
   their `.md` forms, and pointers to the sitemap and the privacy page
   (#884). It repeats the `Content-Signal` of `robots.txt`'s `*` stanza as
@@ -88,8 +95,8 @@ or run `mimir analyze --full`, both removed (see Removed).
   before the `@` (`Signed-off-by: X <x=y@example.com>`) is hidden like any
   other, and so is an address used as the name or written bare
   (`Signed-off-by: joe@example.com <joe@example.com>`). The lifecycle tooltip
-  drops such a reviewer name. This covers the HTML pages and the `.md` pages
-  (#902).
+  drops such a reviewer name. This covers the HTML pages, the `.md` pages and
+  the JSON-LD `text` (#902).
 - The thread view no longer repeats the diff line anchors (`h-1`, `h-1-L4`)
   once per message, which made duplicate `id`s on one page and sent a
   `#h-1-L4` fragment to the wrong message. Those anchors now exist only on
