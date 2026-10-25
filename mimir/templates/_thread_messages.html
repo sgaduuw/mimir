@@ -28,7 +28,9 @@
      omitted: they need per-message bulk lookups, and inside a
      whole-thread render the referenced messages are almost always
      already on this page. #}
-  {{ parsed.body|render_body }}
+  {# `.message-body` is what the "more lines" link swaps out; the full
+     text comes from the fragment route, not from this page. #}
+  <div class="message-body">{{ parsed.body|render_body(compact=True, text_more=(url, url_for('web.api_message_body', inbox_name=inbox_name, article_id=node.id))) }}</div>
   {% elif parsed %}
   <p><em>(no body)</em></p>
   {% else %}

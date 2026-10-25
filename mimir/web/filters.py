@@ -284,6 +284,8 @@ def _render_body_filter(
     msgid_urls=None,
     parent_url=None,
     lore_mirror_urls=None,
+    compact=False,
+    text_more=None,
 ):
     return render_body(
         body,
@@ -291,6 +293,8 @@ def _render_body_filter(
         address_redactor=_redact_trailer_address,
         parent_url=parent_url,
         lore_mirror_urls=lore_mirror_urls,
+        compact=compact,
+        text_more=text_more,
     )
 
 

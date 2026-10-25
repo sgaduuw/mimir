@@ -93,7 +93,11 @@ def _highlight_inline(text: str, lexer) -> str:
 
 
 def _render_diff_block(
-    lines: list[str], with_anchors: bool = True, *, headerless: bool = False
+    lines: list[str],
+    with_anchors: bool = True,
+    *,
+    headerless: bool = False,
+    highlight_tokens: bool = True,
 ) -> str:
     """Render a diff block with per-hunk anchors + per-language
     overlay (#211).
@@ -128,6 +132,12 @@ def _render_diff_block(
     Per-language lexer is detected from each `+++ b/<path>` line
     and stays active until the next `+++` switch; context / + / -
     lines get a per-line Pygments call against that lexer.
+
+    `highlight_tokens=False` skips the per-language overlay: content
+    lines are escaped text, and only the line-level classes remain (the
+    `gi`/`gd` marker, the `gu` hunk header, the `diff-meta` block). The
+    thread view uses it, because Pygments spans were 87% of its diff
+    bytes (#814).
 
     Pathological-block clamp: when the whole diff block exceeds
     `PYGMENTS_MAX_BLOCK_CHARS` total bytes (see body.py) we pin the
@@ -218,7 +228,11 @@ def _render_diff_block(
             line_in_hunk += 1
             marker = line[0]
             content = line[1:]
-            highlighted = _highlight_inline(content, current_lexer)
+            highlighted = (
+                _highlight_inline(content, current_lexer)
+                if highlight_tokens
+                else html.escape(content)
+            )
             if marker == "+":
                 marker_html = '<span class="gi">+</span>'
             elif marker == "-":
@@ -255,7 +269,7 @@ def _render_diff_block(
         elif line.startswith("+++ "):
             meta_buffer.append(f'<span class="gi">{html.escape(line)}</span>')
             m = _DIFF_PLUS_FILE_RE.match(line)
-            if force_text_lexer:
+            if force_text_lexer or not highlight_tokens:
                 # Oversized block: hold the inline lexer at TextLexer
                 # regardless of the filename so the rest of the diff
                 # body bypasses per-language regex backtracking.
