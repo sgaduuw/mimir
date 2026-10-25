@@ -415,12 +415,16 @@ def _format_tooltip(
     # ParsedArticle side, but trailers come from message bodies
     # and the trailer name is whatever bytes the contributor put
     # after `Reviewed-by:` and before the `<address>` bracket.
+    # Function-local, like `mimir.seo`: `mimir.web` imports this module.
+    from mimir.web.filters import _usable_name
+
     seen_as_maintainer: set[str] = set()
     seen_as_other: set[str] = set()
     maintainers: list[str] = []
     others: list[str] = []
     for raw_name, is_m in reviewers:
-        name = _UNSAFE_ATTR_CHARS_RE.sub("", raw_name or "").strip()
+        # Same rule as a From name: an address-shaped name is no name (#902).
+        name = _UNSAFE_ATTR_CHARS_RE.sub("", _usable_name(raw_name) or "").strip()
         if not name:
             continue
         if is_m:

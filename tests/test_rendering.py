@@ -675,8 +675,10 @@ def test_trailer_email_regex_excludes_html_metacharacters():
     an address should fall through to the default `_render_line` path,
     where it gets `html.escape`d as plain text."""
     body = 'Signed-off-by: A <a"b@kernel.org>'
-    # With a redactor that would emit unsafe HTML, the regex tightening
-    # should mean the redactor isn't called at all for this address.
+    # The angle regex never captures the whole `a"b@kernel.org`, so the
+    # redactor is not handed it as an address. It is handed the token
+    # `b@kernel.org` that the bare-address pass (#902) finds beside the
+    # quote, so the part of an odd address after the `"` is hidden too.
     seen_emails: list[str] = []
 
     def spy(email: str) -> str:
@@ -684,9 +686,9 @@ def test_trailer_email_regex_excludes_html_metacharacters():
         return f"<{email}>"
 
     out = str(render_body(body, address_redactor=spy))
-    assert seen_emails == [], (
-        f"redactor should not have been called for an address containing "
-        f"HTML metacharacters; got {seen_emails!r}"
+    assert seen_emails == ["b@kernel.org"], (
+        f"redactor should only see the token after the metacharacter; "
+        f"got {seen_emails!r}"
     )
     # The raw payload must be present only as escaped text.
     assert '<a"b@kernel.org>' not in out
