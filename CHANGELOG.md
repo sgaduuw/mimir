@@ -22,6 +22,12 @@ changes, not internal refactors. Categories: **Added**,
 
 - The fold toggle's "closed" button shows ▶ instead of ▼, in a message page's
   thread tree and on `/merge-window`. A downward triangle reads as "open" (#890).
+- A backfill that meets the weekly VACUUM now waits and retries its chunk
+  instead of exiting with `OperationalError`. It prints one line, retries
+  every 30 s for up to 30 minutes, then exits as before. A lock during a
+  session's first chunk still exits at once, as before: rerun the command.
+  The one VACUUM measured took 198 s on a ~16 GB database (production,
+  2026-10-25) (#885).
 
 ## [3.28.0] - 2026-10-25
 
