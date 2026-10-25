@@ -10,10 +10,12 @@ rule for the page's URL (sitemap `loc` equals the page canonical).
 import os
 import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
+import mimir
 from mimir.merge_window import (
     MERGE_WINDOW_PATH,
     NO_SUBSYSTEM,
@@ -510,9 +512,31 @@ def test_long_section_sits_in_a_fold_box(client):
     assert "<details" not in section
     assert _fold_boxes(html) == [("partial", ["closed", "partial", "expanded"], 25)]
     assert re.search(r'<script src="[^"]*/js/fold-box\.js" defer>', html)
-    # A downward triangle reads as "open", so closed shows ▶ (#890).
-    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', html)
-    assert "▼" not in html
+    # Pages render partial, so the closed button shows the open triangle
+    # (#930); CSS swaps it to ▶ when the box is closed. The title doubles
+    # as aria-label so the glyph never becomes the accessible name.
+    assert re.search(
+        r'data-fold-set="closed" title="([^"]+)" aria-label="\1">▼</button>', html
+    )
+    assert "▶" not in html
+
+
+def test_merge_window_closed_box_css_swaps_to_right_triangle():
+    """The ▶ lives in CSS: dropping the closed-state rule leaves ▼ on a
+    closed box (#930)."""
+    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    rule = re.search(
+        r'\.fold-box\[data-fold="closed"\][^{}]*\[data-fold-set="closed"\]::before\s*'
+        r'\{[^}]*content:\s*"\\25B6\\FE0E"',
+        css,
+    )
+    assert rule
+    # The ▼ stays in the HTML; without this rule a closed box shows both.
+    assert re.search(
+        r'\.fold-box\[data-fold="closed"\][^{}]*\[data-fold-set="closed"\]\s*'
+        r"\{\s*font-size:\s*0;",
+        css,
+    )
 
 
 @pytest.mark.parametrize(
