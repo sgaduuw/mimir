@@ -80,7 +80,8 @@ def walk_articles(
 
     `flush_batch(writer, payloads, after=...)` returns a `WriteFuture`.
     The walker awaits `.result()` before composing the next batch and
-    before checking the time budget.
+    before checking the time budget. It skips the call for a batch with
+    no payloads and no `after`, which has nothing to write.
 
     `preload_lists=True` eager-loads `Article.lists` via selectinload
     (needed by the body-re-reading helpers, `patches` and `trailers`);
@@ -157,7 +158,8 @@ def walk_articles(
             after = None
             if run is not None and batch_examined:
                 after = backfill_runs.advance(run.id, cursor, batch_examined)
-            flush_batch(writer, batch_payloads, after=after).result(timeout=120)
+            if batch_payloads or after is not None:
+                flush_batch(writer, batch_payloads, after=after).result(timeout=120)
             # Release the read snapshot so the next batch's SELECT sees
             # the writes that just committed via the writer thread.
             session.commit()

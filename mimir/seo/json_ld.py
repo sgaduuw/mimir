@@ -20,7 +20,7 @@ from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.parser import ParsedArticle
-from mimir.rendering import redact_trailer_addresses
+from mimir.rendering import render_body_text
 
 JSON_LD_TEXT_MAX = 2000
 
@@ -341,18 +341,13 @@ def _json_ld_message(
             "url": f"{base}/{inbox_name}/",
         },
     }
-    # Apply the same DCO trailer redaction the visible HTML uses
-    # before snippeting, JSON-LD `text` is yet another surface a
-    # crawler scrapes, and CONTEXT.md's redaction invariants treat
-    # every surface uniformly. Without this, non-allowlisted
-    # Signed-off-by addresses would leak through the structured
-    # data even though the rendered page redacts them.
-    redacted_body = (
-        redact_trailer_addresses(parsed.body, _redact_trailer_address)
-        if parsed.body
-        else parsed.body
+    # Snippet the body as the page shows it: JSON-LD `text` is yet
+    # another surface a crawler scrapes, and CONTEXT.md's redaction
+    # invariants treat every surface uniformly. A trailer-only pass
+    # leaked the attribution line's address and quoted trailers (#899).
+    body_snippet = _json_ld_text_snippet(
+        render_body_text(parsed.body, _redact_trailer_address)
     )
-    body_snippet = _json_ld_text_snippet(redacted_body)
     if body_snippet:
         forum_post["text"] = body_snippet
     if iso_date:
@@ -476,8 +471,8 @@ def _json_ld_thread(
     parsed body still contributes a comment (author + date + subject
     are known from SQL), it just carries no `text`.
 
-    Every comment body goes through the same trailer redaction as the
-    visible HTML before snippeting. CONTEXT.md's redaction invariants
+    Every comment body goes through the visible HTML's redaction
+    (`render_body_text`) before snippeting. CONTEXT.md's redaction invariants
     apply per surface, and this surface carries N bodies rather than
     one, so a miss here would leak N times over.
     """
@@ -486,10 +481,10 @@ def _json_ld_thread(
 
     def _text_for(node) -> str | None:
         parsed = parsed_by_id.get(node.id)
-        if parsed is None or not parsed.body:
+        if parsed is None:
             return None
         return _json_ld_text_snippet(
-            redact_trailer_addresses(parsed.body, _redact_trailer_address)
+            render_body_text(parsed.body, _redact_trailer_address)
         )
 
     root = nodes[0]

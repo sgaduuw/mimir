@@ -17,10 +17,8 @@ on-site, the lore URL itself is preserved (the caller asked to
 route and threaded through `linkify`/`render_body` as
 `lore_mirror_urls`.
 
-`redact_trailer_addresses` is the plain-text counterpart used by
-JSON-LD code that needs the redaction posture applied to body
-bytes without going through the HTML pipeline. `plain_line` is the
-per-line counterpart of `linkify` itself, for the Markdown pages.
+`plain_line` is the per-line plain-text counterpart of `linkify`,
+for the Markdown pages and JSON-LD.
 """
 
 import html
@@ -219,21 +217,3 @@ def plain_line(line: str, redactor) -> str:
     return prefix + URL_OR_MSGID_RE.sub(
         lambda m: m.group(0) if m.group("url") else "[ref]", content
     )
-
-
-def redact_trailer_addresses(text: str, redactor) -> str:
-    """Plain-text variant of the DCO trailer redaction the HTML
-    renderer applies via `_render_trailer_line`. Walks the body
-    line-by-line, applies `redactor` to every `<email>` pattern on
-    a `Signed-off-by:` / `Reviewed-by:` / etc. line, and returns
-    plaintext with the substitutions in place. Used by surfaces
-    that consume body content outside the HTML pipeline (JSON-LD
-    `text` snippet today) so the redaction posture stays
-    consistent across every place a body byte can flow."""
-    out: list[str] = []
-    for line in text.split("\n"):
-        if _TRAILER_LINE_RE.match(line):
-            out.append(_EMAIL_ANGLE_RE.sub(lambda m: redactor(m.group(1)), line))
-        else:
-            out.append(line)
-    return "\n".join(out)
