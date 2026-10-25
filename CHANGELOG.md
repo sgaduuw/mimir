@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The revisions list links each revision to a diff against the previous
+  one, in place of a diff against the current revision. These are the
+  URLs the series diff sitemap lists, so the page and the sitemap now name
+  the same diffs. A resend gets no link. On the thread view the list is
+  open by default; the message page keeps it folded (#844).
+- The patch summary sentence reads "Revision v7 (5 revisions archived)"
+  instead of "Revision v7 of 5 in this series". The number counts the
+  revisions the archive holds, not the length of the series (#844).
+
 ### Removed
 
 - `mimir backfill-series-chains --reprocess`. It never had an effect: every run

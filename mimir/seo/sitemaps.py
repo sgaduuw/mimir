@@ -25,7 +25,7 @@ from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from itertools import groupby, pairwise
+from itertools import groupby
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -39,7 +39,7 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.models import Article, ArticleList, Inbox
-from mimir.patch_series import series_head
+from mimir.patch_series import adjacent_versions, series_head
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -1031,9 +1031,10 @@ def series_diff_sitemap_xml(
     cover-letter diff between each pair of adjacent revisions of every
     series whose key starts with `bucket`.
 
-    Adjacent follows the revisions fold (`patch_state._series_timeline`):
-    a series' covers oldest first, undated last, a resend folded into the
-    first appearance of its version (an unversioned one is dropped).
+    Adjacent is `patch_series.adjacent_versions`, which the revisions
+    fold links through too (#844): a series' covers oldest first, undated
+    last, a resend folded into the first appearance of its version (an
+    unversioned one is dropped).
     Covers only, because both covers must exist for the route to serve
     the diff, and per-position diffs would be 1.47M URLs (measured
     2026-10-24). `<lastmod>` is the newest cover in either slot: the
@@ -1072,7 +1073,6 @@ def series_diff_sitemap_xml(
 
         pairs = []
         for (key, head), covers in sorted(series.items()):
-            covers.sort(key=lambda c: (c[0] is None, c[0], c[1]))
             slot_dates: dict[str, list] = {}
             first_id: dict[str, int] = {}
             for date, art_id, version in covers:
@@ -1081,7 +1081,7 @@ def series_diff_sitemap_xml(
             # A version with no cover is absent here, so v1, v2 (no cover),
             # v3 pairs v1 with v3: adjacent among the revisions the route
             # can diff, and that page exists.
-            for older, newer in pairwise(slot_dates):
+            for older, newer in adjacent_versions(covers):
                 dates = [d for v in (older, newer) for d in slot_dates[v] if d]
                 lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
                 pairs.append((key, head, older, newer, first_id[newer], lastmod))

@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from email.utils import parseaddr
+from itertools import pairwise
 
 from sqlalchemy import and_, literal_column, select
 
@@ -153,6 +154,25 @@ def series_head():
 def same_series(key: str, head_id: int | None):
     """ORM condition: an `Article` is in the series `(key, head_id)`."""
     return and_(Article.patch_series_key == key, series_head() == (head_id or 0))
+
+
+def adjacent_versions(revisions) -> list[tuple[str, str]]:
+    """`(older, newer)` version pairs, one per step between adjacent
+    revisions, from `(date, article_id, version)` rows of one series and
+    one position. The revisions fold links each step and the series diff
+    sitemap lists the same steps (#844, #846), so a link and a sitemap
+    entry come out byte-identical.
+
+    Oldest first, undated last, the id breaking ties. A version posted
+    again is a resend, folded into its first appearance. A NULL or bare
+    `resend` version is dropped, because the diff route matches version
+    strings exactly and cannot serve either.
+    """
+    ordered = sorted(
+        (r for r in revisions if r[2] and r[2] != "resend"),
+        key=lambda r: (r[0] is None, r[0], r[1]),
+    )
+    return list(pairwise(dict.fromkeys(r[2] for r in ordered)))
 
 
 def newer_revision_sql(older: str, newer: str) -> str:
