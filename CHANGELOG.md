@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Requests that send `Sec-Fetch-Site: none` with a `Referer`, a pair no browser
+  sends on a real navigation, share one small crawler-budget bucket,
+  `CRAWLER_IMPOSSIBLE_HEADERS_PCT` of the global (default 1, `0` turns it off).
+  Declared crawlers keep their own bucket; its log line names the request
+  headers, not a User-Agent (#903).
 - `/api/<inbox>/body/<id>`: one message's body as an HTML fragment, for the
   thread view's "more lines" link. It is `noindex`, under the already
   disallowed `/api/` (#814).
