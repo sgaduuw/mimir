@@ -34,6 +34,9 @@
         href="/{{ current_inbox }}/feed.atom">
   {% endif %}
   {% block extra_atom_feeds %}{% endblock %}
+  {% if markdown_url %}
+  <link rel="alternate" type="text/markdown" href="{{ markdown_url }}">
+  {% endif %}
   {# Sequence links for paginated surfaces. Emitted for Bing, which
      still consumes them; Google dropped rel=next/prev as an indexing
      signal in 2019, so these consolidate nothing there. Absent
