@@ -158,7 +158,7 @@ def author_recent(
     did."""
 
     def compute() -> list[ArticleSummary]:
-        return _inbox_first_rows(
+        return _listing_rows(
             session,
             inbox,
             "a.author LIKE :pattern",
@@ -175,40 +175,50 @@ def author_recent(
     )
 
 
-def latest_pull_requests(
-    session: Session, inbox: Inbox, limit: int = 5, force: bool = False
+def _recent_matching(
+    session: Session,
+    inbox: Inbox,
+    key: str,
+    where: str,
+    limit: int,
+    force: bool,
 ) -> list[ArticleSummary]:
-    """Recent `[GIT PULL] ...` originals in `inbox`."""
+    """Newest `where` matches in `inbox` over the last
+    `LISTING_RECENCY_FLOOR_DAYS`, cached under `key`."""
     floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
 
     def compute() -> list[ArticleSummary]:
-        # LIKE treats `[` literally and folds ASCII case, as `ilike` did.
-        if _inbox_first(inbox):
-            return _inbox_first_listing(
-                session, inbox, "a.subject LIKE '[GIT PULL]%'", floor, limit
-            )
-        rows = (
-            session.execute(
-                _inbox_scoped(
-                    select(Article)
-                    .where(Article.subject.ilike("[GIT PULL]%"))
-                    .where(Article.date >= floor),
-                    inbox,
-                )
-                .order_by(Article.date.desc().nulls_last(), Article.id.desc())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
+        return _listing_rows(
+            session,
+            inbox,
+            where,
+            {},
+            limit,
+            floor=floor,
+            inbox_first=_inbox_first(inbox),
         )
-        return _summarize(rows)
 
     return cache.get_or_compute(
         session,
-        f"latest_pull_requests:{inbox.name}:{limit}",
+        f"{key}:{inbox.name}:{limit}",
         LISTING_CACHE_TTL_SEC,
         compute,
         force=force,
+    )
+
+
+def latest_pull_requests(
+    session: Session, inbox: Inbox, limit: int = 5, force: bool = False
+) -> list[ArticleSummary]:
+    """Recent `[GIT PULL] ...` originals in `inbox`. LIKE treats `[`
+    literally and folds ASCII case."""
+    return _recent_matching(
+        session,
+        inbox,
+        "latest_pull_requests",
+        "a.subject LIKE '[GIT PULL]%'",
+        limit,
+        force,
     )
 
 
@@ -217,35 +227,13 @@ def latest_stable_releases(
 ) -> list[ArticleSummary]:
     """Recent release announcements in `inbox`: subject starting with
     'Linux <digit>...'. GLOB is case-sensitive in SQLite."""
-    floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
-
-    def compute() -> list[ArticleSummary]:
-        if _inbox_first(inbox):
-            return _inbox_first_listing(
-                session, inbox, "a.subject GLOB 'Linux [0-9]*'", floor, limit
-            )
-        rows = (
-            session.execute(
-                _inbox_scoped(
-                    select(Article)
-                    .where(text("subject GLOB 'Linux [0-9]*'"))
-                    .where(Article.date >= floor),
-                    inbox,
-                )
-                .order_by(Article.date.desc().nulls_last(), Article.id.desc())
-                .limit(limit)
-            )
-            .scalars()
-            .all()
-        )
-        return _summarize(rows)
-
-    return cache.get_or_compute(
+    return _recent_matching(
         session,
-        f"latest_stable_releases:{inbox.name}:{limit}",
-        LISTING_CACHE_TTL_SEC,
-        compute,
-        force=force,
+        inbox,
+        "latest_stable_releases",
+        "a.subject GLOB 'Linux [0-9]*'",
+        limit,
+        force,
     )
 
 
@@ -358,19 +346,15 @@ def recent_page(
     listing is uncached, and guessing small would sort all of lkml on
     the inbox page and on every Load more."""
     total = cached_archive_total(inbox)
-    if total is not None and total < RECENT_INBOX_FIRST_BELOW_ARTICLES:
-        return _inbox_first_rows(session, inbox, "1", {}, limit, offset)
-    rows = (
-        session.execute(
-            _inbox_scoped(select(Article), inbox)
-            .order_by(Article.date.desc().nulls_last(), Article.id.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        .scalars()
-        .all()
+    return _listing_rows(
+        session,
+        inbox,
+        "1",
+        {},
+        limit,
+        offset,
+        inbox_first=total is not None and total < RECENT_INBOX_FIRST_BELOW_ARTICLES,
     )
-    return _summarize(rows)
 
 
 def recent_articles(
@@ -402,14 +386,26 @@ def recent_articles(
 
 # Inbox-first: seek this inbox's `article_lists` rows, fetch each article
 # by primary key. CROSS JOIN pins that order (SQLite never reorders it),
-# as in `_triage_sql`; INDEXED BY pins the seek.
-def _inbox_first_sql(where: str) -> str:
-    """The inbox-first SELECT for a WHERE fragment over alias `a`."""
+# as in `_triage_sql`; INDEXED BY pins the seek. Date-first walks
+# `ix_articles_date` and probes `article_lists` per row, also as there.
+def _listing_sql(where: str, inbox_first: bool) -> str:
+    """The listing SELECT for a WHERE fragment over alias `a`."""
+    if inbox_first:
+        source = (
+            "article_lists al INDEXED BY ix_article_lists_inbox_id\n"
+            "         CROSS JOIN articles a ON a.id = al.article_id"
+        )
+        in_inbox = "al.inbox_id = :inbox_id"
+    else:
+        source = "articles a"
+        in_inbox = """EXISTS (
+          SELECT 1 FROM article_lists al
+          WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
+      )"""
     return f"""
     SELECT a.id, a.subject, a.author, a.date
-    FROM article_lists al INDEXED BY ix_article_lists_inbox_id
-         CROSS JOIN articles a ON a.id = al.article_id
-    WHERE al.inbox_id = :inbox_id
+    FROM {source}
+    WHERE {in_inbox}
       AND {where}
     -- id DESC breaks date ties the way the old date-index walk did,
     -- so LIMIT keeps the same rows at a tie.
@@ -423,18 +419,25 @@ SEARCH_WHERE = r"""(a.subject LIKE :pattern ESCAPE '\'
            OR a.author LIKE :pattern ESCAPE '\')"""
 
 
-def _inbox_first_rows(
+def _listing_rows(
     session: Session,
     inbox: Inbox,
     where: str,
     binds: dict,
     limit: int,
     offset: int = 0,
+    *,
+    floor: datetime | None = None,
+    inbox_first: bool = True,
 ) -> list[ArticleSummary]:
-    """Run the inbox-first statement for `where`; `binds` carries its
-    parameters, with `floor` (a datetime) bound as a DateTime."""
-    stmt = text(_inbox_first_sql(where))
-    if "floor" in binds:
+    """Run the listing statement for `where`; `binds` carries its
+    parameters. A `floor` keeps rows dated at or after it (undated ones
+    out)."""
+    if floor is not None:
+        where = f"{where} AND a.date >= :floor"
+        binds = {**binds, "floor": floor}
+    stmt = text(_listing_sql(where, inbox_first))
+    if floor is not None:
         stmt = stmt.bindparams(bindparam("floor", type_=DateTime))
     rows = session.execute(
         stmt, {**binds, "inbox_id": inbox.id, "limit": limit, "offset": offset}
@@ -445,16 +448,6 @@ def _inbox_first_rows(
         )
         for r in rows
     ]
-
-
-def _inbox_first_listing(
-    session: Session, inbox: Inbox, where: str, floor: datetime, limit: int
-) -> list[ArticleSummary]:
-    """`where` matches over the last `LISTING_RECENCY_FLOOR_DAYS`,
-    newest first, read inbox-first."""
-    return _inbox_first_rows(
-        session, inbox, f"{where} AND a.date >= :floor", {"floor": floor}, limit
-    )
 
 
 def search_articles(
@@ -468,7 +461,7 @@ def search_articles(
     case-insensitive, ordered by date desc (undated last), capped at
     `limit`.
 
-    Reads inbox-first (`_inbox_first_sql`), so the cost is bounded by the
+    Reads inbox-first (`_listing_sql`), so the cost is bounded by the
     list's size. A date-first walk stops early only once it has `limit`
     matches; with fewer (a small list, or a rare term) it reads the
     whole archive (#791).
@@ -481,7 +474,7 @@ def search_articles(
     """
 
     def compute() -> list[ArticleSummary]:
-        return _inbox_first_rows(
+        return _listing_rows(
             session,
             inbox,
             SEARCH_WHERE,
