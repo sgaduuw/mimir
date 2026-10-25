@@ -52,8 +52,10 @@ def _visible_html_text(page: str) -> str:
     """What a reader sees: no head (canonical, JSON-LD), no scripts, no
     attributes. JSON-LD has its own known redaction gap, so letting it
     into the oracle would excuse the same leak in the `.md`."""
-    page = re.sub(r"<head>.*?</head>", "", page, flags=re.DOTALL)
-    page = re.sub(r"<script.*?</script>", "", page, flags=re.DOTALL)
+    page = re.sub(r"<head\b.*?</head\s*>", "", page, flags=re.DOTALL | re.IGNORECASE)
+    page = re.sub(
+        r"<script\b.*?</script\s*>", "", page, flags=re.DOTALL | re.IGNORECASE
+    )
     return html_lib.unescape(re.sub(r"<[^>]+>", "", page))
 
 
