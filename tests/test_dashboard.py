@@ -21,6 +21,7 @@ from mimir.dashboard import (
     INBOX_FIRST_BELOW_ARTICLES,
     RECENT_INBOX_FIRST_BELOW_ARTICLES,
     _archive_stats_key,
+    _inbox_first,
     archive_stats,
     author_recent,
     daily_volume,
@@ -1017,6 +1018,16 @@ def test_unknown_size_recent_keeps_the_date_walk(seeded_db, listing):
     with seeded_db() as s:
         plan = _listing_plan(s, listing, alpha)
     assert "ix_articles_date" in plan, plan
+
+
+def test_unknown_inbox_size_goes_inbox_first(seeded_db):
+    """No cached stats: inbox-first, whose worst measured case (5.9 s
+    on the biggest list) is under date-first's (14 s on a small one).
+    The lookup must not compute the COUNT."""
+    alpha = _inbox(seeded_db, "alpha")
+    cache.delete(_archive_stats_key(alpha))
+    assert _inbox_first(alpha) is True
+    assert cache.get(_archive_stats_key(alpha)) is None
 
 
 def test_author_recent_rows(seeded_db):
