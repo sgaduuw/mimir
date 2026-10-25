@@ -474,34 +474,6 @@ class Settings(BaseSettings):
     # Override via MIMIR_DEPLOY.
     mimir_deploy: bool = False
 
-    # SQLite `PRAGMA analysis_limit` (max rows sampled per index by
-    # ANALYZE). 0 means "no limit": ANALYZE reads every row of every
-    # index. That is the default since #817.
-    #
-    # A non-zero limit is not a random sample. SQLite reads about that
-    # many rows from the first key values and stops, so every index
-    # with more rows per key than the limit records limit + 1 (4001 at
-    # 4000) however large the real figure is. On production that put
-    # `ix_article_lists_inbox_id` at 4001 per inbox against a real
-    # average near 150k, and the daily bounded pass overwrote the
-    # weekly full figures within a day. Full figures kept 474 of 476
-    # captured statements on their plan and improved the other two.
-    #
-    # Cost, measured on the production corpus: a full pass holds the
-    # writer lock for 16.7 s (2026-10-22); the bounded pass took 1.2
-    # to 6.6 s. The pragma is set on every connection in
-    # `mimir.extensions._sqlite_pragmas`, so the 0 applies to every
-    # ANALYZE: post-migrate (before the broker serves, so on the
-    # startup budget), after ingest, and `mimir analyze`.
-    #
-    # History: 400 (1.35.1) mis-planned the recursive CTEs badly (a
-    # 15-message `get_thread` took 400 s); 4000 (1.36.4) was the
-    # compromise until the cap itself was found to be the problem.
-    #
-    # Set to a positive number to cap the sample again (faster,
-    # inexact). Override via ANALYZE_LIMIT.
-    analyze_limit: int = 0
-
     # Auto-ANALYZE threshold. After `ingest_inbox` finishes a run, if
     # `new + linked` across that run's epochs reaches this many rows,
     # we issue ANALYZE so the SQLite planner doesn't keep stale stats

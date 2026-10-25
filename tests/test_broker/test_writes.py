@@ -423,11 +423,9 @@ def test_writer_thread_engine_has_sqlite_pragmas_set(seeded_db):
             f"PRAGMA busy_timeout must match settings.sqlite_busy_timeout_ms "
             f"({settings.sqlite_busy_timeout_ms}); got {result['busy_timeout']}"
         )
-        assert result["analysis_limit"] == settings.analyze_limit, (
-            f"PRAGMA analysis_limit must match settings.analyze_limit "
-            f"({settings.analyze_limit}); got {result['analysis_limit']}. "
-            "the writer connection must carry the same sample as the "
-            "shared engine (0 is the default, every row)"
+        assert result["analysis_limit"] == 0, (
+            f"PRAGMA analysis_limit must stay SQLite's default 0 (every "
+            f"row); got {result['analysis_limit']}"
         )
     finally:
         writer.stop(timeout=5)
