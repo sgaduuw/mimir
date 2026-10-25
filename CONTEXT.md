@@ -77,8 +77,12 @@ This locks in three invariants:
 - **DCO trailers (`Signed-off-by:`, `Reviewed-by:`, `Acked-by:`,
   `Tested-by:`, `Reported-by:`).** Visible HTML uses
   `_redact_trailer_address`: allowlisted addresses survive
-  verbatim; everyone else's address becomes `<redacted>`. The
-  trailer text in the rendered body is otherwise unchanged. The
+  verbatim; everyone else's address becomes `<redacted>`, whether it
+  sits in the angle brackets (any RFC 5322 atext local part,
+  `EMAIL_LOCAL_PART` in `rendering/linkify.py`) or elsewhere on the
+  line as a name or bare address (#902). The tooltip's reviewer names
+  follow the From-name rule. The trailer text in the rendered body is
+  otherwise unchanged. The
   raw trailer in the blob is byte-identical to what the contributor
   sent, required for DCO chain integrity if those bytes ever flow
   through `git am` after a `.patch` download.
