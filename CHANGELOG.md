@@ -33,6 +33,11 @@ changes, not internal refactors. Categories: **Added**,
 - `backfill-article-trailers --reprocess` now removes an article's trailer rows
   when its body no longer yields any, instead of keeping the old ones (#913).
 
+- `dev-seed-thread` works again. It failed on every path: a read-only
+  database outside the broker, and no writer inside it. It now sends the
+  inbox and the ingest to the running broker, so it needs one, and stores
+  the mirror path as an absolute path (#932).
+
 ### Upgrade notes
 
 - Run `backfill-article-trailers --reprocess` after the deploy to re-split

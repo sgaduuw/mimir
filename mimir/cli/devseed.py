@@ -1,6 +1,6 @@
 """`dev-seed-thread`: build a synthetic multi-message thread and
-ingest it into the local DB so the message-page UI has real-shaped
-data to render.
+ingest it into the local DB through the broker so the message-page UI
+has real-shaped data to render.
 
 Dev-only; not for production. Idempotent if the inbox already exists
 with a synthetic mirror, appends more messages to the same epoch
@@ -15,7 +15,6 @@ from sqlalchemy import select
 
 from mimir.extensions import SessionLocal
 from mimir.inboxes import InboxValidationError, validate_name
-from mimir.ingest import ingest_epoch
 from mimir.models import Article, ArticleList, Inbox
 from mimir.web.urls import _msg_path
 
@@ -49,8 +48,9 @@ def dev_seed_thread_command(
 ) -> None:
     """Build a synthetic multi-message thread and ingest it.
 
-    Use during local dev to populate an empty DB so the message-page
-    UI (thread tree, fold states, HTMX swap) has real data to render.
+    Needs a running broker, which does every DB write. Use during
+    local dev to populate an empty DB so the message-page UI (thread
+    tree, fold states, HTMX swap) has real data to render.
     Not for production. The repo lives at
     `<mirror_root>/<inbox>/git/0.git` and is gitignored via the
     existing `Inboxes/` rule.
@@ -58,10 +58,10 @@ def dev_seed_thread_command(
     Idempotent if the inbox already exists with a synthetic mirror;
     appends more messages to the same epoch on re-run.
 
-    Example:
+    Example, with the broker running (README, "Try it locally"):
 
-        poetry run flask --app mimir dev-seed-thread --messages 12
-        poetry run flask --app mimir run
+        uv run mimir dev-seed-thread --messages 12
+        uv run mimir run
         # navigate to http://127.0.0.1:5000/dev-thread/
     """
     # Validate the inbox name before it gets splatted into both the
@@ -78,15 +78,37 @@ def dev_seed_thread_command(
     from dulwich.objects import Blob, Commit, Tree
     from dulwich.repo import Repo
 
+    from mimir.broker.client import BrokerUnavailable, get_broker_client
+    from mimir.broker.protocol import (
+        InboxCreateRequest,
+        InboxUpdateRequest,
+        IngestInboxRequest,
+    )
     from mimir.inboxes import InboxNotFound, get_inbox
+    from mimir.ingest.epoch import IngestResult
 
-    mirror_dir = Path(mirror_root) / inbox_name / "git"
+    # This process opens SQLite query_only, so every DB write is an
+    # existing broker request, the ones `admin inbox add`/`update` and
+    # `ingest` send. The mirror is written here and the broker reads it
+    # from disk, so both must run on one host.
+    def _call(req) -> dict:
+        try:
+            return get_broker_client().call(req)
+        except BrokerUnavailable as exc:
+            raise click.ClickException(f"broker {exc}") from exc
+
+    # Absolute, because the broker and the web process each resolve a
+    # relative mirror_path against their own working directory.
+    mirror_dir = Path(mirror_root).absolute() / inbox_name / "git"
     epoch_dir = mirror_dir / "0.git"
     mirror_dir.mkdir(parents=True, exist_ok=True)
 
     try:
-        get_inbox(inbox_name)
+        ix = get_inbox(inbox_name)
         click.echo(f"using existing inbox '{inbox_name}'")
+        inbox_id = ix.id
+        if ix.mirror_path != str(mirror_dir):
+            _call(InboxUpdateRequest(name=inbox_name, mirror_path=str(mirror_dir)))
     except InboxNotFound:
         # Validators require https://. NOT never-fetched: `mimir update`
         # with no --inbox selects every row and calls `sync_epochs` on
@@ -96,26 +118,16 @@ def dev_seed_thread_command(
         # dev-seed inbox, so the host is a placeholder. Narrow except
         # to InboxNotFound only so a real DB error (connection lost,
         # schema mismatch) surfaces as a traceback rather than
-        # silently triggering an unwanted create_inbox.
-        # Written directly: this dev-only command has no broker writer,
-        # and `create_inbox` requires one.
-        with SessionLocal() as s:
-            s.add(
-                Inbox(
-                    name=inbox_name,
-                    mirror_path=str(mirror_dir),
-                    upstream_url=f"https://local-dev.invalid/{inbox_name}",
-                )
+        # silently triggering an unwanted create.
+        created = _call(
+            InboxCreateRequest(
+                name=inbox_name,
+                mirror_path=str(mirror_dir),
+                upstream_url=f"https://local-dev.invalid/{inbox_name}",
             )
-            s.commit()
+        )
+        inbox_id = created["inbox"]["id"]
         click.echo(f"created inbox '{inbox_name}'")
-
-    with SessionLocal() as s:
-        # Reload + pin mirror_path in case an existing inbox's differs.
-        ix = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
-        ix.mirror_path = str(mirror_dir)
-        s.commit()
-        inbox_id = ix.id
 
     if epoch_dir.exists():
         repo = Repo(str(epoch_dir))
@@ -184,10 +196,8 @@ def dev_seed_thread_command(
 
     repo.refs[b"HEAD"] = prev_commit
 
-    # Ingest into the DB.
-    with SessionLocal() as s:
-        ix = s.execute(select(Inbox).where(Inbox.id == inbox_id)).scalar_one()
-        result = ingest_epoch(s, ix, "0.git", epoch_dir, workers=1)
+    raw = _call(IngestInboxRequest(inbox_name=inbox_name, workers=1))["results"]
+    for result in (IngestResult.model_validate(r) for r in raw):
         click.echo(
             f"ingested into '{inbox_name}': "
             f"new={result.new} linked={result.linked} "
