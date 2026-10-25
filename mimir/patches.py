@@ -29,7 +29,7 @@ import re
 from collections.abc import Callable
 from functools import partial
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
@@ -146,6 +146,14 @@ def has_article_files(session, article_id: int) -> bool:
         ).first()
         is not None
     )
+
+
+def article_has_files():
+    """`has_article_files` as an ORM column expression over `Article`,
+    for readers that decide per row in one statement (the slot rule,
+    `patch_series.slot_rank`). One predicate, two spellings: an
+    `article_files` row exists."""
+    return exists().where(ArticleFile.article_id == Article.id)
 
 
 class BackfillResult(BackfillCounters):

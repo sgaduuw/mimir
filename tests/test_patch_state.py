@@ -439,52 +439,163 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
     assert "pos=cover" in v2_entry.diff_url
 
 
-def test_patch_state_series_timeline_no_diff_for_same_version(seeded_db):
-    """#661: a resend carries the same version string as an earlier
-    revision. The step to that version links on its first copy only,
-    so the resend gets no link and none of them is `from == to`, which
-    the route 404s."""
+def _slot_row(msgid, version, day, *, position=0, key="slotkey", diff=False):
+    """One series row, a cover by default; `diff` gives it an
+    `article_files` row, the has-a-diff predicate of the slot rule."""
+    subject = (
+        f"[PATCH {version} 0/2] common series title"
+        if position == 0
+        else f"[PATCH {version} {position}/2] foo: bar"
+    )
+    art = Article(
+        message_id=msgid,
+        subject=subject,
+        author="Author <a@example.com>",
+        date=datetime(2024, 6, day, tzinfo=UTC),
+        thread_parent=None,
+        subject_normalized=subject.lower(),
+        patch_series_key=key,
+        patch_series_version=version,
+        patch_series_position=position,
+    )
+    if diff:
+        art.files = [ArticleFile(path="fs/foo.c")]
+    return art
+
+
+def _seed_slot_rows(s, rows):
+    """Add `rows` to `s` filed in alpha, commit, and return them in
+    order (ids follow it)."""
+    alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    for r in rows:
+        r.lists = [ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="bb" * 20)]
+    s.add_all(rows)
+    s.commit()
+    return rows
+
+
+def _card(s, article):
+    return patch_state_for_article(
+        s,
+        article,
+        thread_dates=[article.date],
+        subsystem_ids=[],
+        inbox_name="alpha",
+        state_key="t",
+        force=True,
+    )
+
+
+def test_patch_state_series_timeline_folds_a_resend_into_its_version(seeded_db):
+    """#661, #861: a resend carries the same version string as an earlier
+    revision. One entry per version: the slot's patch, with the resend
+    listed under it, and the diff link on the version's entry. Viewed
+    from the resend, the version's entry is the current one."""
     with seeded_db() as s:
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-
-        def _cover(msgid, version, day):
-            return Article(
-                message_id=msgid,
-                subject=f"[PATCH {version} 0/2] common series title",
-                author="Author <a@example.com>",
-                date=datetime(2024, 6, day, tzinfo=UTC),
-                thread_parent=None,
-                subject_normalized=f"[patch {version} 0/2] common series title",
-                patch_series_key="resendkey",
-                patch_series_version=version,
-                patch_series_position=0,
-                lists=[
-                    ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="bb" * 20)
-                ],
-            )
-
-        v1 = _cover("rs-v1@x", "v1", 1)
-        v2 = _cover("rs-v2@x", "v2", 10)
-        v2_resend = _cover("rs-v2b@x", "v2", 11)
-        s.add_all([v1, v2, v2_resend])
-        s.commit()
-        state = patch_state_for_article(
+        v1, v2, v2_resend = _seed_slot_rows(
             s,
-            v2_resend,
-            thread_dates=[v2_resend.date],
-            subsystem_ids=[],
-            inbox_name="alpha",
-            state_key="t",
-            force=True,
+            [
+                _slot_row("rs-v1@x", "v1", 1),
+                _slot_row("rs-v2@x", "v2", 10),
+                _slot_row("rs-v2b@x", "v2", 11),
+            ],
         )
-    by_id = {e.article_id: e for e in state.series}
-    # Precondition: all three revisions are on the timeline, and the
-    # one that must keep its link (the first v2) has it.
-    assert len(by_id) == 3
-    assert by_id[v1.id].diff_url is None
-    assert "from=v1&to=v2" in by_id[v2.id].diff_url
-    assert by_id[v2_resend.id].version == "v2"
-    assert by_id[v2_resend.id].diff_url is None
+        state = _card(s, v2_resend)
+        ids = (v1.id, v2.id, v2_resend.id)
+        # Precondition: v2 and its resend share one slot.
+        assert v2.patch_series_version == v2_resend.patch_series_version == "v2"
+    assert [(e.version, e.article_id) for e in state.series] == [
+        ("v1", ids[0]),
+        ("v2", ids[1]),
+    ]
+    v1_entry, v2_entry = state.series
+    assert v1_entry.diff_url is None
+    assert "from=v1&to=v2" in v2_entry.diff_url
+    assert v1_entry.reposts == []
+    assert [(r.article_id, r.is_current) for r in v2_entry.reposts] == [(ids[2], True)]
+    assert (v1_entry.is_current, v2_entry.is_current) == (False, True)
+
+
+def test_patch_state_series_timeline_names_the_row_with_a_diff_the_patch(seeded_db):
+    """#861: of two rows in one slot, the lowest id with a diff is the
+    patch, not a lower-id row without one."""
+    with seeded_db() as s:
+        v1, no_diff, with_diff = _seed_slot_rows(
+            s,
+            [
+                _slot_row("sd-v1@x", "v1", 1, position=1, diff=True),
+                _slot_row("sd-v2a@x", "v2", 10, position=1),
+                _slot_row("sd-v2b@x", "v2", 11, position=1, diff=True),
+            ],
+        )
+        state = _card(s, v1)
+        ids = (no_diff.id, with_diff.id)
+    v2_entry = state.series[1]
+    assert v2_entry.article_id == ids[1]  # not the lower id, which has no diff
+    assert [r.article_id for r in v2_entry.reposts] == [ids[0]]
+    # The link and the diff page's canonical name the same winner.
+    assert "from=v1&to=v2" in v2_entry.diff_url
+
+
+def test_patch_state_series_timeline_has_no_fold_for_one_version(seeded_db):
+    """#861: a version posted twice is still one version, so the fold,
+    which renders at two or more, has nothing to show."""
+    with seeded_db() as s:
+        first, again = _seed_slot_rows(
+            s, [_slot_row("one-a@x", "v1", 1), _slot_row("one-b@x", "v1", 2)]
+        )
+        state = _card(s, again)
+    assert state.series == []
+
+
+def test_patch_synthesis_counts_versions_not_rows(seeded_db):
+    """#861: v1, v2 and a resend of v2 are two versions, so the sentence
+    says "2 revisions archived", not 3."""
+    from mimir.web.filters import _patch_synthesis_filter
+
+    with seeded_db() as s:
+        _v1, _v2, resend = _seed_slot_rows(
+            s,
+            [
+                _slot_row("sy-v1@x", "v1", 1),
+                _slot_row("sy-v2@x", "v2", 10),
+                _slot_row("sy-v2b@x", "v2", 11),
+            ],
+        )
+        state = _card(s, resend)
+    assert _patch_synthesis_filter(state) == "Revision v2 (2 revisions archived)."
+
+
+def test_patch_state_card_skips_a_no_diff_row_that_loses_its_slot(seeded_db):
+    """#861: a reply repeating a patch's bracketed subject is a row of
+    the patch's slot with no diff. It is not a patch, so no card. The
+    row that has the diff, and a re-post with its own diff, still are."""
+    with seeded_db() as s:
+        patch, reply, repost = _seed_slot_rows(
+            s,
+            [
+                _slot_row("ls-p@x", "v1", 1, position=1, diff=True),
+                _slot_row("ls-r@x", "v1", 2, position=1),
+                _slot_row("ls-q@x", "v1", 3, position=1, diff=True),
+            ],
+        )
+        cards = [_card(s, a).is_patch for a in (patch, reply, repost)]
+    assert cards == [True, False, True]
+
+
+def test_patch_state_card_keeps_a_slot_where_no_row_has_a_diff(seeded_db):
+    """#861: with no diff anywhere, the lowest id is the patch and the
+    card stays on every row, as before the rule."""
+    with seeded_db() as s:
+        rows = _seed_slot_rows(
+            s,
+            [
+                _slot_row("nd-a@x", "v1", 1, position=1),
+                _slot_row("nd-b@x", "v1", 2, position=1),
+            ],
+        )
+        cards = [_card(s, a).is_patch for a in rows]
+    assert cards == [True, True]
 
 
 def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
@@ -772,3 +883,45 @@ def test_series_timeline_treats_null_position_as_zero(seeded_db):
             force=True,
         )
     assert [e.version for e in state.series] == ["v1", "v2"]
+
+
+def test_a_card_cached_before_reposts_existed_still_decodes():
+    """#861 added `reposts` without bumping `cache.NAMESPACE_VERSION`,
+    which would orphan every cache. A card cached in the old shape must
+    keep decoding, with no re-posts."""
+    from mimir.cache import _decode
+
+    old_entry = {
+        "__t": "StateSeriesEntry",
+        "v": {
+            "version": "v1",
+            "article_id": 1,
+            "date": None,
+            "url": "/alpha/2024/06/1",
+            "is_current": True,
+            "diff_url": None,
+        },
+    }
+    state = _decode(
+        {
+            "__t": "PatchState",
+            "v": {
+                "is_patch": True,
+                "trailers": [],
+                "mainline_landings": [],
+                "series": [old_entry],
+                "days_since_last_reply": None,
+            },
+        }
+    )
+    assert state.series == [
+        StateSeriesEntry(
+            version="v1",
+            article_id=1,
+            date=None,
+            url="/alpha/2024/06/1",
+            is_current=True,
+            diff_url=None,
+            reposts=[],
+        )
+    ]
