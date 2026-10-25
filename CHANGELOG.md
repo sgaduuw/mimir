@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Requests that send `Sec-Fetch-Site: none` with a `Referer`, a pair no browser
+  sends on a real navigation, share one small crawler-budget bucket,
+  `CRAWLER_IMPOSSIBLE_HEADERS_PCT` of the global (default 1, `0` turns it off).
+  Declared crawlers keep their own bucket; its log line names the request
+  headers, not a User-Agent (#903).
 - `/api/<inbox>/body/<id>`: one message's body as an HTML fragment, for the
   thread view's "more lines" link. It is `noindex`, under the already
   disallowed `/api/` (#814).
@@ -29,6 +34,12 @@ changes, not internal refactors. Categories: **Added**,
   sitemaps do not list `.md` URLs. The crawler budget applies to them as to
   the HTML pages; a user-initiated agent such as `Claude-User` is not a
   recognised crawler and is not gated on either.
+- `/llms.txt`, for AI agents: what the site is, the page URL shapes with
+  their `.md` forms, and pointers to the sitemap and the privacy page
+  (#884). It repeats the `Content-Signal` of `robots.txt`'s `*` stanza as
+  is, read from the same rule, so the two files cannot disagree; change it
+  with `admin robots` as before. Fetches made on a user's behalf are governed
+  by that signal, with no separate rule.
 
 ### Changed
 
