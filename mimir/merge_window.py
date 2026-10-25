@@ -44,10 +44,7 @@ from mimir.patch_series import (
     series_head_sql,
     version_number_sql,
 )
-from mimir.patch_state import _resolve_tree_label
 from mimir.subsystems import ranked_subsystems
-from mimir.web.filters import _usable_display_name
-from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
 logger = logging.getLogger(__name__)
 
@@ -216,6 +213,12 @@ SELECT DISTINCT o.message_id, o.tree_name
 
 
 def _compute(session: Session) -> MergeWindow:
+    # Function-local: `mimir.web` imports this module for `LINUS_TREE`, and
+    # `mimir.patch_state` imports `mimir.web.urls` at module level.
+    from mimir.patch_state import _resolve_tree_label
+    from mimir.web.filters import _usable_display_name
+    from mimir.web.urls import _canonical_inbox_names_for, _msg_path
+
     rows = session.execute(_QUEUED_SQL).all()
     queued = len(rows)
     # Raw SQL returns SQLite's stored text for dates; coerce as the
@@ -255,7 +258,7 @@ def _compute(session: Session) -> MergeWindow:
         )
         # A cover names the posting unless it is an `rfc` or `resend`
         # one and a queued patch carries a stored `vN`.
-        rank, cover = covers.get(posting, ((True,), None))
+        rank, cover = covers.get(posting, (None, None))
         representatives[posting] = (
             cover
             if cover and rank[0] <= first_rank[0]
@@ -434,10 +437,10 @@ def _commit_author_votes(
 def _files(session: Session, article_ids: list[int]) -> dict[int, list[str]]:
     """Touched files per article, for the subsystem grouping."""
     out: dict[int, list[str]] = {}
-    for i in range(0, len(article_ids), 900):
+    for chunk in batched(article_ids, 900):
         for aid, path in session.execute(
             select(ArticleFile.article_id, ArticleFile.path).where(
-                ArticleFile.article_id.in_(article_ids[i : i + 900])
+                ArticleFile.article_id.in_(chunk)
             )
         ).all():
             out.setdefault(aid, []).append(path)
@@ -464,7 +467,7 @@ def _covers(
     out: dict[tuple, tuple[tuple, tuple]] = {}
     rev = literal_column(version_number_sql("articles.patch_series_version"))
     posting_key = tuple_(Article.patch_series_key, series_head(), rev)
-    for i in range(0, len(postings), 400):
+    for chunk in batched(postings, 400):
         for a in session.execute(
             select(
                 Article.id,
@@ -476,7 +479,7 @@ def _covers(
                 series_head().label("series_head"),
                 rev.label("series_rev"),
             ).where(
-                posting_key.in_(postings[i : i + 400]),
+                posting_key.in_(chunk),
                 func.coalesce(Article.patch_series_position, 0) == 0,
             )
         ).all():
