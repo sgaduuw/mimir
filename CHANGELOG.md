@@ -13,9 +13,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- `backfill-article-files --reprocess` now deletes an article's stored file
+  rows when its body no longer yields a diff. It used to keep rows an older
+  extractor had written. No migration. Stale rows already stored are cleared
+  by the next `backfill-article-files --reprocess`; no separate run is needed
+  for this fix (#923).
 - The fold toggle's first button is a disclosure triangle again: ▶ when the
   box is closed, ▼ when it is open (partial or expanded), on the thread view
   and on `/merge-window`. 3.29.0 always showed ▶. This corrects #890 (#930).
+- `dev-seed-thread` works again. It failed on every path: a read-only
+  database outside the broker, and no writer inside it. It now sends the
+  inbox and the ingest to the running broker, so it needs one, and stores
+  the mirror path as an absolute path (#932).
 
 ## [3.29.0] - 2026-10-25
 

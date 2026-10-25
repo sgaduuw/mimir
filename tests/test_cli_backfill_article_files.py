@@ -291,3 +291,45 @@ def test_backfill_reads_article_whose_canonical_inbox_is_not_filed(
             ).all()
         }
     assert rows == {("m0@example.com", "fs/foo/a.c")}
+
+
+def _store_stale_row(seeded_db, message_id: str, path: str = "old/parser.c") -> None:
+    """Simulate a row an older extractor wrote for a body that the
+    current extractor reads as having no diff."""
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == message_id)
+        ).scalar_one()
+        s.add(ArticleFile(article_id=art.id, path=path))
+        s.commit()
+
+
+def _paths(seeded_db) -> list[str]:
+    with seeded_db() as s:
+        return [r.path for r in s.execute(select(ArticleFile)).scalars()]
+
+
+def test_reprocess_clears_rows_when_body_has_no_diff(
+    seeded_db, tmp_path, broker_active
+):
+    """#923: an extractor change can make a body yield no diff. `--reprocess`
+    must drop the rows the old extractor stored, not keep them forever."""
+    _ingest_articles_without_files(seeded_db, tmp_path, _PROSE_BODY)
+    _store_stale_row(seeded_db, "m0@example.com")
+
+    result = CliRunner().invoke(
+        backfill_article_files_command, ["--limit", "1", "--reprocess"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "no_diff=1" in result.output
+    assert _paths(seeded_db) == []
+
+
+def test_plain_run_keeps_rows_when_body_has_no_diff(seeded_db, tmp_path, broker_active):
+    """Without `--reprocess` an article that has rows is left alone."""
+    _ingest_articles_without_files(seeded_db, tmp_path, _PROSE_BODY)
+    _store_stale_row(seeded_db, "m0@example.com")
+
+    result = backfill_article_files(limit=1)
+    assert result.skipped == 1
+    assert _paths(seeded_db) == ["old/parser.c"]
