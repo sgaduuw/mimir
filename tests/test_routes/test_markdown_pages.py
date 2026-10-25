@@ -6,9 +6,9 @@ tests hold the two together on the URL, the canonical, the validator,
 the crawler budget and, above all, on which addresses are visible.
 """
 
-import html as html_lib
 import re
 import time
+from html.parser import HTMLParser
 
 import pytest
 
@@ -48,15 +48,35 @@ def _path(url: str) -> str:
 _ADDR_RE = re.compile(r"[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,255}")
 
 
+class _VisibleText(HTMLParser):
+    """Text nodes outside <head> and <script>, entities decoded."""
+
+    _HIDDEN = frozenset({"head", "script"})
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.depth = 0
+        self.parts: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        self.depth += tag in self._HIDDEN
+
+    def handle_endtag(self, tag):
+        self.depth -= tag in self._HIDDEN and self.depth > 0
+
+    def handle_data(self, data):
+        if not self.depth:
+            self.parts.append(data)
+
+
 def _visible_html_text(page: str) -> str:
     """What a reader sees: no head (canonical, JSON-LD), no scripts, no
     attributes. JSON-LD has its own known redaction gap, so letting it
     into the oracle would excuse the same leak in the `.md`."""
-    page = re.sub(r"<head\b.*?</head\s*>", "", page, flags=re.DOTALL | re.IGNORECASE)
-    page = re.sub(
-        r"<script\b.*?</script\s*>", "", page, flags=re.DOTALL | re.IGNORECASE
-    )
-    return html_lib.unescape(re.sub(r"<[^>]+>", "", page))
+    parser = _VisibleText()
+    parser.feed(page)
+    parser.close()
+    return "".join(parser.parts)
 
 
 def test_message_md_is_served_as_markdown(client, tmp_path):
