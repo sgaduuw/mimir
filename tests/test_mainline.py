@@ -23,6 +23,7 @@ from mimir.broker.writes import WriteOp, WriterThread
 from mimir.config import settings
 from mimir.mainline import _submit_mainline_batch, extract_message_ids, walk_commits
 from mimir.models import Inbox, MainlineCommit, MainlineState
+from tests._helpers import add_commit
 
 
 @pytest.fixture
@@ -194,19 +195,14 @@ def _build_commit(
 ) -> bytes:
     """Append a commit with `message` (empty tree) to the bare repo
     and update HEAD. Returns the new commit id."""
-    tree = Tree()
-    # Empty trees serialise to a fixed SHA; dulwich expects it to
-    # be in the object store. Adding it is idempotent.
-    repo.object_store.add_object(tree)
-    commit = Commit()
-    commit.tree = tree.id
-    commit.parents = [parent] if parent else []
-    commit.author = commit.committer = b"test <t@x>"
-    commit.commit_time = commit.author_time = commit_time
-    commit.commit_timezone = commit.author_timezone = 0
-    commit.encoding = b"UTF-8"
-    commit.message = message
-    repo.object_store.add_object(commit)
+    commit = add_commit(
+        repo,
+        b"test <t@x>",
+        [parent] if parent else [],
+        message,
+        when=commit_time,
+        encoding=b"UTF-8",
+    )
     repo.refs[b"HEAD"] = commit.id
     return commit.id
 
@@ -1798,7 +1794,6 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
     from concurrent.futures import Future
 
     import sqlalchemy as sa
-    from dulwich.objects import Commit, Tree
     from dulwich.repo import Repo
     from sqlalchemy import create_engine
 
@@ -1815,24 +1810,9 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
     repo_path = tmp_path / "crash-test.git"
     repo = Repo.init_bare(str(repo_path), mkdir=True)
 
-    def _build(repo: Repo, msg: bytes, parent: bytes | None = None) -> bytes:
-        tree = Tree()
-        repo.object_store.add_object(tree)
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [parent] if parent else []
-        commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = 1700000000
-        commit.commit_timezone = commit.author_timezone = 0
-        commit.encoding = b"UTF-8"
-        commit.message = msg
-        repo.object_store.add_object(commit)
-        repo.refs[b"HEAD"] = commit.id
-        return commit.id
-
     prev = None
     for i in range(1, 6):
-        prev = _build(
+        prev = _build_commit(
             repo,
             f"Fix {i}.\n\nLink: https://lore.kernel.org/r/m{i}@test\n".encode(),
             parent=prev,
@@ -2009,7 +1989,6 @@ def test_walk_commits_rebases_dispatches_rebuild_then_cursor(seeded_db, tmp_path
     one rebuild carried the whole walk.
     """
     import sqlalchemy as sa
-    from dulwich.objects import Commit, Tree
     from dulwich.repo import Repo
     from sqlalchemy import create_engine
 
@@ -2021,26 +2000,11 @@ def test_walk_commits_rebases_dispatches_rebuild_then_cursor(seeded_db, tmp_path
     repo_path = tmp_path / "rebases-test.git"
     repo = Repo.init_bare(str(repo_path), mkdir=True)
 
-    def _build(repo: Repo, msg: bytes, parent: bytes | None = None) -> bytes:
-        tree = Tree()
-        repo.object_store.add_object(tree)
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [parent] if parent else []
-        commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = 1700000000
-        commit.commit_timezone = commit.author_timezone = 0
-        commit.encoding = b"UTF-8"
-        commit.message = msg
-        repo.object_store.add_object(commit)
-        repo.refs[b"HEAD"] = commit.id
-        return commit.id
-
     # 3 Link-trailered commits; batch_size=2 would have given 2 batches
     # in the old shape. Now: 1 rebuild + 1 cursor, whatever batch_size.
     prev = None
     for i in range(1, 4):
-        prev = _build(
+        prev = _build_commit(
             repo,
             f"Fix {i}.\n\nLink: https://lore.kernel.org/r/m{i}@test\n".encode(),
             parent=prev,
@@ -2126,7 +2090,6 @@ def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
     Asserts: max per-cache-write wall time < 5 s (generous; on a
     healthy laptop the real numbers are tens of ms). The point is the
     absence of head-of-line stalls, not a wall-time speedup."""
-    from dulwich.objects import Commit, Tree
     from dulwich.repo import Repo
 
     from mimir.mainline import walk_commits
@@ -2138,21 +2101,6 @@ def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
     # cache-set WriteOps can drain.
     repo_path = tmp_path / "ft-stress.git"
     repo = Repo.init_bare(str(repo_path), mkdir=True)
-
-    def _build_commit(repo: Repo, msg: bytes, parent: bytes | None = None) -> bytes:
-        tree = Tree()
-        repo.object_store.add_object(tree)
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [parent] if parent else []
-        commit.author = commit.committer = b"test <t@x>"
-        commit.commit_time = commit.author_time = 1700000000
-        commit.commit_timezone = commit.author_timezone = 0
-        commit.encoding = b"UTF-8"
-        commit.message = msg
-        repo.object_store.add_object(commit)
-        repo.refs[b"HEAD"] = commit.id
-        return commit.id
 
     prev = None
     for idx in range(1, 21):

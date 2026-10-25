@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from types import SimpleNamespace
 
+from dulwich.objects import Commit, Tree
 from sqlalchemy import event, select, text
 
 from mimir import cache
@@ -158,3 +159,24 @@ def series_columns(session_factory, *message_ids):
             ).where(Article.message_id.in_(message_ids))
         ).all()
     return {r[0]: tuple(r[1:]) for r in rows}
+
+
+def add_commit(repo, author, parents, message, *, when=1700000000, tz=0, encoding=None):
+    """Add an empty-tree commit to a dulwich `repo` and return it. `author`
+    is bytes, `parents` a list of commit ids, `when` the author and commit
+    time, `tz` their offset in seconds. HEAD and refs are the caller's."""
+    tree = Tree()
+    # Empty trees serialise to a fixed SHA; dulwich expects it in the
+    # object store. Adding it is idempotent.
+    repo.object_store.add_object(tree)
+    commit = Commit()
+    commit.tree = tree.id
+    commit.parents = parents
+    commit.author = commit.committer = author
+    commit.author_time = commit.commit_time = when
+    commit.author_timezone = commit.commit_timezone = tz
+    if encoding:
+        commit.encoding = encoding
+    commit.message = message
+    repo.object_store.add_object(commit)
+    return commit

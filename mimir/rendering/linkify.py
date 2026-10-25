@@ -19,13 +19,15 @@ route and threaded through `linkify`/`render_body` as
 
 `redact_trailer_addresses` is the plain-text counterpart used by
 JSON-LD code that needs the redaction posture applied to body
-bytes without going through the HTML pipeline.
+bytes without going through the HTML pipeline. `plain_line` is the
+per-line counterpart of `linkify` itself, for the Markdown pages.
 """
 
 import html
 import re
 
 from mimir.msgid_url import msgid_from_url
+from mimir.rendering.blocks import QUOTE_PREFIX_RE
 
 URL_OR_MSGID_RE = re.compile(
     r'(?P<url>https?://[^\s<>"\'\]\)]+)'
@@ -198,6 +200,25 @@ def _render_trailer_line(
         pos = end
     out.append(html.escape(line[pos:]))
     return "".join(out)
+
+
+def plain_line(line: str, redactor) -> str:
+    """One text or quoted line as plain text, hiding exactly what
+    `linkify` hides: trailer addresses go through `redactor`, and on
+    any other line a `<Message-ID>`-shaped token (which is also how an
+    `<address>` in prose looks) collapses to `[ref]`.
+
+    The trailer test runs on the line with its quote markers stripped,
+    which is what the HTML renderer sees after its quote recursion (and
+    after `_flatten_quote` past the depth caps). The markers themselves
+    are kept as written."""
+    content = QUOTE_PREFIX_RE.sub("", line, count=1)
+    prefix = line[: len(line) - len(content)]
+    if _TRAILER_LINE_RE.match(content):
+        return prefix + _EMAIL_ANGLE_RE.sub(lambda m: redactor(m.group(1)), content)
+    return prefix + URL_OR_MSGID_RE.sub(
+        lambda m: m.group(0) if m.group("url") else "[ref]", content
+    )
 
 
 def redact_trailer_addresses(text: str, redactor) -> str:

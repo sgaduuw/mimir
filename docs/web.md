@@ -59,6 +59,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/<YYYY>/<MM>/<id>` | Message and thread tree |
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t` | First page of a whole thread |
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t/<page>` | Subsequent thread page |
+| `/<inbox>/<YYYY>/<MM>/<id>.md`, `.../<root-id>/t.md`, `.../<root-id>/t/<page>.md` | The message page or a thread page as Markdown |
 | `/<inbox>/<YYYY>/<MM>/<id>/attachment/<n>` | Download attachment |
 | `/<inbox>/<YYYY>/<MM>/<id>/attachment/<n>/preview` | Preview attachment |
 | `/<inbox>/series/<key>/diff?from=<vN>&to=<vM>&pos=<N>[&s=<head>]` | Compare a patch position across revisions; `pos=cover` compares cover letters; `s` names a series split off its key (unrelated postings under one cover title), absent for the key's first series |
@@ -72,6 +73,22 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 
 Unsupported maintainer addresses remain visible as text without profile links.
 Unknown or unsupported profile addresses return 404.
+
+### Markdown pages
+
+Each message and thread page has a Markdown version at the same URL plus
+`.md`, for AI agents and other tools, and names it in
+`<link rel="alternate" type="text/markdown">`. The content is chosen by URL,
+never by the `Accept` header. The body is the mail as text in a fenced block,
+under the same address hiding as the HTML page: a hidden sender stays hidden,
+and the Message-ID is left out by design. Attachments are listed as links.
+A thread's Markdown pages follow its HTML pages, `t.md` then `t/<page>.md`,
+linking previous and next. Each response sends
+`Content-Type: text/markdown; charset=utf-8`, its own ETag with
+`Cache-Control: public, no-cache`, and `Link: <...>; rel="canonical"` naming
+the HTML page's own canonical, so search engines index the HTML page. Sitemaps
+do not list `.md` URLs. They count against a crawler's budget exactly as the
+HTML pages do.
 
 ## Discovery and canonical URLs
 

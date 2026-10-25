@@ -36,7 +36,7 @@ from mimir.rendering.blocks import (
     parse_blocks,
 )
 from mimir.rendering.diff import _render_diff_block
-from mimir.rendering.linkify import linkify
+from mimir.rendering.linkify import linkify, plain_line
 
 _CODE_FORMATTER = HtmlFormatter(
     noclasses=False, nobackground=True, cssclass="highlight"
@@ -309,3 +309,30 @@ def render_body(
         lore_mirror_urls=lore_mirror_urls,
     )
     return Markup("".join(_render_block(b, context) for b in parse_blocks(body)))
+
+
+def render_body_text(body: str | None, address_redactor) -> str:
+    """`body` as plain text for the Markdown pages (#884), hiding what
+    `render_body` hides and nothing else.
+
+    Walks the same `parse_blocks` segmentation, so a line is filtered
+    exactly when the HTML would filter it: text and quoted lines go
+    through `plain_line`, diff and code blocks stay verbatim, as on the
+    page. Quoted lines are filtered whole, so a diff quoted inside a
+    reply is hidden where the page would show it: stricter, never
+    looser. The one change to the text is a code fence's delimiter
+    line, which `parse_blocks` drops and this re-emits as ```info.
+    """
+    if not body:
+        return ""
+    out: list[str] = []
+    for block in parse_blocks(body):
+        if block.kind == "diff":
+            out.extend(block.lines)
+        elif block.kind == "code":
+            out.append(f"```{block.info}")
+            out.extend(block.lines)
+            out.append("```")
+        else:
+            out.extend(plain_line(line, address_redactor) for line in block.lines)
+    return "\n".join(out)
