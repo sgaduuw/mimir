@@ -129,6 +129,10 @@ to remove settings. The `*` stanza cannot be deleted. `admin robots reset --yes`
 restores defaults, replacing custom rules. These are crawler instructions, not
 an enforcement mechanism. Use `admin robots --help` for the command list.
 
+`/llms.txt` repeats the `*` stanza's Content-Signal as is, so a change to it
+shows in both files. There is no separate rule for agents: a fetch made on a
+user's behalf is governed by that signal as configured.
+
 ## IndexNow
 
 IndexNow notifications are disabled by default. To enable them, set

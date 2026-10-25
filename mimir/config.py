@@ -810,6 +810,13 @@ class Settings(BaseSettings):
     # Listed crawlers never touch it.
     crawler_unlisted_pool_pct: int = Field(default=30, ge=1, le=100)
 
+    # One shared bucket, this percentage of the global budget, for
+    # requests that did not name a crawler but send `Sec-Fetch-Site: none`
+    # with a Referer: a browser sends no Referer on a user-initiated
+    # navigation, so the pair is a client faking a click (#903). 0 turns
+    # it off.
+    crawler_impossible_headers_pct: int = Field(default=1, ge=0, le=100)
+
     # Retry-After on a refused request, seconds. Long enough that a
     # crawler backs off past a bucket refill instead of retrying at once.
     crawler_retry_after_sec: int = Field(default=120, ge=1)

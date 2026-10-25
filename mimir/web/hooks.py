@@ -93,6 +93,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # minutes rather than a day. Matches the sitemap.xml cadence
     # for the same reason (the underlying state is mutable).
     "web.robots_txt": "public, max-age=300",
+    # Restates robots.txt's Content-Signal, so the same short window.
+    "web.llms_txt": "public, max-age=300",
     "web.security_txt": "public, max-age=3600",
     "web.privacy": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
@@ -250,7 +252,13 @@ def _crawler_budget_gate():
     only rewrites Cache-Control on 200/301/302/304, so it stays."""
     if request.endpoint in EXEMPT_ENDPOINTS:
         return None
-    if _crawler_gate.check(request.headers.get("User-Agent")) is None:
+    h = request.headers
+    if (
+        _crawler_gate.check(
+            h.get("User-Agent"), h.get("Sec-Fetch-Site"), h.get("Referer")
+        )
+        is None
+    ):
         return None
     return Response(
         "Too Many Requests\n",
