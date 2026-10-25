@@ -11,6 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The fold toggle's "closed" button shows ▶ instead of ▼, in a message page's
+  thread tree and on `/merge-window`. A downward triangle reads as "open" (#890).
+
 ## [3.28.0] - 2026-10-25
 
 ### Changed
