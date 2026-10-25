@@ -7,9 +7,11 @@ identity contract)."""
 
 import re
 from datetime import UTC
+from pathlib import Path
 
 import pytest
 
+import mimir
 from mimir.config import settings
 from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
@@ -427,13 +429,34 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     )
 
 
-def test_message_page_closed_fold_button_points_right(client, tmp_path):
-    """A triangle pointing down means "open", so the closed button shows
-    the collapsed glyph ▶, not ▼ (#890)."""
+def test_message_page_closed_fold_button_renders_open_triangle(client, tmp_path):
+    """Pages render partial, so the closed button shows ▼ on first paint
+    (#930); CSS swaps it to ▶ when the box is closed. The title doubles as
+    aria-label so the glyph never becomes the accessible name."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
     body = client.get(msgs["root"][1]).data.decode()
-    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', body)
-    assert "▼" not in body
+    assert re.search(
+        r'data-fold-set="closed" title="([^"]+)" aria-label="\1">▼</button>', body
+    )
+    assert "▶" not in body
+
+
+def test_thread_closed_state_css_swaps_to_right_triangle():
+    """The ▶ lives in CSS: dropping the closed-state rule leaves ▼ on a
+    closed thread box (#930)."""
+    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    rule = re.search(
+        r'html\[data-thread-fold="closed"\][^{}]*\[data-fold-set="closed"\]::before\s*'
+        r'\{[^}]*content:\s*"\\25B6\\FE0E"',
+        css,
+    )
+    assert rule
+    # The ▼ stays in the HTML; without this rule a closed box shows both.
+    assert re.search(
+        r'html\[data-thread-fold="closed"\][^{}]*\[data-fold-set="closed"\][^{}]*'
+        r"\{\s*font-size:\s*0;",
+        css,
+    )
 
 
 def test_message_page_thread_fold_links_carry_htmx_attrs(

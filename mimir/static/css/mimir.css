@@ -328,6 +328,20 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   color: var(--pico-secondary-inverse);
   border-color: var(--pico-secondary);
 }
+/* The closed button is a disclosure triangle (#930): the templates render
+   ▼ (open, which is what a fresh page is), and a closed box swaps it for ▶
+   here. The text shrinks to nothing and ::before draws the replacement; the
+   button's aria-label keeps its accessible name. U+FE0E keeps ▶ text-style,
+   as ▶ has an emoji form; ▼ has none. */
+html[data-thread-fold="closed"] .thread-context .thread-toggle > button[data-fold-set="closed"],
+.fold-box[data-fold="closed"] .thread-toggle > button[data-fold-set="closed"] {
+  font-size: 0;
+}
+html[data-thread-fold="closed"] .thread-context .thread-toggle > button[data-fold-set="closed"]::before,
+.fold-box[data-fold="closed"] .thread-toggle > button[data-fold-set="closed"]::before {
+  content: "\25B6\FE0E";
+  font-size: 0.85rem;
+}
 /* Tree list. `list-style: none` on the ul plus list-style-type on each li
    defeats Pico's marker styling (which leaks through `list-style: none`
    alone on this Pico version). */
