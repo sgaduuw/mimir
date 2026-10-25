@@ -29,6 +29,11 @@ changes, not internal refactors. Categories: **Added**,
   predates it is not refused: the broker drops the field and walks every
   article, as a plain run, or as a full `--reprocess` if that was given.
   Upgrade the broker first (#874).
+- The inbox nav has a "subsystems" dropdown after "yesterday". It opens on
+  hover, or by tap or Enter, and lists the current message's subsystems (at
+  most 8) above an "all subsystems" link. On pages with no message or no
+  subsystems it holds only "all subsystems". No new query and no JavaScript
+  (#892).
 
 ### Changed
 
