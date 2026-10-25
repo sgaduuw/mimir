@@ -43,21 +43,6 @@ from tests.test_ingest._helpers import (
 )
 
 
-@pytest.fixture
-def writer():
-    """Function-scoped WriterThread for the list-address promotion
-    gate tests, mirroring the fixture in test_pending.py. The
-    autouse `_reset_db` fixture runs before this, so the DB is already
-    seeded; the writer commits via its own engine against the same
-    test DB the `seeded_db` sessions read from."""
-    from mimir.broker.writes import WriterThread
-
-    wt = WriterThread.from_settings()
-    wt.start()
-    yield wt
-    wt.stop(timeout=10)
-
-
 def test_ingest_new_message_creates_article(seeded_db, tmp_path, broker_active):
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(tmp_path / "0.git", [_rfc5322("fresh@example.com")])

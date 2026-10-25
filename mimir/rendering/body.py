@@ -382,8 +382,9 @@ def render_body(
 
 
 def render_body_text(body: str | None, address_redactor) -> str:
-    """`body` as plain text for the Markdown pages (#884), hiding what
-    `render_body` hides and nothing else.
+    """`body` as plain text for the Markdown pages (#884) and the
+    JSON-LD `text` (#899), hiding what `render_body` hides and nothing
+    else.
 
     Walks the same `parse_blocks` segmentation, so a line is filtered
     exactly when the HTML would filter it: text and quoted lines go

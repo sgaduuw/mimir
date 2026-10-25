@@ -1,0 +1,20 @@
+# {{ site_name }}
+
+> A read-only archive of public mailing lists, indexed from their public-inbox mirrors.
+
+{% if content_signal %}
+Content-Signal: {{ content_signal }}
+
+{% endif %}
+Every message and thread page has a Markdown version at the same URL plus `.md`, for agents and other tools. It carries the mail as plain text under the same address hiding as the HTML page: sender addresses are hidden unless they are allowlisted, and Message-IDs are not shown. Each Markdown page names its HTML page as canonical.
+
+## URL shapes
+
+{% for label, path, md_path in shapes %}
+- {{ label }}: `{{ site_base }}{{ path }}` (Markdown: `{{ site_base }}{{ md_path }}`)
+{% endfor %}
+
+## Discovery
+
+- [Sitemap]({{ site_base }}/sitemap.xml): the HTML pages. The Markdown pages are not listed; add `.md` to a message or thread page URL.
+- [Privacy]({{ site_base }}/privacy): what is hidden and why.

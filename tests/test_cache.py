@@ -977,7 +977,6 @@ def test_cache_set_via_writer_commits_through_writer(seeded_db):
     submits to the writer; the returned WriteFuture resolves once
     the writer commits. The row is then readable via cache.get_or_compute()
     from a fresh session."""
-    from mimir.broker.writes import WriterThread
     from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
@@ -1006,7 +1005,6 @@ def test_cache_set_via_writer_commits_through_writer(seeded_db):
 def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
     """Second write on the same key replaces the value
     (UPSERT semantics)."""
-    from mimir.broker.writes import WriterThread
     from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
@@ -1041,7 +1039,6 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
     from mimir import cache
     from mimir.broker import _context
     from mimir.broker.pools import ReadSessionPool
-    from mimir.broker.writes import WriterThread
     from mimir.config import settings
 
     saved_pool = _context._active_pool
@@ -1346,20 +1343,6 @@ def test_only_broker_warm_handlers_enter_the_refresh_window():
         "handlers; anywhere else makes get_or_compute's "
         f"'window is None outside the warm cycle' comment false: {offenders}"
     )
-
-
-@pytest.fixture
-def writer():
-    """Function-scoped WriterThread for via-writer helper tests.
-
-    Mirrors the `writer` fixture in tests/test_pending_backfill.py.
-    The autouse `_reset_db` fixture seeds the DB before this fixture
-    is entered, so writes against the seeded `cache` rows are safe.
-    """
-    wt = WriterThread.from_settings()
-    wt.start()
-    yield wt
-    wt.stop(timeout=10)
 
 
 def test_set_via_writer_for_nskey_inserts_row(writer, seeded_db):
