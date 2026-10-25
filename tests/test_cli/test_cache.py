@@ -1012,14 +1012,12 @@ def test_build_slow_inbox_targets_excludes_subsystem_dashboards(seeded_db):
 def _add_late_inboxes(seeded_db):
     """Two inboxes that sort after the seeded `alpha` and `beta`, so a
     pinned order can only come from `pinned_inboxes`, not the name."""
-    from mimir.inboxes import refresh_inbox_names
     from mimir.models import Inbox
 
     with seeded_db() as s:
         for name in ("yy-pin", "zz-pin"):
             s.add(Inbox(name=name, mirror_path="/x", upstream_url=f"https://x/{name}"))
         s.commit()
-    refresh_inbox_names()
 
 
 def _warm_order(monkeypatch) -> list[str]:

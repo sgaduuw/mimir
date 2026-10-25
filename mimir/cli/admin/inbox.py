@@ -1,8 +1,8 @@
 """`admin inbox …`: CRUD on the `inboxes` table + per-inbox trackers.
 
 Thin click wrappers around `mimir.inboxes`'s service-layer
-functions (validation, cascade-delete semantics, nav-name cache
-refresh all live there). Mutating commands route through the broker
+functions (validation and cascade-delete semantics live there).
+Mutating commands route through the broker
 when `BROKER_SOCKET_PATH` is set, matching the rest of the broker
 family; read commands (`list`, `show`, `trackers show`) hit the DB
 directly via `query_only=1` connections.
@@ -55,9 +55,8 @@ def admin_inbox_group() -> None:
     """CRUD on the `inboxes` table.
 
     These commands are the CLI front-end to the same service-layer
-    functions the future Flask admin UI will call. Validation,
-    cascade-delete semantics, and the nav-name cache refresh all live
-    in `mimir.inboxes`.
+    functions the future Flask admin UI will call. Validation and
+    cascade-delete semantics live in `mimir.inboxes`.
     """
 
 

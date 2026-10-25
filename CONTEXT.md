@@ -835,11 +835,11 @@ state and continue to pass unchanged.
 Subtleties surfaced during the migration (worth durable
 documentation):
 
-- **`_publish_names` requires a Session.** The `inboxes.py` write
-  functions must refresh the in-memory `_INBOX_NAMES` nav cache.
-  Writer closures receive a Connection, not a Session, so each calls
-  the existing `refresh_inbox_names()` helper after `future.result()`
-  (a few ms after the commit lands; acceptable for a nav cache).
+- **The nav-name cache is gone (#895).** The `inboxes.py` write
+  functions used to refresh an in-memory `_INBOX_NAMES` list after
+  each commit. Only the broker runs them, so the web process always
+  rendered from an empty list. A page that needs inbox names queries
+  the DB.
 
 - **Tracker add/remove/clear are no longer broker ops (#708).**
   Phase 5 folded `add_tracked_author` and `remove_tracked_author`
