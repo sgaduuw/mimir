@@ -489,14 +489,6 @@ def _parent(session, thread_parent):
     ).one_or_none()
 
 
-def _reply_to_cover_in_db(session, subject, author, thread_parent) -> bool:
-    """`reply_to_cover` for a stored article."""
-    parent = _parent(session, thread_parent)
-    return parent is not None and reply_to_cover(
-        subject, author, parent.subject, parent.author
-    )
-
-
 def _reply_to_patch_in_db(session, article, subject) -> bool:
     """`reply_to_patch` for a stored article. Its diff is whether
     `article_files` holds a row for it: ingest writes those rows from
@@ -583,8 +575,9 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         return bucket("skipped"), pending(*stored)
 
     cover = parse_cover_letter(subject)
-    if cover is not None and _reply_to_cover_in_db(
-        session, subject, article.author, article.thread_parent
+    parent = _parent(session, article.thread_parent) if cover is not None else None
+    if parent is not None and reply_to_cover(
+        subject, article.author, parent.subject, parent.author
     ):
         # An already cleared reply is never "fully resolved", so every
         # plain run meets it again, and writes nothing unless the
@@ -617,9 +610,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         return bucket("in_series_orphan"), pending(*kept, in_series.position)
 
     # Neither cover nor in-series. On reprocess, clear any prior series row.
-    if reprocess:
-        return bucket("not_cover"), pending(None, None, None)
-    return bucket("not_cover"), pending(*stored)
+    return bucket("not_cover"), pending(*((None, None, None) if reprocess else stored))
 
 
 def backfill_patch_series(
