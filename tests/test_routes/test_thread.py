@@ -104,6 +104,35 @@ def test_thread_view_json_ld_nests_replies_under_their_parent(client, tmp_path):
     )
 
 
+def test_thread_view_json_ld_hides_addresses_the_page_hides(
+    client, tmp_path, monkeypatch
+):
+    """Root and comment `text` hide every address the page hides
+    (#899): the attribution line and a quoted trailer, while an
+    allowlisted trailer address stays."""
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
+    body = (
+        b"On Mon, Joe User <joe@example.com> wrote:\n"
+        b"> Signed-off-by: Joe User <joe@example.com>\n"
+        b"\n"
+        b"my reply\n"
+        b"\n"
+        b"Signed-off-by: Maintainer <m@kernel.org>\n"
+    )
+    assert b"joe@example.com" in body  # precondition
+    seeded = _seed_three_message_thread(tmp_path, "alpha", bodies=(body, body, b"x"))
+    _, root_url, _ = seeded["root"]
+    blocks = _json_ld_blocks(client.get(root_url + "/t").data.decode())
+    posting = next(
+        g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+    )
+    texts = [posting["text"], posting["comment"][0]["text"]]
+    for text in texts:
+        assert "my reply" in text  # precondition: root and reply bodies
+        assert "m@kernel.org" in text
+    assert "joe@example.com" not in json.dumps(blocks)
+
+
 def _comment_authors(comments):
     """Every Comment author in a (nested) JSON-LD comment tree."""
     for c in comments:
