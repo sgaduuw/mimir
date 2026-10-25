@@ -1,7 +1,7 @@
 """Manage the Inbox entity's lifecycle: bootstrap from env, mutate
-via admin, expose via the nav-name cache.
+via admin.
 
-Three sub-areas, one concern (the `Inbox` row, end to end):
+Two sub-areas, one concern (the `Inbox` row, end to end):
 
 - **Bootstrap.** `Settings.inboxes` is the bootstrap source:
   each entry guarantees an `Inbox` row exists in the DB on first
@@ -17,28 +17,21 @@ Three sub-areas, one concern (the `Inbox` row, end to end):
   commands and the future Flask admin UI. Keeps validation in one
   place. Every mutator writes through the broker's WriterThread
   and raises `RuntimeError` when none is active.
-- **Observe.** A module-level `_INBOX_NAMES` cache avoids hitting
-  the DB on every request just to render the nav. Repopulated by
-  `bootstrap_inboxes` on every startup; every mutator above calls
-  `_publish_names()` so the cache stays consistent with the DB
-  after every change.
 
 Validators (`validate_name`, `validate_upstream_url`,
 `validate_mirror_path`, `validate_tracked_authors`) are pure and
-shared by all three sub-areas, splitting them out would scatter
+shared by both sub-areas, splitting them out would scatter
 tightly-coupled state for no real win. See #187 for the won't-split
 reasoning.
 """
 
 import logging
 import shutil
-import threading
 from email.utils import parseaddr
 from pathlib import Path
 
 from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir._inbox_name import INBOX_NAME_RE
@@ -48,17 +41,6 @@ from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox, IngestState
 
 logger = logging.getLogger(__name__)
-
-
-# Guarded by `_INBOX_NAMES_LOCK` against torn reads. Under the GIL the
-# slice-assignment was approximately atomic and readers/writers were
-# safe without a lock; under PYTHON_GIL=0 (3.15t in production) the
-# underlying list resize + copy loop runs without the GIL and a reader
-# can observe partial state. Writers acquire the lock around
-# `_INBOX_NAMES[:] = names`; readers acquire the lock around
-# `list(_INBOX_NAMES)`.
-_INBOX_NAMES: list[str] = []
-_INBOX_NAMES_LOCK = threading.Lock()
 
 
 class InboxValidationError(ValueError):
@@ -159,28 +141,6 @@ def validate_mirror_path(mirror_path: str) -> str:
     return mirror_path
 
 
-def _publish_names(session: Session) -> None:
-    """Refresh the nav-name cache from the open session. Use after
-    any CRUD op so the running web process sees the change."""
-    names = sorted(n for (n,) in session.execute(select(Inbox.name)))
-    with _INBOX_NAMES_LOCK:
-        _INBOX_NAMES[:] = names
-
-
-def refresh_inbox_names() -> list[str]:
-    """Repopulate the cached nav list from the DB. Returns the new list."""
-    with SessionLocal() as session:
-        _publish_names(session)
-    with _INBOX_NAMES_LOCK:
-        return list(_INBOX_NAMES)
-
-
-def inbox_names() -> list[str]:
-    """The current set of inbox slugs, for nav rendering. Cheap, no DB hit."""
-    with _INBOX_NAMES_LOCK:
-        return list(_INBOX_NAMES)
-
-
 def bootstrap_inboxes() -> dict[str, Inbox]:
     """Insert any missing `Settings.inboxes` entries, leave existing
     rows untouched, return {name: Inbox} for every row in the table.
@@ -190,8 +150,8 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
     a broker context is set (the steady-state `handle_bootstrap_inboxes`
     RPC); otherwise it runs on `SessionLocal` (the pre-serve
     `_bootstrap_inboxes_if_needed`, exception class 2, and non-broker
-    callers / tests). The re-read and `_publish_names` nav-cache refresh
-    run on a read session after the write commits.
+    callers / tests). The re-read runs on a read session after the
+    write commits.
     """
     rows = [
         {
@@ -231,12 +191,10 @@ def bootstrap_inboxes() -> dict[str, Inbox]:
                 session.commit()
 
     with SessionLocal() as session:
-        out = {
+        return {
             inbox.name: inbox
             for inbox in session.execute(select(Inbox)).scalars().all()
         }
-        _publish_names(session)
-    return out
 
 
 def list_inboxes() -> list[Inbox]:
@@ -289,9 +247,7 @@ def create_inbox(name: str, mirror_path: str, upstream_url: str) -> Inbox:
         row = conn.execute(select(Inbox).where(Inbox.name == name)).one()
         return Inbox(**dict(row._mapping))
 
-    result = submit_write(f"inbox:create:{name}", _fn, timeout=30)
-    refresh_inbox_names()
-    return result
+    return submit_write(f"inbox:create:{name}", _fn, timeout=30)
 
 
 def _check_list_address_free(conn, list_address: str, inbox_id: int) -> None:
@@ -382,7 +338,6 @@ def update_inbox(
         return Inbox(**dict(updated._mapping)), renamed_from
 
     result, renamed_from = submit_write(f"inbox:update:{name}", _fn, timeout=30)
-    refresh_inbox_names()
     # Drop cached entries that referenced the old name. Cache values
     # don't depend on mirror_path / upstream_url, so non-rename
     # updates don't need invalidation. This stays OUTSIDE the closure
@@ -489,7 +444,6 @@ def delete_inbox(
     report.ingest_state_deleted = is_count
     report.orphan_articles_deleted = orphan_count
 
-    refresh_inbox_names()
     # cache.delete_for_inbox stays OUTSIDE the closure (Decision 10).
     cache.delete_for_inbox(name)
 
@@ -540,10 +494,4 @@ def set_tracked_authors(
         updated = conn.execute(select(Inbox).where(Inbox.name == name)).one()
         return Inbox(**dict(updated._mapping))
 
-    result = submit_write(f"inbox:set_tracked_authors:{name}", _fn, timeout=30)
-    # Refresh the nav-name cache outside the closure. The closure
-    # receives a Connection, not a Session; _publish_names requires
-    # a Session. refresh_inbox_names opens its own short-lived
-    # SessionLocal (Decision 10 from the Phase 5 plan).
-    refresh_inbox_names()
-    return result
+    return submit_write(f"inbox:set_tracked_authors:{name}", _fn, timeout=30)
