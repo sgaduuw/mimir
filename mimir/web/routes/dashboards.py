@@ -163,7 +163,7 @@ def index():
 @bp_web.route("/<inbox_name>")
 def inbox_dashboard_bare(inbox_name: str):
     """Werkzeug's own trailing-slash redirect fires before any view runs,
-    so every unknown root segment (`/llms.txt`, `/search`) got a 308 to a
+    so every unknown root segment (`/ads.txt`, `/search`) got a 308 to a
     URL that then 404s. Check the inbox first and redirect only to a page
     that exists (#827)."""
     with SessionLocal() as session:
