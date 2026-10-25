@@ -123,6 +123,10 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # larger here: a 304 skips up to `thread_view_render_cap` git blob
     # fetches and parses, which is the whole cost of this page.
     "web.thread_view": "public, no-cache",
+    # The Markdown forms (#884) carry their own ETag on the same
+    # content inputs, so the same posture.
+    "web.message_md": "public, no-cache",
+    "web.thread_view_md": "public, no-cache",
     # The thread view's "more lines" fragment: ETag-validated in the
     # route, so revalidate every time.
     "web.api_message_body": "public, no-cache",

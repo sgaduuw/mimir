@@ -20,6 +20,7 @@ from mimir.linus_pulls import linus_pulls
 from mimir.merge_window import MERGE_WINDOW_PATH, merge_window_state
 from mimir.models import Article, ArticleList, Inbox, MainlineState
 from mimir.parser import ParsedArticle
+from tests._helpers import add_commit
 
 _TAG = "v7.3-rc7"
 _TAG_TIME = datetime(2026, 10, 11, 20, 0, tzinfo=UTC)
@@ -394,23 +395,22 @@ def test_stalled_git_shows_pending(seeded_db, messages, monkeypatch, caplog):
 def _linus_repo(tmp_path):
     """A bare repo: an annotated `v7.3-rc7` on the first commit, HEAD
     one commit later."""
-    from dulwich.objects import Commit, Tag, Tree
+    from dulwich.objects import Commit, Tag
     from dulwich.repo import Repo
 
     repo = Repo.init_bare(str(tmp_path / "linux.git"), mkdir=True)
-    tree = Tree()
-    repo.object_store.add_object(tree)
     commits = []
     for n, when in enumerate((1760212800, 1760299200)):
-        c = Commit()
-        c.tree = tree.id
-        c.parents = [commits[-1].id] if commits else []
-        c.author = c.committer = b"L <l@x>"
-        c.author_time = c.commit_time = when
-        c.author_timezone = c.commit_timezone = -7 * 3600
-        c.message = f"c{n}".encode()
-        repo.object_store.add_object(c)
-        commits.append(c)
+        commits.append(
+            add_commit(
+                repo,
+                b"L <l@x>",
+                [commits[-1].id] if commits else [],
+                f"c{n}".encode(),
+                when=when,
+                tz=-7 * 3600,
+            )
+        )
     tag = Tag()
     tag.name = _TAG.encode()
     tag.object = (Commit, commits[0].id)

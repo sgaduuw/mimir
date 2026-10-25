@@ -31,7 +31,7 @@ from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
-from mimir.rendering import render_body
+from mimir.rendering import render_body, render_body_text
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -43,7 +43,9 @@ from mimir.web.urls import (
     _msg_path,
     _msg_url,
     _thread_view_url,
+    attachment_path,
     is_addressable_reviewer_address,
+    markdown_path,
 )
 
 bp_web.add_app_template_filter(
@@ -294,6 +296,42 @@ def _render_body_filter(
         compact=compact,
         text_more=text_more,
     )
+
+
+@bp_web.app_template_filter("render_body_text")
+def _render_body_text_filter(body) -> str:
+    """The Markdown pages' body: `render_body`'s filtering with the
+    same redactor, as plain text (#884)."""
+    return render_body_text(body, address_redactor=_redact_trailer_address)
+
+
+bp_web.add_app_template_filter(markdown_path, "markdown_path")
+bp_web.add_app_template_global(attachment_path, "attachment_path")
+
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+@bp_web.app_template_filter("md_fence")
+def _md_fence(text: str) -> str:
+    """A code fence longer than any backtick run in `text`, so no line
+    of a body can close it early (patches to `.md` and `.rst` docs
+    carry triple backticks). One linear scan."""
+    longest = max((len(run) for run in _BACKTICK_RUN_RE.findall(text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+_MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]<>#|~&])")
+
+
+@bp_web.app_template_filter("md_escape")
+def _md_escape(text: str | None) -> str:
+    """Sender-controlled text (a subject, a name, a filename) as inert
+    Markdown on one line: whitespace collapsed, and the characters that
+    open emphasis, links, code, HTML, headings or entity references
+    backslash-escaped. A bare `<hidden>` would otherwise be read as an
+    HTML tag and vanish, and `a&commat;b&period;org` decoded into an
+    address that the HTML page shows as literal text."""
+    return _MD_SPECIAL_RE.sub(r"\\\1", _SUBJECT_WS_RE.sub(" ", text or "").strip())
 
 
 @bp_web.app_template_filter("safe_from")
