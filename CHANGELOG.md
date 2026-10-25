@@ -11,6 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- `mimir init-db`. It failed under default settings, and under
+  `MIMIR_IS_BROKER=true` it left a database that the broker could not
+  migrate. Start the broker instead: it creates and migrates the database at
+  startup (#888).
+
 ### Fixed
 
 - The fold toggle's "closed" button shows ▶ instead of ▼, in a message page's

@@ -74,7 +74,6 @@ from mimir.cli.ingest import (
     reindex_command,
     update_command,
 )
-from mimir.cli.initdb import init_db_command
 from mimir.cli.mainline import update_mainline_command
 from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.cli.show import show_command
@@ -116,7 +115,6 @@ __all__ = [
     "dev_seed_thread_command",
     "doctor_command",
     "ingest_command",
-    "init_db_command",
     "register_cli",
     "reindex_command",
     "show_command",
@@ -129,7 +127,6 @@ __all__ = [
 
 
 def register_cli(app: Flask) -> None:
-    app.cli.add_command(init_db_command)
     app.cli.add_command(bootstrap_inboxes_command)
     app.cli.add_command(broker_command)
     app.cli.add_command(broker_ping_command)
