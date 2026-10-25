@@ -184,9 +184,3 @@ def test_admin_failures_replay_epoch_filter_isolates_one_epoch(seeded_db):
             .all()
         )
     assert epochs == {"0.git", "1.git"}
-
-
-# `init-db` -- bootstrap helper; documented in CLAUDE.md as a quick
-# local-dev path that the operator falls back to when alembic isn't
-# applicable. Untested historically because alembic is the real
-# migration story.
