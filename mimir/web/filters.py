@@ -553,6 +553,9 @@ def _subsystem_maintainers_filter(hits) -> list[tuple[str, str]]:
     out: list[tuple[str, str]] = []
     for hit in hits:
         for role, name, address in hit.maintainers:
+            # A name that is itself a non-allowlisted address is no name
+            # (#852), so it can never print an address as text.
+            name = _usable_name(name)
             key = address.lower() if address else f"name:{name}"
             if role == "M" and name and key not in seen:
                 seen.add(key)

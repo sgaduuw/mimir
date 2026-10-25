@@ -16,7 +16,8 @@ changes, not internal refactors. Categories: **Added**,
 - A cover letter's subsystems are now those of its patches. A cover
   carries no diff, so its thread view and its message page showed no
   subsystem line at all. Both now list the subsystems the posting's
-  patches touch, and the page validator covers those files, so a patch
+  patches touch, its review summary counts the maintainers of those
+  subsystems, and the page validator covers those files, so a patch
   that gains a file moves the cover's ETag (#844).
 - The thread view shows the subsystem maintainers next to the
   subsystems, as the message page already did: `M:` entries only, each
