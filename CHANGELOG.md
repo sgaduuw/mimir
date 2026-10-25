@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.28.0] - 2026-10-25
+
 ### Changed
 
 - `/merge-window` shows each subsystem section and each pull request column
