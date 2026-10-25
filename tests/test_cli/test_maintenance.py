@@ -77,11 +77,3 @@ def test_update_verbose_prints_no_op_lines(seeded_db, monkeypatch):
     assert result.exit_code == 0
     assert "sync: cloned=[] fetched=[] failed=[]" in result.output
     assert "/0.git: new=0 linked=0" in result.output
-
-
-# `dev-seed-thread` builds a synthetic multi-message thread into a bare
-# git repo under <mirror-root>/<inbox>/git/, then ingests it. The CLI is
-# dev-only but the contract still needs pinning so a refactor of the
-# synth-thread shape (depth, in_reply_to chain, author dedup) doesn't
-# silently produce something that looks fine via `flask run` but breaks
-# real ingest paths the next time it's exercised.
