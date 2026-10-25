@@ -11,6 +11,25 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `mimir backfill-article-files --patch-subjects` reads the body only of
+  articles whose subject is an in-series patch (`[PATCH 2/5]`), and counts every
+  other article as `skipped` from its subject alone, without fetching its
+  blob. It fills the file rows the reply rule needs for history that predates
+  #869's quilt and plain-diff extraction, without the plain run's read of every
+  article. It is a run of its own: it never resumes a plain run's position, and
+  a plain run never resumes it. With `--reprocess` it re-extracts those patches
+  only and leaves every other article's rows alone. To correct history after
+  #869, run `backfill-article-files --patch-subjects`, then
+  `backfill-patch-series --reprocess`. Known limit: a solo `[PATCH]` and a
+  non-series quilt patch get no file rows from this option, so the per-path
+  lookup and subsystem attribution stay incomplete for them until a plain
+  `backfill-article-files` run. A CLI with this option sent to a broker that
+  predates it is not refused: the broker drops the field and walks every
+  article, as a plain run, or as a full `--reprocess` if that was given.
+  Upgrade the broker first (#874).
+
 ### Changed
 
 - The revisions list links each revision to a diff against the previous
