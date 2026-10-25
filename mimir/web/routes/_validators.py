@@ -28,6 +28,7 @@ from mimir.models import (
 )
 from mimir.patch_series import same_series
 from mimir.patch_state import _resolve_tree_label
+from mimir.patches import article_has_files
 
 
 def _digest(values) -> str:
@@ -158,13 +159,17 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         # Plus each revision's canonical inbox and memberships: the fold
         # links every revision (and the diff's `to` slot) through
         # `_canonical_url_for`, so a sibling cross-posted later moves a
-        # link without moving anything else here (#687).
+        # link without moving anything else here (#687). Plus whether
+        # each has a diff: a slot's patch is its lowest-id row with one
+        # (`patch_series.slot_rank`, #861), so a backfill that gives a
+        # row its diff moves the fold, the diff link and the state card.
         revisions = session.execute(
             select(
                 Article.id,
                 Article.patch_series_version,
                 Article.canonical_inbox_id,
                 ArticleList.inbox_id,
+                article_has_files(),
             )
             .outerjoin(ArticleList, ArticleList.article_id == Article.id)
             .where(

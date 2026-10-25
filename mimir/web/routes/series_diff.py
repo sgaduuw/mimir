@@ -38,7 +38,8 @@ from mimir.patch_revisions import (
     patch_bracket,
     resolve_series_patches,
 )
-from mimir.patch_series import same_series
+from mimir.patch_series import same_series, slot_rank
+from mimir.patches import article_has_files
 from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _clean_subject_filter
@@ -80,32 +81,32 @@ def _resolve_via_index(
     to_version: str,
     pos: int,
 ) -> tuple[list[Article], list[Article]]:
-    """Indexed lookup for the articles at `(series, version, pos)`
-    for both sides. Returns `(from_candidates, to_candidates)`;
-    a side is empty when its row hasn't been backfilled yet, in which
-    case the caller falls back to the heuristic resolver. A side holds
-    several candidates when the same slot was sent twice (a resend);
-    `mimir.store.read_first_readable` picks among them.
+    """Indexed lookup for the article at `(series, version, pos)` for
+    both sides. Returns `(from_slot, to_slot)`; a side is empty when its
+    row hasn't been backfilled yet, in which case the caller falls back
+    to the heuristic resolver. A side holds one article, the slot's
+    patch (`patch_series.slot_rank`), when the same slot was sent
+    twice (a resend): the rest are re-posts.
 
-    Two-row SELECT (one per version) over the
-    `ix_articles_patch_series_key` index, then position filter, fast.
+    One SELECT over the `ix_articles_patch_series_key` index, then
+    position filter, fast.
     """
-    rows = (
-        session.execute(
-            select(Article).where(
-                same_series(series_key, head_id),
-                Article.patch_series_version.in_([from_version, to_version]),
-                # NULL is 0, as in the revisions fold that links here.
-                func.coalesce(Article.patch_series_position, 0) == pos,
-            )
+    rows = session.execute(
+        select(Article, article_has_files()).where(
+            same_series(series_key, head_id),
+            Article.patch_series_version.in_([from_version, to_version]),
+            # NULL is 0, as in the revisions fold that links here.
+            func.coalesce(Article.patch_series_position, 0) == pos,
         )
-        .scalars()
-        .all()
-    )
-    return (
-        [a for a in rows if a.patch_series_version == from_version],
-        [a for a in rows if a.patch_series_version == to_version],
-    )
+    ).all()
+
+    def winner(version: str) -> list[Article]:
+        slot = [
+            (a, has_diff) for a, has_diff in rows if a.patch_series_version == version
+        ]
+        return [min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]] if slot else []
+
+    return winner(from_version), winner(to_version)
 
 
 def _message_url(article: Article) -> str:
@@ -201,8 +202,8 @@ def series_diff(inbox_name: str, series_key: str):
         # Cache key: what the diff is computed from, not the series
         # identity in the URL (#816), so re-chaining a key can never
         # serve one series' diff for another. That is the two slots'
-        # article ids, or, when either is empty, the two covers the
-        # heuristic fallback walks from. The versions and position stay
+        # winner ids, which move when a row gains a diff, or, when either
+        # is empty, the two covers the heuristic fallback walks from. The versions and position stay
         # too, because the cached diff is labelled with them and
         # `backfill-patch-series --reprocess` can rewrite a stored
         # version in place under the same ids. The inbox stays because
@@ -210,10 +211,7 @@ def series_diff(inbox_name: str, series_key: str):
         # (some append a footer), and the heuristic walks thread
         # children in the URL's inbox.
         if from_slot and to_slot:
-            sides = ":".join(
-                ",".join(str(a.id) for a in sorted(slot, key=lambda a: a.id))
-                for slot in (from_slot, to_slot)
-            )
+            sides = f"{from_slot[0].id}:{to_slot[0].id}"
         else:
             sides = f"h{from_cover.id}:{to_cover.id}"
         cache_key = (
@@ -293,7 +291,7 @@ def series_diff(inbox_name: str, series_key: str):
         # which walks the URL's inbox only, so that inbox is the one
         # known to serve the diff.
         canonical_url = _series_diff_url(
-            to_slot if from_slot else [],
+            to_slot[0] if from_slot and to_slot else None,
             series_key,
             from_version,
             to_version,

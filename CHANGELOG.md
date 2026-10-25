@@ -54,6 +54,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A series slot, the rows sharing a key, series, version and position
+  (a version posted again), now has one patch: its lowest-id row with a
+  diff, else its lowest-id row. The series diff page, its canonical URL,
+  the series diff sitemap, the revisions list, the summary sentence and
+  the state card all use it, and the page ETag carries which rows have a
+  diff. The revisions list shows one entry per version, with the re-posts
+  listed under it, and appears from two versions on. The summary sentence
+  counts versions: v1, v2 and a resend of v2 read "Revision v2 (2
+  revisions archived)". At a patch position, a reply that repeats the
+  bracketed subject, has no diff and shares the slot of a row that has
+  one no longer gets a state card. A re-post is not treated as superseded. Measured on
+  2026-10-25: 87,354 patch slots and 18,780 cover slots hold more than
+  one row, and the rule changes today's pick in 163 patch and 81 cover
+  slots, where today's pick has no diff (#861).
 - `backfill-article-files --reprocess` now deletes an article's stored file
   rows when its body no longer yields a diff. It used to keep rows an older
   extractor had written. No migration. Stale rows already stored are cleared
