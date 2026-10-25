@@ -89,3 +89,9 @@
   </ul>
   {% endif %}
 </article>
+{# HTMX swaps only #msg, so refresh the nav menu with it (#892). Never on a
+   full page: the menu is already in base.html and the id must stay unique. #}
+{% if request.headers.get('HX-Request') == 'true' %}
+{% from "_subsystems_dd_menu.html" import subsystems_dd_menu %}
+{{ subsystems_dd_menu(subsystem_hits, current_inbox, oob=true) }}
+{% endif %}
