@@ -34,8 +34,6 @@ from mimir.web.urls import _site_base, markdown_path
 # (matches the prior `/og-image.svg` shape and reads as deliberate
 # branding rather than a deep static-folder path).
 OG_IMAGE_FILENAME = "og-image.png"
-OG_IMAGE_WIDTH = 1200
-OG_IMAGE_HEIGHT = 630
 OG_IMAGE_ALT = (
     "Ratatoskr from a 17th-century Icelandic Edda manuscript "
     "(AM 738 4to era, Árni Magnússon Institute, public domain), "

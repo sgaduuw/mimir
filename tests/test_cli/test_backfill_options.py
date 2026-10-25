@@ -38,8 +38,19 @@ def _option(command: click.Command, name: str) -> dict:
 
 @pytest.mark.parametrize("name", _SHARED + ("reprocess",))
 def test_the_commands_share_each_option(name):
-    seen = [_option(c, name) for c in _COMMANDS.values()]
+    # backfill-series-chains recomputes whole keys, so it has no
+    # `--reprocess` (#889).
+    commands = [
+        c
+        for c in _COMMANDS.values()
+        if name != "reprocess" or c is not backfill_series_chains_command
+    ]
+    seen = [_option(c, name) for c in commands]
     if name == "reprocess":
         for option in seen:
             option.pop("help")
     assert all(option == seen[0] for option in seen), seen
+
+
+def test_series_chains_leaves_reprocess_out():
+    assert "reprocess" not in {p.name for p in backfill_series_chains_command.params}
