@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- The inbox nav has a "subsystems" dropdown after "yesterday". It opens on
+  hover, or by tap or Enter, and lists the current message's subsystems (at
+  most 8) above an "all subsystems" link. On pages with no message or no
+  subsystems it holds only "all subsystems". No new query and no JavaScript
+  (#892).
+
 ### Fixed
 
 - `backfill-article-files --reprocess` now deletes an article's stored file

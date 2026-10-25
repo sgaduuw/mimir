@@ -1,0 +1,14 @@
+{# The panel of the inbox nav "subsystems" dropdown (#892). A macro because
+   it is rendered twice: by base.html, and again as an out-of-band swap
+   after #msg when HTMX replaces only the message, so the nav follows the
+   message on screen. Same macro as the header, so the hrefs are the same
+   bytes; names the route would 404 are dropped, not shown as text. #}
+{% from "_subsystem_link.html" import subsystem_link %}
+{% macro subsystems_dd_menu(hits, inbox_name, oob=false) -%}
+<ul id="subsystems-dd-menu"{% if oob %} hx-swap-oob="true"{% endif %}>
+  {% for hit in hits or [] if hit.name | is_addressable_subsystem %}
+  {% if loop.index <= 8 %}<li>{{ subsystem_link(hit.name, inbox_name) }}</li>{% endif %}
+  {% endfor %}
+  <li><a href="/{{ inbox_name }}/subsystem/"><em>all subsystems</em></a></li>
+</ul>
+{%- endmacro %}
