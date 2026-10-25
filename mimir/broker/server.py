@@ -794,8 +794,6 @@ def _post_migrate_analyze_if_needed(
 ) -> None:
     """Run `ANALYZE` after a schema migration so the planner has stats
     for any newly-created index, and for any table a migration rebuilt.
-    Governed by the per-connection `analysis_limit` pragma, which
-    defaults to 0 (every row, #817).
 
     Runs when EITHER the first-run sentinel is absent OR the applied
     alembic revision just moved. The second condition is the important
@@ -834,7 +832,7 @@ def _post_migrate_analyze_if_needed(
     try:
         from mimir.maintenance import run_analyze
 
-        result = run_analyze(full=False)
+        result = run_analyze()
     except Exception:
         # Don't refuse to start the broker if ANALYZE fails; log
         # loudly and continue. The next scheduled ANALYZE
@@ -1104,7 +1102,7 @@ def _run_post_backfill_analyze() -> None:
     try:
         from mimir.maintenance import run_analyze
 
-        run_analyze(full=False)
+        run_analyze()
     except Exception:
         logger.exception(
             "broker: post-backfill ANALYZE failed; planner stats for "
@@ -1362,10 +1360,9 @@ def build_server(socket_path: Path) -> _BrokerServer:
     #      on the first request.
     #   3. Post-migrate ANALYZE: a fresh schema migration may have
     #      added indexes whose `sqlite_stat1` needs populating
-    #      before the planner sees them; the full-sample pass takes
-    #      ~16.7 s on the production corpus (2026-10-22). It runs
-    #      BEFORE the healthcheck sentinel, so it is on the startup
-    #      budget; re-measure it whenever that budget is reviewed.
+    #      before the planner sees them. It runs BEFORE the healthcheck
+    #      sentinel, so it is on the startup budget; CONTEXT.md
+    #      "ANALYZE sample size" has the measured cost.
     #
     # Each is sentinel-gated. The web tier gates on the broker's
     # healthcheck so cold requests after deploy never hit any of

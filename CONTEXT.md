@@ -77,8 +77,12 @@ This locks in three invariants:
 - **DCO trailers (`Signed-off-by:`, `Reviewed-by:`, `Acked-by:`,
   `Tested-by:`, `Reported-by:`).** Visible HTML uses
   `_redact_trailer_address`: allowlisted addresses survive
-  verbatim; everyone else's address becomes `<redacted>`. The
-  trailer text in the rendered body is otherwise unchanged. The
+  verbatim; everyone else's address becomes `<redacted>`, whether it
+  sits in the angle brackets (any RFC 5322 atext local part,
+  `EMAIL_LOCAL_PART` in `rendering/linkify.py`) or elsewhere on the
+  line as a name or bare address (#902). The tooltip's reviewer names
+  follow the From-name rule. The trailer text in the rendered body is
+  otherwise unchanged. The
   raw trailer in the blob is byte-identical to what the contributor
   sent, required for DCO chain integrity if those bytes ever flow
   through `git am` after a `.patch` download.
@@ -781,8 +785,7 @@ spec), not collapsed. Scoped via a brainstorming → spec → plan pass:
 steady-state shared-engine writers: `cache.delete` /
 `cache.delete_for_inbox` (symmetric `_broker_handler_active()`
 routing; `cache.set` was already routed), `run_analyze` (dual-fork
-WriteOp, with the `analysis_limit` reset needed on BOTH the writer
-and the pooled shared-engine fallback path), `load_maintainers`
+WriteOp with a shared-engine fallback), `load_maintainers`
 (composite WriteOp), the `update_mainline` `last_walked_at` cadence
 write (this one was missed by the spec inventory and caught only by
 the final whole-branch review, it had no `write_transaction` wrapper
@@ -868,7 +871,7 @@ documentation):
   `event.listen(engine, "connect", _sqlite_pragmas)` at engine
   creation (`mimir/broker/writes.py`), so the writer's connections
   now carry the same pragmas as the shared engine (foreign_keys,
-  synchronous=NORMAL, analysis_limit, busy_timeout). The listener
+  synchronous=NORMAL, busy_timeout). The listener
   skips `query_only=1` when `mimir_is_broker=true`, so the writer
   stays writable. The inline workaround in `delete_inbox` was
   removed; the closure relies on the registered cascade pragma.
@@ -1791,8 +1794,7 @@ Decisions specific to that shape:
   introduce new indexes whose `sqlite_stat1` entries don't get
   populated as a side effect. After `alembic upgrade head` and
   `bootstrap_inboxes`, the broker runs a full-sample ANALYZE
-  (`analysis_limit=0`, ~16.7 s on the production corpus as measured
-  2026-10-22)
+  (see "ANALYZE sample size")
   gated on a `/data/.broker_initial_analyze` sentinel so
   subsequent restarts skip it. Web tier doesn't start serving
   until the broker's healthcheck flips green, the right
@@ -1890,14 +1892,14 @@ cheap and a wrong-index recursive-CTE choice is multi-minute pain.
 
 ## ANALYZE sample size: 0 (every row), because a cap is not a sample
 
-`settings.analyze_limit` (default 0, #817) is `PRAGMA analysis_limit`
-applied on every SQLite connection. A non-zero value makes ANALYZE
-stop after about that many rows per index when it estimates the
-per-key distribution the query planner reads from `sqlite_stat1`.
-It is not a random sample: SQLite reads the first key values and
-stops, so every index with more than N rows per key records N + 1.
-Items 1 to 3 below are the history that led to the cap; item 4 is why
-it is gone.
+`PRAGMA analysis_limit` is left at SQLite's default, 0 (no limit), on
+every connection. The `ANALYZE_LIMIT` setting and `mimir analyze --full`
+that could cap it are gone (#784). A non-zero value makes ANALYZE stop
+after about that many rows per index when it estimates the per-key
+distribution the query planner reads from `sqlite_stat1`. It is not a
+random sample: SQLite reads the first key values and stops, so every
+index with more than N rows per key records N + 1. Items 1 to 3 below
+are the history that led to the cap; item 4 is why it is gone.
 
 The history of this knob matters:
 
@@ -1940,7 +1942,9 @@ The history of this knob matters:
    against a real average near 150k) six days in seven, because the
    daily bounded pass overwrote the weekly full figures. With full
    figures 474 of 476 captured statements kept their plan and the
-   other two improved. The daily pass is gone; the weekly one stays.
+   other two improved. The daily pass is gone; the weekly one stays
+   (`ANALYZE_FULL_EVERY`, a plain `mimir analyze`). The cap setting was
+   removed afterwards (#784), since nobody should set one.
    A full pass holds the writer lock 16.7 s (production, 2026-10-22),
    against 1.2 to 6.6 s bounded. The 4000-row claim in item 3 that it
    "produces the same plans as a full scan" was wrong for the big
@@ -1958,7 +1962,7 @@ docs defaults as production-ready at scale.
 ## Scheduler-loop timers persist across restarts; post-migrate ANALYZE
 
 `deploy/scheduler.sh` runs `warm-cache`/`update`/`update-mainline`/
-`analyze --full`/`vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
+`analyze`/`vacuum` on env-tunable cadences (`WARM_CACHE_EVERY`,
 `UPDATE_EVERY`, `UPDATE_MAINLINE_EVERY`, `ANALYZE_FULL_EVERY`,
 `VACUUM_EVERY`). `update-mainline` short-circuits cheaply when the
 fetched mainline HEAD hasn't moved (the MAINTAINERS reparse early-
@@ -1986,14 +1990,14 @@ so a transient failure doesn't push the next retry out by a full
 cadence.
 
 Companion: the broker runs a full-sample `ANALYZE`
-(`analysis_limit=0`) immediately after `alembic upgrade head`
+immediately after `alembic upgrade head`
 and `bootstrap_inboxes`, before touching the `/data/.migrated`
 healthcheck sentinel, gated on `/data/.broker_initial_analyze` so
 subsequent restarts skip it (it's a one-shot per schema). The
 v2.0.0 broker owns this; through v1.x it lived in scheduler.sh.
 Migrations can introduce new indexes whose `sqlite_stat1` entries
 don't get populated as a side effect; the post-migrate pass closes
-that gap (~16.7 s as of 2026-10-22). Web tier gates on the broker's
+that gap (cost: "ANALYZE sample size"). Web tier gates on the broker's
 healthcheck so gunicorn doesn't start serving until the
 post-migrate ANALYZE finishes, the right ordering: serve queries
 against the schema only once the planner has stats for the schema.

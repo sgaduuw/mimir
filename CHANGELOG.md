@@ -63,6 +63,13 @@ changes, not internal refactors. Categories: **Added**,
 - The nav's inbox count on the front page and its plain "archive" label inside
   an inbox. The count never rendered in production, because the web process
   never fills the inbox name list it reads (#891).
+- The `ANALYZE_LIMIT` setting and the `--full` flag of `mimir analyze`
+  (#784). ANALYZE has read every row since #817, so the setting could only
+  bring back the capped figures that mislead the planner. A leftover
+  `ANALYZE_LIMIT` in an environment or `.env` is ignored and does not stop
+  startup; delete it. `mimir analyze --full`, for example in a cron job,
+  now fails with "no such option": drop `--full`, the pass is the same.
+  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged.
 
 ### Fixed
 
@@ -70,6 +77,13 @@ changes, not internal refactors. Categories: **Added**,
   message, thread, Markdown and `/merge-window` pages kept a matching ETag,
   so CDNs and browsers went on showing an address the page now hides until
   the next release (#900).
+- A trailer line no longer shows a non-allowlisted address in two shapes the
+  rest of the page hides. An address with a character such as `=`, `'` or `!`
+  before the `@` (`Signed-off-by: X <x=y@example.com>`) is hidden like any
+  other, and so is an address used as the name or written bare
+  (`Signed-off-by: joe@example.com <joe@example.com>`). The lifecycle tooltip
+  drops such a reviewer name. This covers the HTML pages and the `.md` pages
+  (#902).
 - The thread view no longer repeats the diff line anchors (`h-1`, `h-1-L4`)
   once per message, which made duplicate `id`s on one page and sent a
   `#h-1-L4` fragment to the wrong message. Those anchors now exist only on
