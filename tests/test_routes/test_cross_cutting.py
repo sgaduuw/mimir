@@ -5,8 +5,11 @@ keyboard-nav `data-nav-up` and the kbd-help dialog rendered
 on every page, the external-stylesheet contract, and small
 helper / filter unit tests imported from mimir.web."""
 
+import re
+
 import pytest
 
+from mimir.inboxes import inbox_names
 from tests.test_routes._helpers import (
     _build_app_with_hops,
     _ingest_one_article,
@@ -740,6 +743,48 @@ def test_keyboard_help_dialog_present_on_every_page(client, inbox_name):
         # so a refactor that drops a row is caught.
         for key in ("h", "j", "k", "l", "Esc", "?"):
             assert f"<kbd>{key}</kbd>" in body
+
+
+def _nav_merge_window_links(body):
+    """The main nav's links to /merge-window, as their full <a> tags."""
+    nav = re.search(r"<nav>(.*?)</nav>", body, re.DOTALL).group(1)
+    return re.findall(r'<a href="/merge-window"[^>]*>', nav)
+
+
+def _nav_right_items(body):
+    """Text of each item in the nav's right-hand list."""
+    nav = re.search(r"<nav>(.*?)</nav>", body, re.DOTALL).group(1)
+    right = re.findall(r"<ul>(.*?)</ul>", nav, re.DOTALL)[1]
+    return [
+        re.sub(r"<[^>]+>|\s+", " ", li).strip()
+        for li in re.findall(r"<li>(.*?)</li>", right, re.DOTALL)
+    ]
+
+
+def test_nav_links_the_merge_window_from_every_page(client, tmp_path, inbox_name):
+    """A reader who lands on a thread from a search engine can reach the
+    merge window from the nav, not only from the front page (#891). The
+    link marks itself current on that page alone, and it is the only
+    item there: the inbox count and the "archive" label went, as the
+    count never rendered in production's web process (#891)."""
+    _, msg_url = _ingest_one_article(tmp_path, inbox_name, "nav-mw@example.com")
+    pages = ("/", f"/{inbox_name}/", msg_url, "/merge-window")
+    links = {
+        path: _nav_merge_window_links(client.get(path).data.decode()) for path in pages
+    }
+    assert links == {
+        "/": ['<a href="/merge-window">'],
+        f"/{inbox_name}/": ['<a href="/merge-window">'],
+        msg_url: ['<a href="/merge-window">'],
+        "/merge-window": ['<a href="/merge-window" aria-current="page">'],
+    }
+    bodies = {path: client.get(path).data.decode() for path in pages}
+    assert len(inbox_names()) > 1  # precondition: the count would render
+    assert {path: _nav_right_items(b) for path, b in bodies.items()} == {
+        path: ["Merge window"] for path in pages
+    }
+    # The nav link replaced the front page's own prose link.
+    assert len(re.findall(r'href="/merge-window"', bodies["/"])) == 1
 
 
 def test_keyboard_nav_data_nav_up_meta_index_has_no_parent(client):
