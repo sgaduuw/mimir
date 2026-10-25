@@ -12,15 +12,15 @@ share with the read pool.
 `after(conn)`, when given, runs as the closure's FINAL statement, in
 the same transaction as the batch: the backfills pass
 `mimir.backfill_runs.advance` so a run's cursor commits with the rows
-it covers. With `after` set an empty batch still submits, because a
-batch whose articles produced no writes still moves the cursor.
+it covers. Callers skip a batch with no payloads and no `after`; with
+`after` set an empty batch still submits, because a batch whose
+articles produced no writes still moves the cursor.
 
 Underscore-prefixed; not part of the public ingest / patches /
 trailers / patch_series surfaces.
 """
 
 from collections.abc import Callable
-from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -157,14 +157,7 @@ def _submit_article_files_batch(
     - if `delete_first`, issue `DELETE FROM article_files WHERE article_id = ?`.
     - then issue `INSERT INTO article_files (article_id, path) VALUES (?, ?)
       ON CONFLICT (article_id, path) DO NOTHING` for each path.
-
-    Empty payload list returns a pre-resolved future without queueing,
-    unless `after` is set (see the module docstring).
     """
-    if not payloads and after is None:
-        f: Future = Future()
-        f.set_result(None)
-        return f
 
     def _fn(conn):
         for p in payloads:
@@ -197,10 +190,6 @@ def _submit_article_trailers_batch(
     autoincrement `id` PK with no natural UNIQUE on
     (article_id, address, role), so the INSERT is a plain VALUES.
     """
-    if not payloads and after is None:
-        f: Future = Future()
-        f.set_result(None)
-        return f
 
     def _fn(conn):
         for p in payloads:
@@ -256,11 +245,6 @@ def _submit_patch_series_batch(
     NULL values overwrite previously-set values (used by the
     orphan-clear / not-a-cover paths).
     """
-    if not payloads and after is None:
-        f: Future = Future()
-        f.set_result(None)
-        return f
-
     from mimir.patch_series_chains import rechain_keys
 
     def _fn(conn):
@@ -294,11 +278,6 @@ def _submit_series_heads_batch(
     `backfill_series_chains`: re-chain the payloads' keys from the state
     the writer holds (`rechain_keys`, as an ingest batch does), then
     `after`."""
-    if not payloads and after is None:
-        f: Future = Future()
-        f.set_result(None)
-        return f
-
     from mimir.patch_series_chains import rechain_keys
 
     def _fn(conn):
@@ -322,10 +301,6 @@ def _submit_canonical_batch(
        count = inbox_address_observations.count + excluded.count,
        last_seen = MAX(inbox_address_observations.last_seen, excluded.last_seen)`
     """
-    if not payloads and after is None:
-        f: Future = Future()
-        f.set_result(None)
-        return f
 
     def _fn(conn):
         for p in payloads:

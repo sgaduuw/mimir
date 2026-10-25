@@ -689,11 +689,13 @@ def test_a_session_that_joined_a_run_stops_when_the_run_finishes(
         calls["b"] += 1
         if calls["b"] == 2:
             # Session A joins and finishes the run while B waits.
-            while True:
+            for _ in range(_N + 1):  # every chunk examines at least one row
                 calls["a"] += 1
                 start = "resume" if calls["a"] == 1 else None
                 if not chunk(reprocess=True, start=start)["partial"]:
                     break
+            else:
+                raise AssertionError("session A's run never finished")
         return chunk(limit=req.limit, reprocess=req.reprocess, start=req.start)
 
     result, run = _broker_backfill_loop(

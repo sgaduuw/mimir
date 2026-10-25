@@ -11,13 +11,14 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
-from mimir import _pending_backfill, patch_series_chains
+from mimir import _pending_backfill
 from mimir._pending_backfill import _submit_patch_series_batch
 from mimir.broker._context import get_active_writer
 from mimir.broker.writes import WriteOp
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import _process_one, backfill_patch_series, series_key
 from mimir.patch_series_chains import backfill_series_chains, rechain_keys
+from tests._helpers import series_columns
 
 KEY = series_key("netfilter updates", "A <a@x>")
 OLD, NEW = datetime(2024, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)
@@ -72,14 +73,7 @@ def _seed(
 
 
 def _heads(seeded_db):
-    with seeded_db() as s:
-        return dict(
-            s.execute(
-                select(Article.message_id, Article.patch_series_head_id).where(
-                    Article.message_id.in_(MSGIDS)
-                )
-            ).all()
-        )
+    return {m: c[3] for m, c in series_columns(seeded_db, *MSGIDS).items()}
 
 
 def _read(seeded_db, msgid):
@@ -150,31 +144,24 @@ def test_a_second_reprocess_writes_and_re_chains_nothing(
     payload, so a reprocess re-chains only the keys it really changes,
     not every key it walks."""
     _seed(seeded_db, c2p2_key=None)
-    rechained: list[set[str]] = []
     payloads: list[list] = []
-
-    def record_rechain(conn, keys):
-        rechained.append(set(keys))
-        return rechain_keys(conn, keys)
 
     def record_submit(writer, batch, after=None):
         payloads.append(list(batch))
         return _submit_patch_series_batch(writer, batch, after=after)
 
-    monkeypatch.setattr(patch_series_chains, "rechain_keys", record_rechain)
     monkeypatch.setattr(_pending_backfill, "_submit_patch_series_batch", record_submit)
 
     backfill_patch_series(reprocess=True)
-    # Precondition: the first run linked c2p2 and re-chained its key.
-    assert any(KEY in keys for keys in rechained), rechained
-    assert {p.article_id for batch in payloads for p in batch}
+    # Precondition: the first run linked c2p2 and so sent its key.
+    assert any(
+        KEY in (p.old_key, p.patch_series_key) for batch in payloads for p in batch
+    ), payloads
 
-    rechained.clear()
     payloads.clear()
     backfill_patch_series(reprocess=True)
 
     assert [p for batch in payloads for p in batch] == []
-    assert all(keys == set() for keys in rechained), rechained
 
 
 def _id(seeded_db, msgid):
