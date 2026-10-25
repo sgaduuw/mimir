@@ -27,12 +27,15 @@ moment to make that choice durable.
 import logging
 import re
 from collections.abc import Callable
+from functools import partial
 
 from sqlalchemy import select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article, ArticleFile
+from mimir.parser import unfold
+from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.store import read_first_readable
 
 logger = logging.getLogger(__name__)
@@ -148,14 +151,15 @@ def has_article_files(session, article_id: int) -> bool:
 class BackfillResult(BackfillCounters):
     """Outcome counters for `backfill_article_files`. Every article
     examined lands in exactly one bucket. `skipped` covers articles
-    that already had ArticleFile rows (idempotent re-runs) plus
-    articles whose mirror is unreachable from this host.
+    that already had ArticleFile rows (idempotent re-runs), articles
+    whose mirror is unreachable from this host, and, under
+    `patch_subjects`, articles whose subject is not an in-series patch.
     """
 
     examined: int = 0
     indexed: int = 0  # had a patch body and one or more paths landed
     no_diff: int = 0  # body parsed but no diff found
-    skipped: int = 0  # already had rows, or unreadable
+    skipped: int = 0  # already had rows, unreadable, or not a patch subject
     failed: int = 0  # parse error reading the blob
 
 
@@ -166,6 +170,7 @@ def backfill_article_files(
     *,
     max_seconds: float | None = None,
     run: Run | None = None,
+    patch_subjects: bool = False,
 ) -> BackfillResult:
     """Walk articles, extract diff-touched paths, insert ArticleFile
      rows. Idempotent: articles with existing rows are skipped unless
@@ -181,13 +186,20 @@ def backfill_article_files(
      starting below the run's cursor (`mimir.backfill_runs`), then
      returns `partial=True` so the CLI loops with a follow-up RPC.
      Direct callers leave both None and get the original full-walk
-     behaviour."""
+     behaviour.
+
+     `patch_subjects` reads the body only of articles whose subject
+     parses as an in-series patch (#874), the only ones the reply rule
+     reads `article_files` for. The rest are counted `skipped` from
+     the subject alone, so the walk still pages every row but fetches
+     no blob for them. It composes with `reprocess`: the patches are
+     re-extracted, every other article keeps its rows."""
     from mimir._pending_backfill import _submit_article_files_batch
 
     result = BackfillResult()
     result.partial = walk_articles(
         result,
-        _process_one,
+        partial(_process_one, patch_subjects=patch_subjects),
         _submit_article_files_batch,
         limit=limit,
         reprocess=reprocess,
@@ -199,11 +211,21 @@ def backfill_article_files(
     return result
 
 
-def _process_one(session, article: Article, reprocess: bool) -> tuple[str, object]:
+def _process_one(
+    session, article: Article, reprocess: bool, *, patch_subjects: bool = False
+) -> tuple[str, object]:
     """Per-article work for `backfill_article_files`. Returns
     `(bucket, pending_payload)` where pending_payload is an
     `_ArticleFilesPending` or None for buckets that produce no writes."""
     from mimir._pending_backfill import _ArticleFilesPending
+
+    # A string check on the loaded row, so it goes before the row seek
+    # and the blob read it saves.
+    if (
+        patch_subjects
+        and parse_in_series_patch_subject(unfold(article.subject)) is None
+    ):
+        return "skipped", None
 
     has_rows = has_article_files(session, article.id)
     if has_rows and not reprocess:
