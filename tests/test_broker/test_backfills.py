@@ -201,6 +201,24 @@ def test_walk_articles_starts_below_the_run_cursor(seeded_db, broker_active):
     assert seen == [min_id]
 
 
+def test_walk_articles_skips_a_batch_with_nothing_to_write(seeded_db, broker_active):
+    """No payloads and no run (so no cursor `after`): the walker does
+    not call `flush_batch`, so the writer gets no empty WriteOp."""
+    from mimir._backfill import walk_articles
+    from mimir.patches import BackfillResult
+
+    calls: list[list] = []
+
+    def flush_batch(writer, payloads, after=None):
+        calls.append(payloads)
+        raise AssertionError("flush_batch called with nothing to write")
+
+    result = BackfillResult()
+    walk_articles(result, lambda _s, _a, _r: ("no_diff", None), flush_batch)
+    assert result.examined == 4  # precondition: the walk saw every article
+    assert calls == []
+
+
 # ----- BackfillResult.merge ---------------------------------------------
 
 
