@@ -47,18 +47,24 @@ INDEXED_TRAILER_ROLES = (
 )
 _INDEXED_TRAILER_RE = re.compile(
     r"^(?P<role>" + "|".join(re.escape(k) for k in INDEXED_TRAILER_ROLES) + r"):\s*"
-    r"(?P<rest>.+?)\s*$",
+    r"(?P<rest>.+)",
     re.IGNORECASE | re.MULTILINE,
 )
-# Match "Display Name <addr@host>" or bare "<addr@host>" / "addr@host".
-# The local-part / domain subset matches the conservative shape used
-# elsewhere (see rendering._EMAIL_ANGLE_RE) so address-shaped tokens
-# carrying HTML metacharacters fall through and the line is silently
-# skipped. The address itself is stored verbatim; redaction is a
-# render-time concern (see CONTEXT.md "Redaction is a display-time
-# decision").
+# Match "Display Name <addr@host>" or bare "<addr@host>" / "addr@host",
+# anchored at the line's end: the address is the run of local-part characters
+# before the line's last "@", and the name is whatever precedes it (or
+# its "<"). A character outside the local-part class ends the address
+# there, so `X <x=y@example.com>` splits as `X <x=` / `y@example.com`
+# (#913). The address starts at a "<" or where that run starts, never
+# inside it: an unanchored scan would otherwise rescan the run from each
+# of its characters, which is quadratic on hostile input (#921). `rest`
+# keeps the line's trailing whitespace for the `\s*$` here, as a lazy
+# `rest` before its own `\s*$` was quadratic on a whitespace run.
+# The address is stored verbatim; redaction is a render-time concern
+# (see CONTEXT.md "Redaction is a display-time decision").
 _TRAILER_NAME_ADDR_RE = re.compile(
-    r"^(?:(?P<name>.*?)\s*)?<?(?P<addr>[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>?\s*$"
+    r"(?:<|(?<![A-Za-z0-9._%+\-]))"
+    r"(?P<addr>[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>?\s*$"
 )
 
 
@@ -82,10 +88,11 @@ def extract_trailers(body: str | None) -> list[tuple[str, str, str]]:
     canonical = {k.lower(): k for k in INDEXED_TRAILER_ROLES}
     out: list[tuple[str, str, str]] = []
     for m in _INDEXED_TRAILER_RE.finditer(body):
-        addr_match = _TRAILER_NAME_ADDR_RE.match(m.group("rest"))
+        rest = m.group("rest")
+        addr_match = _TRAILER_NAME_ADDR_RE.search(rest)
         if addr_match is None:
             continue
-        name = (addr_match.group("name") or "").strip()
+        name = rest[: addr_match.start()].strip()
         # Strip wrapping quotes a prose line might add around the
         # display name.
         if name.startswith('"') and name.endswith('"') and len(name) >= 2:

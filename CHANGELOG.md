@@ -82,6 +82,11 @@ changes, not internal refactors. Categories: **Added**,
   session's first chunk still exits at once, as before: rerun the command.
   The one VACUUM measured took 198 s on a ~16 GB database (production,
   2026-10-25) (#885).
+- Review trailer parsing at ingest and in `backfill-article-trailers` now
+  takes linear time. A long trailer line, such as a run of spaces or of
+  address characters, took time that grew with the square of its length:
+  about 22 s for one 40,000-character line (measured on develop). Trailers
+  parse as before (#921).
 
 ### Security
 
