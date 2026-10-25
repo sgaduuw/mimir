@@ -518,6 +518,9 @@ def test_long_section_sits_in_a_fold_box(client):
     assert "<details" not in section
     assert _fold_boxes(html) == [("partial", ["closed", "partial", "expanded"], 25)]
     assert re.search(r'<script src="[^"]*/js/fold-box\.js" defer>', html)
+    # A downward triangle reads as "open", so closed shows ▶ (#890).
+    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', html)
+    assert "▼" not in html
 
 
 @pytest.mark.parametrize(
