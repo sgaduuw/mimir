@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The fold toggle's first button is a disclosure triangle again: ▶ when the
+  box is closed, ▼ when it is open (partial or expanded), on the thread view
+  and on `/merge-window`. 3.29.0 always showed ▶. This corrects #890 (#930).
+
 ## [3.29.0] - 2026-10-25
 
 No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`,
