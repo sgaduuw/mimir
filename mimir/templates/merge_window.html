@@ -4,6 +4,23 @@
 {% block meta_description %}Patches in linux-next that are not yet in Linus's tree, grouped by kernel subsystem, each linked to its review thread: what the next Linux merge window is likely to bring.{% endblock %}
 
 {% block content %}
+{# A long list scrolls inside a capped box with the thread view's
+   closed/partial/expanded toggle (#881): a shorter page, with every
+   link still in the HTML for crawlers. Without JS it stays partial. #}
+{% macro fold_box(level, heading, anchor=none) %}
+<div class="fold-box" data-fold="partial">
+  <header class="thread-toolbar">
+    <h{{ level }}{% if anchor %} id="{{ anchor }}"{% endif %}>{{ heading }}</h{{ level }}>
+    <span class="thread-toggle" aria-label="Fold state">
+      <button type="button" data-fold-set="closed" title="Collapse to heading">▼</button>
+      <button type="button" data-fold-set="partial" title="Show in a scrollable box" aria-pressed="true">≡</button>
+      <button type="button" data-fold-set="expanded" title="Expand inline">▤</button>
+    </span>
+  </header>
+  <div class="thread-box" tabindex="0">{{ caller() }}</div>
+</div>
+{% endmacro %}
+
 {% macro pull_requests() %}
 <h2 id="pull-requests-to-linus">Pull requests to Linus{% if pulls.anchor %} <small>since {{ pulls.anchor }}</small>{% endif %}</h2>
 {% if pulls.rows %}
@@ -12,7 +29,8 @@
   {% set rows = pulls.rows|selectattr('state', 'equalto', state)|list %}
   {% if rows %}
   <section class="pull-column" id="pulls-{{ state }}">
-    <h3>{{ state|capitalize }} <small>{{ rows|length }}</small></h3>
+    {% set heading %}{{ state|capitalize }} <small>{{ rows|length }}</small>{% endset %}
+    {% call fold_box(3, heading) %}
     {% if state == 'unknown' %}<p><small>Names no commit, and pr-tracker-bot has not replied.</small></p>{% endif %}
     <ul>
       {% for pr in rows %}
@@ -23,6 +41,7 @@
       </li>
       {% endfor %}
     </ul>
+    {% endcall %}
   </section>
   {% endif %}
   {% endfor %}
@@ -61,9 +80,6 @@
 </small></nav>
 {% endif %}
 
-{# Long sections fold after FOLD rows: a shorter page at merge-window
-   scale, with every link still in the HTML for crawlers. #}
-{% set FOLD = 20 %}
 {% macro rows(items) %}
 <ul>
   {% for row in items %}
@@ -81,14 +97,8 @@
 {% endmacro %}
 
 {% for sec in mw.sections %}
-<h2 id="{{ sec.anchor }}">{{ sec.name }} <small>{{ sec.patches }} patches</small></h2>
-{{ rows(sec.rows[:FOLD]) }}
-{% if sec.rows|length > FOLD %}
-<details>
-  <summary>Show all {{ sec.rows|length }}</summary>
-  {{ rows(sec.rows[FOLD:]) }}
-</details>
-{% endif %}
+{% set heading %}{{ sec.name }} <small>{{ sec.patches }} patches</small>{% endset %}
+{% call fold_box(2, heading, sec.anchor) %}{{ rows(sec.rows) }}{% endcall %}
 {% endfor %}
 
 {% if mw.smaller %}
@@ -109,4 +119,5 @@
 {% endif %}
 
 {% if not mw.window_open %}{{ pull_requests() }}{% endif %}
+<script src="{{ url_for('static', filename='js/fold-box.js') }}" defer></script>
 {% endblock %}

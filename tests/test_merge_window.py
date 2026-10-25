@@ -480,10 +480,29 @@ def test_page_says_whether_the_merge_window_is_open(client, monkeypatch, tag, ex
     assert sentences == ([expected] if expected else [])
 
 
-def test_long_section_folds_after_twenty_rows(client):
-    """Each section shows its first 20 rows; the rest sit in a <details>,
-    still in the HTML so crawlers see every link (#703). The index links
-    to the section by its anchor."""
+def _fold_boxes(html):
+    """(data-fold, toggle buttons, rows) per fold box, in page order."""
+    return [
+        (
+            m.group(1),
+            re.findall(r'data-fold-set="(\w+)"', m.group(2)),
+            m.group(3).count("<li>"),
+        )
+        for m in re.finditer(
+            r'<div class="fold-box" data-fold="(\w+)">\s*'
+            r'<header class="thread-toolbar">(.*?)</header>\s*'
+            r'<div class="thread-box" tabindex="0">(.*?)</div>\s*</div>',
+            html,
+            re.DOTALL,
+        )
+    ]
+
+
+def test_long_section_sits_in_a_fold_box(client):
+    """Each section renders every row in one capped box, partial by
+    default, with the thread view's closed/partial/expanded toggle, so
+    the page stays short and crawlers still see every link (#881). The
+    index links to the section by its anchor."""
     from mimir.extensions import SessionLocal
 
     with SessionLocal() as s:
@@ -495,12 +514,10 @@ def test_long_section_folds_after_twenty_rows(client):
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
     anchor = "kernel-virtual-machine-for-x86-kvm-x86"
     assert f'<a href="#{anchor}">' in html
-    section = html.split(f'<h2 id="{anchor}">', 1)[1].split("</h2>", 1)[1]
-    section = section.split("<h2", 1)[0]
-    visible, _, folded = section.partition("<details")
-    assert visible.count("<li>") == 20
-    assert folded.count("<li>") == 5
-    assert re.search(r"<summary>Show all 25</summary>", folded)
+    section = html.split(f'<h2 id="{anchor}">', 1)[1].split("<h2", 1)[0]
+    assert "<details" not in section
+    assert _fold_boxes(html) == [("partial", ["closed", "partial", "expanded"], 25)]
+    assert re.search(r'<script src="[^"]*/js/fold-box\.js" defer>', html)
 
 
 @pytest.mark.parametrize(
