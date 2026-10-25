@@ -6,9 +6,7 @@ validator)."""
 from click.testing import CliRunner
 from sqlalchemy import select
 
-from mimir.cli import (
-    dev_seed_thread_command,
-)
+from mimir.cli.devseed import dev_seed_thread_command
 from mimir.models import Article, ArticleList, Inbox
 
 

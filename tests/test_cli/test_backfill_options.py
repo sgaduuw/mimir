@@ -9,13 +9,13 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from mimir.cli import (
+from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
+from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
     backfill_series_chains_command,
 )
-from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
 
 _FIXTURES = Path(__file__).parent.parent / "fixtures" / "cli_help"
 
