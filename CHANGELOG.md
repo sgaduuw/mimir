@@ -11,12 +11,22 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- The main navigation links to `/merge-window` on every page, not only from the
+  front page (#891).
+
 ### Removed
 
 - `mimir init-db`. It failed under default settings, and under
   `MIMIR_IS_BROKER=true` it left a database that the broker could not
   migrate. Start the broker instead: it creates and migrates the database at
   startup (#888).
+- The front page's own "Linux merge window" line, now that the nav links the
+  page (#891).
+- The nav's inbox count on the front page and its plain "archive" label inside
+  an inbox. The count never rendered in production, because the web process
+  never fills the inbox name list it reads (#891).
 
 ## [3.28.0] - 2026-10-25
 
