@@ -427,6 +427,15 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     )
 
 
+def test_message_page_closed_fold_button_points_right(client, tmp_path):
+    """A triangle pointing down means "open", so the closed button shows
+    the collapsed glyph ▶, not ▼ (#890)."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["root"][1]).data.decode()
+    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', body)
+    assert "▼" not in body
+
+
 def test_message_page_thread_fold_links_carry_htmx_attrs(
     client,
     tmp_path,
