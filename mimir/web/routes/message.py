@@ -54,6 +54,7 @@ from mimir.web.urls import (
     _canonical_inbox_name,
     _canonical_url_for,
     _get_inbox_or_404,
+    _markdown_response,
     _msg_path,
     _msg_url,
     _site_base,
@@ -414,21 +415,14 @@ def message(
         if markdown:
             # Header, body and attachments only: everything below this
             # point feeds panels the Markdown form does not render.
-            response = make_response(
-                render_template(
-                    "message.md",
-                    inbox_name=inbox.name,
-                    parsed=parsed,
-                    article=article,
-                    thread_view_url=thread_view_url,
-                )
+            body = render_template(
+                "message.md",
+                inbox_name=inbox.name,
+                parsed=parsed,
+                article=article,
+                thread_view_url=thread_view_url,
             )
-            response.mimetype = "text/markdown"
-            response.set_etag(etag)
-            # The page's own canonical, the very value base.html prints,
-            # so a reply's names its thread page (a chain otherwise).
-            response.headers["Link"] = f'<{canonical_url}>; rel="canonical"'
-            return response
+            return _markdown_response(body, etag, canonical_url)
 
         # If the thread root still has a thread_parent (i.e. our walk-up hit
         # the top of what we have, but the original chain continued through

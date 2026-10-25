@@ -8,7 +8,7 @@
 - Subsystems: {{ subsystem_hits|map(attribute='name')|join(', ')|md_escape }}
 {% endif %}
 {% if patch_state and patch_state.is_patch and lifecycle_status and lifecycle_status.state.value != 'pending' %}
-- Status: {{ lifecycle_status.pill_label|md_escape }}{{ (lifecycle_status.count_suffix or '')|md_escape }}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
+- Status: {{ lifecycle_status.pill_label|md_escape }}{{ lifecycle_status.count_suffix|md_escape }}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
 {% endif %}
 {% set synthesis = patch_state|patch_synthesis %}
 {% if synthesis %}

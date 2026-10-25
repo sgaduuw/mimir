@@ -64,6 +64,7 @@ from mimir.web.urls import (
     MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
     _get_inbox_or_404,
+    _markdown_response,
     _msg_url,
     _site_base,
     _thread_view_url,
@@ -519,12 +520,9 @@ def thread_view(
         ),
     )
     if markdown:
-        response = make_response(render_template("thread.md", **context))
-        response.mimetype = "text/markdown"
-        response.set_etag(etag)
-        # The page's own canonical, as base.html prints it.
-        response.headers["Link"] = f'<{canonical_url}>; rel="canonical"'
-        return response
+        return _markdown_response(
+            render_template("thread.md", **context), etag, canonical_url
+        )
     # Same URL, two representations, exactly as `message.py` does it:
     # HTMX gets just the next slice to append, everything else gets the
     # page. Both are folded into the ETag above, and `hooks.py` sends

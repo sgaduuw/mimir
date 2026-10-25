@@ -15,7 +15,7 @@ to repeat per call.
 import re
 from urllib.parse import urlencode
 
-from flask import abort, g, request
+from flask import Response, abort, g, request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
 
@@ -162,6 +162,17 @@ def markdown_path(path: str) -> str:
     spelling of the year and month. `url_for` would write the month
     unpadded: a second spelling of the same page."""
     return path + MD_SUFFIX
+
+
+def _markdown_response(body: str, etag: str, canonical_url: str) -> Response:
+    """A rendered Markdown page with its own validator and a canonical
+    header naming the HTML page's own canonical, the very value
+    base.html prints, so a reply's names its thread page rather than
+    starting a chain."""
+    response = Response(body, mimetype="text/markdown")
+    response.set_etag(etag)
+    response.headers["Link"] = f'<{canonical_url}>; rel="canonical"'
+    return response
 
 
 def attachment_path(article: Article, inbox_name: str, n: int) -> str:
