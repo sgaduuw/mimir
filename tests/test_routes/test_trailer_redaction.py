@@ -215,6 +215,16 @@ _REPEATS = 300_000
         (EMAIL_TOKEN_RE, "a@" * _REPEATS),
         (EMAIL_TOKEN_RE, "@a" * _REPEATS),
     ],
+    # Short ids: the default spells each 300,000-character input into
+    # the test name, and CI's verbose log spent eleven minutes on it.
+    ids=[
+        "angle-open-run",
+        "angle-repeated-open",
+        "angle-dotted-run",
+        "token-run",
+        "token-at-pairs",
+        "token-leading-at",
+    ],
 )
 def test_address_regexes_are_linear_on_hostile_input(pattern, text):
     t = time.perf_counter()
