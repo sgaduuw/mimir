@@ -4,9 +4,7 @@ scheduler-verbosity rework)."""
 
 from click.testing import CliRunner
 
-from mimir.cli import (
-    update_command,
-)
+from mimir.cli.ingest import update_command
 
 
 def test_update_default_silent_on_no_op(seeded_db, monkeypatch):

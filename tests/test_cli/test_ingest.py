@@ -12,10 +12,7 @@ from click.testing import CliRunner
 from sqlalchemy import select
 
 from mimir.broker.protocol import PingRequest, ReindexRequest
-from mimir.cli import (
-    ingest_command,
-    reindex_command,
-)
+from mimir.cli.ingest import ingest_command, reindex_command
 from mimir.models import Article, ArticleList, Inbox
 from tests.test_cli._helpers import _build_pubinbox_repo, _repoint_inbox, _rfc5322_msg
 

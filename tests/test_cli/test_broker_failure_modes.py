@@ -26,19 +26,18 @@ class.
 import pytest
 from click.testing import CliRunner
 
-from mimir.cli import (
-    admin_canonicals_backfill_command,
-    admin_failures_replay_command,
-    admin_inbox_add_command,
-    analyze_command,
+from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
+from mimir.cli.admin.failures import admin_failures_replay_command
+from mimir.cli.admin.inbox import admin_inbox_add_command
+from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
-    ingest_command,
-    update_mainline_command,
-    vacuum_command,
-    warm_cache_command,
 )
+from mimir.cli.cache import warm_cache_command
+from mimir.cli.ingest import ingest_command
+from mimir.cli.mainline import update_mainline_command
+from mimir.cli.maintenance import analyze_command, vacuum_command
 
 
 @pytest.fixture

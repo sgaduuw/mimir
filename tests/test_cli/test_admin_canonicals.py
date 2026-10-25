@@ -3,9 +3,7 @@
 
 from click.testing import CliRunner
 
-from mimir.cli import (
-    admin_canonicals_backfill_command,
-)
+from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
 
 
 def test_admin_canonicals_backfill_runs_and_prints_summary(seeded_db):

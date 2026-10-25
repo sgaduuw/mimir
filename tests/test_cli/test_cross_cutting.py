@@ -17,7 +17,7 @@ def test_configure_logging_actually_changes_level_on_re_invocation():
     Audit (2026-05-15)."""
     import logging
 
-    from mimir.cli import _configure_logging
+    from mimir.cli._common import _configure_logging
 
     root = logging.getLogger()
     original_level = root.level
@@ -39,7 +39,7 @@ def test_configure_logging_actually_changes_level_on_re_invocation():
 
 def test_register_cli_attaches_every_module_level_command():
     """Every `@click.command`/`@click.group`-decorated callable at
-    `mimir.cli` module scope must be reachable through `app.cli`
+    `mimir.cli` submodule scope must be reachable through `app.cli`
     after `register_cli(app)` runs, either added directly to
     `app.cli` or attached to a registered group (`admin`,
     `admin inbox`, `admin inbox trackers`, `admin failures`,
@@ -50,6 +50,9 @@ def test_register_cli_attaches_every_module_level_command():
     `flask --app mimir <name>` returns "No such command." Pin the
     surface by traversing the registered command tree and asserting
     no module-level Command falls outside it."""
+    import importlib
+    import pkgutil
+
     import click
     from flask import Flask
 
@@ -68,13 +71,16 @@ def test_register_cli_attaches_every_module_level_command():
 
     attached = reachable(app.cli.commands)
 
-    declared = {v for v in vars(cli_mod).values() if isinstance(v, click.Command)}
-    # `mimir` (the FlaskGroup-based standalone entry point introduced
-    # in #221) is the OUTER group, not a subcommand of `app.cli`. It
-    # discovers `app.cli` commands via `FlaskGroup.create_app`, so
-    # asserting it's reachable via `app.cli.commands` would be
-    # circular. Exclude from the wire-up assertion.
-    declared -= {cli_mod.mimir}
+    # Walk the package and every submodule: the package no longer re-exports
+    # every command. The `mimir` outer group is left out (it discovers
+    # `app.cli`, so asserting it is reachable through it would be circular).
+    modules = [cli_mod] + [
+        importlib.import_module(info.name)
+        for info in pkgutil.walk_packages(cli_mod.__path__, "mimir.cli.")
+    ]
+    declared = {
+        v for m in modules for v in vars(m).values() if isinstance(v, click.Command)
+    } - {cli_mod.mimir}
 
     missing = declared - attached
     assert not missing, (
