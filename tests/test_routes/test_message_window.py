@@ -296,7 +296,7 @@ def test_window_per_request_work_does_not_grow_with_the_thread(
     thread. Measured on the second request: the first one primes the
     caches every page shares (lifecycle pill, related panels, patch
     card), the way a crawler meets them. The pill's own walk on a miss
-    is #798's second PR and is deliberately outside this test."""
+    is deliberately outside this test."""
     monkeypatch.setattr(settings, "thread_view_render_cap", 75)
     measured = {}
     for size, inbox in ((200, "alpha"), (2000, "beta")):
@@ -536,3 +536,85 @@ def test_windowed_orphans_exclude_the_whole_thread_through_the_column(
         int(i) for i in re.findall(r'href="/alpha/\d+/\d+/(\d+)"', related.group(0))
     }
     assert linked == {stranger_id}
+
+
+def test_window_counts_the_thread_page_once(client, tmp_path, monkeypatch):
+    """The canonical tag and the window's gap links both want
+    `thread_page_of` for the same inbox, root and article. One count
+    serves both, on warm requests too."""
+    monkeypatch.setattr(settings, "thread_view_render_cap", 5)
+    seeded = build_thread(tmp_path, "alpha", shape="fan_out", size=20)
+    _, url = seeded["m10"]
+    assert client.get(url).status_code == 200
+    statements = []
+    with SessionLocal() as s:
+        engine = s.get_bind()
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        statements.append(" ".join(statement.split()))
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        resp = client.get(url)
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert resp.status_code == 200
+    assert "View all 20 messages" in resp.get_data(as_text=True)  # it is windowed
+    page_counts = [
+        st
+        for st in statements
+        if st.startswith("SELECT count(*)")
+        and "article_lists.thread_root_id = ?" in st
+        and "articles.id != ?" in st
+    ]
+    assert len(page_counts) == 1, page_counts
+
+
+def _page_url(root_id, article_id, inbox_name):
+    with SessionLocal() as s:
+        inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
+        page = thread_page_of(
+            s,
+            inbox.id,
+            root_id,
+            s.get(Article, article_id),
+            settings.thread_view_render_cap,
+        )
+        return thread_page_url(root_id, s.get(Article, root_id).date, inbox_name, page)
+
+
+def test_cross_posted_window_links_this_inbox_page_not_the_canonical_one(
+    client, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "thread_view_render_cap", 5)
+    seeded = build_thread(
+        tmp_path,
+        "alpha",
+        shape="fan_out",
+        size=40,
+        dates="spread",
+        cross_post_to="beta",
+    )
+    root_id = seeded["m0"][0]
+    art_id, url = seeded["m20"]
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        s.get(Article, art_id).canonical_inbox_id = beta.id
+        # Beta lacks the earlier replies, so m20 sits on another page there.
+        s.execute(
+            delete(ArticleList).where(
+                ArticleList.inbox_id == beta.id,
+                ArticleList.article_id.in_([seeded[f"m{i}"][0] for i in range(1, 16)]),
+            )
+        )
+        s.commit()
+    alpha_page = _page_url(root_id, art_id, "alpha")
+    beta_page = _page_url(root_id, art_id, "beta")
+    assert alpha_page.rsplit("/", 1)[-1] != beta_page.rsplit("/", 1)[-1]  # precondition
+
+    html = client.get(url).get_data(as_text=True)
+    canonical = re.search(r'<link rel="canonical" href="([^"]+)"', html).group(1)
+    assert canonical.endswith(beta_page)  # precondition: canonical is beta's page
+    assert "View all 40 messages" in html  # precondition: windowed in alpha
+    gap_links = set(re.findall(r'href="(/alpha/[^"]*/t(?:/\d+)?)"', html))
+    assert gap_links == {alpha_page}, (gap_links, alpha_page, beta_page)
