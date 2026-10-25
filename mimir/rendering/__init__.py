@@ -11,6 +11,8 @@
   JSON-LD code outside the HTML pipeline.
 - `body`: orchestrator, `_render_block` dispatches each block to
   the right submodule and `render_body` is the top-level API.
+  `render_body_text` is its plain-text counterpart for the Markdown
+  pages.
 
 The public surface (re-exported below) preserves the historical
 names callers reach for: `render_body`, `linkify`,
@@ -21,7 +23,7 @@ split.
 """
 
 from mimir.rendering.blocks import parse_blocks
-from mimir.rendering.body import render_body
+from mimir.rendering.body import render_body, render_body_text
 from mimir.rendering.linkify import (
     URL_OR_MSGID_RE,
     linkify,
@@ -34,4 +36,5 @@ __all__ = [
     "parse_blocks",
     "redact_trailer_addresses",
     "render_body",
+    "render_body_text",
 ]
