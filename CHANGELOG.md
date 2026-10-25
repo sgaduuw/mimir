@@ -18,6 +18,11 @@ changes, not internal refactors. Categories: **Added**,
   migrate. Start the broker instead: it creates and migrates the database at
   startup (#888).
 
+### Fixed
+
+- The fold toggle's "closed" button shows ▶ instead of ▼, in a message page's
+  thread tree and on `/merge-window`. A downward triangle reads as "open" (#890).
+
 ## [3.28.0] - 2026-10-25
 
 ### Changed
