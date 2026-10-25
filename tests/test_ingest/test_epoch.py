@@ -40,6 +40,7 @@ from tests.test_ingest._helpers import (
     _naive_utc,
     _rfc5322,
     _rfc5322_with_date,
+    _subject,
 )
 
 
@@ -420,8 +421,7 @@ def test_ingest_inseries_inherits_the_cover_series_head(
     re-chain."""
 
     def msg(mid, subject, parent=None):
-        raw = _rfc5322(mid, body=b"x", in_reply_to=parent)
-        return raw.replace(b"Subject: t\r\n", f"Subject: {subject}\r\n".encode())
+        return _subject(_rfc5322(mid, body=b"x", in_reply_to=parent), subject)
 
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(
