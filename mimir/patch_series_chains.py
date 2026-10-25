@@ -328,7 +328,6 @@ def rechain_keys(conn, keys) -> None:
 
 def backfill_series_chains(
     limit: int | None = None,
-    reprocess: bool = False,
     progress: Callable[[BackfillResult], None] | None = None,
     *,
     max_seconds: float | None = None,
@@ -347,9 +346,6 @@ def backfill_series_chains(
     decides which keys to send and feeds the counters; the batch
     re-chains each key on the writer, so its rows are written from the
     state at write time and a failed batch leaves no half-chained key.
-
-    `reprocess` changes nothing here: every run recomputes whole keys.
-    The parameter is the shape the broker's backfill handlers share.
     """
     from mimir._pending_backfill import _SeriesKeyPending, _submit_series_heads_batch
 
@@ -375,7 +371,6 @@ def backfill_series_chains(
         process_one,
         _submit_series_heads_batch,
         limit=limit,
-        reprocess=reprocess,
         progress=progress,
         preload_lists=False,
         label="backfill_series_chains",

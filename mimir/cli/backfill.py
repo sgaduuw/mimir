@@ -162,13 +162,9 @@ def backfill_patch_series_command(
 
 
 @click.command("backfill-series-chains")
-@backfill_options(
-    reprocess_help="No effect: every run chains whole keys afresh and writes "
-    "only the heads that change.",
-)
+@backfill_options(reprocess_help=None)
 def backfill_series_chains_command(
     limit: int | None,
-    reprocess: bool,
     restart: bool,
     yes: bool,
     verbose: int,
@@ -189,7 +185,6 @@ def backfill_series_chains_command(
             BackfillSeriesChainsRequest,
             BackfillResult,
             limit=limit,
-            reprocess=reprocess,
             restart=restart,
             yes=yes,
         )

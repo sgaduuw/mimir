@@ -39,13 +39,6 @@ def test_strips_surrounding_whitespace():
     )
 
 
-def test_accepts_http_when_allow_http_set():
-    assert (
-        validate_outbound_url("http://example.com", allow_http=True)
-        == "http://example.com"
-    )
-
-
 def test_accepts_public_ipv4_literal():
     """Public routable IPs (e.g. 1.1.1.1) are allowed. Operator might
     pin to one to avoid DNS, that's a legitimate choice."""
@@ -85,7 +78,7 @@ def test_rejects_whitespace_only_string():
 # --- validate_outbound_url: scheme rejections ---
 
 
-def test_rejects_http_by_default():
+def test_rejects_http():
     with pytest.raises(OutboundUrlError, match="scheme"):
         validate_outbound_url("http://example.com")
 
@@ -98,12 +91,6 @@ def test_rejects_non_https_schemes(scheme):
     `git://` (no transport security), and `data:` (no host at all)."""
     with pytest.raises(OutboundUrlError, match="scheme"):
         validate_outbound_url(f"{scheme}://example.com")
-
-
-def test_rejects_non_http_scheme_even_when_allow_http_set():
-    """`allow_http=True` widens to `http`, not to every scheme."""
-    with pytest.raises(OutboundUrlError, match="scheme"):
-        validate_outbound_url("file:///etc/passwd", allow_http=True)
 
 
 # --- validate_outbound_url: host rejections ---
