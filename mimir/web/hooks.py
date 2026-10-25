@@ -21,7 +21,6 @@ from datetime import UTC, datetime
 from flask import Response, g, request
 
 from mimir.config import settings
-from mimir.inboxes import inbox_names
 from mimir.web._blueprint import bp_web
 from mimir.web.crawler_budget import EXEMPT_ENDPOINTS, CrawlerBudget
 from mimir.web.routes.static_meta import OG_IMAGE_ALT
@@ -30,10 +29,9 @@ from mimir.web.urls import _site_base
 
 @bp_web.app_context_processor
 def _inject_template_globals() -> dict:
-    """Inboxes are needed by base.html for the nav. `current_inbox` is set
-    per-view (None on the meta-index `/`). Names come from the cached
-    list populated at bootstrap, no per-request DB hit. `site_name` is
-    the configurable brand; "mimir" stays as the page generator.
+    """Globals every template may read. `current_inbox` is set per-view
+    (None on the meta-index `/`). `site_name` is the configurable brand;
+    "mimir" stays as the page generator.
 
     `default_canonical_url` is the https-safe fallback for og:url on
     routes that don't pin their own canonical (search, daily, year,
@@ -50,7 +48,6 @@ def _inject_template_globals() -> dict:
         site_base = _site_base()
         default_canonical = site_base + request.path
     return {
-        "inboxes": inbox_names(),
         "site_name": settings.site_name,
         "mimir_version": mimir_version,
         "site_base": site_base,
