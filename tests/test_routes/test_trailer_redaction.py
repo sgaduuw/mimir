@@ -57,16 +57,35 @@ def _tooltips(page: str) -> list[str]:
 
 # JSON-LD carries the body through its own redaction (#899), so it is
 # outside this oracle, as in test_markdown_pages.
-_SCRIPT_RE = re.compile(r"<script\b.*?</script>", re.DOTALL)
-_JSON_LD_RE = re.compile(
-    r'<script type="application/ld\+json">(.*?)</script>', re.DOTALL
-)
+class _JsonLd(HTMLParser):
+    """The text of each `<script type="application/ld+json">`."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=False)
+        self.inside = False
+        self.blocks: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "script" and ("type", "application/ld+json") in attrs:
+            self.inside = True
+            self.blocks.append("")
+
+    def handle_endtag(self, tag):
+        if tag == "script":
+            self.inside = False
+
+    def handle_data(self, data):
+        if self.inside:
+            self.blocks[-1] += data
 
 
 def _json_ld(page: str) -> str:
     """The page's JSON-LD, decoded, so an escaped character cannot hide
-    a match. It is stripped from the HTML surfaces with every script."""
-    blocks = [json.loads(b) for b in _JSON_LD_RE.findall(page)]
+    a match. The HTML surfaces are the raw pages, JSON-LD included."""
+    parser = _JsonLd()
+    parser.feed(page)
+    parser.close()
+    blocks = [json.loads(b) for b in parser.blocks]
     assert blocks  # precondition: the page carries JSON-LD
     return json.dumps(blocks, ensure_ascii=False)
 
@@ -82,9 +101,9 @@ def _surfaces(client, tmp_path, body: bytes) -> dict[str, str]:
     )
     page = client.get(url).get_data(as_text=True)
     return {
-        "message": _SCRIPT_RE.sub("", page),
+        "message": page,
         "message.json-ld": _json_ld(page),
-        "thread": _SCRIPT_RE.sub("", client.get(url + "/t").get_data(as_text=True)),
+        "thread": client.get(url + "/t").get_data(as_text=True),
         "message.md": client.get(url + ".md").get_data(as_text=True),
         "thread.md": client.get(url + "/t.md").get_data(as_text=True),
     }
