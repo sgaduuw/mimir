@@ -68,6 +68,13 @@ changes, not internal refactors. Categories: **Added**,
   The one VACUUM measured took 198 s on a ~16 GB database (production,
   2026-10-25) (#885).
 
+### Security
+
+- The JSON-LD `text` on message and thread pages no longer shows addresses the
+  page hides (#899). It kept a non-allowlisted address on a reply's "On Mon,
+  Joe <joe@example.com> wrote:" line and in a quoted `Signed-off-by:`. It now
+  uses the same redaction as the page body.
+
 ## [3.28.0] - 2026-10-25
 
 ### Changed
