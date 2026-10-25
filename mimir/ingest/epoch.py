@@ -24,9 +24,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    # Imported lazily at call-site to avoid a heavy circular import on the
-    # hot ingest path; imported here only so type-checkers and ruff can
-    # resolve the forward-reference string annotations.
+    # Type-only: imported here so type-checkers and ruff can resolve the
+    # forward-reference string annotations.
     from mimir.broker.writes import WriterThread
     from mimir.ingest._pending import _ArticleInsert
 
@@ -306,7 +305,6 @@ def ingest_epoch(
     repo_path: Path,
     *,
     writer: WriterThread | None = None,
-    batch_flush_seconds: float | None = None,
     limit: int | None = None,
     workers: int = DEFAULT_WORKERS,
 ) -> IngestResult:
@@ -325,14 +323,7 @@ def ingest_epoch(
     normal production path, where `ingest_inbox` sets up the active
     context). Pass explicitly when calling outside a broker context
     (e.g. tests that want a specific WriterThread instance).
-
-    `batch_flush_seconds` defaults to `settings.ingest_batch_flush_seconds`
-    when None; keyword-only to avoid silent positional confusion.
     """
-    # Import WriterThread type lazily to avoid a circular import at the
-    # module level (epoch.py is imported before the broker package in
-    # some test paths).
-    from mimir.broker.writes import WriterThread  # noqa: F401 (type hint)
     from mimir.ingest._pending import (
         _ArticleListInsert,
         _ParseFailureRecord,
@@ -346,11 +337,7 @@ def ingest_epoch(
 
         writer = get_active_writer()  # raises RuntimeError when not set
 
-    flush_seconds = (
-        batch_flush_seconds
-        if batch_flush_seconds is not None
-        else settings.ingest_batch_flush_seconds
-    )
+    flush_seconds = settings.ingest_batch_flush_seconds
 
     inbox_id = inbox.id
     inbox_name = inbox.name
@@ -397,7 +384,7 @@ def ingest_epoch(
     # Per-batch pending writes accumulator. Reset at each flush boundary.
     pending = _PendingWrites(inbox_id=inbox_id, epoch=epoch_name)
 
-    # Wall-clock anchor for the batch_flush_seconds time cap.
+    # Wall-clock anchor for the `flush_seconds` time cap.
     last_commit_at = time.monotonic()
 
     logger.info(

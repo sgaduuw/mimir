@@ -111,7 +111,6 @@ def _subsystem_path_filter_sql(
 
 def _subsystem_path_filter_exists_sql(
     subsystem: Subsystem,
-    article_alias: str = "a",
     prefix: str = "spe",
 ) -> tuple[str, dict] | None:
     """Sibling of `_subsystem_path_filter_sql` that returns a
@@ -123,7 +122,7 @@ def _subsystem_path_filter_exists_sql(
 
     Returns `(predicate_sql, params)` where `predicate_sql` is a
     boolean expression to AND into an outer WHERE. The expression
-    references `{article_alias}.id` as the correlation column.
+    references `a.id` as the correlation column.
     Returns `None` when the subsystem has no supported (non-
     wildcard) include rules; caller treats that as "no match" and
     skips the query entirely.
@@ -187,7 +186,7 @@ def _subsystem_path_filter_exists_sql(
 
     predicate = (
         f"EXISTS (SELECT 1 FROM article_files af "
-        f"WHERE af.article_id = {article_alias}.id "
+        "WHERE af.article_id = a.id "
         f"AND ({include_or}){exc_clause})"
     )
     return predicate, params
