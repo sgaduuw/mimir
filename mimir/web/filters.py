@@ -539,6 +539,31 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     return _is_allowlisted(address)
 
 
+@bp_web.app_template_filter("subsystem_maintainers")
+def _subsystem_maintainers_filter(hits) -> list[tuple[str, str]]:
+    """`(name, address)` of each `M:` maintainer across `hits`, once
+    each, in hit order. `R:` reviewers are left out: the profile route
+    serves `M:` only (see `maintainer_link_url`).
+
+    Deduped on the ADDRESS, not the name: the address is the profile's
+    identity, and two sections can spell one person's name differently.
+    MAINTAINERS permits a bare `M:` line with no address (rare but
+    legal); that person is keyed on the name and keeps a plain-text
+    entry rather than being dropped."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for hit in hits:
+        for role, name, address in hit.maintainers:
+            # A name that is itself a non-allowlisted address is no name
+            # (#852), so it can never print an address as text.
+            name = _usable_name(name)
+            key = address.lower() if address else f"name:{name}"
+            if role == "M" and name and key not in seen:
+                seen.add(key)
+                out.append((name, address))
+    return out
+
+
 @bp_web.app_template_filter("maintainer_link_url")
 def _maintainer_link_url_filter(address: str | None) -> str:
     """Site-relative profile URL for a maintainer, or "" when the

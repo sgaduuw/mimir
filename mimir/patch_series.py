@@ -174,6 +174,20 @@ def same_series(key: str, head_id: int | None):
     return and_(Article.patch_series_key == key, series_head() == (head_id or 0))
 
 
+def same_posting(article: Article):
+    """ORM condition: an `Article` was posted with `article`, meaning the
+    same series and the same version string, cover and patches alike.
+    The string, not the revision number `version_number_sql` gives:
+    that folds an `rfc` posting into the `v1` after it (#691), and this
+    asks which patches went out together. A resend of one version within
+    the same series reads as the same posting. Only for an article with a
+    key and a version; a NULL version would compare as `IS NULL`."""
+    return and_(
+        same_series(article.patch_series_key, article.patch_series_head_id),
+        Article.patch_series_version == article.patch_series_version,
+    )
+
+
 def adjacent_versions(revisions) -> list[tuple[str, str]]:
     """`(older, newer)` version pairs, one per step between adjacent
     revisions, from `(date, article_id, version)` rows of one series and

@@ -27,9 +27,19 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
    drop the lifecycle prose, subsystem attribution, and review roll-up
    that make this archive distinctive in search. #}
 {% if subsystem_hits %}
-{% from "_subsystem_link.html" import subsystem_link %}
+{% from "_subsystem_link.html" import maintainer_links, subsystem_link %}
 <p><small><strong>Subsystems:</strong>
   {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
+  {{ maintainer_links(subsystem_hits) }}
+</small></p>
+{% endif %}
+{# A cover's whole posting (#844): lore shows each patch's diffstat,
+   not the series' total. #}
+{% if series_totals and series_totals[0] %}
+{% set _patches, _files = series_totals %}
+<p><small><strong>Series:</strong>
+  {{ _patches }} patch{{ '' if _patches == 1 else 'es' }}
+  {%- if _files %} touching {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif %}
 </small></p>
 {% endif %}
 {% if patch_state and patch_state.is_patch and lifecycle_status %}
