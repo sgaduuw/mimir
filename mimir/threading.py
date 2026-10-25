@@ -555,18 +555,7 @@ def thread_by_root_id(
         .offset(offset or None)
         .limit(limit)
     ).all()
-    return [
-        ThreadNode(
-            id=r.id,
-            message_id=r.message_id,
-            thread_parent=r.thread_parent,
-            subject=r.subject,
-            author=r.author,
-            date=r.date,
-            depth=None,
-        )
-        for r in rows
-    ]
+    return [_node(r, None) for r in rows]
 
 
 # The message page's window onto a thread longer than one thread-view
@@ -606,7 +595,7 @@ class ThreadWindow:
     reply_count: int
 
 
-def _window_node(row, depth: int) -> ThreadNode:
+def _node(row, depth: int | None) -> ThreadNode:
     return ThreadNode(
         id=row.id,
         message_id=row.message_id,
@@ -679,7 +668,7 @@ def thread_window(
     ).all()
     if not path or path[0].id != root.id:
         return None
-    ancestors = [_window_node(r, d) for d, r in enumerate(path[:-1])]
+    ancestors = [_node(r, d) for d, r in enumerate(path[:-1])]
     depth = len(ancestors)
     path_ids = [r.id for r in path]
     key = (func.coalesce(Article.date, _DATE_FLOOR), Article.id)
@@ -732,7 +721,7 @@ def thread_window(
         parent_mid = ancestors[-1].message_id
         siblings = replies_to(parent_mid)
         before = [
-            _window_node(r, depth)
+            _node(r, depth)
             for r in session.execute(
                 siblings.where(tuple_(*key) < here)
                 .order_by(key[0].desc(), key[1].desc())
@@ -740,7 +729,7 @@ def thread_window(
             ).all()
         ][::-1]
         after = [
-            _window_node(r, depth)
+            _node(r, depth)
             for r in session.execute(
                 siblings.where(tuple_(*key) > here)
                 .order_by(*key)
@@ -752,7 +741,7 @@ def thread_window(
         accounted[parent_mid] += (n_before - len(before)) + (n_after - len(after))
 
     children = [
-        _window_node(r, depth + 1)
+        _node(r, depth + 1)
         for r in session.execute(
             replies_to(article.message_id).order_by(*key).limit(WINDOW_CHILDREN)
         ).all()
@@ -763,7 +752,7 @@ def thread_window(
     if n_before > len(before):
         rows.append(ThreadGap(depth=depth, gap_count=n_before - len(before)))
     rows.extend(before)
-    rows.append(_window_node(article, depth))
+    rows.append(_node(article, depth))
     rows.extend(children)
     if n_children > len(children):
         rows.append(ThreadGap(depth=depth + 1, gap_count=n_children - len(children)))
@@ -822,18 +811,7 @@ def get_thread(
     rows = session.execute(
         sql, {"inbox_id": inbox.id, "root": root_message_id, "max_depth": MAX_DEPTH}
     ).all()
-    return [
-        ThreadNode(
-            id=r.id,
-            message_id=r.message_id,
-            thread_parent=r.thread_parent,
-            subject=r.subject,
-            author=r.author,
-            date=coerce_dt(r.date),
-            depth=r.depth,
-        )
-        for r in rows
-    ]
+    return [_node(r, r.depth) for r in rows]
 
 
 _ORDER_CLAUSES = {
