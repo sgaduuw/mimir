@@ -568,8 +568,8 @@ def test_list_address_downgrade_restores_the_plain_index(tmp_path):
 
 
 def test_list_address_index_in_the_model_matches_the_migration(tmp_path):
-    """`init-db` builds the schema from the model and the broker from
-    migrations, so both must produce the same index."""
+    """A schema built from the model and one built by the broker from
+    migrations must have the same index."""
     import sqlalchemy
 
     import mimir.models  # noqa: F401  (registers the tables on Base)
