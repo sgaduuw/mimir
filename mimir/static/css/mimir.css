@@ -751,3 +751,60 @@ pre.body-text-block {
   font-size: 0.85em;
   font-family: ui-monospace, monospace;
 }
+
+/* Inbox nav "subsystems" dropdown (#892). The label is Pico's
+   <details class="dropdown"> summary restyled to read like the other nav
+   links. The menu is a SIBLING of the <details>, not its content: a closed
+   <details> does not paint its content even with ::details-content
+   forced visible (measured in Chrome 156), so hover could not open it.
+   Tap and keyboard toggle the <details>; `details[open] ~ ul` shows the menu. */
+nav .subsystems-dd { position: relative; }
+nav .subsystems-dd details.dropdown > summary,
+nav .subsystems-dd details.dropdown > summary:not([role]) {
+  height: auto; margin: 0; padding: 0;
+  border: 0; border-radius: 0; background: none; box-shadow: none;
+  color: var(--pico-primary); line-height: inherit; font: inherit;
+}
+nav .subsystems-dd details.dropdown > summary:hover { text-decoration: underline; }
+nav .subsystems-dd details.dropdown > summary::after {
+  float: none; display: inline-block; vertical-align: middle;
+  width: 0.7em; height: 0.7em; margin: 0 0 0 0.2em;
+  background-size: 0.7em; opacity: 0.7;
+}
+nav .subsystems-dd details.dropdown > summary:focus-visible {
+  box-shadow: none; outline: 2px solid var(--pico-primary-focus);
+}
+/* Panel look copied from Pico's dropdown. It starts at the label's bottom
+   edge (the li's own padding is subtracted), so there is no strip between
+   label and panel for the pointer to drop in, and the li stays hovered
+   throughout. */
+nav .subsystems-dd > ul {
+  display: none; flex-direction: column;
+  position: absolute; left: 0; z-index: 99;
+  top: calc(100% - var(--pico-nav-element-spacing-vertical));
+  min-width: 16rem; margin: 0; padding: 0;
+  border: var(--pico-border-width) solid var(--pico-dropdown-border-color);
+  border-radius: var(--pico-border-radius);
+  background-color: var(--pico-dropdown-background-color);
+  box-shadow: var(--pico-dropdown-box-shadow);
+}
+nav .subsystems-dd > ul li {
+  display: block; width: 100%; margin: 0;
+  padding: calc(var(--pico-form-element-spacing-vertical) * 0.5) var(--pico-form-element-spacing-horizontal);
+  list-style: none;
+}
+nav .subsystems-dd > ul li a {
+  display: block; margin: calc(var(--pico-form-element-spacing-vertical) * -0.5) calc(var(--pico-form-element-spacing-horizontal) * -1);
+  padding: calc(var(--pico-form-element-spacing-vertical) * 0.5) var(--pico-form-element-spacing-horizontal);
+  color: var(--pico-dropdown-color); text-decoration: none;
+  overflow: hidden; text-overflow: ellipsis;
+}
+nav .subsystems-dd > ul li a:hover { background-color: var(--pico-dropdown-hover-background-color); }
+/* Separator above "all subsystems", only when subsystem links precede it. */
+nav .subsystems-dd > ul > li:not(:only-child):last-child {
+  border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+nav .subsystems-dd details[open] ~ ul { display: flex; }
+@media (hover: hover) {
+  nav .subsystems-dd:hover > ul { display: flex; }
+}

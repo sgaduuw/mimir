@@ -183,6 +183,9 @@ class BackfillArticleFilesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
+    # Read the body of in-series patches only (#874). A broker that
+    # predates the field drops it and walks every article, a plain run.
+    patch_subjects: bool = False
     start: Literal["resume", "restart", "force_restart"] | None = None
 
 

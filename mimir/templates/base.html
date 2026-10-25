@@ -120,6 +120,17 @@
         <li><a href="/{{ current_inbox }}/">{{ current_inbox }}</a></li>
         <li><a href="/{{ current_inbox }}/today">today</a></li>
         <li><a href="/{{ current_inbox }}/yesterday">yesterday</a></li>
+        {# Tap or Enter toggles the <details> (CSS shows the sibling menu
+           when it is open); hover shows the menu directly. The menu is NOT
+           inside the <details>: a closed one never paints its content,
+           whatever the CSS says. `subsystem_hits` is what the message and
+           thread routes already computed for their headers (absent
+           elsewhere, so only the index link shows). #}
+        {% from "_subsystems_dd_menu.html" import subsystems_dd_menu %}
+        <li class="subsystems-dd">
+          <details class="dropdown"><summary>subsystems</summary></details>
+          {{ subsystems_dd_menu(subsystem_hits, current_inbox) }}
+        </li>
         {% endif %}
       </ul>
       <ul>
