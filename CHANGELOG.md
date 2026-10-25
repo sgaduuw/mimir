@@ -63,6 +63,13 @@ changes, not internal refactors. Categories: **Added**,
 - The nav's inbox count on the front page and its plain "archive" label inside
   an inbox. The count never rendered in production, because the web process
   never fills the inbox name list it reads (#891).
+- The `ANALYZE_LIMIT` setting and the `--full` flag of `mimir analyze`
+  (#784). ANALYZE has read every row since #817, so the setting could only
+  bring back the capped figures that mislead the planner. A leftover
+  `ANALYZE_LIMIT` in an environment or `.env` is ignored and does not stop
+  startup; delete it. `mimir analyze --full`, for example in a cron job,
+  now fails with "no such option": drop `--full`, the pass is the same.
+  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged.
 
 ### Fixed
 

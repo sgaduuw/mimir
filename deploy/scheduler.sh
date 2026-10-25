@@ -9,7 +9,7 @@
 #   WARM_CACHE_SLOW_EVERY default 3600   ; slow tier (subsystem dashboards + rest)
 #   UPDATE_EVERY          default 300    ; sync upstream + ingest new commits
 #   UPDATE_MAINLINE_EVERY default 600    ; check every configured tree for due-ness (per-tree cadence inside the CLI)
-#   ANALYZE_FULL_EVERY    default 604800 ; refresh sqlite_stat1 (weekly, full sample)
+#   ANALYZE_FULL_EVERY    default 604800 ; refresh sqlite_stat1 (weekly)
 #   VACUUM_EVERY          default 604800 ; compact DB + collapse WAL (weekly)
 #
 # `update-mainline` is now multi-tree aware: each invocation
@@ -41,7 +41,7 @@
 #
 # Ad-hoc pause: `touch /data/.scheduler-paused` quiesces the loop
 # (no warm-cache / update / update-mainline /
-# analyze --full / vacuum firings) within ~10s;
+# analyze / vacuum firings) within ~10s;
 # `rm /data/.scheduler-paused` resumes. Used
 # during operator maintenance (e.g. `admin canonicals backfill`,
 # manual SQL) where scheduler write contention would extend the
@@ -58,11 +58,10 @@ WARM_CACHE_EVERY=${WARM_CACHE_EVERY:-60}
 WARM_CACHE_SLOW_EVERY=${WARM_CACHE_SLOW_EVERY:-3600}
 UPDATE_EVERY=${UPDATE_EVERY:-300}
 UPDATE_MAINLINE_EVERY=${UPDATE_MAINLINE_EVERY:-600}
-# Weekly ANALYZE, the only scheduled one. Every ANALYZE reads every row
-# (settings.analyze_limit defaults to 0, #817); a capped daily pass
-# used to overwrite the full figures with "limit + 1" for every big
-# index. The pass holds the writer lock for 16.7 s on the production
-# corpus (2026-10-22). Override via ANALYZE_FULL_EVERY.
+# Weekly ANALYZE, the only scheduled one (CONTEXT.md "ANALYZE sample
+# size"). The name keeps "FULL" so existing overrides still apply; so
+# does the /data/.last_analyze_full sentinel. Override via
+# ANALYZE_FULL_EVERY.
 ANALYZE_FULL_EVERY=${ANALYZE_FULL_EVERY:-604800}
 VACUUM_EVERY=${VACUUM_EVERY:-604800}
 
@@ -156,7 +155,7 @@ run "warm-cache fast (initial, backgrounded)" /data/.last_warm_fast \
 # (recovers from a deleted /data volume, or from this being the
 # first deploy after #202). The initial warm run above wrote a fresh
 # sentinel, so its in-loop tick starts with a fresh clock; update,
-# update-mainline, analyze --full and vacuum are gated by the
+# update-mainline, analyze and vacuum are gated by the
 # persisted mtime alone.
 # Stamp the slow-tier sentinel at boot if missing so the slow tier
 # does NOT fire immediately on first boot. Without this, missing
@@ -241,9 +240,9 @@ while true; do
         last_update_mainline=$(date +%s)
     fi
 
-    # Weekly ANALYZE, full sample (see ANALYZE_FULL_EVERY above).
+    # Weekly ANALYZE (see ANALYZE_FULL_EVERY above).
     if [ $((now - last_analyze_full)) -ge "$ANALYZE_FULL_EVERY" ]; then
-        run "analyze --full" /data/.last_analyze_full mimir analyze --full
+        run "analyze" /data/.last_analyze_full mimir analyze
         last_analyze_full=$(date +%s)
     fi
 

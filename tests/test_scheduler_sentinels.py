@@ -2,7 +2,7 @@
 
 CONTEXT.md "Scheduler-loop timers persist across restarts": each
 periodic task (warm-cache fast/slow, update, update-mainline,
-analyze --full, vacuum) records a `/data/.last_<task>`
+analyze, vacuum) records a `/data/.last_<task>`
 sentinel touched on every successful run. The next-tick decision
 reads `now - mtime(sentinel) >= cadence_seconds` from the
 PERSISTED mtime (not from a per-container-restart wall clock),
@@ -209,13 +209,16 @@ def test_extracted_function_names_match_scheduler_sh():
         )
 
 
-def test_scheduler_runs_only_the_full_analyze():
+def test_scheduler_runs_only_the_weekly_analyze():
     """#817: the daily bounded `mimir analyze` overwrote the weekly full
     figures in `sqlite_stat1` within a day. The only ANALYZE the loop
-    fires is the weekly `--full` one."""
+    fires is the weekly one, on the `.last_analyze_full` sentinel."""
     source = SCHEDULER_SH.read_text()
     code = [line for line in source.splitlines() if not line.lstrip().startswith("#")]
     calls = [line for line in code if re.search(r"\bmimir analyze\b", line)]
     assert calls, "scheduler no longer runs ANALYZE at all"
-    assert all(line.rstrip().endswith("mimir analyze --full") for line in calls), calls
+    # Pin the whole command: a stray flag the CLI rejects would fail the
+    # weekly ANALYZE silently.
+    assert len(calls) == 1, calls
+    assert calls[0].rstrip().endswith("/data/.last_analyze_full mimir analyze"), calls
     assert "ANALYZE_EVERY" not in "\n".join(code)
