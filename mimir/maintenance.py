@@ -7,11 +7,10 @@ wrappers, the click commands in `mimir.cli.maintenance` delegate
 here, and the Phase 2.3 broker handlers do too. Single-concern:
 "the SQLite hygiene writers, end to end."
 
-ANALYZE reads every row (`analysis_limit=0`, #817) and is not cheap:
-16.7 s on the production corpus (measured 2026-10-22; the bounded
-pass it replaced took 1.2 to 6.6 s). That matters beyond tidiness:
-the post-migrate ANALYZE runs before the broker touches its
-healthcheck sentinel, so it is on the startup budget. VACUUM holds an
+ANALYZE reads every row and is not cheap (CONTEXT.md "ANALYZE sample
+size"). That matters beyond tidiness: the post-migrate ANALYZE runs
+before the broker touches its healthcheck sentinel, so it is on the
+startup budget. VACUUM holds an
 exclusive lock for the duration (minutes on large databases); under
 the broker that means every other broker worker pauses, so it
 should run in a quiet window only.
@@ -25,18 +24,14 @@ from pathlib import Path
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from mimir.config import settings
 from mimir.extensions import engine
 
 logger = logging.getLogger(__name__)
 
 
 class AnalyzeResult(BaseModel):
-    """Outcome of one `run_analyze` invocation. `full` reflects the
-    flag passed in (so a caller examining the result can tell which
-    kind of pass ran)."""
+    """Outcome of one `run_analyze` invocation."""
 
-    full: bool
     elapsed_ms: int
 
 
@@ -59,13 +54,9 @@ class VacuumResult(BaseModel):
     wal_truncated: bool = True
 
 
-def run_analyze(*, full: bool = False) -> AnalyzeResult:
-    """Refresh SQLite planner statistics.
-
-    By default uses whatever `PRAGMA analysis_limit` the connection
-    inherited from `_sqlite_pragmas`, which is 0 (every row) unless
-    `ANALYZE_LIMIT` caps it (#817). `full=True` forces 0 for this pass
-    whatever the setting, and restores the setting afterwards.
+def run_analyze() -> AnalyzeResult:
+    """Refresh SQLite planner statistics, every row sampled (see
+    CONTEXT.md "ANALYZE sample size").
 
     Phase 6a dual-dispatch: when a broker WriterThread is active
     (steady-state `handle_analyze` RPC), submit the ANALYZE as a
@@ -85,45 +76,15 @@ def run_analyze(*, full: bool = False) -> AnalyzeResult:
     if writer is not None:
         from mimir.broker.writes import WriteOp
 
-        label = "analyze_full" if full else "analyze"
-        default_limit = settings.analyze_limit
-
-        def _fn(conn):
-            if full:
-                # Override the persistent writer connection's limit for
-                # this pass, then restore the default. The writer reuses
-                # one connection across ops and never reconnects, so
-                # unlike the shared engine (which re-applies the default
-                # on every connect via _sqlite_pragmas) we MUST reset it
-                # here or the next bounded analyze runs unbounded.
-                conn.execute(text("PRAGMA analysis_limit=0"))
-            try:
-                conn.execute(text("ANALYZE"))
-            finally:
-                if full:
-                    conn.execute(text(f"PRAGMA analysis_limit={default_limit}"))
-
-        writer.submit(WriteOp(label=label, fn=_fn)).result()
+        writer.submit(
+            WriteOp(label="analyze", fn=lambda conn: conn.execute(text("ANALYZE")))
+        ).result()
     else:
         with engine.begin() as conn:
-            if full:
-                # The pool reuses physical DBAPI connections across checkouts;
-                # _sqlite_pragmas fires on the "connect" event (new physical
-                # connection only), NOT on pool checkout. A connection that
-                # ran analysis_limit=0 here retains that value on its next
-                # checkout. The reset must therefore be explicit, the same
-                # shape as the writer path above.
-                conn.execute(text("PRAGMA analysis_limit=0"))
-            try:
-                conn.execute(text("ANALYZE"))
-            finally:
-                if full:
-                    conn.execute(
-                        text(f"PRAGMA analysis_limit={settings.analyze_limit}")
-                    )
+            conn.execute(text("ANALYZE"))
 
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    return AnalyzeResult(full=full, elapsed_ms=elapsed_ms)
+    return AnalyzeResult(elapsed_ms=elapsed_ms)
 
 
 def _db_sizes() -> dict[str, int]:

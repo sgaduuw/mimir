@@ -32,6 +32,7 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.rendering import render_body, render_body_text
+from mimir.rendering.linkify import EMAIL_TOKEN_RE as _EMAIL_TOKEN_RE
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -390,23 +391,25 @@ def _display_name_filter(author: str | None) -> str:
     )
 
 
-# Bounded runs keep the scan linear on a hostile, very long name.
-_EMAIL_TOKEN_RE = re.compile(r"[^\s@<>()\[\],;:\"]{1,64}@[^\s@<>()\[\],;:\"]{1,255}")
-
-
-def _usable_display_name(author: str | None) -> str | None:
-    """The From display name, or None when it is empty or holds an
+def _usable_name(name: str | None) -> str | None:
+    """A display name, or None when it is empty or holds an
     email-shaped token that is not allowlisted (#852). `"a@x.org"
     <a@x.org>` and a list rewrite like `"a@x.org via list" <list@y.org>`
     would otherwise print the address through the name. Errs towards
     hiding: a false positive drops a name, a false negative leaks an
-    address. "John @ Company" is not email-shaped and stays."""
-    name = parseaddr(author or "")[0].strip()
+    address. "John @ Company" is not email-shaped and stays. The one
+    rule for From names and trailer names (#902)."""
+    name = (name or "").strip()
     if not name:
         return None
     if any(not _is_allowlisted(m) for m in _EMAIL_TOKEN_RE.findall(name)):
         return None
     return name
+
+
+def _usable_display_name(author: str | None) -> str | None:
+    """The From display name through `_usable_name`."""
+    return _usable_name(parseaddr(author or "")[0])
 
 
 def _allowlisted_email(author: str | None) -> str | None:
