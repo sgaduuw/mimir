@@ -153,7 +153,7 @@ class _RenderContext:
     lore_mirror_urls: dict[str, str] | None = None
     compact: bool = False
     # (message page URL, fragment URL) for the "more lines" link; None
-    # means compact text blocks are not cut.
+    # means text blocks are not cut.
     text_more: tuple[str, str] | None = None
     # Quote levels left for this render. One context per `render_body`
     # call, threaded through the recursion, because the bound is a
@@ -218,7 +218,6 @@ def _render_block(
     if (
         block.kind == "quote"
         and depth == 0
-        and context.compact
         and context.text_more is not None
         and len(block.lines) > BODY_TEXT_FOLD_LINES
     ):
@@ -324,11 +323,7 @@ def _render_block(
             context.lore_mirror_urls,
         )
 
-    if (
-        context.compact
-        and context.text_more is not None
-        and len(block.lines) > BODY_TEXT_FOLD_LINES
-    ):
+    if context.text_more is not None and len(block.lines) > BODY_TEXT_FOLD_LINES:
         left = len(block.lines) - BODY_TEXT_FOLD_LINES
         return (
             f'<pre class="body-text-block">{_linkified(block.lines[:BODY_TEXT_FOLD_LINES])}</pre>'
