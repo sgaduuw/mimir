@@ -359,7 +359,7 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     from click.testing import CliRunner
 
     from mimir.broker import client as broker_client_mod
-    from mimir.cli import warm_cache_command
+    from mimir.cli.cache import warm_cache_command
     from mimir.config import settings as live_settings
 
     # Activate broker mode for the duration of this test. The

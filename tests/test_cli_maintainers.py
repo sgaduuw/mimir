@@ -14,7 +14,7 @@ from sqlalchemy import select
 from mimir.broker import _context
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.writes import WriterThread
-from mimir.cli import update_mainline_command
+from mimir.cli.mainline import update_mainline_command
 from mimir.config import settings
 from mimir.models import MainlineState, Subsystem
 from tests.conftest import linus_tree as _linus_tree
