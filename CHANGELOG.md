@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- `mimir backfill-series-chains --reprocess`. It never had an effect: every run
+  chains whole keys afresh. A CLI that still sends it to the broker is not
+  refused; the broker ignores the field, as it always pinned it to false (#889).
+
 ### Fixed
 
 - `backfill-article-files --reprocess` now deletes an article's stored file

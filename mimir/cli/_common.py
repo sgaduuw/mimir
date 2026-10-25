@@ -138,8 +138,10 @@ def _verbose_broker_hint(verbose: int) -> None:
         )
 
 
-def backfill_options(*, reprocess_help: str):
-    """The options every backfill command shares, in `--help` order."""
+def backfill_options(*, reprocess_help: str | None):
+    """The options every backfill command shares, in `--help` order.
+    `reprocess_help=None` leaves `--reprocess` out, for a backfill that
+    always recomputes whole units."""
     options = [
         click.option(
             "--limit",
@@ -147,7 +149,11 @@ def backfill_options(*, reprocess_help: str):
             default=None,
             help="Cap the number of articles examined this session.",
         ),
-        click.option("--reprocess", is_flag=True, help=reprocess_help),
+        *(
+            [click.option("--reprocess", is_flag=True, help=reprocess_help)]
+            if reprocess_help is not None
+            else []
+        ),
         click.option(
             "--restart",
             is_flag=True,
@@ -187,7 +193,7 @@ def _broker_backfill_loop(
     result_cls,
     *,
     limit: int | None,
-    reprocess: bool,
+    reprocess: bool | None = None,
     restart: bool = False,
     yes: bool = False,
     extra: dict | None = None,
@@ -211,7 +217,8 @@ def _broker_backfill_loop(
     Whatever the start, a run another session is driving (see
     `mimir.backfill_runs`) is refused and this raises.
     `extra` carries per-backfill extras (e.g. `inbox_filter` for
-    canonicals).
+    canonicals). `reprocess=None` sends no `reprocess`, for a request
+    that has none.
 
     Cross-chunk `--limit` semantics: each iteration subtracts the
     chunk's `examined` from the remaining cap and stops once it
@@ -232,11 +239,13 @@ def _broker_backfill_loop(
     from mimir.broker.client import BrokerUnavailable
 
     extra = extra or {}
+    if reprocess is not None:
+        extra = {**extra, "reprocess": reprocess}
     aggregated = None
     remaining = limit
     start = ("force_restart" if yes else "restart") if restart else "resume"
     while True:
-        req = request_cls(limit=remaining, reprocess=reprocess, start=start, **extra)
+        req = request_cls(limit=remaining, start=start, **extra)
         for attempt in range(_LOCKED_RETRIES + 1):
             try:
                 reply = client.call(req)
