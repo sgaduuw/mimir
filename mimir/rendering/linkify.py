@@ -58,8 +58,8 @@ _TRAILER_LINE_RE = re.compile(
 # it, so a hostile address still falls through to `_render_line`
 # (which always escapes) instead of the redactor branch; the trailer
 # renderer also html-escapes the redactor's return value as defense in
-# depth. `mimir/trailers.py` adopts it in #913, so parsing and display
-# agree on what an address is; until then it parses with a narrower class.
+# depth. `mimir/trailers.py` parses trailers with it too (#913), so
+# parsing and display agree on what an address is.
 EMAIL_LOCAL_PART = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\-]+"
 _EMAIL_ANGLE_RE = re.compile(r"<(" + EMAIL_LOCAL_PART + r"@[A-Za-z0-9.\-]+)>")
 # An address-shaped token anywhere in a name, for #852 and #902. Bounded
