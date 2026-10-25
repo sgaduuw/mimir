@@ -127,6 +127,9 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # content inputs, so the same posture.
     "web.message_md": "public, no-cache",
     "web.thread_view_md": "public, no-cache",
+    # The thread view's "more lines" fragment: ETag-validated in the
+    # route, so revalidate every time.
+    "web.api_message_body": "public, no-cache",
     # Same ETag-revalidation posture: the validator moves with each
     # linux-next or Linus walk.
     "web.merge_window_page": "public, no-cache",

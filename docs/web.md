@@ -27,6 +27,12 @@ and removals, hunk anchors such as `#h-2`, and line anchors such as `#h-2-L15`.
 Message-ID references link to archived messages; lore links can include a local
 mirror link. Text attachments have a preview where supported.
 
+On the whole-thread view, a plain-text
+or quoted block of more than 40 lines shows its first 40, then a "more lines"
+link that loads the message's full body in place (it is the message page's
+text, so it works without JavaScript too). Patch bodies there keep their
+`+`/`-` colouring but not per-language syntax colours or line anchors.
+
 ## Follow patch and review activity
 
 Patch pages show review trailers, maintainer attestations, tracked-tree landing
