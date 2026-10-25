@@ -657,8 +657,9 @@ pre.body-text-block {
    Foldable timeline that lives between the From block and the message
    body on patch pages with >= 2 revisions. Summary line carries the
    count so a maintainer sees revision-density at-a-glance; expanded
-   body renders one row per revision with a [diff vs current] link
-   (except on the current revision itself).
+   body renders one row per revision with a [diff against previous]
+   link (except on the first revision and a resend). Rendered open on
+   the thread view (#844).
    ===================================================================== */
 
 .revisions-fold {
@@ -731,7 +732,7 @@ pre.body-text-block {
 }
 /* When .rev-label is an <a> (non-current revision linking to its
    page) the generic .revisions-timeline a rule below would shrink
-   + dim it like the [diff vs current] chip. Restore primary-label
+   + dim it like the [diff against previous] chip. Restore primary-label
    weight + size for the link variant. */
 .revisions-timeline a.rev-label {
   margin-left: 0;
