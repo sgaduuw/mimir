@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 from mimir.config import settings
 from mimir.models import (
     Article,
-    ArticleFile,
     ArticleList,
     ArticleTrailer,
     MainlineCommit,
@@ -28,6 +27,7 @@ from mimir.models import (
 )
 from mimir.patch_series import same_series
 from mimir.patch_state import _resolve_tree_label
+from mimir.subsystems import article_paths
 
 
 def _digest(values) -> str:
@@ -122,16 +122,14 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # `count(*)`: `backfill-article-files --reprocess` (or a re-ingest
     # after a parser fix) can rewrite a path in place, which keeps the
     # count and changes which subsystems claim the article. The paths
-    # themselves are the truthful input, and they cost the same to read
-    # (a range scan on the `(article_id, path)` PK, ~3 rows per article,
-    # already ordered by that PK so the ORDER BY is free). NUL-joined so
-    # {"ab"} and {"a", "b"} cannot collide.
-    paths = session.scalars(
-        select(ArticleFile.path)
-        .where(ArticleFile.article_id == article_id)
-        .order_by(ArticleFile.path)
-    ).all()
-    files_tag = _digest(paths)
+    # themselves are the truthful input, read through the same
+    # `article_paths` the page renders from: for a cover that is every
+    # patch of its posting, with the position, since the series totals
+    # count patches as well as files (#844). `get` is the route's own
+    # loaded row, so it costs no statement.
+    files_tag = _digest(
+        repr(row) for row in article_paths(session, session.get(Article, article_id))
+    )
     # Supersedance and the revision count come from SIBLING articles
     # in this patch's series (key and head), so they live in none of the reads
     # above. Posting a v2 flips this article's badge to SUPERSEDED and
