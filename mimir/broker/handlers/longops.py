@@ -235,7 +235,11 @@ def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:
     from mimir.patches import backfill_article_files
 
     return _run_backfill_chunk(
-        req, "backfill_article_files", backfill_article_files, reprocess=req.reprocess
+        req,
+        "backfill_article_files",
+        backfill_article_files,
+        reprocess=req.reprocess,
+        patch_subjects=req.patch_subjects,
     )
 
 
