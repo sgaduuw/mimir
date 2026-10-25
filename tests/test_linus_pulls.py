@@ -586,10 +586,30 @@ def _columns(html):
         m.group(1): int(m.group(2))
         for m in re.finditer(
             r'<section class="pull-column" id="pulls-(\w+)">\s*'
+            r'<div class="fold-box"[^>]*>\s*<header[^>]*>\s*'
             r"<h3>[^<]*<small>(\d+)</small>",
             html,
         )
     }
+
+
+def test_each_column_sits_in_a_fold_box(client, messages):
+    """A long column scrolls inside a capped box with the thread view's
+    toggle instead of stretching the page (#881)."""
+    from mimir.extensions import SessionLocal
+    from tests.test_merge_window import _fold_boxes
+
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with SessionLocal() as s:
+        _pull(s, bodies, "a@x", _TIP_A, hours=10)
+        _pull(s, bodies, "b@x", _TIP_B, hours=20)
+        _pull(s, bodies, "c@x", _TIP_B, hours=30)
+        s.commit()
+    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    toggle = ["closed", "partial", "expanded"]
+    assert _fold_boxes(_column_html(html, "pending")) == [("partial", toggle, 2)]
+    assert _fold_boxes(_column_html(html, "merged")) == [("partial", toggle, 1)]
 
 
 def test_columns_render_only_when_populated(client, messages):

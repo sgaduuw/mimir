@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.28.0] - 2026-10-25
+
+### Changed
+
+- `/merge-window` shows each subsystem section and each pull request column
+  in a capped scroll box with the thread view's closed / partial / expanded
+  toggle, instead of 20 rows and a "Show all" fold. The page is much shorter.
+  Every link is still in the HTML (#881).
+
 ## [3.27.0] - 2026-10-25
 
 Upgrade steps, after deploying, in this order. Do not run them alongside
