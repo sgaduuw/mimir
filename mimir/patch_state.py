@@ -6,7 +6,7 @@ landing on a patch page:
 - Trailer roll-up across `article_trailers`, with a maintainer-vs-
   random-reviewer distinction sourced from `subsystem_maintainers`.
 - Mainline-landing record from `mainline_commits` reverse lookup.
-- Patch-series timeline (v1, v2, v3) with `[diff vs current]` links,
+- Patch-series timeline (v1, v2, v3) with diff-against-previous links,
   carried over from #210 so the new card REPLACES the existing
   patch-series sidebar without losing the diff navigation.
 - Thread activity (days since last reply), derived from the already-
@@ -46,7 +46,7 @@ from mimir.models import (
     SubsystemMaintainer,
 )
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
-from mimir.patch_series import parse_cover_letter, same_series
+from mimir.patch_series import adjacent_versions, parse_cover_letter, same_series
 from mimir.trailers import INDEXED_TRAILER_ROLES
 from mimir.web.urls import _canonical_url_for, _series_diff_url
 
@@ -79,7 +79,9 @@ class StateMainlineLanding:
 class StateSeriesEntry:
     """One revision in the series timeline. Carries everything the
     template needs to render either the bold current-revision marker
-    or the link + `[diff vs current]` chip, without re-querying."""
+    or the link, plus the diff-against-previous link, without
+    re-querying. `diff_url` diffs the previous revision against this
+    one, and is None for the first revision and for a resend."""
 
     version: str
     article_id: int
@@ -249,7 +251,7 @@ def _series_timeline(
     article: Article,
     inbox_name: str,
 ) -> list[StateSeriesEntry]:
-    """Build the revision timeline + per-revision `[diff vs current]`
+    """Build the revision timeline + per-revision diff-against-previous
     links for the current article's series position. Returns an
     empty list when the article isn't a series patch (NULL
     `patch_series_key`).
@@ -280,12 +282,21 @@ def _series_timeline(
                 func.coalesce(Article.patch_series_position, 0)
                 == (article.patch_series_position or 0),
             )
-            .order_by(Article.date.asc().nulls_last())
+            # The id breaks ties as `adjacent_versions` does, so a
+            # version's first row here is the one its link sits on.
+            .order_by(Article.date.asc().nulls_last(), Article.id)
         ).scalars()
     )
     if len(revisions) < 2:
         return []
-    current_version = article.patch_series_version
+    # Each step links on the first row of its newer version. A resend
+    # repeats a version, and the step is already on its first copy.
+    previous = {
+        newer: older
+        for older, newer in adjacent_versions(
+            (r.date, r.id, r.patch_series_version) for r in revisions
+        )
+    }
     # `pos=cover` vs `pos=N` matches the `series_diff` route's
     # accepted shape; covers have position 0 and the route accepts
     # both `cover` and `0`, we use the friendlier alias. Defensive
@@ -294,26 +305,24 @@ def _series_timeline(
     # but a partially-rolled-out deploy could observe the NULL state
     # briefly.
     pos = article.patch_series_position
-    to_slot = [r for r in revisions if r.patch_series_version == current_version]
     out: list[StateSeriesEntry] = []
     for rev in revisions:
         link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
         url = _canonical_url_for(rev, link_set, base="") or ""
         is_current = rev.id == article.id
         diff_url: str | None = None
-        # A resend shares the current version string, and the route
-        # 404s on `from == to`, so it gets no link (#661).
-        if (
-            not is_current
-            and rev.patch_series_version
-            and current_version
-            and rev.patch_series_version != current_version
-        ):
+        older = previous.pop(rev.patch_series_version, None)
+        if older is not None:
+            to_slot = [
+                r
+                for r in revisions
+                if r.patch_series_version == rev.patch_series_version
+            ]
             diff_url = _series_diff_url(
                 to_slot,
                 article.patch_series_key,
+                older,
                 rev.patch_series_version,
-                current_version,
                 pos,
                 head_id=article.patch_series_head_id,
                 fallback_inbox=inbox_name,

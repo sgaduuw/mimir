@@ -44,8 +44,10 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 <p><small>{{ synthesis }}</small></p>
 {% endif %}
 {# The root's revisions, with its links to the series diffs (#846):
-   message pages canonicalise here, so this is the copy crawlers see. #}
-{% include "_revisions_fold.html" %}
+   message pages canonicalise here, so this is the copy crawlers see.
+   Open here (#844): the series diff is the most original page mimir
+   serves, and the thread's body is otherwise the copy lore has. #}
+{% with revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}
 <p>
   <small>
     {{ total_count }} message{{ '' if total_count == 1 else 's' }},

@@ -364,9 +364,9 @@ def test_patch_state_landing_row_empty_when_not_landed(seeded_db):
 
 
 def test_patch_state_series_timeline_with_diff_links(seeded_db):
-    """Cover letters with 2+ revisions get a timeline; each non-
-    current revision carries a `diff_url` pointing at the #210
-    inter-revision-diff route."""
+    """Cover letters with 2+ revisions get a timeline; each revision
+    after the first carries a `diff_url` from its previous revision,
+    pointing at the #210 inter-revision-diff route (#844)."""
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
 
@@ -429,19 +429,21 @@ def test_patch_state_series_timeline_with_diff_links(seeded_db):
     assert versions == ["v1", "v2"]
     v1_entry = next(e for e in state.series if e.version == "v1")
     v2_entry = next(e for e in state.series if e.version == "v2")
-    assert v2_entry.is_current is True
-    assert v2_entry.diff_url is None  # no diff for the current revision
     assert v1_entry.is_current is False
-    assert v1_entry.diff_url is not None
-    assert "/alpha/series/testkeyseries/diff" in v1_entry.diff_url
-    assert "from=v1" in v1_entry.diff_url
-    assert "to=v2" in v1_entry.diff_url
-    assert "pos=cover" in v1_entry.diff_url
+    assert v1_entry.diff_url is None  # nothing before the first revision
+    assert v2_entry.is_current is True
+    assert v2_entry.diff_url is not None
+    assert "/alpha/series/testkeyseries/diff" in v2_entry.diff_url
+    assert "from=v1" in v2_entry.diff_url
+    assert "to=v2" in v2_entry.diff_url
+    assert "pos=cover" in v2_entry.diff_url
 
 
 def test_patch_state_series_timeline_no_diff_for_same_version(seeded_db):
-    """#661: a resend carries the same version string as the current
-    revision. The route 404s on `from == to`, so no link is built."""
+    """#661: a resend carries the same version string as an earlier
+    revision. The step to that version links on its first copy only,
+    so the resend gets no link and none of them is `from == to`, which
+    the route 404s."""
     with seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
 
@@ -477,11 +479,12 @@ def test_patch_state_series_timeline_no_diff_for_same_version(seeded_db):
         )
     by_id = {e.article_id: e for e in state.series}
     # Precondition: all three revisions are on the timeline, and the
-    # one that must keep its link (v1) has it.
+    # one that must keep its link (the first v2) has it.
     assert len(by_id) == 3
-    assert by_id[v1.id].diff_url is not None
-    assert by_id[v2.id].version == "v2"
-    assert by_id[v2.id].diff_url is None
+    assert by_id[v1.id].diff_url is None
+    assert "from=v1&to=v2" in by_id[v2.id].diff_url
+    assert by_id[v2_resend.id].version == "v2"
+    assert by_id[v2_resend.id].diff_url is None
 
 
 def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
@@ -541,10 +544,10 @@ def test_patch_state_series_timeline_renders_on_in_series_patch(seeded_db):
         next(r.id for r in rows if r.message_id == "v2-1of3@x"),
     }
     # Diff URL uses `pos=1` for in-series patches (not `pos=cover`).
-    v1_entry = next(e for e in state.series if e.version == "v1")
-    assert v1_entry.diff_url is not None
-    assert "pos=1" in v1_entry.diff_url
-    assert "pos=cover" not in v1_entry.diff_url
+    v2_entry = next(e for e in state.series if e.version == "v2")
+    assert v2_entry.diff_url is not None
+    assert "pos=1" in v2_entry.diff_url
+    assert "pos=cover" not in v2_entry.diff_url
 
 
 def test_patch_state_series_empty_for_solo_revision(seeded_db):
