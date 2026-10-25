@@ -8,7 +8,7 @@
 - `atom`: Atom 1.0 feed renderer used by per-inbox and per-author feeds.
 
 A few JSON-LD / Atom helpers reach back into `mimir.web` for the
-shared display filters (`_msg_url`, `_display_name_filter`,
+shared display filters (`_msg_url`, `_usable_display_name`,
 `_redact_trailer_address`). Those imports are done inside the
 function bodies to avoid an import-time cycle (web imports
 sitemap/JSON-LD builders from this package at module load).
