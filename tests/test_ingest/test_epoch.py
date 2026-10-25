@@ -40,22 +40,8 @@ from tests.test_ingest._helpers import (
     _naive_utc,
     _rfc5322,
     _rfc5322_with_date,
+    _subject,
 )
-
-
-@pytest.fixture
-def writer():
-    """Function-scoped WriterThread for the list-address promotion
-    gate tests, mirroring the fixture in test_pending.py. The
-    autouse `_reset_db` fixture runs before this, so the DB is already
-    seeded; the writer commits via its own engine against the same
-    test DB the `seeded_db` sessions read from."""
-    from mimir.broker.writes import WriterThread
-
-    wt = WriterThread.from_settings()
-    wt.start()
-    yield wt
-    wt.stop(timeout=10)
 
 
 def test_ingest_new_message_creates_article(seeded_db, tmp_path, broker_active):
@@ -420,8 +406,7 @@ def test_ingest_inseries_inherits_the_cover_series_head(
     re-chain."""
 
     def msg(mid, subject, parent=None):
-        raw = _rfc5322(mid, body=b"x", in_reply_to=parent)
-        return raw.replace(b"Subject: t\r\n", f"Subject: {subject}\r\n".encode())
+        return _subject(_rfc5322(mid, body=b"x", in_reply_to=parent), subject)
 
     alpha = _alpha(seeded_db)
     _build_pubinbox_repo(

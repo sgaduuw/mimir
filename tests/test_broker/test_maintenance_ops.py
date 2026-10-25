@@ -52,24 +52,8 @@ def test_analyze_via_broker_runs(seeded_db):
         finally:
             c.close()
     assert isinstance(result, dict)
-    assert result.get("full") is False
     assert "elapsed_ms" in result
     assert isinstance(result["elapsed_ms"], int)
-
-
-def test_analyze_full_via_broker_runs(seeded_db):
-    """`full=True` propagates through the RPC and the handler runs
-    the no-cap pass. We can't easily distinguish the two passes
-    from outside (both produce a `Reply.ok=True`); the reply's
-    `full` field is the structural signal."""
-    sp = short_socket_path("analyze-full-rpc")
-    with broker_running(sp):
-        c = BrokerClient(sp)
-        try:
-            result = c.call(AnalyzeRequest(full=True))
-        finally:
-            c.close()
-    assert result.get("full") is True
 
 
 def test_analyze_cli_dispatches_via_broker(seeded_db, monkeypatch):
@@ -349,11 +333,10 @@ def test_run_analyze_dispatches_via_writer_when_active(broker_active):
     original = writer.submit
     writer.submit = lambda op: (submits.append(op), original(op))[1]
     try:
-        result = run_analyze(full=False)
+        result = run_analyze()
     finally:
         writer.submit = original
 
-    assert result.full is False
     assert isinstance(result.elapsed_ms, int)
     assert any(op.label.startswith("analyze") for op in submits), (
         f"run_analyze must submit an analyze WriteOp; saw {[o.label for o in submits]}"
@@ -367,48 +350,8 @@ def test_run_analyze_falls_back_to_engine_when_no_writer(seeded_db):
     from mimir.maintenance import run_analyze
 
     _context.clear_active()  # ensure no writer
-    result = run_analyze(full=False)
-    assert result.full is False
+    result = run_analyze()
     assert isinstance(result.elapsed_ms, int)
-
-
-def test_run_analyze_full_resets_analysis_limit_on_shared_engine_fallback(seeded_db):
-    """Regression: run_analyze(full=True) on the shared-engine fallback
-    path (no active writer) must reset analysis_limit back to the
-    settings default before returning the pooled connection.
-
-    SQLAlchemy's QueuePool reuses physical DBAPI connections across
-    checkouts. The 'connect' event (_sqlite_pragmas) fires only on a new
-    physical connection, NOT on pool checkout, so a connection that ran
-    'PRAGMA analysis_limit=0' retains that value on its next checkout.
-    A missing try/finally reset means a later ANALYZE on the same pooled
-    connection runs unbounded, reproducing the 1.36.4 regression class.
-
-    This test fails against the pre-fix code (the else: branch had no
-    try/finally reset) and passes after."""
-    from sqlalchemy import text
-
-    from mimir.broker import _context
-    from mimir.config import settings
-    from mimir.extensions import engine
-    from mimir.maintenance import run_analyze
-
-    _context.clear_active()  # take the shared-engine fallback path
-
-    run_analyze(full=True)
-
-    # Open a new connection from the same pool. Because the pool reuses
-    # physical connections, the checkout may land on the same DBAPI
-    # connection that just ran analysis_limit=0. If the reset was
-    # missing, this reads back 0 instead of the configured default.
-    with engine.begin() as conn:
-        limit = conn.execute(text("PRAGMA analysis_limit")).scalar()
-
-    assert limit == settings.analyze_limit, (
-        f"analysis_limit should be reset to {settings.analyze_limit} "
-        f"after run_analyze(full=True) on the shared-engine fallback; "
-        f"got {limit} (the reset try/finally is missing)"
-    )
 
 
 def test_run_analyze_default_is_full_sample(seeded_db):

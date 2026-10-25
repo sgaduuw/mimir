@@ -104,6 +104,35 @@ def test_thread_view_json_ld_nests_replies_under_their_parent(client, tmp_path):
     )
 
 
+def test_thread_view_json_ld_hides_addresses_the_page_hides(
+    client, tmp_path, monkeypatch
+):
+    """Root and comment `text` hide every address the page hides
+    (#899): the attribution line and a quoted trailer, while an
+    allowlisted trailer address stays."""
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
+    body = (
+        b"On Mon, Joe User <joe@example.com> wrote:\n"
+        b"> Signed-off-by: Joe User <joe@example.com>\n"
+        b"\n"
+        b"my reply\n"
+        b"\n"
+        b"Signed-off-by: Maintainer <m@kernel.org>\n"
+    )
+    assert b"joe@example.com" in body  # precondition
+    seeded = _seed_three_message_thread(tmp_path, "alpha", bodies=(body, body, b"x"))
+    _, root_url, _ = seeded["root"]
+    blocks = _json_ld_blocks(client.get(root_url + "/t").data.decode())
+    posting = next(
+        g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+    )
+    texts = [posting["text"], posting["comment"][0]["text"]]
+    for text in texts:
+        assert "my reply" in text  # precondition: root and reply bodies
+        assert "m@kernel.org" in text
+    assert "joe@example.com" not in json.dumps(blocks)
+
+
 def _comment_authors(comments):
     """Every Comment author in a (nested) JSON-LD comment tree."""
     for c in comments:
@@ -1340,7 +1369,7 @@ def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, s
     )
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["message", "thread", "thread_md"])
 @pytest.mark.parametrize(
     "case", _RENDER_STATE_CASES, ids=[c[0] for c in _RENDER_STATE_CASES]
 )
@@ -1356,7 +1385,7 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
     from tests.test_routes._helpers import seed_thread_shape
 
     _label, prepare, mutate = case
-    if (surface, _label) == ("thread", "series_head"):
+    if surface != "message" and _label == "series_head":
         # The head is spelled only in the revisions fold's diff links,
         # which the thread view does not render; its ETag still moves
         # (shared `render_state_tag`), checked by the matrix above.
@@ -1365,7 +1394,11 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = {
+        "message": root_url,
+        "thread": root_url + "/t",
+        "thread_md": root_url + "/t.md",
+    }[surface]
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()

@@ -16,16 +16,7 @@ from mimir.cli._common import _fmt_bytes
 
 
 @click.command("analyze")
-@click.option(
-    "--full",
-    "full",
-    is_flag=True,
-    help="Force `analysis_limit=0` (every row) for this pass, even if "
-    "`ANALYZE_LIMIT` caps it. The default is already 0, so this only "
-    "matters on a deployment that set a cap. A full pass holds the "
-    "writer lock for 16.7 s on the production corpus (2026-10-22).",
-)
-def analyze_command(full: bool) -> None:
+def analyze_command() -> None:
     """Run ANALYZE to refresh the SQLite query planner statistics.
 
     Stale `sqlite_stat1` makes the planner pick bad plans (we hit
@@ -33,22 +24,17 @@ def analyze_command(full: bool) -> None:
     later ingest left the stats wrong by orders of magnitude). Run
     after a big ingest delta, weekly via cron is plenty.
 
-    By default this runs with whatever `PRAGMA analysis_limit` the
-    connection inherited from `mimir.extensions._sqlite_pragmas`
-    (default 0, every row). Pass `--full` to force 0 for this pass on
-    a deployment that set `ANALYZE_LIMIT`. A capped pass records the
-    cap plus one for every bigger index, which misleads the planner.
+    Every row is sampled; see CONTEXT.md "ANALYZE sample size".
     """
     from mimir.broker.client import BrokerUnavailable, get_broker_client
     from mimir.broker.protocol import AnalyzeRequest
 
     try:
-        payload = get_broker_client().call(AnalyzeRequest(full=full))
+        payload = get_broker_client().call(AnalyzeRequest())
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker analyze failed: {exc}")
     elapsed_s = payload.get("elapsed_ms", 0) / 1000.0
-    kind = "full ANALYZE" if full else "ANALYZE"
-    click.echo(f"{kind} complete in {elapsed_s:.1f} s")
+    click.echo(f"ANALYZE complete in {elapsed_s:.1f} s")
 
 
 @click.command("vacuum")

@@ -427,6 +427,15 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     )
 
 
+def test_message_page_closed_fold_button_points_right(client, tmp_path):
+    """A triangle pointing down means "open", so the closed button shows
+    the collapsed glyph ▶, not ▼ (#890)."""
+    msgs = _seed_three_message_thread(tmp_path, "alpha")
+    body = client.get(msgs["root"][1]).data.decode()
+    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', body)
+    assert "▼" not in body
+
+
 def test_message_page_thread_fold_links_carry_htmx_attrs(
     client,
     tmp_path,
@@ -1736,6 +1745,40 @@ def test_message_json_ld_text_redacts_dco_trailer_addresses(
     assert "m@kernel.org" in text  # allowlisted survives
     assert "o@example.com" not in text  # non-allowlisted redacted
     assert "<redacted>" in text
+
+
+# #899: the two shapes the trailer-only helper missed and the page hides.
+_ATTRIBUTION_BODY = (
+    b"On Mon, Joe User <joe@example.com> wrote:\n"
+    b"> Signed-off-by: Joe User <joe@example.com>\n"
+    b"\n"
+    b"my reply\n"
+    b"\n"
+    b"Signed-off-by: Maintainer <m@kernel.org>\n"
+)
+
+
+def test_message_json_ld_hides_attribution_and_quoted_trailer_addresses(
+    client, tmp_path, monkeypatch
+):
+    """A reply's JSON-LD hides every address its page hides (#899), on
+    the attribution line and on a quoted trailer, and still shows an
+    allowlisted trailer address."""
+    import json
+
+    monkeypatch.setattr(settings, "email_allowlist", ["@kernel.org"])
+    assert b"joe@example.com" in _ATTRIBUTION_BODY  # precondition
+    seeded = _seed_three_message_thread(
+        tmp_path, "alpha", bodies=(b"body", _ATTRIBUTION_BODY, b"body")
+    )
+    _, reply_url, _ = seeded["reply"]
+    blocks = _json_ld_blocks(client.get(reply_url).data.decode())
+    posting = next(
+        g for g in blocks[0]["@graph"] if g["@type"] == "DiscussionForumPosting"
+    )
+    assert "my reply" in posting["text"]  # precondition: the reply's own body
+    assert "m@kernel.org" in posting["text"]
+    assert "joe@example.com" not in json.dumps(blocks)
 
 
 def test_message_json_ld_text_omitted_when_body_empty(client, tmp_path):

@@ -134,11 +134,9 @@ class WriterThread:
         # engine in mimir.extensions uses. Without this, the writer's
         # connection lacks foreign_keys=ON (silently breaks
         # ondelete=CASCADE), synchronous=NORMAL (every commit fsyncs
-        # the WAL twice), analysis_limit (the writer would ignore
-        # ANALYZE_LIMIT and SQLite's own default), and
-        # busy_timeout. The listener correctly skips query_only=1 when
-        # mimir_is_broker=true, so attaching it here doesn't make the
-        # writer read-only.
+        # the WAL twice), and busy_timeout. The listener correctly
+        # skips query_only=1 when mimir_is_broker=true, so attaching it
+        # here doesn't make the writer read-only.
         event.listen(engine, "connect", _sqlite_pragmas)
         try:
             # `with engine.connect()` so a `connect()` raise (wrong

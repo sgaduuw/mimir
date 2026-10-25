@@ -15,7 +15,7 @@ to repeat per call.
 import re
 from urllib.parse import urlencode
 
-from flask import abort, g, request
+from flask import Response, abort, g, request
 from sqlalchemy import select
 from sqlalchemy.orm import Session, aliased
 
@@ -146,6 +146,39 @@ def thread_page_url(article_id: int, date, inbox_name: str, page: int = 1) -> st
     """
     path = _msg_path(article_id, date, inbox_name) + "/t"
     return path if page <= 1 else f"{path}/{page}"
+
+
+# The suffix of every Markdown page URL (#884). The route rules and
+# `markdown_path` both spell it from here, so a `.md` link and the rule
+# that serves it cannot drift apart.
+MD_SUFFIX = ".md"
+
+
+def markdown_path(path: str) -> str:
+    """The Markdown form of a message or thread-page path.
+
+    Takes the output of `_msg_url` / `thread_page_url` rather than
+    rebuilding one from parts, so the `.md` URL inherits their one
+    spelling of the year and month. `url_for` would write the month
+    unpadded: a second spelling of the same page."""
+    return path + MD_SUFFIX
+
+
+def _markdown_response(body: str, etag: str, canonical_url: str) -> Response:
+    """A rendered Markdown page with its own validator and a canonical
+    header naming the HTML page's own canonical, the very value
+    base.html prints, so a reply's names its thread page rather than
+    starting a chain."""
+    response = Response(body, mimetype="text/markdown")
+    response.set_etag(etag)
+    response.headers["Link"] = f'<{canonical_url}>; rel="canonical"'
+    return response
+
+
+def attachment_path(article: Article, inbox_name: str, n: int) -> str:
+    """The download URL of a message's `n`th attachment, for every page
+    that links one, so no template spells it by hand."""
+    return f"{_msg_url(article, inbox_name)}/attachment/{n}"
 
 
 def _canonical_inbox_name(

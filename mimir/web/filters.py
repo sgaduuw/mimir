@@ -31,7 +31,8 @@ from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
-from mimir.rendering import render_body
+from mimir.rendering import render_body, render_body_text
+from mimir.rendering.linkify import EMAIL_TOKEN_RE as _EMAIL_TOKEN_RE
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -43,7 +44,9 @@ from mimir.web.urls import (
     _msg_path,
     _msg_url,
     _thread_view_url,
+    attachment_path,
     is_addressable_reviewer_address,
+    markdown_path,
 )
 
 bp_web.add_app_template_filter(
@@ -282,6 +285,8 @@ def _render_body_filter(
     msgid_urls=None,
     parent_url=None,
     lore_mirror_urls=None,
+    compact=False,
+    text_more=None,
 ):
     return render_body(
         body,
@@ -289,7 +294,45 @@ def _render_body_filter(
         address_redactor=_redact_trailer_address,
         parent_url=parent_url,
         lore_mirror_urls=lore_mirror_urls,
+        compact=compact,
+        text_more=text_more,
     )
+
+
+@bp_web.app_template_filter("render_body_text")
+def _render_body_text_filter(body) -> str:
+    """The Markdown pages' body: `render_body`'s filtering with the
+    same redactor, as plain text (#884)."""
+    return render_body_text(body, address_redactor=_redact_trailer_address)
+
+
+bp_web.add_app_template_filter(markdown_path, "markdown_path")
+bp_web.add_app_template_global(attachment_path, "attachment_path")
+
+_BACKTICK_RUN_RE = re.compile(r"`+")
+
+
+@bp_web.app_template_filter("md_fence")
+def _md_fence(text: str) -> str:
+    """A code fence longer than any backtick run in `text`, so no line
+    of a body can close it early (patches to `.md` and `.rst` docs
+    carry triple backticks). One linear scan."""
+    longest = max((len(run) for run in _BACKTICK_RUN_RE.findall(text)), default=0)
+    return "`" * max(3, longest + 1)
+
+
+_MD_SPECIAL_RE = re.compile(r"([\\`*_\[\]<>#|~&])")
+
+
+@bp_web.app_template_filter("md_escape")
+def _md_escape(text: str | None) -> str:
+    """Sender-controlled text (a subject, a name, a filename) as inert
+    Markdown on one line: whitespace collapsed, and the characters that
+    open emphasis, links, code, HTML, headings or entity references
+    backslash-escaped. A bare `<hidden>` would otherwise be read as an
+    HTML tag and vanish, and `a&commat;b&period;org` decoded into an
+    address that the HTML page shows as literal text."""
+    return _MD_SPECIAL_RE.sub(r"\\\1", _SUBJECT_WS_RE.sub(" ", text or "").strip())
 
 
 @bp_web.app_template_filter("safe_from")
@@ -348,23 +391,25 @@ def _display_name_filter(author: str | None) -> str:
     )
 
 
-# Bounded runs keep the scan linear on a hostile, very long name.
-_EMAIL_TOKEN_RE = re.compile(r"[^\s@<>()\[\],;:\"]{1,64}@[^\s@<>()\[\],;:\"]{1,255}")
-
-
-def _usable_display_name(author: str | None) -> str | None:
-    """The From display name, or None when it is empty or holds an
+def _usable_name(name: str | None) -> str | None:
+    """A display name, or None when it is empty or holds an
     email-shaped token that is not allowlisted (#852). `"a@x.org"
     <a@x.org>` and a list rewrite like `"a@x.org via list" <list@y.org>`
     would otherwise print the address through the name. Errs towards
     hiding: a false positive drops a name, a false negative leaks an
-    address. "John @ Company" is not email-shaped and stays."""
-    name = parseaddr(author or "")[0].strip()
+    address. "John @ Company" is not email-shaped and stays. The one
+    rule for From names and trailer names (#902)."""
+    name = (name or "").strip()
     if not name:
         return None
     if any(not _is_allowlisted(m) for m in _EMAIL_TOKEN_RE.findall(name)):
         return None
     return name
+
+
+def _usable_display_name(author: str | None) -> str | None:
+    """The From display name through `_usable_name`."""
+    return _usable_name(parseaddr(author or "")[0])
 
 
 def _allowlisted_email(author: str | None) -> str | None:

@@ -277,6 +277,9 @@ def test_ua_match_is_a_case_insensitive_substring():
         (CUBOT_BROWSER, None),
         (BROWSER, None),
         ("Lynx/2.9.0 libwww-FM/2.14", None),
+        # A user-initiated agent fetch (#884): no marker token, so it is
+        # not a crawler and is ungated on HTML and Markdown alike.
+        ("Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)", None),
         ("", None),
         (None, None),
     ],
@@ -688,3 +691,174 @@ def test_nested_env_form_overrides_a_default_despite_lowercasing(monkeypatch):
     assert merged["Applebot"] == 50
     assert "applebot" not in merged
     assert list(merged) == list(DEFAULT_CRAWLER_UA_BUDGETS)
+
+
+# Impossible Fetch Metadata / Referer combination (#903): a browser sends
+# no Referer on a user-initiated navigation (`Sec-Fetch-Site: none`), so
+# that pair is a client faking a click. One shared small bucket.
+IMPOSSIBLE = {"sec_fetch_site": "none", "referer": "https://example.org/"}
+IMPOSSIBLE_HDRS = {"Sec-Fetch-Site": "none", "Referer": "https://example.org/"}
+
+
+@pytest.mark.parametrize(
+    "site, referer, matches",
+    [
+        ("none", "https://example.org/", True),
+        ("None", "https://example.org/", True),
+        ("none", None, False),
+        ("none", "", False),
+        ("same-origin", "https://example.org/", False),
+        ("cross-site", "https://example.org/", False),
+        (None, "https://example.org/", False),
+        (None, None, False),
+    ],
+)
+def test_impossible_headers_predicate(site, referer, matches):
+    assert crawler_budget.impossible_headers(site, referer) is matches
+
+
+def test_impossible_headers_get_a_one_percent_bucket_that_charges_global():
+    gate = _gate(Clock(), total=1200)  # 1% = 12 a minute, capacity 2
+    assert gate.check(BROWSER, **IMPOSSIBLE) is None
+    assert gate.check(BROWSER, **IMPOSSIBLE) is None
+    assert gate.check(BROWSER, **IMPOSSIBLE) == crawler_budget.IMPOSSIBLE_KEY
+    assert gate.global_tokens() == pytest.approx(200 - 2)
+    assert gate.unlisted_count() == 0
+    assert gate.pool_tokens() == pytest.approx(60)  # 30% of 200, untouched
+
+
+def test_impossible_bucket_capacity_follows_the_setting():
+    gate = _gate(Clock(), total=1200, impossible_headers_pct=50)  # 600/min, cap 100
+    admitted = sum(gate.check(BROWSER, **IMPOSSIBLE) is None for _ in range(300))
+    assert admitted == 100
+
+
+def test_impossible_headers_pct_zero_disables_it():
+    gate = _gate(Clock(), total=100, impossible_headers_pct=0)
+    assert all(gate.check(BROWSER, **IMPOSSIBLE) is None for _ in range(500))
+
+
+def test_global_zero_disables_impossible_headers():
+    gate = _gate(Clock(), total=0)
+    assert all(gate.check(BROWSER, **IMPOSSIBLE) is None for _ in range(500))
+
+
+def test_declared_crawler_keeps_its_own_bucket_when_headers_are_impossible():
+    gate = _gate(Clock(), total=1200)
+    assert gate.check(APPLEBOT, **IMPOSSIBLE) is None
+    assert gate.check(APPLEBOT, **IMPOSSIBLE) is None
+    assert gate.check(APPLEBOT, **IMPOSSIBLE) == "Applebot"
+    # The impossible-header bucket was never touched.
+    assert gate.check(BROWSER, **IMPOSSIBLE) is None
+    assert gate.check(BROWSER, **IMPOSSIBLE) is None
+
+
+def test_impossible_refusal_charges_no_bucket():
+    gate = _gate(Clock(), total=1200)
+    for _ in range(2):
+        gate.check(BROWSER, **IMPOSSIBLE)
+    before = gate.global_tokens()
+    assert gate.check(BROWSER, **IMPOSSIBLE) == crawler_budget.IMPOSSIBLE_KEY
+    assert gate.global_tokens() == before
+
+
+def test_impossible_headers_route_gets_429_but_real_navigation_never_does(
+    client, monkeypatch
+):
+    _install(monkeypatch, _gate(Clock(), total=1200))
+    h = {"User-Agent": BROWSER, **IMPOSSIBLE_HDRS}
+    assert client.get("/", headers=h).status_code == 200
+    assert client.get("/", headers=h).status_code == 200
+    r = client.get("/", headers=h)
+    assert r.status_code == 429
+    assert r.headers["Retry-After"] == "120"
+    # Bucket empty: an in-site click and a direct visit still pass.
+    click = {
+        "User-Agent": BROWSER,
+        "Sec-Fetch-Site": "same-origin",
+        "Sec-Fetch-Mode": "navigate",
+        "Referer": "https://example.org/",
+    }
+    direct = {"User-Agent": BROWSER, "Sec-Fetch-Site": "none"}
+    for _ in range(5):
+        assert client.get("/", headers=click).status_code == 200
+        assert client.get("/", headers=direct).status_code == 200
+
+
+@pytest.mark.parametrize("path", ["/robots.txt", "/sitemap.xml", "/healthz", "/readyz"])
+def test_exempt_endpoints_are_never_gated_on_impossible_headers(
+    client, monkeypatch, path
+):
+    _install(monkeypatch, _gate(Clock(), total=1200, impossible_headers_pct=100))
+    h = {"User-Agent": BROWSER, **IMPOSSIBLE_HDRS}
+    for _ in range(300):  # past the 200 token capacity
+        client.get("/", headers=h)
+    assert client.get("/", headers=h).status_code == 429
+    assert client.get(path, headers=h).status_code != 429
+
+
+def _warnings(fn):
+    seen = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    handler = Collect(level=logging.WARNING)
+    logging.getLogger().addHandler(handler)
+    try:
+        fn()
+    finally:
+        logging.getLogger().removeHandler(handler)
+    return seen
+
+
+def test_header_bucket_log_line_says_headers_not_user_agent():
+    clock = Clock()
+    gate = _gate(clock, total=1200)
+
+    def run():
+        for _ in range(4):  # 2 admitted, 2 deferred: one line, the second silent
+            gate.check(BROWSER, **IMPOSSIBLE)
+        clock.now += 61  # bucket full again
+        for _ in range(3):  # 2 admitted, 1 deferred, plus the silent one
+            gate.check(BROWSER, **IMPOSSIBLE)
+
+    pid = os.getpid()
+    assert _warnings(run) == [
+        "crawler budget: matched on request headers, not User-Agent: "
+        f'rule="Sec-Fetch-Site: none with Referer" deferred=1 pid={pid}',
+        "crawler budget: matched on request headers, not User-Agent: "
+        f'rule="Sec-Fetch-Site: none with Referer" deferred=2 pid={pid}',
+    ]
+
+
+def test_ua_log_line_is_unchanged_next_to_the_header_line():
+    gate = _gate(Clock(), total=1200)
+
+    def run():
+        for _ in range(3):
+            gate.check(APPLEBOT, **IMPOSSIBLE)
+
+    assert _warnings(run) == [
+        f"crawler budget: crawler=Applebot deferred=1 pid={os.getpid()}"
+    ]
+
+
+def test_impossible_headers_pct_setting(monkeypatch):
+    assert Settings().crawler_impossible_headers_pct == 1
+    monkeypatch.setenv("CRAWLER_IMPOSSIBLE_HEADERS_PCT", "0")
+    assert Settings().crawler_impossible_headers_pct == 0
+    monkeypatch.setenv("CRAWLER_IMPOSSIBLE_HEADERS_PCT", "7")
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "1200")
+    s = Settings()
+    assert s.crawler_impossible_headers_pct == 7
+    gate = CrawlerBudget.from_settings(s)
+    assert gate.impossible_per_worker_per_minute() == pytest.approx(84)
+
+
+@pytest.mark.parametrize("value", ["-1", "101"])
+def test_impossible_headers_pct_is_a_validated_percentage(monkeypatch, value):
+    monkeypatch.setenv("CRAWLER_IMPOSSIBLE_HEADERS_PCT", value)
+    with pytest.raises(ValueError):
+        Settings()

@@ -301,11 +301,13 @@ def _thread_dates(
     stale = unmaterialised_roots(
         session, inbox_id, sorted({r for r in roots.values() if r is not None})
     )
-    fast = [a for a, r in roots.items() if r is not None and r not in stale]
-    fast_set = set(fast)
-    walk = [a for a in article_ids if a not in fast_set]
+    fast = {a for a, r in roots.items() if r is not None and r not in stale}
+    walk = [a for a in article_ids if a not in fast]
     out: dict[int, object] = {}
-    for ids, sql in ((fast, _THREAD_DATES_COLUMN_SQL), (walk, _THREAD_DATES_WALK_SQL)):
+    for ids, sql in (
+        (sorted(fast), _THREAD_DATES_COLUMN_SQL),
+        (walk, _THREAD_DATES_WALK_SQL),
+    ):
         if ids:
             params = {"ids": ids, "inbox_id": inbox_id}
             out.update(
@@ -413,12 +415,16 @@ def _format_tooltip(
     # ParsedArticle side, but trailers come from message bodies
     # and the trailer name is whatever bytes the contributor put
     # after `Reviewed-by:` and before the `<address>` bracket.
+    # Function-local, like `mimir.seo`: `mimir.web` imports this module.
+    from mimir.web.filters import _usable_name
+
     seen_as_maintainer: set[str] = set()
     seen_as_other: set[str] = set()
     maintainers: list[str] = []
     others: list[str] = []
     for raw_name, is_m in reviewers:
-        name = _UNSAFE_ATTR_CHARS_RE.sub("", raw_name or "").strip()
+        # Same rule as a From name: an address-shaped name is no name (#902).
+        name = _UNSAFE_ATTR_CHARS_RE.sub("", _usable_name(raw_name) or "").strip()
         if not name:
             continue
         if is_m:

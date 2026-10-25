@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
-from mimir.cli import backfill_patch_series_command
+from mimir.cli.backfill import backfill_patch_series_command
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series
 

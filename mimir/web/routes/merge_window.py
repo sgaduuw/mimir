@@ -16,6 +16,7 @@ from mimir.merge_window import (
     merge_window_state,
 )
 from mimir.web._blueprint import bp_web
+from mimir.web.routes._validators import allowlist_tag
 from mimir.web.urls import _site_base
 
 
@@ -34,7 +35,11 @@ def merge_window_page():
         state = merge_window_state(session)
         pulls_state = linus_pulls_state(session)
         etag = hashlib.blake2s(
-            f"{state}|{pulls_state}|{canonical_url}".encode(), digest_size=8
+            # The author lines name a nameless allowlisted sender by its
+            # address (`display_name`), so the allowlist is an input; the
+            # data cache key leaves it out, as the data does not use it.
+            f"{state}|{pulls_state}|{canonical_url}|{allowlist_tag()}".encode(),
+            digest_size=8,
         ).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)

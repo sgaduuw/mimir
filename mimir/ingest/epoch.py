@@ -48,6 +48,7 @@ from mimir.models import (
 from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
+    _parent,
     in_series_link,
     parse_cover_letter,
     reply_to_cover,
@@ -192,15 +193,7 @@ def _thread_parent(session: Session, message_id: str, pending_articles: list | N
     for art in pending_articles or ():
         if art.message_id == message_id:
             return art
-    return session.execute(
-        select(
-            Article.message_id,
-            Article.subject,
-            Article.author,
-            Article.date,
-            Article.thread_parent,
-        ).where(Article.message_id == message_id)
-    ).one_or_none()
+    return _parent(session, message_id)
 
 
 def _to_article_insert(

@@ -88,12 +88,12 @@ def test_write_transaction_symbol_removed():
     )
 
 
-def test_analyze_limit_pragma_set_on_every_connection():
-    """`Settings.analyze_limit` is applied via PRAGMA on every
-    connection so ANALYZE's per-index row sample is the same
-    across `mimir analyze`, auto-ANALYZE-after-ingest, and ad-hoc
-    sessions."""
-    assert _pragma("analysis_limit") == settings.analyze_limit
+def test_analysis_limit_is_sqlite_default_0():
+    """#817: ANALYZE reads every row. A cap is not a random sample, it
+    records N + 1 for every big index (CONTEXT.md "ANALYZE sample
+    size"), so nothing sets one and a connection must report SQLite's
+    own default 0. Fails if a cap is reintroduced in `_sqlite_pragmas`."""
+    assert _pragma("analysis_limit") == 0
 
 
 # ---------------------------------------------------------------------------
@@ -172,49 +172,4 @@ def test_pragmas_listener_does_not_set_query_only_when_broker():
     assert result == 0, (
         "broker connections must NOT carry query_only=1; the broker IS "
         "the sole SQLite writer process"
-    )
-
-
-def test_analyze_limit_default_is_0():
-    """#817: no cap. A cap is not a random sample: SQLite reads the
-    first key values and stops, so every index with more than N rows
-    per key records N + 1 (4001 at 4000, where production's real
-    figure for `ix_article_lists_inbox_id` is near 150k). 400 (1.35.1)
-    mis-planned `get_thread` at 400 s; 4000 (1.36.4) only hid the same
-    error in the big indexes. Pinning so an edit back to a cap does
-    not quietly return production to those figures. A full pass is
-    16.7 s of writer lock (2026-10-22)."""
-    # Note: this asserts the **default** before any env override.
-    # If env sets ANALYZE_LIMIT, that wins at process start;
-    # `settings.analyze_limit` reflects the final value, which
-    # may differ. So we read the model field's default directly.
-    from mimir.config import Settings
-
-    assert Settings.model_fields["analyze_limit"].default == 0
-
-
-def test_full_analyze_writeop_resets_analysis_limit(broker_active):
-    """A full ANALYZE WriteOp sets analysis_limit=0 for its run, then
-    must restore the default on the persistent writer connection so the
-    next analyze, under a capped ANALYZE_LIMIT, is not left unbounded."""
-    from sqlalchemy import text
-
-    from mimir.broker._context import get_active_writer
-    from mimir.broker.writes import WriteOp
-    from mimir.config import settings
-    from mimir.maintenance import run_analyze
-
-    run_analyze(full=True)
-
-    writer = get_active_writer()
-
-    # Submit a probe WriteOp that reads analysis_limit on the SAME
-    # persistent writer connection used by the analyze op.
-    def _probe(conn):
-        return conn.execute(text("PRAGMA analysis_limit")).scalar()
-
-    limit = writer.submit(WriteOp(label="probe:analysis_limit", fn=_probe)).result()
-    assert limit == settings.analyze_limit, (
-        f"writer connection left analysis_limit={limit}, "
-        f"expected default {settings.analyze_limit}"
     )

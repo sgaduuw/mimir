@@ -78,6 +78,36 @@ def test_seo_reaching_mimir_web_first_does_not_raise_importerror():
     )
 
 
+def test_merge_window_reaching_mimir_web_first_does_not_raise_importerror():
+    """`mimir.merge_window` must import cleanly when it is reached BEFORE
+    `mimir.web`.
+
+    It imported `mimir.web.filters` and `mimir.web.urls` at module level,
+    and `mimir.web` pulls in the routes, which import `mimir.merge_window`
+    for `LINUS_TREE`. Entered first, the module was still half-built:
+
+        ImportError: cannot import name 'LINUS_TREE'
+
+    `mimir.patch_state` imports `mimir.web.urls` at module level too, so
+    `merge_window` imports it inside `_compute`. Same stub-package setup
+    as the `mimir.seo` test above.
+    """
+    program = textwrap.dedent(
+        f"""
+        import sys, types
+        pkg = types.ModuleType("mimir")
+        pkg.__path__ = [{str(MIMIR)!r}]
+        pkg.__version__ = "0.0.0+test"
+        sys.modules["mimir"] = pkg
+        import mimir.merge_window
+        """
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", program], capture_output=True, text=True
+    )
+    assert proc.returncode == 0, proc.stderr.strip().splitlines()[-1:]
+
+
 def test_mimir_web_is_entered_before_mimir_seo():
     """`mimir.web`'s own submodules must start executing BEFORE
     `mimir.seo` does.

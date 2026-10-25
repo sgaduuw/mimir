@@ -236,7 +236,7 @@ canonical resolution, rendering, or route shapes, **add a test**
 rather than relying on manual checks: a regression in those layers
 silently corrupts cached data or breaks URL contracts.
 
-Six checks that are worth more than "write a good test", because
+Seven checks that are worth more than "write a good test", because
 each has caught a guard that looked fine and guarded nothing:
 
 1. **Watch it fail.** Run the assertion against the unfixed code and
@@ -260,6 +260,14 @@ each has caught a guard that looked fine and guarded nothing:
    compiling dropped an `INDEXED BY` pin SQLAlchemy never rendered on
    SQLite (#835). Small seeded data lets the planner choose the right
    index unaided, so assert the pin itself where one is meant to exist.
+7. **Time it on hostile input when it scans mail text.** A regex or a
+   loop over a subject, a From header or a body meets whatever a
+   sender wrote. Feed it a few hundred thousand repeats of the shape
+   it works on (`tests/test_patch_series.py`,
+   `test_a_long_bracket_parses_in_linear_time`) and bound the wall
+   time loosely, at seconds, so a slow CI runner passes and quadratic
+   code does not. Three quadratic scans reached review in one release
+   (#852, #869, #870).
 
 Note the suite installs a broker context session-wide, so a code
 path that can only work inside the broker still passes its tests.

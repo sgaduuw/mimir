@@ -50,6 +50,15 @@ the cap, a further new token shares ONE overflow bucket at the default
 percentage, so a flood of invented crawler names is throttled together
 instead of each getting a fresh bucket.
 
+A request that did not identify a crawler in its User-Agent but sends
+`Sec-Fetch-Site: none` with a `Referer` (#903) is held in ONE small shared
+bucket, `crawler_impossible_headers_pct` of the global. `none` marks a
+user-initiated navigation (typed URL, bookmark), and a browser sends no
+Referer on one, so the pair is a client faking a click. It charges the
+global bucket like a listed crawler, not the unlisted pool. A declared
+crawler keeps its own bucket. Its log line says the match was on request
+headers, not the User-Agent.
+
 No database, blob or render work happens on any path through here.
 """
 
@@ -99,6 +108,12 @@ MAX_UNLISTED_BUCKETS = 256
 # A bucket idle this long (and refilled) carries no state: drop it.
 _IDLE_DROP_SEC = 600
 OVERFLOW_KEY = "(other crawlers)"
+IMPOSSIBLE_KEY = "(impossible headers)"
+
+
+def impossible_headers(sec_fetch_site: str | None, referer: str | None) -> bool:
+    """`Sec-Fetch-Site: none` (a user-initiated navigation) with a Referer."""
+    return bool(referer) and (sec_fetch_site or "").lower() == "none"
 
 
 class _Bucket:
@@ -130,6 +145,7 @@ class CrawlerBudget:
         markers: Sequence[str] | None = None,
         default_ua_pct: int = 10,
         unlisted_pool_pct: int = 30,
+        impossible_headers_pct: int = 1,
     ):
         self.retry_after_sec = retry_after_sec
         self._clock = clock
@@ -156,6 +172,11 @@ class CrawlerBudget:
         self._unlisted: dict[str, _Bucket] = {}
         self._overflow = self._bucket(default_ua_pct, now)
         self._pool = self._bucket(unlisted_pool_pct, now)
+        self._impossible = (
+            self._bucket(impossible_headers_pct, now)
+            if total_per_minute > 0 and impossible_headers_pct > 0
+            else None
+        )
         self._last_sweep = now
 
     def _bucket(self, pct: int, now: float) -> _Bucket:
@@ -171,6 +192,7 @@ class CrawlerBudget:
             markers=s.crawler_ua_markers,
             default_ua_pct=s.crawler_default_ua_pct,
             unlisted_pool_pct=s.crawler_unlisted_pool_pct,
+            impossible_headers_pct=s.crawler_impossible_headers_pct,
         )
 
     def crawler_key(self, user_agent: str | None) -> str | None:
@@ -186,20 +208,34 @@ class CrawlerBudget:
         match = self._token.search(user_agent) if self._token else None
         return match.group(1).lower() if match else None
 
-    def check(self, user_agent: str | None) -> str | None:
-        """Return the crawler's bucket key when the request must be
-        refused; None when it passes (not a crawler, or admitted and
-        charged)."""
+    def check(
+        self,
+        user_agent: str | None,
+        sec_fetch_site: str | None = None,
+        referer: str | None = None,
+    ) -> str | None:
+        """Return the bucket key when the request must be refused; None
+        when it passes (not gated, or admitted and charged)."""
         key = self.crawler_key(user_agent)
+        if (
+            key is None
+            and self._impossible
+            and impossible_headers(sec_fetch_site, referer)
+        ):
+            key = IMPOSSIBLE_KEY
         with self._lock:
             now = self._clock()
             self._sweep(now)
             if key is None:
                 return None
-            own = self._bucket_for(key, now)
+            own = (
+                self._impossible
+                if key == IMPOSSIBLE_KEY
+                else self._bucket_for(key, now)
+            )
             own.last_used = now
             buckets = [own, self._global]
-            if key not in self._listed:
+            if key not in self._listed and key != IMPOSSIBLE_KEY:
                 buckets.append(self._pool)
             for b in buckets:
                 b.refill(now)
@@ -240,12 +276,20 @@ class CrawlerBudget:
         # per bucket, with the count since the previous line.
         bucket.deferred += 1
         if bucket.last_log is None or now - bucket.last_log >= _LOG_EVERY_SEC:
-            logger.warning(
-                "crawler budget: crawler=%s deferred=%d pid=%d",
-                key,
-                bucket.deferred,
-                os.getpid(),
-            )
+            if key == IMPOSSIBLE_KEY:
+                logger.warning(
+                    "crawler budget: matched on request headers, not User-Agent: "
+                    'rule="Sec-Fetch-Site: none with Referer" deferred=%d pid=%d',
+                    bucket.deferred,
+                    os.getpid(),
+                )
+            else:
+                logger.warning(
+                    "crawler budget: crawler=%s deferred=%d pid=%d",
+                    key,
+                    bucket.deferred,
+                    os.getpid(),
+                )
             bucket.deferred = 0
             bucket.last_log = now
 
@@ -257,6 +301,9 @@ class CrawlerBudget:
 
     def ua_per_worker_per_minute(self, key: str) -> float:
         return self._find(key).rate * 60
+
+    def impossible_per_worker_per_minute(self) -> float:
+        return self._impossible.rate * 60 if self._impossible else 0.0
 
     def unlisted_count(self) -> int:
         return len(self._unlisted)

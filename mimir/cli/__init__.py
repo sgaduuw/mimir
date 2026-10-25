@@ -11,46 +11,15 @@ Two public entry points:
   app-factory discovery; this just spares operators the
   `flask --app mimir` prefix.
 
-The package is split by concern (see each submodule); names that
-callers (tests, the legacy `mimir.cli` import path) used to import
-from `mimir.cli` are re-exported here so the cutover is a pure
-refactor.
+The package is split by concern (see each submodule). Import a command
+from its own module; this file imports only what `register_cli` wires.
 """
 
 import click
 from flask import Flask
 from flask.cli import FlaskGroup
 
-from mimir.cli._common import (
-    _configure_logging,
-    _fmt_bytes,
-    _parse_pair,
-    _select_inboxes,
-)
 from mimir.cli.admin import admin_group
-from mimir.cli.admin.canonicals import (
-    admin_canonicals_backfill_command,
-    admin_canonicals_group,
-)
-from mimir.cli.admin.failures import (
-    admin_failures_group,
-    admin_failures_list_command,
-    admin_failures_replay_command,
-)
-from mimir.cli.admin.inbox import (
-    admin_inbox_add_command,
-    admin_inbox_group,
-    admin_inbox_list_command,
-    admin_inbox_remove_command,
-    admin_inbox_show_command,
-    admin_inbox_trackers_add_command,
-    admin_inbox_trackers_clear_command,
-    admin_inbox_trackers_group,
-    admin_inbox_trackers_remove_command,
-    admin_inbox_trackers_set_command,
-    admin_inbox_trackers_show_command,
-    admin_inbox_update_command,
-)
 from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
@@ -60,76 +29,17 @@ from mimir.cli.backfill import (
 )
 from mimir.cli.bootstrap import bootstrap_inboxes_command
 from mimir.cli.broker import broker_command, broker_ping_command
-from mimir.cli.cache import (
-    WARM_CACHE_REFRESH_WITHIN_SEC,
-    WARM_TOP_SUBSYSTEMS_PER_INBOX,
-    warm_cache_command,
-)
+from mimir.cli.cache import warm_cache_command
 from mimir.cli.devseed import dev_seed_thread_command
 from mimir.cli.diagnostics import tracemalloc_diff_command
 from mimir.cli.doctor import doctor_command
-from mimir.cli.ingest import (
-    _push_indexnow,
-    ingest_command,
-    reindex_command,
-    update_command,
-)
-from mimir.cli.initdb import init_db_command
+from mimir.cli.ingest import ingest_command, reindex_command, update_command
 from mimir.cli.mainline import update_mainline_command
 from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.cli.show import show_command
 
-__all__ = [
-    "WARM_CACHE_REFRESH_WITHIN_SEC",
-    "WARM_TOP_SUBSYSTEMS_PER_INBOX",
-    "_configure_logging",
-    "_fmt_bytes",
-    "_parse_pair",
-    "_push_indexnow",
-    "_select_inboxes",
-    "admin_canonicals_backfill_command",
-    "admin_canonicals_group",
-    "admin_failures_group",
-    "admin_failures_list_command",
-    "admin_failures_replay_command",
-    "admin_group",
-    "admin_inbox_add_command",
-    "admin_inbox_group",
-    "admin_inbox_list_command",
-    "admin_inbox_remove_command",
-    "admin_inbox_show_command",
-    "admin_inbox_trackers_add_command",
-    "admin_inbox_trackers_clear_command",
-    "admin_inbox_trackers_group",
-    "admin_inbox_trackers_remove_command",
-    "admin_inbox_trackers_set_command",
-    "admin_inbox_trackers_show_command",
-    "admin_inbox_update_command",
-    "analyze_command",
-    "backfill_article_files_command",
-    "backfill_article_trailers_command",
-    "backfill_patch_series_command",
-    "backfill_series_chains_command",
-    "bootstrap_inboxes_command",
-    "broker_command",
-    "broker_ping_command",
-    "dev_seed_thread_command",
-    "doctor_command",
-    "ingest_command",
-    "init_db_command",
-    "register_cli",
-    "reindex_command",
-    "show_command",
-    "tracemalloc_diff_command",
-    "update_command",
-    "update_mainline_command",
-    "vacuum_command",
-    "warm_cache_command",
-]
-
 
 def register_cli(app: Flask) -> None:
-    app.cli.add_command(init_db_command)
     app.cli.add_command(bootstrap_inboxes_command)
     app.cli.add_command(broker_command)
     app.cli.add_command(broker_ping_command)

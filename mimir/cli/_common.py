@@ -10,6 +10,7 @@ import logging
 import re
 import shlex
 import sys
+import time
 
 import click
 
@@ -22,6 +23,16 @@ from mimir.models import Inbox
 # like `../../etc` would walk outside the mirror root before the
 # `.exists()` guard ever runs.
 _EPOCH_RE = re.compile(r"\d+\.git")
+
+# A backfill chunk that meets the weekly VACUUM gets `database is
+# locked` after SQLITE_BUSY_TIMEOUT_MS and the broker replies
+# `OperationalError`. The one VACUUM measured took 198 s on a ~16 GB
+# database (production, 2026-10-25), so 60 waits of 30 s (30 min) is
+# about 9x that, room for the archive to grow. A cap that runs out
+# costs what a lock cost before #885: the run stops and is resumed by
+# hand.
+_LOCKED_RETRY_SEC = 30
+_LOCKED_RETRIES = 60
 
 
 def _configure_logging(verbose: int) -> None:
@@ -207,15 +218,45 @@ def _broker_backfill_loop(
     reaches zero. The per-RPC `limit` is the remaining budget so the
     handler short-circuits at the right total. The cap is per session:
     a run stopped by it stays unfinished and the next session resumes.
+
+    An `OperationalError` reply to a later chunk (the database locked,
+    usually by the weekly VACUUM) resends the same chunk every
+    `_LOCKED_RETRY_SEC`, at most `_LOCKED_RETRIES` times in a row,
+    then raises. Resending is safe because a failed batch rolls back
+    with its cursor, and `start=None` joins the run without the busy
+    check. A first chunk is not retried: its run lookup may have
+    committed the claim before the lock hit, and a resend with `start`
+    is then refused as busy by that claim. Any other error raises at
+    once.
     """
+    from mimir.broker.client import BrokerUnavailable
+
     extra = extra or {}
     aggregated = None
     remaining = limit
     start = ("force_restart" if yes else "restart") if restart else "resume"
     while True:
-        reply = client.call(
-            request_cls(limit=remaining, reprocess=reprocess, start=start, **extra)
-        )
+        req = request_cls(limit=remaining, reprocess=reprocess, start=start, **extra)
+        for attempt in range(_LOCKED_RETRIES + 1):
+            try:
+                reply = client.call(req)
+                break
+            except BrokerUnavailable as exc:
+                # The exact text `BrokerClient.call` builds for the
+                # reply; a socket failure or a crash reads differently.
+                locked = str(exc) == f"{req.op}: OperationalError"
+                if not locked or start is not None or attempt == _LOCKED_RETRIES:
+                    raise
+                if attempt == 0:
+                    click.echo(
+                        f"{req.op}: broker reported OperationalError (often "
+                        "the database locked by VACUUM; the broker log has "
+                        "the cause); retrying the chunk every "
+                        f"{_LOCKED_RETRY_SEC} s for up to "
+                        f"{_LOCKED_RETRY_SEC * _LOCKED_RETRIES // 60} min",
+                        err=True,
+                    )
+                time.sleep(_LOCKED_RETRY_SEC)
         chunk = result_cls.model_validate(reply.get("counters", {}))
         run = reply.get("run")
         start = None
