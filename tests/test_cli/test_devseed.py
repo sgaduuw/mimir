@@ -3,6 +3,13 @@ inbox + articles, real thread structure, idempotent on re-
 run, message-URL reachable through the route, inbox-name
 validator)."""
 
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
@@ -135,6 +142,28 @@ def test_dev_seed_thread_idempotent_appends_on_rerun(seeded_db, tmp_path):
     assert len(rows) == 6
 
 
+def test_dev_seed_thread_repoints_existing_inbox_to_new_mirror(seeded_db, tmp_path):
+    """A re-run with another --mirror-root repoints the inbox, so the
+    broker ingests the mirror this run wrote rather than the old one."""
+    from mimir.extensions import SessionLocal
+
+    def run(root):
+        args = ["--inbox", "dev-thread-moved", "--messages", "3"]
+        return CliRunner().invoke(
+            dev_seed_thread_command, [*args, "--mirror-root", str(root)]
+        )
+
+    assert run(tmp_path / "a").exit_code == 0
+    second = run(tmp_path / "b")
+    assert second.exit_code == 0, second.output
+    assert re.search(r"\bnew=(\d+)", second.output).group(1) == "3"
+    with SessionLocal() as s:
+        ix = s.execute(
+            select(Inbox).where(Inbox.name == "dev-thread-moved")
+        ).scalar_one()
+    assert ix.mirror_path == str(tmp_path / "b" / "dev-thread-moved" / "git")
+
+
 def test_dev_seed_thread_message_url_is_reachable(client, seeded_db, tmp_path):
     """The printed URL must resolve to a 200 against the running app.
     Extracts the URL from CLI output and hits it; if dev-seed has
@@ -162,6 +191,65 @@ def test_dev_seed_thread_message_url_is_reachable(client, seeded_db, tmp_path):
         f"dev-seed URL {url_path} returned {r.status_code}; "
         f"the seed helper has likely drifted from the route shape"
     )
+
+
+@pytest.mark.parametrize("broker_available", [False, True])
+def test_dev_seed_thread_from_separate_read_only_process(
+    client, seeded_db, tmp_path, broker_available
+):
+    """A real dev-seed run is a separate process with `query_only=1`
+    connections and no writer context, unlike this suite, which runs
+    in-process as the writer. Every write must go over the broker socket,
+    and the seeded thread must render with its fold toolbar (#932). The
+    run starts in another directory with a relative --mirror-root, so the
+    broker finds the mirror only if the stored path is absolute."""
+    from mimir.config import settings
+
+    assert Path.cwd() != tmp_path
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from mimir.cli.devseed import dev_seed_thread_command; "
+            "dev_seed_thread_command()",
+            "--inbox",
+            "dev-thread-rpc",
+            "--messages",
+            "5",
+            "--mirror-root",
+            "Inboxes",
+        ],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "MIMIR_IS_BROKER": "false",
+            "BROKER_SOCKET_PATH": str(
+                settings.broker_socket_path
+                if broker_available
+                else tmp_path / "missing.sock"
+            ),
+        },
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if not broker_available:
+        assert result.returncode != 0
+        # A ClickException naming the broker, not a write traceback.
+        assert "Traceback" not in result.stderr, result.stderr
+        assert "broker" in result.stderr.lower(), result.stderr
+        return
+    assert result.returncode == 0, result.stdout + result.stderr
+    m = re.search(r"navigate to: http://[^/]+(/\S+)", result.stdout)
+    assert m is not None, result.stdout
+    r = client.get(m.group(1))
+    assert r.status_code == 200
+    body = r.get_data(as_text=True)
+    total = re.search(r"Thread \((\d+) messages\)", body)
+    assert total is not None, "message page rendered no thread toolbar"
+    assert int(total.group(1)) == 5
+    assert 'data-fold-set="closed"' in body
 
 
 # Shared helpers for the blob-touching commands (ingest / reindex / show).
