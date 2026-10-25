@@ -46,7 +46,7 @@ from mimir.models import (
 from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
-from mimir.subsystems import subsystems_for_article
+from mimir.subsystems import article_paths, is_cover, subsystems_for_paths
 from mimir.threading import (
     dedupe_thread,
     find_thread_root,
@@ -391,8 +391,22 @@ def thread_view(
                 )
             messages.append((node, parsed, _msg_url(node, inbox.name)))
 
-        subsystem_hits = subsystems_for_article(session, root_node.id)
+        # One read for both the subsystem line and the series totals.
+        # A cover's files are its patches' (#844), so for a series this
+        # is the posting, and the validator digests the same rows.
+        root_paths = article_paths(session, root_node)
+        subsystem_hits = subsystems_for_paths(
+            session, [path for _, _, path in root_paths if path]
+        )
         subsystem_names = [h.name for h in subsystem_hits]
+        # Only for a cover: a single patch carries git's diffstat in its
+        # own body, so a total there would copy lore.
+        series_totals = None
+        if is_cover(root_node):
+            series_totals = (
+                len({pos for _, pos, _ in root_paths if pos}),
+                len({path for _, _, path in root_paths if path}),
+            )
 
         # The root's patch surfaces. Message pages in a multi-message
         # thread canonicalise here, and the message page is otherwise
@@ -513,6 +527,7 @@ def thread_view(
         page_json_ld=page_json_ld,
         root_url=_msg_url(root_node, inbox.name),
         subsystem_hits=subsystem_hits,
+        series_totals=series_totals,
         patch_state=root_patch_state,
         lifecycle_status=root_lifecycle,
         markdown_url=markdown_path(
