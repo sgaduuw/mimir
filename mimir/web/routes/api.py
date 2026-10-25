@@ -13,7 +13,6 @@ from sqlalchemy import select
 
 import mimir
 from mimir import maintainer_allowlist
-from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList
@@ -21,6 +20,7 @@ from mimir.rendering import render_body
 from mimir.store import MessageNotFound, read_message
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _redact_trailer_address
+from mimir.web.routes._validators import allowlist_tag
 from mimir.web.routes.dashboards import RECENT_PAGE_SIZE, _fetch_recent
 from mimir.web.urls import _get_inbox_or_404
 
@@ -100,7 +100,7 @@ def api_message_body(inbox_name: str, article_id: int):
                     mimir.__version__,
                     link.epoch,
                     link.commit_sha,
-                    "\0".join(settings.email_allowlist),
+                    allowlist_tag(),
                     "\0".join(sorted(maintainer_allowlist.maintainer_addresses())),
                 )
             ).encode(),

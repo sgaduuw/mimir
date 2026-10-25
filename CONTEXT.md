@@ -2413,7 +2413,16 @@ every matrix case on both surfaces except one pairing: `series_head` on
 the thread view, which renders no revisions fold, so the head (spelled
 only in the fold's diff links) cannot reach its body; that ETag still
 moves through the shared `render_state_tag`, which the validator matrix
-checks. Known exceptions: time-relative output (the activity chip ages within the TTL;
+checks. The static address allowlist, `Settings.email_allowlist`, is the same
+kind of input as the render cap: an env knob that restarts the same
+image. `allowlist_tag()` in `_validators.py` puts it into
+`render_state_tag` (message and thread pages and their `.md` forms), the
+`/merge-window` ETag (its author lines name a nameless allowlisted sender
+by address) and the thread view's body fragment (#900). The MAINTAINERS
+half of the allowlist moves with `rules_version`.
+`tests/test_routes/test_allowlist_etag.py` removes a token on each of the
+five surfaces and asserts a 200 whose body no longer shows the address.
+Known exceptions: time-relative output (the activity chip ages within the TTL;
 no validator can carry `now()`), and the related-patches and
 related-discussions lists, which are cached by id and are not validator
 inputs at all, by the same choice as before 3.13.0.
