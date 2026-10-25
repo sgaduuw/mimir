@@ -2,6 +2,8 @@
 review-attestation extractor used at ingest and by the backfill CLI.
 """
 
+import time
+
 from mimir.trailers import extract_trailers
 
 
@@ -106,3 +108,27 @@ def test_extract_handles_co_developed_by_and_compound_roles():
     rows = extract_trailers(body)
     assert ("Co-developed-by", "A", "a@x.com") in rows
     assert ("Reported-and-tested-by", "B", "b@x.com") in rows
+
+
+def test_a_long_trailer_line_parses_in_linear_time():
+    """The line pattern retried its trailing-whitespace tail at every
+    character of a long whitespace run (#921)."""
+    start = time.perf_counter()
+    spaces = " " * 300_000
+    assert extract_trailers("Reviewed-by: a" + spaces + "b") == []
+    assert extract_trailers("Reviewed-by: a" + spaces + "b <j@x.org>") == [
+        ("Reviewed-by", "a" + spaces + "b", "j@x.org")
+    ]
+    assert time.perf_counter() - start < 5
+
+
+def test_a_long_address_run_parses_in_linear_time():
+    """The name/address pattern rescanned the address run from every
+    possible end of the name (#921)."""
+    start = time.perf_counter()
+    run = "a" * 300_000
+    assert extract_trailers("Reviewed-by: " + run) == []
+    assert extract_trailers("Reviewed-by: " + run + " <j@x.org>") == [
+        ("Reviewed-by", run, "j@x.org")
+    ]
+    assert time.perf_counter() - start < 5
