@@ -293,9 +293,9 @@ def head_updates(
     return updates, versions, len(set(heads.values())) > 1
 
 
-def rechain_keys(conn, keys) -> int:
+def rechain_keys(conn, keys) -> None:
     """Re-chain each of `keys` from the state `conn` sees and write the
-    heads and versions that changed; returns the rows written.
+    heads and versions that changed.
 
     It writes a posting's version last, after the subject's own that
     ingest, replay and `backfill-patch-series` store, so the patches'
@@ -312,24 +312,18 @@ def rechain_keys(conn, keys) -> int:
     titles, which the rule reads. Whole keys, never the new rows alone:
     an older posting arriving late moves every later chain of its key.
     """
-    written = 0
     for key in sorted(keys):
         heads, versions, _split = head_updates(conn, key) or ((), (), False)
-        for article_id, head in heads:
-            conn.execute(
-                update(Article)
-                .where(Article.id == article_id)
-                .values(patch_series_head_id=head)
-            )
-            written += 1
-        for article_id, version in versions:
-            conn.execute(
-                update(Article)
-                .where(Article.id == article_id)
-                .values(patch_series_version=version)
-            )
-            written += 1
-    return written
+        for column, rows in (
+            ("patch_series_head_id", heads),
+            ("patch_series_version", versions),
+        ):
+            for article_id, value in rows:
+                conn.execute(
+                    update(Article)
+                    .where(Article.id == article_id)
+                    .values({column: value})
+                )
 
 
 def backfill_series_chains(

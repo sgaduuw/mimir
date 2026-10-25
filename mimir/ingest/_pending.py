@@ -551,11 +551,10 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
                 .values(last_article_date=last_article_date_candidate)
             )
 
-        # Step 6: re-chain every series key the batch touched, from the
-        # state this transaction now holds (#816). A cover's key covers
-        # its in-series patches too, since they carry it. Rows an insert
-        # skipped as duplicates are re-chained as well, which writes
-        # nothing when their key is already chained.
+        # Step 6: re-chain every series key the batch touched (see
+        # `rechain_keys`). Rows an insert skipped as duplicates are
+        # re-chained as well, which writes nothing when their key is
+        # already chained.
         rechain_keys(conn, {a.patch_series_key for a in articles if a.patch_series_key})
 
         # Step 7 (FINAL): IngestState.last_commit_sha UPSERT. Must be

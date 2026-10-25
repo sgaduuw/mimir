@@ -65,8 +65,6 @@ def _replay_loop(
 
     rows = list(conn.execute(q).mappings())
 
-    # still-failed updates accumulate and are written after the loop.
-    still_failed_updates: list[dict] = []
     # Message ids recovered by this run, for the thread-root passes.
     recovered_msgids: list[str] = []
     # Series keys of the articles this run inserted, to re-chain.
@@ -103,15 +101,20 @@ def _replay_loop(
         try:
             parsed = parse_message(raw)
         except Exception as exc:
-            # Defer to a batch update after the loop.
-            still_failed_updates.append(
-                {
-                    "_epoch": row_epoch,
-                    "_commit_sha": row_commit_sha,
-                    "_error_class": type(exc).__name__,
-                    "_error_message": str(exc)[:1000],
-                    "_now": datetime.now(UTC),
-                }
+            # One UPDATE per row: each carries its own error.
+            conn.execute(
+                update(ParseFailure)
+                .where(
+                    ParseFailure.inbox_id == inbox_id,
+                    ParseFailure.epoch == row_epoch,
+                    ParseFailure.commit_sha == row_commit_sha,
+                )
+                .values(
+                    last_attempt=datetime.now(UTC),
+                    attempts=ParseFailure.attempts + 1,
+                    error_class=type(exc).__name__,
+                    error_message=str(exc)[:1000],
+                )
             )
             out.still_failed += 1
             continue
@@ -224,29 +227,9 @@ def _replay_loop(
     if out.recovered:
         _resolve_roots_after_replay(conn, inbox_id, recovered_msgids)
 
-    # A recovered cover is written with no head, as ingest writes one;
-    # re-chain its key here, in the same WriteOp, as an ingest batch
-    # does (#816), so the replay ends where `backfill-series-chains`
-    # would.
+    # Re-chain the keys of the articles this run inserted, as an ingest
+    # batch does (see `rechain_keys`).
     rechain_keys(conn, touched_keys)
-
-    # Flush still-failed updates: one UPDATE per row so each carries
-    # its specific error_class / error_message.
-    for upd in still_failed_updates:
-        conn.execute(
-            update(ParseFailure)
-            .where(
-                ParseFailure.inbox_id == inbox_id,
-                ParseFailure.epoch == upd["_epoch"],
-                ParseFailure.commit_sha == upd["_commit_sha"],
-            )
-            .values(
-                last_attempt=upd["_now"],
-                attempts=ParseFailure.attempts + 1,
-                error_class=upd["_error_class"],
-                error_message=upd["_error_message"],
-            )
-        )
 
     return out
 
