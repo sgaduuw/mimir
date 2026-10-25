@@ -13,11 +13,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- `/api/<inbox>/body/<id>`: one message's body as an HTML fragment, for the
+  thread view's "more lines" link. It is `noindex`, under the already
+  disallowed `/api/` (#814).
 - The main navigation links to `/merge-window` on every page, not only from the
   front page (#891).
 
 ### Changed
 
+- The thread view renders lighter (#814). Diffs keep their `+`/`-`/`@@`
+  colouring but lose the per-token syntax spans. A plain-text block or a
+  quote of more than 40 lines shows its first 40, then an "N more lines" link to the message
+  page that loads the rest in place; the rest is no longer in the thread page.
+  The message page is unchanged, and so is pagination.
 - The series diff page heading names the series, both versions and the
   position, the same text as its title, instead of a generic
   "Inter-revision diff: cover letter" (or "patch N") (#880).
@@ -36,6 +44,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The thread view no longer repeats the diff line anchors (`h-1`, `h-1-L4`)
+  once per message, which made duplicate `id`s on one page and sent a
+  `#h-1-L4` fragment to the wrong message. Those anchors now exist only on
+  the message page (#814).
 - The fold toggle's "closed" button shows ▶ instead of ▼, in a message page's
   thread tree and on `/merge-window`. A downward triangle reads as "open" (#890).
 - A backfill that meets the weekly VACUUM now waits and retries its chunk

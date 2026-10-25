@@ -99,6 +99,12 @@ MAX_QUOTE_DEPTH = 64
 # rendered 44 levels in total.
 MAX_QUOTE_LEVELS_PER_RENDER = 512
 
+# Compact rendering (the thread view) cuts a plain-text or top-level
+# quote block past this many lines and links to the rest, which is not in the page. A thread
+# page can hold 75 CI logs of thousands of lines each (syzbot), and the
+# text is the weight. A `<details>` kept those bytes, so it did not help.
+BODY_TEXT_FOLD_LINES = 40
+
 
 def _lexer_for_fence(info: str):
     """Pick a Pygments lexer for a code fence's info string.
@@ -145,6 +151,10 @@ class _RenderContext:
     address_redactor: Callable[[str], str] | None = None
     parent_url: str | None = None
     lore_mirror_urls: dict[str, str] | None = None
+    compact: bool = False
+    # (message page URL, fragment URL) for the "more lines" link; None
+    # means compact text blocks are not cut.
+    text_more: tuple[str, str] | None = None
     # Quote levels left for this render. One context per `render_body`
     # call, threaded through the recursion, because the bound is a
     # property of the whole message rather than of any one block.
@@ -184,11 +194,43 @@ def _flatten_quote(
     )
 
 
+def _more_link(context: _RenderContext, left: int, noun: str) -> str:
+    """The link that replaces text a compact render cut.
+
+    A real link first: it works without JS and for crawlers, and the
+    message page renders everything. htmx swaps in the whole message
+    body, so one click shows every cut block.
+    """
+    href, fragment = context.text_more
+    return (
+        f'<p class="text-more"><a href="{html.escape(href)}"'
+        f' hx-get="{html.escape(fragment)}"'
+        ' hx-target="closest .message-body" hx-swap="outerHTML">'
+        f"{left} more {noun}</a></p>"
+    )
+
+
 def _render_block(
     block: _Block,
     context: _RenderContext,
     depth: int = 0,
 ) -> str:
+    if (
+        block.kind == "quote"
+        and depth == 0
+        and context.compact
+        and context.text_more is not None
+        and len(block.lines) > BODY_TEXT_FOLD_LINES
+    ):
+        # Cut BEFORE the recursion below: the quote's tail is never
+        # parsed, which is the cost (syzbot's 800-line nested quotes
+        # were 3,000 `parse_blocks` calls a page).
+        head = _Block("quote", block.lines[:BODY_TEXT_FOLD_LINES])
+        left = len(block.lines) - BODY_TEXT_FOLD_LINES
+        return _render_block(head, context, depth) + _more_link(
+            context, left, "quoted lines"
+        )
+
     if block.kind == "quote":
         if depth >= MAX_QUOTE_DEPTH:
             return _flatten_quote(
@@ -256,8 +298,11 @@ def _render_block(
         # than relying on the two staying aligned.
         return _render_diff_block(
             block.lines,
-            with_anchors=(depth == 0 and not block.headerless),
+            # Compact (thread view): a thread page holds many diffs that
+            # each restart at `h-1`, so the ids would repeat on one page.
+            with_anchors=(depth == 0 and not block.headerless and not context.compact),
             headerless=block.headerless,
+            highlight_tokens=not context.compact,
         )
 
     if block.kind == "code":
@@ -271,11 +316,25 @@ def _render_block(
             lexer = _lexer_for_fence(block.info)
         return highlight(code_text, lexer, _CODE_FORMATTER)
 
-    text = "\n".join(block.lines)
-    return (
-        '<pre class="body-text-block">'
-        f"{linkify(text, context.msgid_urls, context.address_redactor, context.lore_mirror_urls)}</pre>"
-    )
+    def _linkified(lines: list[str]) -> str:
+        return linkify(
+            "\n".join(lines),
+            context.msgid_urls,
+            context.address_redactor,
+            context.lore_mirror_urls,
+        )
+
+    if (
+        context.compact
+        and context.text_more is not None
+        and len(block.lines) > BODY_TEXT_FOLD_LINES
+    ):
+        left = len(block.lines) - BODY_TEXT_FOLD_LINES
+        return (
+            f'<pre class="body-text-block">{_linkified(block.lines[:BODY_TEXT_FOLD_LINES])}</pre>'
+            + _more_link(context, left, "lines")
+        )
+    return f'<pre class="body-text-block">{_linkified(block.lines)}</pre>'
 
 
 def render_body(
@@ -284,6 +343,8 @@ def render_body(
     address_redactor=None,
     parent_url: str | None = None,
     lore_mirror_urls: dict[str, str] | None = None,
+    compact: bool = False,
+    text_more: tuple[str, str] | None = None,
 ) -> Markup:
     """Render `body` to HTML.
 
@@ -292,6 +353,13 @@ def render_body(
     `<details>` with a "↗ jump to hunk" link pointing here. Pass
     the URL of the message being replied to (typically resolved
     from `article.thread_parent` via the thread's URL map).
+
+    `compact`: the thread view's rendering, which drops what a page of
+    many messages cannot afford (#814): diffs lose their per-token
+    spans and per-line anchors. With `text_more` (message page URL,
+    fragment URL) a plain-text block past `BODY_TEXT_FOLD_LINES` is
+    cut there and followed by a link to the rest. The message page
+    never sets either.
 
     `lore_mirror_urls`: optional `{msgid: mimir_url}` dict. Body
     text linking out to `lore.kernel.org/<slug>/<msgid>/...` gets a
@@ -307,5 +375,7 @@ def render_body(
         address_redactor=address_redactor,
         parent_url=parent_url,
         lore_mirror_urls=lore_mirror_urls,
+        compact=compact,
+        text_more=text_more,
     )
     return Markup("".join(_render_block(b, context) for b in parse_blocks(body)))
