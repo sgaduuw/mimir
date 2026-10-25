@@ -1221,9 +1221,8 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
     assert 'class="rev-label" href=' in fold and ">v1</a>" in fold
     assert '<span class="rev-label">v2</span>' in fold
-    # The prior revision (v1) carries a diff link; v2 carries the
-    # "current" marker instead.
-    assert "[diff vs current]" in fold
+    # v2 carries the "current" marker and the diff against v1 (#844).
+    assert "[diff against previous]" in fold
     assert "rev-current-marker" in fold
 
 
@@ -2810,7 +2809,7 @@ def test_message_page_patch_metadata_is_inside_swap_target(
     for marker in (
         'class="msg-badges"',
         'class="badge badge-lifecycle-landed"',
-        "of 2 in this series",
+        "(2 revisions archived)",
         "landed in mainline as aabbccddeeff",
         'class="revisions-fold"',
         'class="revisions-count">(2)',
@@ -2903,8 +2902,8 @@ def test_message_page_revisions_fold_links_non_current_versions(
     assert '<span class="rev-label">v2</span>' in fold, (
         "current revision label (v2) must stay a plain span, not a link"
     )
-    # And the [diff vs current] link on v1 is preserved.
-    assert "[diff vs current]" in fold
+    # And the diff from v1 sits on v2, the revision it leads to (#844).
+    assert "[diff against previous]" in fold
 
 
 # ---------------------------------------------------------------------------
