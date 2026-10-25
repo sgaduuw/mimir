@@ -78,7 +78,7 @@ def validate_upstream_url(url: str) -> str:
     so existing admin-CLI handlers keep working unchanged.
     """
     try:
-        return validate_outbound_url(url, allow_http=False)
+        return validate_outbound_url(url)
     except OutboundUrlError as exc:
         raise InboxValidationError(f"upstream_url: {exc}") from exc
 

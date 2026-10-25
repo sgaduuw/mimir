@@ -561,9 +561,9 @@ WriteOp per batch via `_submit_ingest_batch`, awaited via
 `.result()` before the next batch composes).
 
 - `ingest_epoch` takes a new `writer` kwarg with context fallback
-  (`_context.get_active_writer()`) and a `batch_flush_seconds`
-  kwarg sourced from `INGEST_BATCH_FLUSH_SECONDS` (new Settings
-  field, default 0.5, env-tunable).
+  (`_context.get_active_writer()`) and flushes on
+  `INGEST_BATCH_FLUSH_SECONDS` (new Settings field, default 0.5,
+  env-tunable).
 - The Article INSERTs use SQLite's `RETURNING id` so ArticleList
   / ArticleFile / ArticleTrailer rows land their FKs in the same
   closure. Same-batch cover-letter lookup checks the in-flight

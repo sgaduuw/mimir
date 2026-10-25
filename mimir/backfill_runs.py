@@ -93,7 +93,7 @@ _COLUMNS = (
 )
 
 
-def params_key(*, reprocess: bool, inbox_filter: str | None = None) -> str:
+def params_key(*, reprocess: bool = False, inbox_filter: str | None = None) -> str:
     """The parameters that define which articles a run walks, as a
     canonical string. The ONE builder of the key, for both the lookup
     and the insert in `resolve`.
