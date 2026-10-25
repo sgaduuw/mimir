@@ -28,3 +28,19 @@
 {{ name|lower }}
 {%- endif %}
 {%- endmacro %}
+
+
+{# The `M:` maintainers of `hits`, after a subsystem list, each linked
+   to a profile page where the profile route serves one. Shared by the
+   message page and the thread view (#844), so both apply one gate.
+   `subsystem_maintainers` picks and dedupes the people; the link goes
+   through `maintainer_link_url`, which keeps an address the page would
+   redact out of the href. No address is ever rendered as text. #}
+{% macro maintainer_links(hits) -%}
+{%- set maints = hits | subsystem_maintainers -%}
+{%- if maints %}
+&middot; <strong>Maintainer{{ '' if maints|length == 1 else 's' }}:</strong>
+{% for name, addr in maints %}{% set url = addr | maintainer_link_url %}{% if url %}<a
+  href="{{ url }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+{%- endif %}
+{%- endmacro %}
