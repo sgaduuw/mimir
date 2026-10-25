@@ -277,6 +277,9 @@ def test_ua_match_is_a_case_insensitive_substring():
         (CUBOT_BROWSER, None),
         (BROWSER, None),
         ("Lynx/2.9.0 libwww-FM/2.14", None),
+        # A user-initiated agent fetch (#884): no marker token, so it is
+        # not a crawler and is ungated on HTML and Markdown alike.
+        ("Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)", None),
         ("", None),
         (None, None),
     ],

@@ -6,7 +6,8 @@ dispatch on.
 beyond `mimir/rendering/` imports this one, and `__init__` re-exports
 only `parse_blocks` from it). Within the package, `body.py` also takes
 `_Block`, `_strip_one_quote_level` and `looks_like_orphaned_diff`,
-and `diff.py` takes `DIFF_TRAILER_LINE`. Its output is a list of
+`diff.py` takes `DIFF_TRAILER_LINE`, and `linkify.py` takes
+`QUOTE_PREFIX_RE`. Its output is a list of
 `_Block` dataclasses that the orchestrator in `body.py` walks
 recursively (quote blocks re-enter `parse_blocks` after one level
 of `>`-prefix stripping, which is how nested quotes render).
