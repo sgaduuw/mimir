@@ -15,6 +15,17 @@ changes, not internal refactors. Categories: **Added**,
 
 - The main navigation links to `/merge-window` on every page, not only from the
   front page (#891).
+- Message and thread pages have Markdown versions for AI agents and other
+  tools, at the page URL plus `.md`: `/<inbox>/<YYYY>/<MM>/<id>.md`,
+  `.../t.md` and `.../t/<page>.md` (#884). Each HTML page links its version
+  with `<link rel="alternate" type="text/markdown">`; the format is chosen by
+  URL, not by the `Accept` header. The body is the mail as text, under the
+  same address hiding as the HTML page, and the Message-ID is left out by
+  design, as on the page. Each response carries its own ETag and a
+  `Link: rel="canonical"` header naming the HTML page's canonical, and the
+  sitemaps do not list `.md` URLs. The crawler budget applies to them as to
+  the HTML pages; a user-initiated agent such as `Claude-User` is not a
+  recognised crawler and is not gated on either.
 
 ### Changed
 

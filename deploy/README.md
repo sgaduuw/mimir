@@ -204,7 +204,10 @@ so list a crawler to protect it from a flood. Each unlisted crawler has its
 own bucket, keyed by its lowercased token; at most 256 are held, idle ones are
 dropped after ten minutes, and past 256 new names share one overflow bucket at
 the default share. Never gated: robots, sitemaps, `/healthz`, `/readyz`,
-static files, and requests that are not a recognised crawler.
+static files, and requests that are not a recognised crawler. The Markdown
+pages (`.md`) draw on the same buckets as the HTML pages. An agent fetching a
+page on a user's behalf, such as `Claude-User (claude-code/...)`, carries no
+marker token, so it is not a recognised crawler and is not gated on either.
 
 The default markers include `curl`, `wget` and `python-requests`, so your own
 scripts and smoke checks that use those tools count as a crawler once the
