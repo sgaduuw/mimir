@@ -12,11 +12,8 @@ from sqlalchemy import select
 from mimir.broker import _context
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.writes import WriterThread
-from mimir.cli import (
-    analyze_command,
-    vacuum_command,
-    warm_cache_command,
-)
+from mimir.cli.cache import warm_cache_command
+from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.inboxes import set_tracked_authors
 from mimir.models import Article, ArticleList, Inbox
 

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from click.testing import CliRunner
 
-from mimir.cli import doctor_command
+from mimir.cli.doctor import doctor_command
 
 
 @pytest.fixture

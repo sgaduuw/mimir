@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 from sqlalchemy import select
 
-from mimir.cli import (
+from mimir.cli.admin.inbox import (
     admin_inbox_add_command,
     admin_inbox_list_command,
     admin_inbox_remove_command,
