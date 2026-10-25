@@ -66,6 +66,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Removing a token from `EMAIL_ALLOWLIST` now reaches cached pages. The
+  message, thread, Markdown and `/merge-window` pages kept a matching ETag,
+  so CDNs and browsers went on showing an address the page now hides until
+  the next release (#900).
 - The thread view no longer repeats the diff line anchors (`h-1`, `h-1-L4`)
   once per message, which made duplicate `id`s on one page and sent a
   `#h-1-L4` fragment to the wrong message. Those anchors now exist only on
