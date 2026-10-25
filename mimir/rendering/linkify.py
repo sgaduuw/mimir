@@ -53,13 +53,14 @@ _TRAILER_LINE_RE = re.compile(
     r"^(?:" + "|".join(re.escape(k) for k in TRAILER_KEYS) + r"):\s",
     re.IGNORECASE,
 )
-# Local-part / domain restricted to a conservative RFC 5322 subset that
-# excludes HTML metacharacters (`"`, `'`, `<`, `=`, etc.). The trailer
-# renderer also html-escapes the redactor's return value as defense in
-# depth; tightening here means hostile addresses fall through to the
-# default `_render_line` path (which always escapes) instead of going
-# through the redactor branch at all.
-_EMAIL_ANGLE_RE = re.compile(r"<([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>")
+# The local part accepts the RFC 5322 atom characters (#902): `=` and the
+# rest are legal in an address, and a narrower class let one through
+# unredacted. The trailer renderer html-escapes the redactor's return
+# value, so a wider match cannot smuggle HTML into the output.
+_EMAIL_ANGLE_RE = re.compile(r"<([A-Za-z0-9!#$%&'*+/=?^_`{|}~.\-]+@[A-Za-z0-9.\-]+)>")
+# The same shape without the angle brackets, for tokens inside a trailer
+# name: `Signed-off-by: joe@example.com <joe@example.com>`.
+_ADDRESS_TOKEN_RE = re.compile(r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\-]+@[A-Za-z0-9.\-]+")
 
 
 def linkify(
@@ -158,6 +159,23 @@ def _render_line(
     return "".join(out)
 
 
+def _strip_redacted_trailer_name(line: str, redactor) -> str:
+    """Drop the name part of a trailer line that carries a non-allowlisted
+    address (#902). `Signed-off-by: joe@example.com <joe@example.com>`
+    otherwise prints the address through the name. The redactor answers
+    the allowlist question: it returns the address unchanged, in angle
+    brackets, for an allowlisted sender."""
+    match = _EMAIL_ANGLE_RE.search(line)
+    if not match:
+        return line
+    name = line[: match.start()]
+    tokens = _ADDRESS_TOKEN_RE.findall(name)
+    if not tokens or all(redactor(t) == f"<{t}>" for t in tokens):
+        return line
+    key_end = name.find(":")
+    return line[: key_end + 1] + " " + line[match.start() :]
+
+
 def _render_trailer_line(
     line: str,
     redactor,
@@ -174,6 +192,7 @@ def _render_trailer_line(
     live HTML through this code path regardless of what the email
     regex matched.
     """
+    line = _strip_redacted_trailer_name(line, redactor)
     out: list[str] = []
     pos = 0
     spans: list[tuple[int, int, str]] = []
@@ -212,6 +231,7 @@ def redact_trailer_addresses(text: str, redactor) -> str:
     out: list[str] = []
     for line in text.split("\n"):
         if _TRAILER_LINE_RE.match(line):
+            line = _strip_redacted_trailer_name(line, redactor)
             out.append(_EMAIL_ANGLE_RE.sub(lambda m: redactor(m.group(1)), line))
         else:
             out.append(line)

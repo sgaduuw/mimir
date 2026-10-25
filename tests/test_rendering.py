@@ -12,7 +12,13 @@ import re
 import pytest
 from markupsafe import Markup
 
-from mimir.rendering import URL_OR_MSGID_RE, linkify, parse_blocks, render_body
+from mimir.rendering import (
+    URL_OR_MSGID_RE,
+    linkify,
+    parse_blocks,
+    redact_trailer_addresses,
+    render_body,
+)
 from mimir.rendering.body import MAX_QUOTE_DEPTH
 
 # linkify, escaping + URL handling
@@ -637,6 +643,43 @@ def test_trailer_keeps_allowlisted_addresses_when_redactor_says_so():
     assert "torvalds@kernel.org" in out
     assert "random@example.com" not in out
     assert "redacted" in out
+
+
+def test_trailer_name_with_a_non_allowlisted_address_is_dropped():
+    """#902: `Signed-off-by: joe@example.com <joe@example.com>` printed
+    the address through the name part; the name is dropped instead."""
+
+    def keep_if_kernel(email):
+        return f"<{email}>" if email.lower().endswith("@kernel.org") else "<redacted>"
+
+    body = (
+        "Signed-off-by: joe@example.com <joe@example.com>\n"
+        "Reviewed-by: Jane <jane@kernel.org>\n"
+    )
+    out = str(render_body(body, address_redactor=keep_if_kernel))
+    assert "joe@example.com" not in out
+    assert "Jane" in out and "jane@kernel.org" in out
+
+
+def test_trailer_address_with_rfc5322_local_chars_is_redacted():
+    """#902: the local part used to stop at `=`, so the address printed
+    verbatim; the RFC 5322 atom characters are part of the match now."""
+    body = "Signed-off-by: X <x=y@example.com>"
+    out = str(render_body(body, address_redactor=lambda _e: "<redacted>"))
+    assert "x=y@example.com" not in out
+    assert "redacted" in out
+
+
+def test_plaintext_trailer_redaction_drops_email_shaped_names():
+    """#902: the `.md`/JSON-LD plaintext path follows the HTML path."""
+
+    def keep_if_kernel(email):
+        return f"<{email}>" if email.lower().endswith("@kernel.org") else "<redacted>"
+
+    text = "Signed-off-by: joe@example.com <joe@example.com>\nbody text"
+    out = redact_trailer_addresses(text, keep_if_kernel)
+    assert "joe@example.com" not in out
+    assert "body text" in out
 
 
 def test_trailer_redactor_output_html_metacharacters_are_escaped():
