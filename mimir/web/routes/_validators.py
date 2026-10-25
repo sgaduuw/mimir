@@ -17,6 +17,7 @@ import hashlib
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from mimir.config import settings
 from mimir.models import (
     Article,
     ArticleFile,
@@ -33,6 +34,15 @@ def _digest(values) -> str:
     """Short digest of NUL-joined strings, so {"ab"} and {"a", "b"}
     cannot collide."""
     return hashlib.blake2s("\0".join(values).encode(), digest_size=4).hexdigest()
+
+
+def allowlist_tag() -> str:
+    """The static half of the address allowlist, `Settings.email_allowlist`,
+    as a validator input (#900). It is an env knob: changing it restarts
+    the same image without moving `mimir.__version__`, and removing a
+    token must reach every cache holding a page that showed the address.
+    The MAINTAINERS half moves with `rules_version` below."""
+    return _digest(settings.email_allowlist)
 
 
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
@@ -169,5 +179,6 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         # every link.
         series_tag = _digest(repr(tuple(r)) for r in [series, *revisions])
     return (
-        f"{landings_tag}|{trailers_tag}|{rules_version or ''}|{series_tag}|{files_tag}"
+        f"{landings_tag}|{trailers_tag}|{rules_version or ''}|{series_tag}|{files_tag}|"
+        f"{allowlist_tag()}"
     )
