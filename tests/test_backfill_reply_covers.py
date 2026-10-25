@@ -58,9 +58,6 @@ def _add(
         s.commit()
 
 
-_series = series_columns
-
-
 def test_reprocess_clears_a_stored_reply_cover(seeded_db, broker_active):
     _add(seeded_db, "c820@x", COVER, AUTHOR, key=KEY, position=0)
     _add(
@@ -80,7 +77,9 @@ def test_reprocess_clears_a_stored_reply_cover(seeded_db, broker_active):
 
     result = backfill_patch_series(reprocess=True)
 
-    got = _series(seeded_db, "c820@x", "r820@x", "rr820@x", "again820@x", "v3-820@x")
+    got = series_columns(
+        seeded_db, "c820@x", "r820@x", "rr820@x", "again820@x", "v3-820@x"
+    )
     assert got["c820@x"][:3] == (KEY, "v2", 0)
     assert got["r820@x"] == (None, None, None, None)
     assert got["rr820@x"] == (None, None, None, None)
@@ -127,7 +126,7 @@ def test_a_plain_run_does_not_rewrite_a_cleared_reply(
     assert result.reply_cover == 1  # precondition: the reply was recognised
     assert written == writes
     assert stored == REPLY
-    assert _series(seeded_db, "r820@x")["r820@x"] == (None, None, None, None)
+    assert series_columns(seeded_db, "r820@x")["r820@x"] == (None, None, None, None)
 
 
 @pytest.mark.parametrize("reprocess", [False, True])
@@ -161,7 +160,7 @@ def test_a_patch_under_a_reply_cover_is_left_without_a_series(
 
     backfill_patch_series(reprocess=reprocess)
 
-    got = _series(seeded_db, "r820@x", "p1-820@x")
+    got = series_columns(seeded_db, "r820@x", "p1-820@x")
     assert got["r820@x"] == (None, None, None, None)
     assert got["p1-820@x"] == (None, None, 1, None)
 
@@ -184,11 +183,11 @@ def test_chains_after_reprocess_keep_the_parent_key_s_heads(seeded_db, broker_ac
         seeded_db, "r820@x", REPLY, REVIEWER, parent="c820@x", key=REPLY_KEY, position=0
     )
     backfill_series_chains()
-    before = _series(seeded_db, "v1-820@x", "c820@x")
+    before = series_columns(seeded_db, "v1-820@x", "c820@x")
 
     backfill_patch_series(reprocess=True)
 
-    assert _series(seeded_db, "v1-820@x", "c820@x") == before
+    assert series_columns(seeded_db, "v1-820@x", "c820@x") == before
     with seeded_db() as s:
         reply_key_covers = s.execute(
             select(Article.id).where(
@@ -247,7 +246,7 @@ def test_reprocess_re_chains_the_key_a_cleared_reply_leaves(seeded_db, broker_ac
         when=datetime(2024, 3, 10, tzinfo=UTC),
     )
     backfill_series_chains()
-    before = _series(seeded_db, "x2@x", "x3@x")
+    before = series_columns(seeded_db, "x2@x", "x3@x")
     with seeded_db() as s:
         x2_id = s.execute(
             select(Article.id).where(Article.message_id == "x2@x")
@@ -257,7 +256,7 @@ def test_reprocess_re_chains_the_key_a_cleared_reply_leaves(seeded_db, broker_ac
 
     result = backfill_patch_series(reprocess=True)
 
-    got = _series(seeded_db, "x1@x", "x2@x", "x3@x")
+    got = series_columns(seeded_db, "x1@x", "x2@x", "x3@x")
     assert result.reply_cover == 1
     assert got["x2@x"] == (None, None, None, None)
     assert got["x3@x"] == (b_key, "v2", 0, None)

@@ -22,6 +22,10 @@ from mimir.models import (
 from mimir.patch_series import series_key
 
 
+def _subject(raw: bytes, subject: str) -> bytes:
+    return raw.replace(b"Subject: t\r\n", f"Subject: {subject}\r\n".encode())
+
+
 def _rfc5322(
     msgid: str,
     body: bytes = b"hello",
