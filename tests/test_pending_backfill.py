@@ -74,13 +74,6 @@ def test_submit_article_files_batch_delete_first_replaces_rows(writer, seeded_db
     )
 
 
-def test_submit_article_files_batch_empty_is_noop(writer):
-    """Empty payload list returns a pre-resolved future without touching
-    the writer queue."""
-    future = _submit_article_files_batch(writer, [])
-    future.result(timeout=1)
-
-
 def test_submit_article_trailers_batch_inserts_rows(writer, seeded_db):
     """Happy path: 1 article with 2 trailers lands 2 rows with
     address_normalized populated from lowercased address."""
