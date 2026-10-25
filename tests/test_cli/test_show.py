@@ -5,10 +5,8 @@ branches."""
 
 from click.testing import CliRunner
 
-from mimir.cli import (
-    ingest_command,
-    show_command,
-)
+from mimir.cli.ingest import ingest_command
+from mimir.cli.show import show_command
 from tests.test_cli._helpers import (
     _build_pubinbox_repo,
     _ingest_one_for_show,

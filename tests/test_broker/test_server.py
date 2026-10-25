@@ -983,7 +983,7 @@ def test_post_migrate_analyze_reruns_when_the_schema_revision_moves(
     class _Result:
         elapsed_ms = 0
 
-    def _fake_analyze(full=False):
+    def _fake_analyze():
         calls.append("ran")
         return _Result()
 
@@ -1134,7 +1134,7 @@ def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
     class _Result:
         elapsed_ms = 0
 
-    def _fake_analyze(full=False):
+    def _fake_analyze():
         calls.append("ran")
         return _Result()
 
@@ -1179,7 +1179,7 @@ def test_incomplete_backfill_never_claims_complete(
     import mimir.thread_roots
     from mimir.broker import server
 
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
 
     def _explode_for_this_inbox(_run):
         raise RuntimeError("simulated per-inbox failure")
@@ -1228,7 +1228,7 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
     import mimir.maintenance
     from mimir.broker import server
 
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
 
     # The seeded corpus has no unrooted rows, so "remaining=0" is true
     # whether or not the count was ever taken: hardcoding 0 in the log
@@ -1388,7 +1388,7 @@ def test_backfill_that_leaves_rows_unrooted_is_not_called_complete(
     import mimir.maintenance
     from mimir.broker import server
 
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
     # A clean run by every other signal: nothing raised, no pass budget
     # hit. Only the count says otherwise.
     monkeypatch.setattr(server, "_count_unrooted_rows", lambda: 5)
@@ -1429,7 +1429,7 @@ def test_backfill_still_succeeds_when_the_remaining_count_cannot_be_taken(
     import mimir.maintenance
     from mimir.broker import server
 
-    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda full=False: None)
+    monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
     monkeypatch.setattr(server, "_count_unrooted_rows", lambda: None)
 
     sock_dir = tmp_path / "unknown"

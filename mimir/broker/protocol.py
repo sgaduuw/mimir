@@ -290,16 +290,11 @@ class BackfillThreadRootsRequest(_BrokerRequest):
 
 
 class AnalyzeRequest(_BrokerRequest):
-    """Run `ANALYZE` on the broker. `full=True` forces no
-    `analysis_limit` for this pass, whatever `ANALYZE_LIMIT` says; with
-    the default of 0 it changes nothing, and the scheduler still sends it
-    weekly."""
+    """Run `ANALYZE` on the broker."""
 
     op: Literal["analyze"] = "analyze"
-    # Covers a full-sample pass (16.7 s on the production corpus,
-    # measured 2026-10-22) with headroom.
+    # Headroom over a full-sample pass (CONTEXT.md "ANALYZE sample size").
     timeout: ClassVar[float] = 600.0
-    full: bool = False
 
 
 class FailuresReplayRequest(_BrokerRequest):

@@ -151,12 +151,10 @@ def handle_backfill_thread_roots(req: BackfillThreadRootsRequest) -> Reply:
 
 
 def handle_analyze(req: AnalyzeRequest) -> Reply:
-    """Run ANALYZE on the broker. The sample is governed by
-    `Settings.analyze_limit` (default 0, every row); `full=True` forces
-    no cap for this pass."""
+    """Run ANALYZE on the broker."""
     from mimir.maintenance import run_analyze
 
-    result = run_analyze(full=req.full)
+    result = run_analyze()
     return Reply(rpc_id=req.rpc_id, ok=True, result=result.model_dump(mode="json"))
 
 

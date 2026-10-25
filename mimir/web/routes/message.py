@@ -49,13 +49,16 @@ from mimir.web._blueprint import bp_web
 from mimir.web.filters import _thread_summary, thread_summary_from
 from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
+    MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
     _canonical_inbox_name,
     _canonical_url_for,
     _get_inbox_or_404,
+    _markdown_response,
     _msg_path,
     _msg_url,
     _site_base,
+    markdown_path,
     thread_page_url,
 )
 
@@ -71,8 +74,24 @@ logger = logging.getLogger(__name__)
 MSGID_LINKIFY_CAP = 100
 
 
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>" + MD_SUFFIX)
+def message_md(inbox_name: str, year: int, month: int, article_id: int):
+    """The page as Markdown (#884). The same view rather than a second
+    one, so the 404s, the wrong-inbox redirect, the canonical and the
+    validator cannot come apart from the HTML's."""
+    return message(inbox_name, year, month, article_id, markdown=True)
+
+
+def _article_by_message_id(session, message_id: str) -> Article:
+    return session.execute(
+        select(Article).where(Article.message_id == message_id)
+    ).scalar_one()
+
+
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>")
-def message(inbox_name: str, year: int, month: int, article_id: int):
+def message(
+    inbox_name: str, year: int, month: int, article_id: int, markdown: bool = False
+):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         article = session.get(Article, article_id)
@@ -106,7 +125,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             target = _canonical_url_for(article, all_links)
             if target is None:
                 abort(404)
-            return redirect(target, code=301)
+            return redirect(markdown_path(target) if markdown else target, code=301)
 
         # Full thread context (replaces the v1 parent + immediate-replies
         # view). Walk constrained to this article's inbox. Loaded BEFORE
@@ -122,9 +141,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         root = (
             article
             if root_msgid == article.message_id
-            else session.execute(
-                select(Article).where(Article.message_id == root_msgid)
-            ).scalar_one()
+            else _article_by_message_id(session, root_msgid)
         )
         cap = settings.thread_view_render_cap
         thread_rooted = thread_is_materialised(session, inbox.id, root.id)
@@ -233,6 +250,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         # page is built from the column, so the column is what has to
         # agree. Walking the target's thread here cost a second
         # whole-thread walk on every cross-posted page.
+        own_page_no: int | None = None
         if canonical_url:
             target_inbox = inbox
             target_root = root
@@ -246,11 +264,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                         session, target_inbox, article.message_id
                     )
                     if target_root_msgid:
-                        target_root = session.execute(
-                            select(Article).where(
-                                Article.message_id == target_root_msgid
-                            )
-                        ).scalar_one()
+                        target_root = _article_by_message_id(session, target_root_msgid)
             in_target_thread = False
             if target_inbox is not None and target_root is not None:
                 # Its own row carries the root, and the thread is more
@@ -297,6 +311,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 page_no = thread_page_of(
                     session, target_inbox.id, target_root.id, article, cap
                 )
+                if target_inbox is inbox:
+                    own_page_no = page_no  # the window's gap links want it too
                 thread_view_url = thread_page_url(
                     target_root.id,
                     target_root.date,
@@ -314,7 +330,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
                 root.id,
                 root.date,
                 inbox.name,
-                thread_page_of(session, inbox.id, root.id, article, cap),
+                own_page_no
+                if own_page_no is not None
+                else thread_page_of(session, inbox.id, root.id, article, cap),
             )
 
         # Conditional-GET (ETag) for the message page. Inputs:
@@ -343,7 +361,10 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         #   is a strict subset of the full response, so the two variants
         #   need distinct ETags. Companion `Vary: HX-Request` header is
         #   applied in `web.hooks` so intermediate caches don't confuse
-        #   the two responses for the same URL.
+        #   the two responses for the same URL. The Markdown form (#884)
+        #   is a third representation on its own URL; it renders a
+        #   subset of the full page's inputs, so it shares the content
+        #   part.
         # - thread render cap: this page's canonical is
         #   `thread_page_url(..., thread_page_of(..., cap))`, so the cap
         #   decides which thread page the message claims to live on, and
@@ -369,9 +390,9 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
         hx_request = request.headers.get("HX-Request") == "true"
         state_tag = render_state_tag(session, article.id, article.message_id)
         # Split so the ETag is the content part plus the representation
-        # (full or htmx); the pill and card caches key by the content
-        # part, so both representations share one entry. Same shape as
-        # the thread view.
+        # (full, htmx or markdown); the pill and card caches key by the
+        # content part, so all representations share one entry. Same
+        # shape as the thread view.
         content_input = (
             f"{article.id}|{mimir.__version__}|"
             f"{settings.thread_view_render_cap}|"
@@ -383,7 +404,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             f"{','.join(name for _, name in all_links)}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
-        etag_input = f"{content_input}|{'hx' if hx_request else 'full'}"
+        representation = "md" if markdown else "hx" if hx_request else "full"
+        etag_input = f"{content_input}|{representation}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -394,6 +416,18 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             parsed = read_message(session, inbox, article.message_id)
         except MessageNotFound:
             abort(404)
+
+        if markdown:
+            # Header, body and attachments only: everything below this
+            # point feeds panels the Markdown form does not render.
+            body = render_template(
+                "message.md",
+                inbox_name=inbox.name,
+                parsed=parsed,
+                article=article,
+                thread_view_url=thread_view_url,
+            )
+            return _markdown_response(body, etag, canonical_url)
 
         # If the thread root still has a thread_parent (i.e. our walk-up hit
         # the top of what we have, but the original chain continued through
@@ -703,13 +737,8 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             session,
             article,
             # `_days_since_last_reply` reduces this to the newest date
-            # later than the article's, so a window passes the
-            # thread-wide maximum, as the thread view does.
-            thread_dates=(
-                [agg.last_activity]
-                if window is not None
-                else [n.date for n in thread_nodes]
-            ),
+            # later than the article's, which is the thread's maximum.
+            thread_dates=[thread_max_date],
             subsystem_ids=[s.id for s in subsystem_hits],
             inbox_name=inbox.name,
             state_key=content_key,
@@ -753,7 +782,6 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             thread=thread,
             thread_total=thread_total,
             thread_root_id=root.id,
-            thread_is_root=root.id == article.id,
             thread_more_url=thread_more_url,
             hidden_replies=window.hidden_replies if window is not None else {},
             thread_urls=thread_urls,
@@ -773,6 +801,7 @@ def message(inbox_name: str, year: int, month: int, article_id: int):
             related_patches=related_patches,
             patch_state=patch_state,
             lifecycle_status=lifecycle_status,
+            markdown_url=markdown_path(_msg_url(article, inbox.name)),
         )
     )
     response.set_etag(etag)

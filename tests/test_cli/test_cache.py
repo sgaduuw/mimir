@@ -12,11 +12,8 @@ from sqlalchemy import select
 from mimir.broker import _context
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.writes import WriterThread
-from mimir.cli import (
-    analyze_command,
-    vacuum_command,
-    warm_cache_command,
-)
+from mimir.cli.cache import warm_cache_command
+from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.inboxes import set_tracked_authors
 from mimir.models import Article, ArticleList, Inbox
 
@@ -460,19 +457,6 @@ def test_analyze_command_runs(seeded_db):
     result = CliRunner().invoke(analyze_command, [])
     assert result.exit_code == 0, result.output
     assert "ANALYZE complete" in result.output
-
-
-def test_analyze_command_full_flag_runs(seeded_db):
-    """`mimir analyze --full` (1.36.4) runs ANALYZE with
-    `analysis_limit=0` overriding the per-connection default cap
-    (`settings.analyze_limit`). On a tiny test DB the behaviour is
-    indistinguishable from the default flow; the contract being
-    pinned is just that the flag is wired and the command's
-    distinct output line lands so the scheduler loop's log makes
-    `analyze --full` legible vs the default `analyze`."""
-    result = CliRunner().invoke(analyze_command, ["--full"])
-    assert result.exit_code == 0, result.output
-    assert "full ANALYZE complete" in result.output
 
 
 def test_vacuum_command_runs_and_reports_sizes(seeded_db):

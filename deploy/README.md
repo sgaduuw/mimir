@@ -108,7 +108,7 @@ The task service runs [scheduler.sh](scheduler.sh). Configure these on
 | `WARM_CACHE_SLOW_EVERY` | 3600 | Slow warming, including sitemap targets when configured |
 | `UPDATE_EVERY` | 300 | Discover/fetch mirrors and ingest |
 | `UPDATE_MAINLINE_EVERY` | 600 | Refresh tracked trees and MAINTAINERS |
-| `ANALYZE_FULL_EVERY` | 604800 | Planner statistics refresh (full sample) |
+| `ANALYZE_FULL_EVERY` | 604800 | Planner statistics refresh |
 | `VACUUM_EVERY` | 604800 | Database compaction |
 
 Successful task times persist under `/data/.last_*`, so restarts do not reset
@@ -172,6 +172,7 @@ over its budget, with no database or render work. It is off by default.
 | `CRAWLER_DEFAULT_UA_PCT` | `10` | Share for a recognised crawler with no entry in `CRAWLER_UA_BUDGETS` |
 | `CRAWLER_UNLISTED_POOL_PCT` | `30` | Percentage of the global budget that all unlisted crawlers share between them, on top of their own share |
 | `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests", "lightpanda"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
+| `CRAWLER_IMPOSSIBLE_HEADERS_PCT` | `1` | Percentage of the global budget for the one shared bucket of requests with `Sec-Fetch-Site: none` and a `Referer`; `0` turns it off |
 | `CRAWLER_RETRY_AFTER_SEC` | `120` | Seconds sent in `Retry-After` |
 
 The defaults are the heavy known crawlers that name themselves in the
@@ -204,12 +205,27 @@ so list a crawler to protect it from a flood. Each unlisted crawler has its
 own bucket, keyed by its lowercased token; at most 256 are held, idle ones are
 dropped after ten minutes, and past 256 new names share one overflow bucket at
 the default share. Never gated: robots, sitemaps, `/healthz`, `/readyz`,
-static files, and requests that are not a recognised crawler.
+static files, and requests that are not a recognised crawler by their
+`User-Agent` (the impossible-headers bucket below still applies). The Markdown
+pages (`.md`) draw on the same buckets as the HTML pages. An agent fetching a
+page on a user's behalf, such as `Claude-User (claude-code/...)`, carries no
+marker token, so it is not a recognised crawler and is not gated by its
+`User-Agent` on either.
 
 The default markers include `curl`, `wget` and `python-requests`, so your own
 scripts and smoke checks that use those tools count as a crawler once the
 global budget is set. Give them their own percentage in `CRAWLER_UA_BUDGETS`
 (for example `{"curl": 20}`) or send a different `User-Agent`.
+
+A request that did not name a crawler in its `User-Agent` but sends
+`Sec-Fetch-Site: none` together with a `Referer` (#903) is held to
+`CRAWLER_IMPOSSIBLE_HEADERS_PCT` of the global budget, in one bucket shared by
+all such requests. `none` means a user-initiated navigation (a typed URL or a
+bookmark), and a browser sends no `Referer` on one, so a real reader almost
+never matches (8 requests in three days outside the crawl pools, #903); the
+pair is a client faking a click. It charges the global bucket but
+not the unlisted pool, and a declared crawler keeps its own bucket. Like the
+rest of the gate it does nothing while the global budget is `0`.
 
 Buckets live in each gunicorn worker, so each refills at the budget divided by
 `WORKERS` (mimir reads the same `WORKERS` that sets `--workers`): global 120
@@ -226,7 +242,9 @@ crawler rate and give each crawler a percentage of it (Applebot at about 9,000
 an hour, 150 a minute, is a global 50 with Applebot at 100, or a global 100
 with Applebot at 50). Watch its request rate and the `crawler budget:`
 warnings (logger `mimir.web.crawler_budget`, at most one line a minute per
-bucket per worker, with the deferred count) and adjust. Crawlers slow down on
+bucket per worker, with the deferred count; the header bucket's line reads
+`matched on request headers, not User-Agent` instead of `crawler=<name>`) and
+adjust. Crawlers slow down on
 `429`, so the rate should settle near the budget.
 
 ## Reverse proxy

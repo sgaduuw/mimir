@@ -27,9 +27,11 @@ typed-result reconstruction on the client.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC
 from types import SimpleNamespace
 
+import pytest
 from sqlalchemy import select
 
 from mimir.broker.handlers import dispatch
@@ -197,6 +199,24 @@ def test_walk_articles_starts_below_the_run_cursor(seeded_db, broker_active):
     )
     assert partial is False
     assert seen == [min_id]
+
+
+def test_walk_articles_skips_a_batch_with_nothing_to_write(seeded_db, broker_active):
+    """No payloads and no run (so no cursor `after`): the walker does
+    not call `flush_batch`, so the writer gets no empty WriteOp."""
+    from mimir._backfill import walk_articles
+    from mimir.patches import BackfillResult
+
+    calls: list[list] = []
+
+    def flush_batch(writer, payloads, after=None):
+        calls.append(payloads)
+        raise AssertionError("flush_batch called with nothing to write")
+
+    result = BackfillResult()
+    walk_articles(result, lambda _s, _a, _r: ("no_diff", None), flush_batch)
+    assert result.examined == 4  # precondition: the walk saw every article
+    assert calls == []
 
 
 # ----- BackfillResult.merge ---------------------------------------------
@@ -543,6 +563,181 @@ def test_broker_backfill_loop_passes_extra_kwargs(seeded_db):
     )
     assert result.examined == 1
     assert seen_extras == [{"inbox_filter": "alpha"}]
+
+
+# ----- _broker_backfill_loop waits out a locked database (#885) ----------
+
+
+def _locked_then(monkeypatch, replies):
+    """A fake client replaying `replies` in order: an exception is
+    raised, anything else returned. Raises the way `BrokerClient.call`
+    does for an `ok=False` reply. Also stubs the loop's sleep, so the
+    test records the waits instead of taking them."""
+    from mimir.cli import _common
+
+    calls: list[str | None] = []
+    sleeps: list[float] = []
+    monkeypatch.setattr(_common, "time", SimpleNamespace(sleep=sleeps.append))
+
+    def fake_call(req):
+        calls.append(req.start)
+        reply = replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    return SimpleNamespace(call=fake_call), calls, sleeps
+
+
+def _locked():
+    from mimir.broker.client import BrokerUnavailable
+
+    return BrokerUnavailable("backfill_canonicals: OperationalError")
+
+
+def test_broker_backfill_loop_retries_a_locked_chunk(monkeypatch):
+    """A first chunk, then two `OperationalError` replies (the weekly
+    VACUUM holding the lock), then a normal chunk: the loop retries
+    the locked chunk and sums both chunks' counters after four calls.
+    The retries are later chunks, so they resend `start=None`."""
+    from mimir.cli._common import _broker_backfill_loop
+    from mimir.ingest.backfill import BackfillResult
+
+    first = BackfillResult(examined=1, resolved=1, partial=True)
+    last = BackfillResult(examined=3, resolved=2, partial=False)
+    replies = [
+        {"counters": first.model_dump(mode="json"), "run": _RUN},
+        _locked(),
+        _locked(),
+        {"counters": last.model_dump(mode="json"), "run": _RUN},
+    ]
+    client, calls, sleeps = _locked_then(monkeypatch, replies)
+
+    result, _run = _broker_backfill_loop(
+        client,
+        BackfillCanonicalsRequest,
+        BackfillResult,
+        limit=None,
+        reprocess=False,
+    )
+    assert result.examined == 4
+    assert result.resolved == 3
+    assert calls == ["resume", None, None, None]
+    assert sleeps == [30, 30]
+
+
+def test_broker_backfill_loop_gives_up_on_a_lock_after_the_cap(monkeypatch, capsys):
+    """A lock that never clears on a later chunk exits with the
+    original error after 60 waits of 30 s, saying once that it is
+    waiting."""
+    from mimir.broker.client import BrokerUnavailable
+    from mimir.cli._common import _broker_backfill_loop
+    from mimir.ingest.backfill import BackfillResult
+
+    first = BackfillResult(examined=1, partial=True).model_dump(mode="json")
+    replies = [{"counters": first, "run": _RUN}, *[_locked() for _ in range(100)]]
+    client, calls, sleeps = _locked_then(monkeypatch, replies)
+
+    with pytest.raises(
+        BrokerUnavailable, match=r"^backfill_canonicals: OperationalError$"
+    ):
+        _broker_backfill_loop(
+            client,
+            BackfillCanonicalsRequest,
+            BackfillResult,
+            limit=None,
+            reprocess=False,
+        )
+    assert len(calls) == 62
+    assert sleeps == [30] * 60
+    waiting = re.findall(r"retrying the chunk", capsys.readouterr().err)
+    assert len(waiting) == 1
+
+
+def test_broker_backfill_loop_does_not_retry_a_crash(monkeypatch):
+    """Only `OperationalError` is a lock. A later chunk whose handler
+    crashed exits on that call, without waiting. (A first chunk is
+    never retried, so the crash must come later to test anything.)"""
+    from mimir.broker.client import BrokerUnavailable
+    from mimir.cli._common import _broker_backfill_loop
+    from mimir.ingest.backfill import BackfillResult
+
+    def chunk(partial):
+        counters = BackfillResult(examined=1, partial=partial).model_dump(mode="json")
+        return {"counters": counters, "run": _RUN}
+
+    crashed = BrokerUnavailable("backfill_canonicals: HandlerCrashed")
+    # A retry would get the last chunk and return instead of raising.
+    client, calls, sleeps = _locked_then(
+        monkeypatch, [chunk(True), crashed, chunk(False)]
+    )
+
+    with pytest.raises(BrokerUnavailable, match=r"HandlerCrashed$"):
+        _broker_backfill_loop(
+            client,
+            BackfillCanonicalsRequest,
+            BackfillResult,
+            limit=None,
+            reprocess=False,
+        )
+    assert calls == ["resume", None]
+    assert sleeps == []
+
+
+def test_broker_backfill_loop_does_not_retry_a_locked_first_chunk(monkeypatch):
+    """A first chunk may have claimed its run before the lock hit, and a
+    resend with `start` is then refused as busy by that claim. So a
+    locked first chunk exits at once, as before #885; the operator who
+    just started the session reruns it."""
+    from mimir.broker.client import BrokerUnavailable
+    from mimir.cli._common import _broker_backfill_loop
+    from mimir.ingest.backfill import BackfillResult
+
+    chunk = BackfillResult(examined=1, partial=False).model_dump(mode="json")
+    client, calls, sleeps = _locked_then(
+        monkeypatch, [_locked(), {"counters": chunk, "run": _RUN}]
+    )
+    with pytest.raises(
+        BrokerUnavailable, match=r"^backfill_canonicals: OperationalError$"
+    ):
+        _broker_backfill_loop(
+            client,
+            BackfillCanonicalsRequest,
+            BackfillResult,
+            limit=None,
+            reprocess=False,
+        )
+    assert calls == ["resume"]
+    assert sleeps == []
+
+
+def test_broker_backfill_loop_lock_budget_resets_per_chunk(monkeypatch, capsys):
+    """The 60-wait cap is per chunk: a chunk that used all 60 waits and
+    then succeeded leaves the next chunk a full budget, and each wait
+    episode says so once (#885)."""
+    from mimir.cli._common import _broker_backfill_loop
+    from mimir.ingest.backfill import BackfillResult
+
+    def chunk(partial):
+        counters = BackfillResult(examined=1, partial=partial).model_dump(mode="json")
+        return {"counters": counters, "run": _RUN}
+
+    replies = [chunk(True), *[_locked() for _ in range(60)], chunk(True)]
+    replies += [_locked(), chunk(False)]
+    client, calls, sleeps = _locked_then(monkeypatch, replies)
+
+    result, _run = _broker_backfill_loop(
+        client,
+        BackfillCanonicalsRequest,
+        BackfillResult,
+        limit=None,
+        reprocess=False,
+    )
+    assert result.examined == 3
+    assert sleeps == [30] * 61
+    assert calls[0] == "resume" and set(calls[1:]) == {None}
+    waiting = re.findall(r"retrying the chunk", capsys.readouterr().err)
+    assert len(waiting) == 2
 
 
 # ----- end-to-end chunked resume via the broker -------------------------

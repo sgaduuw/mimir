@@ -17,15 +17,15 @@ on-site, the lore URL itself is preserved (the caller asked to
 route and threaded through `linkify`/`render_body` as
 `lore_mirror_urls`.
 
-`redact_trailer_addresses` is the plain-text counterpart used by
-JSON-LD code that needs the redaction posture applied to body
-bytes without going through the HTML pipeline.
+`plain_line` is the per-line plain-text counterpart of `linkify`,
+for the Markdown pages and JSON-LD.
 """
 
 import html
 import re
 
 from mimir.msgid_url import msgid_from_url
+from mimir.rendering.blocks import QUOTE_PREFIX_RE
 
 URL_OR_MSGID_RE = re.compile(
     r'(?P<url>https?://[^\s<>"\'\]\)]+)'
@@ -53,13 +53,32 @@ _TRAILER_LINE_RE = re.compile(
     r"^(?:" + "|".join(re.escape(k) for k in TRAILER_KEYS) + r"):\s",
     re.IGNORECASE,
 )
-# Local-part / domain restricted to a conservative RFC 5322 subset that
-# excludes HTML metacharacters (`"`, `'`, `<`, `=`, etc.). The trailer
+# Local part of an address: the RFC 5322 atext characters plus dot, one
+# class so the scan stays linear. `<`, `>`, `"` and whitespace are not in
+# it, so a hostile address still falls through to `_render_line`
+# (which always escapes) instead of the redactor branch; the trailer
 # renderer also html-escapes the redactor's return value as defense in
-# depth; tightening here means hostile addresses fall through to the
-# default `_render_line` path (which always escapes) instead of going
-# through the redactor branch at all.
-_EMAIL_ANGLE_RE = re.compile(r"<([A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>")
+# depth. `mimir/trailers.py` adopts it in #913, so parsing and display
+# agree on what an address is; until then it parses with a narrower class.
+EMAIL_LOCAL_PART = r"[A-Za-z0-9!#$%&'*+/=?^_`{|}~.\-]+"
+_EMAIL_ANGLE_RE = re.compile(r"<(" + EMAIL_LOCAL_PART + r"@[A-Za-z0-9.\-]+)>")
+# An address-shaped token anywhere in a name, for #852 and #902. Bounded
+# runs keep the scan linear on a hostile, very long name.
+EMAIL_TOKEN_RE = re.compile(r"[^\s@<>()\[\],;:\"]{1,64}@[^\s@<>()\[\],;:\"]{1,255}")
+
+
+def _hide_bare_addresses(text: str, redactor) -> str:
+    """`text` with every address-shaped token the redactor hides
+    replaced by what it returns. A trailer name such as
+    `joe@example.com` in `Signed-off-by: joe@example.com <joe@example.com>`
+    is no angle address, so `_EMAIL_ANGLE_RE` never sees it (#902).
+    A token the redactor keeps (its return value still holds it) stays."""
+
+    def sub(m: re.Match) -> str:
+        shown = redactor(m.group(0))
+        return m.group(0) if m.group(0) in shown else shown
+
+    return EMAIL_TOKEN_RE.sub(sub, text)
 
 
 def linkify(
@@ -193,26 +212,28 @@ def _render_trailer_line(
         spans.append((m.start(), m.end(), html.escape(redactor(m.group(1)))))
     spans.sort()
     for start, end, replacement in spans:
-        out.append(html.escape(line[pos:start]))
+        out.append(html.escape(_hide_bare_addresses(line[pos:start], redactor)))
         out.append(replacement)
         pos = end
-    out.append(html.escape(line[pos:]))
+    out.append(html.escape(_hide_bare_addresses(line[pos:], redactor)))
     return "".join(out)
 
 
-def redact_trailer_addresses(text: str, redactor) -> str:
-    """Plain-text variant of the DCO trailer redaction the HTML
-    renderer applies via `_render_trailer_line`. Walks the body
-    line-by-line, applies `redactor` to every `<email>` pattern on
-    a `Signed-off-by:` / `Reviewed-by:` / etc. line, and returns
-    plaintext with the substitutions in place. Used by surfaces
-    that consume body content outside the HTML pipeline (JSON-LD
-    `text` snippet today) so the redaction posture stays
-    consistent across every place a body byte can flow."""
-    out: list[str] = []
-    for line in text.split("\n"):
-        if _TRAILER_LINE_RE.match(line):
-            out.append(_EMAIL_ANGLE_RE.sub(lambda m: redactor(m.group(1)), line))
-        else:
-            out.append(line)
-    return "\n".join(out)
+def plain_line(line: str, redactor) -> str:
+    """One text or quoted line as plain text, hiding exactly what
+    `linkify` hides: trailer addresses go through `redactor`, and on
+    any other line a `<Message-ID>`-shaped token (which is also how an
+    `<address>` in prose looks) collapses to `[ref]`.
+
+    The trailer test runs on the line with its quote markers stripped,
+    which is what the HTML renderer sees after its quote recursion (and
+    after `_flatten_quote` past the depth caps). The markers themselves
+    are kept as written."""
+    content = QUOTE_PREFIX_RE.sub("", line, count=1)
+    prefix = line[: len(line) - len(content)]
+    if _TRAILER_LINE_RE.match(content):
+        redacted = _EMAIL_ANGLE_RE.sub(lambda m: redactor(m.group(1)), content)
+        return prefix + _hide_bare_addresses(redacted, redactor)
+    return prefix + URL_OR_MSGID_RE.sub(
+        lambda m: m.group(0) if m.group("url") else "[ref]", content
+    )

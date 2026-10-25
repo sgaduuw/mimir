@@ -18,16 +18,12 @@ from sqlalchemy import select
 from mimir.ingest import ingest_epoch, replay_failures
 from mimir.models import Article, Inbox, IngestState
 from mimir.patch_series_chains import backfill_series_chains
-from tests.test_ingest._helpers import _build_pubinbox_repo, _rfc5322
+from tests.test_ingest._helpers import _build_pubinbox_repo, _rfc5322, _subject
 
 A = ["net: fix the frobnicator", "net: add a knob"]
 B = ["drm: rework the scheduler", "drm: drop the lock"]
 T2021 = int(datetime(2021, 3, 1, tzinfo=UTC).timestamp())
 T2026 = int(datetime(2026, 8, 21, tzinfo=UTC).timestamp())
-
-
-def _subject(raw: bytes, subject: str) -> bytes:
-    return raw.replace(b"Subject: t\r\n", f"Subject: {subject}\r\n".encode())
 
 
 def _posting(tag, version, titles, *, first=1, total=None, body=b"x"):

@@ -30,6 +30,7 @@ from mimir.models import (
     MainlineState,
 )
 from mimir.web.filters import _display_name_filter
+from tests._helpers import add_commit
 
 _T0 = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -411,19 +412,10 @@ def test_front_page_links_the_merge_window(client):
 
 
 def _tagged_repo(tmp_path, tags):
-    from dulwich.objects import Commit, Tree
     from dulwich.repo import Repo
 
     repo = Repo.init_bare(str(tmp_path / "linux.git"), mkdir=True)
-    tree = Tree()
-    repo.object_store.add_object(tree)
-    commit = Commit()
-    commit.tree = tree.id
-    commit.author = commit.committer = b"L <l@x>"
-    commit.author_time = commit.commit_time = 1700000000
-    commit.author_timezone = commit.commit_timezone = 0
-    commit.message = b"x"
-    repo.object_store.add_object(commit)
+    commit = add_commit(repo, b"L <l@x>", [], b"x")
     repo.refs[b"HEAD"] = commit.id
     for t in tags:
         repo.refs[b"refs/tags/" + t.encode()] = commit.id
@@ -518,6 +510,9 @@ def test_long_section_sits_in_a_fold_box(client):
     assert "<details" not in section
     assert _fold_boxes(html) == [("partial", ["closed", "partial", "expanded"], 25)]
     assert re.search(r'<script src="[^"]*/js/fold-box\.js" defer>', html)
+    # A downward triangle reads as "open", so closed shows ▶ (#890).
+    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', html)
+    assert "▼" not in html
 
 
 @pytest.mark.parametrize(
@@ -726,25 +721,16 @@ def test_queued_v1_patch_names_the_posting_over_an_older_queued_rfc_patch(seeded
 
 def _next_repo(tmp_path, monkeypatch, commits):
     """A linux-next mirror holding `{sha: (author, parent shas)}`."""
-    from dulwich.objects import Commit, Tree
     from dulwich.repo import Repo
 
     from mimir.config import settings
 
     repo = Repo.init_bare(str(tmp_path / "next.git"), mkdir=True)
-    tree = Tree()
-    repo.object_store.add_object(tree)
     made = {}
     for key, (author, parents) in commits.items():
-        commit = Commit()
-        commit.tree = tree.id
-        commit.parents = [made[p] for p in parents]
-        commit.author = commit.committer = author.encode()
-        commit.author_time = commit.commit_time = 1700000000
-        commit.author_timezone = commit.commit_timezone = 0
-        commit.message = key.encode()
-        repo.object_store.add_object(commit)
-        made[key] = commit.id
+        made[key] = add_commit(
+            repo, author.encode(), [made[p] for p in parents], key.encode()
+        ).id
     monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "next.git")
     return {k: v.decode() for k, v in made.items()}
 

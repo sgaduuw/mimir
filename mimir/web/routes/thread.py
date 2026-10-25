@@ -61,21 +61,41 @@ from mimir.web._blueprint import bp_web
 from mimir.web.filters import thread_summary_from
 from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
+    MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
     _get_inbox_or_404,
+    _markdown_response,
     _msg_url,
     _site_base,
     _thread_view_url,
+    markdown_path,
     thread_page_url,
 )
 
 logger = logging.getLogger(__name__)
 
 
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t" + MD_SUFFIX)
+@bp_web.route(
+    "/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t/<int:page>" + MD_SUFFIX
+)
+def thread_view_md(
+    inbox_name: str, year: int, month: int, article_id: int, page: int | None = None
+):
+    """One thread page as Markdown (#884), through the same view: the
+    same pages, redirects, canonical and validator as the HTML."""
+    return thread_view(inbox_name, year, month, article_id, page, markdown=True)
+
+
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t")
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t/<int:page>")
 def thread_view(
-    inbox_name: str, year: int, month: int, article_id: int, page: int | None = None
+    inbox_name: str,
+    year: int,
+    month: int,
+    article_id: int,
+    page: int | None = None,
+    markdown: bool = False,
 ):
     # `page` is attacker-supplied, and an astronomically large value
     # reaching SQLite as an OFFSET used to 500 the month sitemap on a
@@ -140,7 +160,8 @@ def thread_view(
         # still green. `test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical`
         # now holds them together.
         if explicit_page and page == 1:
-            return redirect(_thread_view_url(article, inbox.name), code=301)
+            target = _thread_view_url(article, inbox.name)
+            return redirect(markdown_path(target) if markdown else target, code=301)
 
         # One thread, one URL. Asking for `/t` on a reply is a coherent
         # request ("show me this conversation"), so redirect to the
@@ -197,9 +218,8 @@ def thread_view(
                         article,
                         settings.thread_view_render_cap,
                     )
-                return redirect(
-                    thread_page_url(root.id, root.date, inbox.name, pg), code=301
-                )
+                target = thread_page_url(root.id, root.date, inbox.name, pg)
+                return redirect(markdown_path(target) if markdown else target, code=301)
             root_msgid = article.message_id
 
         # Membership from the materialised column, NOT a walk. Measured
@@ -313,7 +333,8 @@ def thread_view(
         # anywhere else in the app (a page is up to
         # `thread_view_render_cap` blob fetches). Cap, page and the
         # HTMX-vs-full representation are all inputs because each of
-        # them changes the body. `hooks.py` also sends
+        # them changes the body (Markdown is a third representation,
+        # #884, on its own URL). `hooks.py` also sends
         # `Vary: HX-Request` for this endpoint, which it did NOT until
         # a review caught these comments asserting it. The ETags
         # differ per representation, so revalidating caches were safe,
@@ -338,7 +359,8 @@ def thread_view(
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
-        etag_input = f"{content_input}|{page}|{'hx' if hx_request else 'full'}"
+        representation = "md" if markdown else "hx" if hx_request else "full"
+        etag_input = f"{content_input}|{page}|{representation}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -493,7 +515,14 @@ def thread_view(
         subsystem_hits=subsystem_hits,
         patch_state=root_patch_state,
         lifecycle_status=root_lifecycle,
+        markdown_url=markdown_path(
+            thread_page_url(root_node.id, root_node.date, inbox.name, page)
+        ),
     )
+    if markdown:
+        return _markdown_response(
+            render_template("thread.md", **context), etag, canonical_url
+        )
     # Same URL, two representations, exactly as `message.py` does it:
     # HTMX gets just the next slice to append, everything else gets the
     # page. Both are folded into the ETag above, and `hooks.py` sends

@@ -1,15 +1,26 @@
-"""HTMX backend endpoints.
+"""HTMX backend endpoints: `/api/<inbox>/recent` for the dashboard's
+"Load more" trigger, and `/api/<inbox>/body/<id>` for the thread view's
+"more lines" link.
 
-Currently just `/api/<inbox>/recent` for the dashboard's "Load more"
-trigger; lives separately so adding more HTMX endpoints doesn't grow
-the route-rich `dashboards.py` further.
+Lives separately so adding more HTMX endpoints doesn't grow the
+route-rich `dashboards.py` further.
 """
 
-from flask import abort, render_template, request
+import hashlib
 
+from flask import Response, abort, render_template, request
+from sqlalchemy import select
+
+import mimir
+from mimir import maintainer_allowlist
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.models import Article, ArticleList
+from mimir.rendering import render_body
+from mimir.store import MessageNotFound, read_message
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _redact_trailer_address
+from mimir.web.routes._validators import allowlist_tag
 from mimir.web.routes.dashboards import RECENT_PAGE_SIZE, _fetch_recent
 from mimir.web.urls import _get_inbox_or_404
 
@@ -50,3 +61,66 @@ def api_recent(inbox_name: str):
         recent_next_offset=offset + RECENT_PAGE_SIZE,
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
+
+
+@bp_web.route("/api/<inbox_name>/body/<int:article_id>")
+def api_message_body(inbox_name: str, article_id: int):
+    """The thread view's "more lines" fragment: one message's whole body
+    in the thread view's compact rendering, uncut.
+
+    404 unless the article is linked to this inbox, the same
+    `ArticleList` row `read_message` resolves its blob through.
+
+    The ETag carries every input the output has: the blob (its epoch
+    and commit are immutable per inbox and article, so they identify
+    the bytes), the render code (`mimir.__version__`), and the two
+    address-redaction inputs, the static `email_allowlist` and the
+    MAINTAINERS-derived address set. The set is hashed by value because
+    it moves on a reparse without a release.
+    """
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        article = session.get(Article, article_id)
+        link = (
+            session.execute(
+                select(ArticleList.epoch, ArticleList.commit_sha).where(
+                    ArticleList.article_id == article_id,
+                    ArticleList.inbox_id == inbox.id,
+                )
+            ).one_or_none()
+            if article is not None
+            else None
+        )
+        if link is None:
+            abort(404)
+        etag = hashlib.blake2s(
+            "|".join(
+                (
+                    "body",
+                    mimir.__version__,
+                    link.epoch,
+                    link.commit_sha,
+                    allowlist_tag(),
+                    "\0".join(sorted(maintainer_allowlist.maintainer_addresses())),
+                )
+            ).encode(),
+            digest_size=8,
+        ).hexdigest()
+        if etag in request.if_none_match:
+            response = Response(status=304)
+        else:
+            try:
+                parsed = read_message(session, inbox, article.message_id)
+            except MessageNotFound:
+                abort(404)
+            body = render_body(
+                parsed.body,
+                address_redactor=_redact_trailer_address,
+                compact=True,
+            )
+            response = Response(f'<div class="message-body">{body}</div>')
+    response.set_etag(etag)
+    # A fragment is not a page: nothing to index, and /api/ is
+    # robots-disallowed already.
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response

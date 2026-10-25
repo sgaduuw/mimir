@@ -34,6 +34,9 @@
         href="/{{ current_inbox }}/feed.atom">
   {% endif %}
   {% block extra_atom_feeds %}{% endblock %}
+  {% if markdown_url %}
+  <link rel="alternate" type="text/markdown" href="{{ markdown_url }}">
+  {% endif %}
   {# Sequence links for paginated surfaces. Emitted for Bing, which
      still consumes them; Google dropped rel=next/prev as an indexing
      signal in 2019, so these consolidate nothing there. Absent
@@ -120,11 +123,10 @@
         {% endif %}
       </ul>
       <ul>
-        {% if inboxes|length > 1 and not current_inbox %}
-        <li><small><a href="#inboxes">{{ inboxes|length }} inboxes</a></small></li>
-        {% elif current_inbox %}
-        <li><small>archive</small></li>
-        {% endif %}
+        {# The one site-wide page to browse; readers mostly arrive on a
+           thread from a search engine, never seeing the front page (#891). #}
+        {% set mw_url = url_for('web.merge_window_page') %}
+        <li><small><a href="{{ mw_url }}"{% if request.path == mw_url %} aria-current="page"{% endif %}>Merge window</a></small></li>
       </ul>
     </nav>
     {% block content %}{% endblock %}

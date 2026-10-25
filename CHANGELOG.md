@@ -11,6 +11,117 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-10-25
+
+No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`,
+run `mimir analyze --full`, or run `mimir init-db`, all removed (see Removed).
+
+Known gap: a review trailer whose address has a character such as `=` before
+the `@` is still split at ingest (`Alice <alice.smith=` / `lkml@example.com`),
+so the review tooltip and the thread `.md` status line can show that name
+fragment although the trailer line itself now hides the address. 3.28.0 showed
+the whole address. #913 fixes the parsing, followed by a trailer backfill.
+
+### Added
+
+- Requests that send `Sec-Fetch-Site: none` with a `Referer`, a pair no browser
+  sends on a real navigation, share one small crawler-budget bucket,
+  `CRAWLER_IMPOSSIBLE_HEADERS_PCT` of the global (default 1, `0` turns it off).
+  Declared crawlers keep their own bucket; its log line names the request
+  headers, not a User-Agent (#903).
+- `/api/<inbox>/body/<id>`: one message's body as an HTML fragment, for the
+  thread view's "more lines" link. It is `noindex`, under the already
+  disallowed `/api/` (#814).
+- The main navigation links to `/merge-window` on every page, not only from the
+  front page (#891).
+- Message and thread pages have Markdown versions for AI agents and other
+  tools, at the page URL plus `.md`: `/<inbox>/<YYYY>/<MM>/<id>.md`,
+  `.../t.md` and `.../t/<page>.md` (#884). Each HTML page links its version
+  with `<link rel="alternate" type="text/markdown">`; the format is chosen by
+  URL, not by the `Accept` header. The body is the mail as text, under the
+  same address hiding as the HTML page, and the Message-ID is left out by
+  design, as on the page. Each response carries its own ETag and a
+  `Link: rel="canonical"` header naming the HTML page's canonical, and the
+  sitemaps do not list `.md` URLs. The crawler budget applies to them as to
+  the HTML pages; a user-initiated agent such as `Claude-User` is not a
+  recognised crawler and is not gated by its `User-Agent` on either; the
+  impossible-headers bucket (#903) still applies.
+- `/llms.txt`, for AI agents: what the site is, the page URL shapes with
+  their `.md` forms, and pointers to the sitemap and the privacy page
+  (#884). It repeats the `Content-Signal` of `robots.txt`'s `*` stanza as
+  is, read from the same rule, so the two files cannot disagree; change it
+  with `admin robots` as before. Fetches made on a user's behalf are governed
+  by that signal, with no separate rule.
+
+### Changed
+
+- The thread view renders lighter (#814). Diffs keep their `+`/`-`/`@@`
+  colouring but lose the per-token syntax spans. A plain-text block or a
+  quote of more than 40 lines shows its first 40, then an "N more lines" link to the message
+  page that loads the rest in place; the rest is no longer in the thread page.
+  The message page is unchanged, and so is pagination.
+- The series diff page heading names the series, both versions and the
+  position, the same text as its title, instead of a generic
+  "Inter-revision diff: cover letter" (or "patch N") (#880).
+
+### Removed
+
+- `mimir init-db`. It failed under default settings, and under
+  `MIMIR_IS_BROKER=true` it left a database that the broker could not
+  migrate. Start the broker instead: it creates and migrates the database at
+  startup (#888).
+- The front page's own "Linux merge window" line, now that the nav links the
+  page (#891).
+- The nav's inbox count on the front page and its plain "archive" label inside
+  an inbox. The count never rendered in production, because the web process
+  never fills the inbox name list it reads (#891).
+- The `ANALYZE_LIMIT` setting and the `--full` flag of `mimir analyze`
+  (#784). ANALYZE has read every row since #817, so the setting could only
+  bring back the capped figures that mislead the planner. A leftover
+  `ANALYZE_LIMIT` in an environment or `.env` is ignored and does not stop
+  startup; delete it. `mimir analyze --full`, for example in a cron job,
+  now fails with "no such option": drop `--full`, the pass is the same.
+  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged; its log
+  line now reads `analyze: ok` instead of `analyze --full: ok`.
+
+### Fixed
+
+- Removing a token from `EMAIL_ALLOWLIST` now reaches cached pages. The
+  message, thread, Markdown and `/merge-window` pages kept a matching ETag,
+  so CDNs and browsers went on showing an address the page now hides until
+  the next release (#900).
+- A trailer line no longer shows a non-allowlisted address in two shapes the
+  rest of the page hides. An address with a character such as `=`, `'` or `!`
+  before the `@` (`Signed-off-by: X <x=y@example.com>`) is hidden like any
+  other, and so is an address used as the name or written bare
+  (`Signed-off-by: joe@example.com <joe@example.com>`). The lifecycle tooltip
+  drops such a reviewer name. This covers the HTML pages, the `.md` pages and
+  the JSON-LD `text` (#902).
+- The thread view no longer repeats the diff line anchors (`h-1`, `h-1-L4`)
+  once per message, which made duplicate `id`s on one page and sent a
+  `#h-1-L4` fragment to the wrong message. Those anchors now exist only on
+  the message page (#814).
+- The fold toggle's "closed" button shows ▶ instead of ▼, in a message page's
+  thread tree and on `/merge-window`. A downward triangle reads as "open" (#890).
+- A backfill that meets the weekly VACUUM now waits and retries its chunk
+  instead of exiting with `OperationalError`. It prints one line, retries
+  every 30 s for up to 30 minutes, then exits as before. A lock during a
+  session's first chunk still exits at once, as before: rerun the command.
+  The one VACUUM measured took 198 s on a ~16 GB database (production,
+  2026-10-25) (#885).
+- Review trailer parsing at ingest and in `backfill-article-trailers` now
+  takes linear time. A long trailer line, such as a run of spaces or of
+  address characters, took time that grew with the square of its length:
+  about 22 s for one 40,000-character line (measured on 3.28.0). Trailers
+  parse as before (#921).
+
+### Security
+
+- The JSON-LD `text` on message and thread pages no longer shows addresses the
+  page hides (#899). It kept a non-allowlisted address on a reply's "On Mon,
+  Joe <joe@example.com> wrote:" line and in a quoted `Signed-off-by:`. It now
+  uses the same redaction as the page body.
+
 ## [3.28.0] - 2026-10-25
 
 ### Changed

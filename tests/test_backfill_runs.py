@@ -29,12 +29,12 @@ from mimir.broker.protocol import (
     BackfillCanonicalsRequest,
     BackfillPatchSeriesRequest,
 )
-from mimir.cli import (
+from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
+from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
 )
-from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
 from mimir.config import settings
 from mimir.ingest import backfill as canonicals_backfill
 from mimir.ingest import ingest_epoch
@@ -689,11 +689,13 @@ def test_a_session_that_joined_a_run_stops_when_the_run_finishes(
         calls["b"] += 1
         if calls["b"] == 2:
             # Session A joins and finishes the run while B waits.
-            while True:
+            for _ in range(_N + 1):  # every chunk examines at least one row
                 calls["a"] += 1
                 start = "resume" if calls["a"] == 1 else None
                 if not chunk(reprocess=True, start=start)["partial"]:
                     break
+            else:
+                raise AssertionError("session A's run never finished")
         return chunk(limit=req.limit, reprocess=req.reprocess, start=req.start)
 
     result, run = _broker_backfill_loop(
@@ -736,8 +738,8 @@ def test_summary_says_whether_the_run_finished(
 
 
 def test_a_model_built_schema_never_reuses_a_run_id(tmp_path):
-    """`init-db` builds the schema from the models, not the migrations,
-    so the model must carry AUTOINCREMENT too."""
+    """A schema built from the models, not the migrations, must carry
+    AUTOINCREMENT too."""
     from datetime import datetime
 
     from sqlalchemy import create_engine, insert

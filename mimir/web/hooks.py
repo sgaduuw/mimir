@@ -93,6 +93,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # minutes rather than a day. Matches the sitemap.xml cadence
     # for the same reason (the underlying state is mutable).
     "web.robots_txt": "public, max-age=300",
+    # Restates robots.txt's Content-Signal, so the same short window.
+    "web.llms_txt": "public, max-age=300",
     "web.security_txt": "public, max-age=3600",
     "web.privacy": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
@@ -123,6 +125,13 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # larger here: a 304 skips up to `thread_view_render_cap` git blob
     # fetches and parses, which is the whole cost of this page.
     "web.thread_view": "public, no-cache",
+    # The Markdown forms (#884) carry their own ETag on the same
+    # content inputs, so the same posture.
+    "web.message_md": "public, no-cache",
+    "web.thread_view_md": "public, no-cache",
+    # The thread view's "more lines" fragment: ETag-validated in the
+    # route, so revalidate every time.
+    "web.api_message_body": "public, no-cache",
     # Same ETag-revalidation posture: the validator moves with each
     # linux-next or Linus walk.
     "web.merge_window_page": "public, no-cache",
@@ -243,7 +252,13 @@ def _crawler_budget_gate():
     only rewrites Cache-Control on 200/301/302/304, so it stays."""
     if request.endpoint in EXEMPT_ENDPOINTS:
         return None
-    if _crawler_gate.check(request.headers.get("User-Agent")) is None:
+    h = request.headers
+    if (
+        _crawler_gate.check(
+            h.get("User-Agent"), h.get("Sec-Fetch-Site"), h.get("Referer")
+        )
+        is None
+    ):
         return None
     return Response(
         "Too Many Requests\n",

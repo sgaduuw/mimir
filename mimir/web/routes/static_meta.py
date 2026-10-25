@@ -1,4 +1,4 @@
-"""Static-ish meta endpoints: `robots.txt`, `security.txt`,
+"""Static-ish meta endpoints: `robots.txt`, `llms.txt`, `security.txt`,
 `favicon.svg`, `favicon.ico`, `og-image.png`, `privacy`.
 
 The OG image constants (`OG_IMAGE_*`) live here because they're
@@ -23,7 +23,7 @@ from mimir import robots
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _site_base
+from mimir.web.urls import _site_base, markdown_path
 
 # OG image: 1200x630 PNG composited from a 17th-century Icelandic
 # Edda manuscript depiction of Ratatoskr (AM 738 4to era, Árni
@@ -117,3 +117,28 @@ def security_txt():
         encryption_url=settings.security_encryption_url,
     )
     return Response(body, mimetype="text/plain")
+
+
+@bp_web.route("/llms.txt")
+def llms_txt():
+    """What the site is and where its Markdown pages are, for AI agents
+    (#884, https://llmstxt.org/). The `*` stanza's Content-Signal is
+    copied from robots.txt through the same functions, so an invitation
+    to fetch the Markdown pages never contradicts what robots.txt says
+    agents may do with them."""
+    with SessionLocal() as session:
+        rule = robots.get_rule(session, "*")
+        signals = rule.content_signals if rule is not None else None
+    message = "/<inbox>/<YYYY>/<MM>/<id>"
+    shapes = [
+        ("A message", message),
+        ("A whole thread, first page", message + "/t"),
+        ("A later thread page", message + "/t/<page>"),
+    ]
+    body = render_template(
+        "llms.txt",
+        content_signal=robots.format_content_signals(signals) if signals else None,
+        shapes=[(label, path, markdown_path(path)) for label, path in shapes],
+    )
+    # Jinja drops a template's final newline; a text file ends with one.
+    return Response(body + "\n", mimetype="text/plain")

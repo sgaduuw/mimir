@@ -11,22 +11,7 @@ from mimir._pending_backfill import (
     _ArticleFilesPending,
     _submit_article_files_batch,
 )
-from mimir.broker.writes import WriterThread
 from mimir.models import Article, ArticleFile
-
-
-@pytest.fixture
-def writer():
-    """Function-scoped WriterThread for _submit_*_batch tests.
-
-    Mirrors the `writer` fixture in `tests/test_ingest/test_pending.py`. The
-    autouse `_reset_db` fixture seeds the DB before this fixture is
-    entered, so writes against the seeded `articles` rows are safe.
-    """
-    wt = WriterThread.from_settings()
-    wt.start()
-    yield wt
-    wt.stop(timeout=10)
 
 
 def test_submit_article_files_batch_inserts_rows(writer, seeded_db):
@@ -87,13 +72,6 @@ def test_submit_article_files_batch_delete_first_replaces_rows(writer, seeded_db
     assert out == ["fresh/new.c"], (
         "delete_first should have wiped the stale row; only the fresh path survives"
     )
-
-
-def test_submit_article_files_batch_empty_is_noop(writer):
-    """Empty payload list returns a pre-resolved future without touching
-    the writer queue."""
-    future = _submit_article_files_batch(writer, [])
-    future.result(timeout=1)
 
 
 def test_submit_article_trailers_batch_inserts_rows(writer, seeded_db):

@@ -36,7 +36,7 @@ import threading
 from email.utils import parseaddr
 from pathlib import Path
 
-from sqlalchemy import delete, exists, func, select
+from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -340,8 +340,6 @@ def update_inbox(
                 f"list_address: {list_address!r} is not a bare address"
             )
 
-    from sqlalchemy import update as sa_update
-
     from mimir.broker.writes import submit_write
 
     def _fn(conn) -> tuple[Inbox, str | None]:
@@ -379,7 +377,7 @@ def update_inbox(
             values["list_address"] = list_address or None
 
         if values:
-            conn.execute(sa_update(Inbox).where(Inbox.name == name).values(**values))
+            conn.execute(update(Inbox).where(Inbox.name == name).values(**values))
         updated = conn.execute(select(Inbox).where(Inbox.name == effective_name)).one()
         return Inbox(**dict(updated._mapping)), renamed_from
 
@@ -528,8 +526,6 @@ def set_tracked_authors(
     """
     cleaned = validate_tracked_authors(authors)
 
-    from sqlalchemy import update as sa_update
-
     from mimir.broker.writes import submit_write
 
     def _fn(conn):
@@ -537,7 +533,7 @@ def set_tracked_authors(
         if row is None:
             raise InboxNotFound(f"no inbox named {name!r}")
         conn.execute(
-            sa_update(Inbox).where(Inbox.name == name).values(tracked_authors=cleaned)
+            update(Inbox).where(Inbox.name == name).values(tracked_authors=cleaned)
         )
         # Re-fetch to get the post-update state. The row mapping
         # includes all columns so we can construct a detached instance.

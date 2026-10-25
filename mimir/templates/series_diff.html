@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}{{ series_subject|clean_subject }}: {{ diff.from_version }}{{ '→' }}{{ diff.to_version }} diff ({{ position_label }}) | series | {{ site_name }}{% endblock %}
+{% block title %}{{ heading }} | series | {{ site_name }}{% endblock %}
 {% block meta_description %}{{ series_subject|clean_subject }}: what changed in the {{ position_label }} between {{ diff.from_version }} and {{ diff.to_version }}, on the {{ inbox_name }} archive.{% endblock %}
 {% block content %}
 <article>
   <header>
-    <h1>Inter-revision diff: {{ position_label }}</h1>
+    <h1>{{ heading }}</h1>
     <p>
       <small>
         Comparing
