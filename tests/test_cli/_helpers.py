@@ -13,7 +13,7 @@ from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import select
 
-from mimir.cli import ingest_command
+from mimir.cli.ingest import ingest_command
 from mimir.models import (
     Inbox,
     ParseFailure,

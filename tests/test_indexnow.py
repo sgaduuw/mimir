@@ -305,7 +305,7 @@ def test_update_skips_push_when_above_per_tick_cap(monkeypatch, caplog):
     than `indexnow_max_per_tick`, skip the push entirely (do not
     truncate to the cap; that's still a backfill, just slower).
     The sitemap is the durable discovery path for the backlog."""
-    from mimir.cli import _push_indexnow
+    from mimir.cli.ingest import _push_indexnow
 
     notify_calls = []
     monkeypatch.setattr(
@@ -327,7 +327,7 @@ def test_update_skips_push_when_above_per_tick_cap(monkeypatch, caplog):
 def test_update_no_op_when_no_new_messages(monkeypatch):
     """Steady-state tick with no new articles: don't open a session
     or call notify."""
-    from mimir.cli import _push_indexnow
+    from mimir.cli.ingest import _push_indexnow
 
     notify_calls = []
     monkeypatch.setattr(
@@ -346,7 +346,7 @@ def test_update_no_op_when_key_unset(monkeypatch):
     """Even with new articles, an unconfigured operator never sees
     a push. notify itself also guards this, but the CLI short-
     circuits to avoid a wasted DB query in the dev path."""
-    from mimir.cli import _push_indexnow
+    from mimir.cli.ingest import _push_indexnow
 
     notify_calls = []
     monkeypatch.setattr(
@@ -370,7 +370,7 @@ def test_update_echoes_one_line_on_successful_push(
     default verbosity). Mirrors the per-epoch `name/epoch: new=N
     ...` lines, anything in the scheduler journal signals a real
     event."""
-    from mimir.cli import _push_indexnow
+    from mimir.cli.ingest import _push_indexnow
 
     monkeypatch.setattr(indexnow, "notify", lambda urls: len(urls))
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)
@@ -394,7 +394,7 @@ def test_update_no_echo_when_notify_returns_zero(
     errors. In that case there's no successful push to announce
     the warning log inside notify already covers the failure; we
     don't want a second misleading "pushed 0 URL(s)" line."""
-    from mimir.cli import _push_indexnow
+    from mimir.cli.ingest import _push_indexnow
 
     monkeypatch.setattr(indexnow, "notify", lambda urls: 0)
     monkeypatch.setattr(settings, "indexnow_key", "k" * 32)

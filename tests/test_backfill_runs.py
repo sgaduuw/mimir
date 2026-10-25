@@ -29,12 +29,12 @@ from mimir.broker.protocol import (
     BackfillCanonicalsRequest,
     BackfillPatchSeriesRequest,
 )
-from mimir.cli import (
+from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
+from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
 )
-from mimir.cli.admin.canonicals import admin_canonicals_backfill_command
 from mimir.config import settings
 from mimir.ingest import backfill as canonicals_backfill
 from mimir.ingest import ingest_epoch
