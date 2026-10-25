@@ -301,11 +301,13 @@ def _thread_dates(
     stale = unmaterialised_roots(
         session, inbox_id, sorted({r for r in roots.values() if r is not None})
     )
-    fast = [a for a, r in roots.items() if r is not None and r not in stale]
-    fast_set = set(fast)
-    walk = [a for a in article_ids if a not in fast_set]
+    fast = {a for a, r in roots.items() if r is not None and r not in stale}
+    walk = [a for a in article_ids if a not in fast]
     out: dict[int, object] = {}
-    for ids, sql in ((fast, _THREAD_DATES_COLUMN_SQL), (walk, _THREAD_DATES_WALK_SQL)):
+    for ids, sql in (
+        (sorted(fast), _THREAD_DATES_COLUMN_SQL),
+        (walk, _THREAD_DATES_WALK_SQL),
+    ):
         if ids:
             params = {"ids": ids, "inbox_id": inbox_id}
             out.update(

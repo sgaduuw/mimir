@@ -16,7 +16,7 @@ back to the seeded default if a `*` mutation has wandered.
 import re
 from io import StringIO
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
@@ -161,8 +161,6 @@ def add_rule(
 
     # No write_transaction() wrapper: the WriterThread uses its own
     # engine (Decision 12 from plan), and the closure runs on its conn.
-    from sqlalchemy import select as sa_select
-
     from mimir.broker.writes import submit_write
 
     disallow_paths_val = paths or None
@@ -170,7 +168,7 @@ def add_rule(
 
     def _fn(conn):
         existing = conn.execute(
-            sa_select(RobotsRule).where(RobotsRule.user_agent == ua)
+            select(RobotsRule).where(RobotsRule.user_agent == ua)
         ).first()
         if existing is not None:
             raise RobotsValidationError(
@@ -238,14 +236,11 @@ def update_rule(
         )
     # The closure runs on the writer's conn: it re-selects the current
     # row, applies the in-memory mutations, then issues an UPDATE via Core.
-    from sqlalchemy import select as sa_select
-    from sqlalchemy import update as sa_update
-
     from mimir.broker.writes import submit_write
 
     def _fn(conn):
         row = conn.execute(
-            sa_select(RobotsRule).where(RobotsRule.user_agent == ua)
+            select(RobotsRule).where(RobotsRule.user_agent == ua)
         ).first()
         if row is None:
             raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
@@ -279,7 +274,7 @@ def update_rule(
             new_signals = sig_dict or None
 
         conn.execute(
-            sa_update(RobotsRule)
+            update(RobotsRule)
             .where(RobotsRule.user_agent == ua)
             .values(
                 disallow_paths=new_paths,
@@ -313,10 +308,8 @@ def remove_rule(user_agent: str) -> None:
         result = conn.execute(delete(RobotsRule).where(RobotsRule.user_agent == ua))
         if result.rowcount == 0:
             raise RobotsRuleNotFound(f"no rule for user_agent {ua!r}")
-        return
 
     submit_write(f"robots:remove:{ua}", _fn, timeout=30)
-    return
 
 
 # Seeded defaults for the `*` stanza: `Crawl-delay: 5`, the crawl-budget
@@ -362,10 +355,8 @@ def reset_rules() -> None:
                 content_signals=dict(_DEFAULT_STAR_CONTENT_SIGNALS),
             )
         )
-        return
 
     submit_write("robots:reset", _fn, timeout=30)
-    return
 
 
 def format_content_signals(signals: dict[str, str]) -> str:
