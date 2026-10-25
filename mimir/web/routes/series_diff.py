@@ -41,6 +41,7 @@ from mimir.patch_revisions import (
 from mimir.patch_series import same_series
 from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _clean_subject_filter
 from mimir.web.urls import (
     _canonical_url_for,
     _get_inbox_or_404,
@@ -306,6 +307,12 @@ def series_diff(inbox_name: str, series_key: str):
         bracket = patch_bracket(to_cover.subject or "")
         series_subject = bracket[1] if bracket else to_cover.subject
 
+    position_label = "cover letter" if pos == 0 else f"patch {pos}"
+    # One string for the H1 and the title, so they cannot drift (#880).
+    heading = (
+        f"{_clean_subject_filter(series_subject)}: "
+        f"{diff.from_version}→{diff.to_version} diff ({position_label})"
+    )
     return render_template(
         "series_diff.html",
         canonical_url=canonical_url,
@@ -313,6 +320,7 @@ def series_diff(inbox_name: str, series_key: str):
         current_inbox=inbox.name,
         series_key=series_key,
         series_subject=series_subject,
+        heading=heading,
         diff=diff,
-        position_label="cover letter" if pos == 0 else f"patch {pos}",
+        position_label=position_label,
     )

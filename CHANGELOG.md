@@ -16,6 +16,12 @@ changes, not internal refactors. Categories: **Added**,
 - The main navigation links to `/merge-window` on every page, not only from the
   front page (#891).
 
+### Changed
+
+- The series diff page heading names the series, both versions and the
+  position, the same text as its title, instead of a generic
+  "Inter-revision diff: cover letter" (or "patch N") (#880).
+
 ### Removed
 
 - `mimir init-db`. It failed under default settings, and under

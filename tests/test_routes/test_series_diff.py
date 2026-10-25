@@ -49,8 +49,6 @@ def test_series_diff_cover_letter_renders(client, tmp_path):
     assert "original cover letter explanation" in body
     assert "revised cover letter explanation" in body
     assert "added a Fixes line" in body
-    # Sanity: the page is the series-diff template, not a generic 404.
-    assert "Inter-revision diff" in body
 
 
 def test_series_diff_identical_cover_letters(client, tmp_path):
@@ -135,7 +133,8 @@ def test_series_diff_per_patch_match_by_subject(client, tmp_path):
     # Both patch bodies' distinctive content surfaces in the diff.
     assert "v1 commit message" in out
     assert "v2 commit message updated" in out
-    assert "patch 1" in out  # position_label rendering
+    h1 = html_lib.unescape(re.search(r"<h1>([^<]*)</h1>", out).group(1))
+    assert h1 == "series title: v1→v2 diff (patch 1)", h1
 
 
 def test_series_diff_no_match_404(client, tmp_path):
@@ -806,6 +805,23 @@ def test_series_diff_title_and_description_name_the_series(client, tmp_path):
     assert "[PATCH" not in title
     assert "improve foo handling" in desc
     assert "v1" in desc and "v2" in desc
+
+
+def test_series_diff_heading_escapes_the_subject(client, tmp_path):
+    """#880: the heading is built in Python, so the template must still
+    escape it. A raw `<b>` in the H1 or title is markup from a mail header."""
+    author = "Alice <a@example>"
+    key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[("c1@x", "[PATCH 0/2] fix a & <b>", None, b"a\n", author)],
+        v2_messages=[("c2@x", "[PATCH v2 0/2] fix a & <b>", None, b"b\n", author)],
+    )
+    out = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover").data.decode()
+    h1 = re.search(r"<h1>(.*?)</h1>", out, re.DOTALL).group(1)
+    title = re.search(r"<title>(.*?)</title>", out, re.DOTALL).group(1)
+    assert h1 == "fix a &amp; &lt;b&gt;: v1→v2 diff (cover letter)", h1
+    assert title.startswith(h1 + " | "), (h1, title)
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------
