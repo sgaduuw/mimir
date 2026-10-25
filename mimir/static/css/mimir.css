@@ -263,7 +263,8 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
 /* Toolbar sits flush against the top of the box in `partial` and visibly
    standalone elsewhere. The label collapses to the summary line in
    `closed`. */
-.thread-context .thread-toolbar {
+.thread-context .thread-toolbar,
+.fold-box .thread-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -279,14 +280,17 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   font-weight: bold;
 }
 .thread-context .thread-toolbar .thread-summary { display: none; }
+.fold-box { margin-block: 1rem; }
 /* The three-button toggle. Avoid Pico's [role="group"] pill component
    it'd force width: 100% and split the buttons into equal-width bars. */
-.thread-context .thread-toggle {
+.thread-context .thread-toggle,
+.fold-box .thread-toggle {
   display: inline-flex;
   gap: 0;
   flex: 0 0 auto;
 }
-.thread-context .thread-toggle > button {
+.thread-context .thread-toggle > button,
+.fold-box .thread-toggle > button {
   /* defeat Pico's full-width block button defaults */
   display: inline-block;
   width: auto;
@@ -302,20 +306,24 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   border-radius: 0;
   cursor: pointer;
 }
-.thread-context .thread-toggle > button:first-child {
+.thread-context .thread-toggle > button:first-child,
+.fold-box .thread-toggle > button:first-child {
   border-top-left-radius: var(--pico-border-radius);
   border-bottom-left-radius: var(--pico-border-radius);
 }
-.thread-context .thread-toggle > button:last-child {
+.thread-context .thread-toggle > button:last-child,
+.fold-box .thread-toggle > button:last-child {
   border-right-width: 1px;
   border-top-right-radius: var(--pico-border-radius);
   border-bottom-right-radius: var(--pico-border-radius);
 }
-.thread-context .thread-toggle > button:hover {
+.thread-context .thread-toggle > button:hover,
+.fold-box .thread-toggle > button:hover {
   background: var(--pico-secondary-background);
   color: var(--pico-secondary-inverse);
 }
-.thread-context .thread-toggle > button[aria-pressed="true"] {
+.thread-context .thread-toggle > button[aria-pressed="true"],
+.fold-box .thread-toggle > button[aria-pressed="true"] {
   background: var(--pico-secondary);
   color: var(--pico-secondary-inverse);
   border-color: var(--pico-secondary);
@@ -342,7 +350,8 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   color: inherit;
   text-decoration: none;
 }
-.thread-context .thread-box {
+.thread-context .thread-box,
+.fold-box .thread-box {
   border: 1px solid var(--pico-muted-border-color);
   border-radius: var(--pico-border-radius);
   padding: 0.5rem 1rem;
@@ -445,6 +454,26 @@ pre.body-text-block {
 }
 .related-patches { margin-block: 1rem; }
 
+/* Fold boxes on /merge-window (#881) share the thread view's toolbar
+   and box rules above, but each box holds its own state in data-fold
+   rather than one state on <html>. */
+.fold-box .thread-toolbar > :is(h2, h3) { margin: 0; }
+.fold-box:is([data-fold="partial"], [data-fold="expanded"]) .thread-toolbar {
+  border-bottom: 0;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.fold-box:is([data-fold="partial"], [data-fold="expanded"]) .thread-box {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
+}
+.fold-box[data-fold="closed"] .thread-box { display: none; }
+.fold-box[data-fold="closed"] .thread-toolbar { cursor: pointer; }
+.fold-box[data-fold="expanded"] .thread-box {
+  max-height: none;
+  overflow-y: visible;
+}
+
 /* Pull requests to Linus on /merge-window: one column per state, side
    by side while each gets at least 16rem, stacked below that. */
 .pull-columns {
@@ -452,6 +481,7 @@ pre.body-text-block {
   grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr));
   gap: 1rem;
 }
+.pull-column .fold-box { margin: 0; }
 .pull-column ul {
   margin: 0;
   padding-inline-start: 1rem;
