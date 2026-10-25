@@ -209,8 +209,8 @@ def test_series_diff_missing_inbox_404(client, tmp_path):
 
 def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
     """Viewing a cover letter that has revisions, the patch-state
-    card's Series-revisions row renders a `diff vs current` link
-    per non-current revision pointing at the new route."""
+    card's Series-revisions row renders a `diff against previous`
+    link per revision after the first, pointing at the new route."""
     author = "Alice <a@example>"
     series_key = _ingest_series_pair(
         tmp_path,
@@ -237,7 +237,7 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
     # Badge redesign: series revisions moved from the aside into
     # `_revisions_fold.html`; scope the assertions to that fold.
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
-    assert "diff vs current" in fold
+    assert "diff against previous" in fold
     assert f"/alpha/series/{series_key}/diff" in fold
     assert "from=v1" in fold
     assert "to=v2" in fold

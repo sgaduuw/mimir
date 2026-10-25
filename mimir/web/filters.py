@@ -475,8 +475,10 @@ def _patch_synthesis_filter(patch_state) -> str:
     if len(revisions) >= 2:
         current = next((e for e in revisions if e.is_current), None)
         if current is not None:
+            # The count is what the archive holds, resends included, not
+            # the series' length: "v7 of 5" read as a contradiction (#844).
             clauses.append(
-                f"revision {current.version} of {len(revisions)} in this series"
+                f"revision {current.version} ({len(revisions)} revisions archived)"
             )
         else:
             clauses.append(f"one of {len(revisions)} revisions in this series")

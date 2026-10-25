@@ -500,10 +500,21 @@ def test_patch_synthesis_composes_revision_review_and_landing_clauses():
     )
     out = _patch_synthesis_filter(state)
     assert out == (
-        "Revision v2 of 2 in this series; 4 review trailers "
+        "Revision v2 (2 revisions archived); 4 review trailers "
         "(2 from subsystem maintainers); landed in mainline as "
         "abc123def456 on 2026-06-01."
     )
+
+
+def test_patch_synthesis_counts_archived_revisions_not_the_version():
+    """#844: "Revision v7 of 5 in this series" read as a contradiction.
+    The count is the revisions the archive holds (here v1, v2, v5, v6
+    and v7), not the series' length, so the sentence says so."""
+    from mimir.web.filters import _patch_synthesis_filter
+
+    versions = ["v1", "v2", "v5", "v6", "v7"]
+    state = _patch_state(series=[_rev(v, current=v == "v7") for v in versions])
+    assert _patch_synthesis_filter(state) == "Revision v7 (5 revisions archived)."
 
 
 def test_patch_synthesis_prefers_linus_landing_over_earlier_subsystem_tree():
