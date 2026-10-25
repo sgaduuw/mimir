@@ -2387,8 +2387,10 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # reply, counted 2026-10-25 on develop e36429e before #844: a full
 # render with caches cleared, and the 304 that revalidates it. The
 # revisions block is a render of data the page already reads, so it
-# must add none (#844 budget: +0 for both).
-THREAD_VIEW_STATEMENTS_200 = 33
+# must add none (#844 budget: +0 for both). 32 since #844 Part 3: the
+# status line reads the lifecycle row the pill already fetched, and the
+# card's own landing query is gone.
+THREAD_VIEW_STATEMENTS_200 = 32
 THREAD_VIEW_STATEMENTS_304 = 15
 
 

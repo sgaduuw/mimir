@@ -49,6 +49,7 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
   {%- endwith %}
 </div>
 {% endif %}
+{% include "_status_line.html" %}
 {% set synthesis = patch_state|patch_synthesis %}
 {% if synthesis %}
 <p><small>{{ synthesis }}</small></p>

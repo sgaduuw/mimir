@@ -2810,7 +2810,7 @@ def test_message_page_patch_metadata_is_inside_swap_target(
         'class="msg-badges"',
         'class="badge badge-lifecycle-landed"',
         "(2 revisions archived)",
-        "landed in mainline as aabbccddeeff",
+        "Landed in mainline as aabbccddeeff",
         'class="revisions-fold"',
         'class="revisions-count">(2)',
     ):

@@ -37,6 +37,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Patch pages and the thread view show a status line under the badges:
+  "Landed in mainline as <sha> on <date>", "Queued in <tree> as <sha> on
+  <date>", "Superseded by v8 (posted <date>)" with a link to that
+  revision, or "Reviewed". It reads the same row as the lifecycle pill,
+  so the two cannot disagree. The summary sentence no longer carries
+  the landing clause, which the status line now holds. The Markdown
+  thread view carries the status line too (#844).
 - A cover letter's subsystems are now those of its patches. A cover
   carries no diff, so its thread view and its message page showed no
   subsystem line at all. Both now list the subsystems the posting's
