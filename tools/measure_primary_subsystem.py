@@ -35,7 +35,7 @@ import time
 from sqlalchemy import select, text
 
 from mimir.extensions import SessionLocal
-from mimir.models import ArticleFile, Inbox, Subsystem, SubsystemPath
+from mimir.models import Article, ArticleFile, Inbox, Subsystem, SubsystemPath
 from mimir.subsystems import path_matches_glob, subsystems_for_article
 
 SAMPLE = int(os.environ.get("SAMPLE", "300"))
@@ -143,7 +143,7 @@ with SessionLocal() as s:
     mismatches = []
     for aid in sorted(matches)[:SAMPLE]:
         ours = {names[sid] for sid in matches[aid]}
-        theirs = {h.name for h in subsystems_for_article(s, aid)}
+        theirs = {h.name for h in subsystems_for_article(s, s.get(Article, aid))}
         if ours != theirs:
             mismatches.append((aid, sorted(ours ^ theirs)[:5]))
     print(f"mismatches: {len(mismatches)} of {min(SAMPLE, len(matches))}")

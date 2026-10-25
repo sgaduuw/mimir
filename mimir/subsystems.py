@@ -3,10 +3,10 @@ sections that claim them.
 
 Two read-path helpers:
 
-- `subsystems_for_article(session, article_id)`, given an article,
-  return the deduplicated set of `Subsystem` rows that any of its
-  `article_files` paths land in. The header on the patch page reads
-  this.
+- `subsystems_for_article(session, article)`, given an article,
+  return the deduplicated set of `Subsystem` rows that any of the
+  paths it touches land in (`article_paths`: a cover answers for its
+  patches). The header on the patch page reads this.
 - `recent_patches_touching(session, paths, exclude_id, limit)`
   given a set of paths, return the most-recent articles (other than
   the current one) that share at least one path. The sidebar on the
@@ -49,6 +49,7 @@ from mimir.models import (
     Subsystem,
     SubsystemPath,
 )
+from mimir.patch_series import same_posting
 
 # Per-subsystem dashboard helpers refresh at most once per hour. The
 # underlying joins (article_files × article_lists × articles for
@@ -411,27 +412,67 @@ class SubsystemHit(BaseModel):
     maintainers: list[tuple[str, str, str]] = []
 
 
-def subsystems_for_article(
-    session: Session,
-    article_id: int,
-) -> list[SubsystemHit]:
-    """Resolve the subsystem(s) for an article via its touched files.
+def is_cover(article: Article) -> bool:
+    """A cover letter of a versioned posting. It carries no diff, so
+    the files it touches are its patches' (#844). NULL position is 0, a
+    cover stored before the #212 backfill."""
+    return bool(article.patch_series_key and article.patch_series_version) and (
+        not article.patch_series_position
+    )
 
-    A subsystem matches when a touched file matches one of its `F:`
-    rules and none of its `X:` rules. Returns one `SubsystemHit` per
-    matched subsystem, sorted by name for a stable header order.
+
+def article_paths(
+    session: Session, article: Article
+) -> list[tuple[int, int | None, str | None]]:
+    """`(article_id, position, path)` for every file `article` touches:
+    its own rows, or for a cover those of every article in its posting
+    (`patch_series.same_posting`), with a NULL path for a patch that
+    has none so the patch still counts. One statement either way.
+
+    The single answer to "which files does this article touch": the
+    subsystem line, the maintainer line, the series totals and the page
+    validator (`routes._validators.render_state_tag`) all read it, so
+    the validator digests exactly what the page renders.
+    """
+    if not is_cover(article):
+        return [
+            (article.id, article.patch_series_position, path)
+            for path in session.scalars(
+                select(ArticleFile.path)
+                .where(ArticleFile.article_id == article.id)
+                .order_by(ArticleFile.path)
+            )
+        ]
+    return [
+        tuple(row)
+        for row in session.execute(
+            select(Article.id, Article.patch_series_position, ArticleFile.path)
+            .outerjoin(ArticleFile, ArticleFile.article_id == Article.id)
+            .where(same_posting(article))
+            .order_by(Article.id, ArticleFile.path)
+        )
+    ]
+
+
+def subsystems_for_article(session: Session, article: Article) -> list[SubsystemHit]:
+    """Resolve the subsystem(s) for an article via the files it touches
+    (`article_paths`, so a cover answers for its patches)."""
+    return subsystems_for_paths(
+        session, [path for _, _, path in article_paths(session, article) if path]
+    )
+
+
+def subsystems_for_paths(session: Session, paths: list[str]) -> list[SubsystemHit]:
+    """The subsystems these paths land in.
+
+    A subsystem matches when a path matches one of its `F:` rules and
+    none of its `X:` rules. Returns one `SubsystemHit` per matched
+    subsystem, sorted by name for a stable header order.
 
     Matching goes through `_rules_index` (#705): the rules snapshot
     from the cross-process cache, arranged by directory and kept per
-    process until the rules change. The per-article query against
-    `article_files` still hits the DB.
+    process until the rules change.
     """
-    paths = [
-        row.path
-        for row in session.execute(
-            select(ArticleFile).where(ArticleFile.article_id == article_id)
-        ).scalars()
-    ]
     if not paths:
         return []
 
@@ -579,8 +620,11 @@ __all__ = [
     "SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC",
     "RelatedPatch",
     "SubsystemHit",
+    "article_paths",
+    "is_cover",
     "path_matches_glob",
     "ranked_subsystems",
     "recent_patches_touching",
     "subsystems_for_article",
+    "subsystems_for_paths",
 ]
