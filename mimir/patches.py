@@ -236,6 +236,12 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
 
     paths = extract_touched_paths(parsed.body)
     if not paths:
+        # An older extractor may have stored rows for this body; with no
+        # diff to replace them, reprocess must still drop them (#923).
+        if has_rows:
+            return "no_diff", _ArticleFilesPending(
+                article_id=article.id, delete_first=True
+            )
         return "no_diff", None
 
     return "indexed", _ArticleFilesPending(
