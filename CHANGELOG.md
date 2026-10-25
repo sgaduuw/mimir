@@ -17,6 +17,13 @@ changes, not internal refactors. Categories: **Added**,
   position, the same text as its title, instead of a generic
   "Inter-revision diff: cover letter" (or "patch N") (#880).
 
+### Removed
+
+- `mimir init-db`. It failed under default settings, and under
+  `MIMIR_IS_BROKER=true` it left a database that the broker could not
+  migrate. Start the broker instead: it creates and migrates the database at
+  startup (#888).
+
 ## [3.28.0] - 2026-10-25
 
 ### Changed

@@ -736,8 +736,8 @@ def test_summary_says_whether_the_run_finished(
 
 
 def test_a_model_built_schema_never_reuses_a_run_id(tmp_path):
-    """`init-db` builds the schema from the models, not the migrations,
-    so the model must carry AUTOINCREMENT too."""
+    """A schema built from the models, not the migrations, must carry
+    AUTOINCREMENT too."""
     from datetime import datetime
 
     from sqlalchemy import create_engine, insert
