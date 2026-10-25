@@ -23,7 +23,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    populated, the leading space cleanly separates the attrs from
    `lang="en"`. #}
 {% block html_data_attrs -%}
-{%- if thread_total > 1 %} data-thread-root-id="{{ thread_root_id }}" data-thread-context="{{ 'root' if thread_is_root else 'deep' }}"{%- endif -%}
+{%- if thread_total > 1 %} data-thread-root-id="{{ thread_root_id }}" data-thread-context="{{ 'root' if thread_root_id == article.id else 'deep' }}"{%- endif -%}
 {% endblock %}
 {% block content %}
 {% if thread_total > 1 or parent_off_list %}
