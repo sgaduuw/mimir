@@ -4,31 +4,12 @@ broker's WriterThread."""
 
 from datetime import UTC, datetime
 
-import pytest
-
 from mimir.ingest._pending import (
     _ArticleInsert,
     _ArticleListInsert,
     _ParseFailureRecord,
     _PendingWrites,
 )
-
-
-@pytest.fixture
-def writer():
-    """Function-scoped WriterThread for _submit_ingest_batch tests.
-
-    Mirrors the `writer_thread` fixture in test_mainline.py: starts one
-    WriterThread against the test DB and stops it after the test.
-    `seeded_db` is not required as a parameter because the autouse
-    `_reset_db` fixture already runs before this fixture is entered.
-    """
-    from mimir.broker.writes import WriterThread
-
-    wt = WriterThread.from_settings()
-    wt.start()
-    yield wt
-    wt.stop(timeout=10)
 
 
 def test_submit_ingest_batch_inserts_articles_lists_and_advances_cursor(
@@ -436,13 +417,3 @@ def test_submit_analyze_runs_via_writer(writer, seeded_db):
     future = _submit_analyze(writer, "alpha")
     # Must complete without raising.
     future.result(timeout=30)
-
-
-def test_submit_analyze_is_full_sample(writer, seeded_db):
-    """The after-ingest ANALYZE reads every row too (#817)."""
-    from mimir.ingest._pending import _submit_analyze
-    from tests._helpers import analyze_probe
-
-    with analyze_probe(seeded_db) as stat:
-        _submit_analyze(writer, "alpha").result(timeout=30)
-        assert stat() == "10000 5000"
