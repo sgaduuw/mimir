@@ -93,8 +93,8 @@ linking previous and next. Each response sends
 `Content-Type: text/markdown; charset=utf-8`, its own ETag with
 `Cache-Control: public, no-cache`, and `Link: <...>; rel="canonical"` naming
 the HTML page's own canonical, so search engines index the HTML page. Sitemaps
-do not list `.md` URLs. They count against a crawler's budget exactly as the
-HTML pages do.
+do not list `.md` URLs; `/llms.txt` points agents at them. They count against
+a crawler's budget exactly as the HTML pages do.
 
 ## Discovery and canonical URLs
 
@@ -131,6 +131,7 @@ pages instead use ETags with revalidation.
 | `/healthz` | Liveness, no database access |
 | `/readyz` | Readiness, checks a database query |
 | `/robots.txt` | Configured crawler rules and sitemap location |
+| `/llms.txt` | Site summary for AI agents: URL shapes with their Markdown forms, sitemap, and the `Content-Signal` of `robots.txt`'s `*` stanza |
 | `/security.txt`, `/.well-known/security.txt` | Security contact; 404 unless configured |
 | `/privacy` | Privacy notice linked from the footer |
 | `/favicon.svg`, `/og-image.png` | Site icon and social preview image |
