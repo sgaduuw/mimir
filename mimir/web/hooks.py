@@ -93,6 +93,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # minutes rather than a day. Matches the sitemap.xml cadence
     # for the same reason (the underlying state is mutable).
     "web.robots_txt": "public, max-age=300",
+    # Restates robots.txt's Content-Signal, so the same short window.
+    "web.llms_txt": "public, max-age=300",
     "web.security_txt": "public, max-age=3600",
     "web.privacy": "public, max-age=3600",
     "web.favicon_svg": "public, max-age=604800",
