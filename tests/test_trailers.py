@@ -4,6 +4,8 @@ review-attestation extractor used at ingest and by the backfill CLI.
 
 import time
 
+import pytest
+
 from mimir.trailers import extract_trailers
 
 
@@ -93,9 +95,9 @@ def test_extract_ignores_quoted_trailers_in_replies():
 
 
 def test_extract_skips_address_with_html_metacharacters():
-    """The address regex is conservative, addresses carrying HTML
-    metacharacters fall through (silently skipped). Defense in depth
-    for any future render path that touches the indexed value."""
+    """`"`, `<` and `>` are outside RFC 5322's atext, so an address
+    carrying one falls through (silently skipped). `&` and `'` are
+    atext and are kept; rendering escapes the stored value."""
     body = 'Reviewed-by: A <"weird"@example.com>\n'
     assert extract_trailers(body) == []
 
@@ -127,6 +129,63 @@ def test_a_long_address_run_parses_in_linear_time():
     possible end of the name (#921)."""
     start = time.perf_counter()
     run = "a" * 300_000
+    assert extract_trailers("Reviewed-by: " + run) == []
+    assert extract_trailers("Reviewed-by: " + run + " <j@x.org>") == [
+        ("Reviewed-by", run, "j@x.org")
+    ]
+    assert time.perf_counter() - start < 5
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("Reviewed-by: X <x=y@example.com>", [("Reviewed-by", "X", "x=y@example.com")]),
+        (
+            "Acked-by: O'Neil <o'neil@example.com>",
+            [("Acked-by", "O'Neil", "o'neil@example.com")],
+        ),
+        ("Reviewed-by: X x=y@example.com", [("Reviewed-by", "X", "x=y@example.com")]),
+        # Not an address we can split safely: skipped, never split inside
+        # the address (#913).
+        ('Reviewed-by: A <x"y@example.com>', []),
+        ("Reviewed-by: Name:a@example.com", []),
+        ("Reviewed-by: name,a@example.com", []),
+    ],
+)
+def test_extract_keeps_the_whole_rfc5322_local_part(line, expected):
+    """A local-part character outside the old narrow class ended the
+    address there, and the name took the rest: `X <x=` (#913)."""
+    assert extract_trailers(line + "\n") == expected
+
+
+@pytest.mark.parametrize(
+    ("rest", "expected"),
+    [
+        ("Name<a@b.example>", ("Name", "a@b.example")),
+        ("Name <a@b.example", ("Name", "a@b.example")),
+        ("Name a@b.example>", ("Name", "a@b.example")),
+        ('"Doe, J" <j@x.org>', ("Doe, J", "j@x.org")),
+        ("Name (maint) <a@b.example>", ("Name (maint)", "a@b.example")),
+        (
+            "syzbot+abc@syzkaller.appspotmail.com",
+            ("", "syzbot+abc@syzkaller.appspotmail.com"),
+        ),
+        ("a@b.example   ", ("", "a@b.example")),
+        ("\nJoe <j@x.org>", ("Joe", "j@x.org")),
+        ("Name <a@b.example> # v5.10", None),
+    ],
+)
+def test_existing_trailer_shapes_parse_as_before(rest, expected):
+    """Shapes that parsed right before #913 and must not move."""
+    rows = extract_trailers("Tested-by: " + rest + "\n")
+    assert rows == ([] if expected is None else [("Tested-by", *expected)])
+
+
+def test_an_rfc5322_address_run_parses_in_linear_time():
+    """`=` and `'` sit inside the address run since #913; the scan over
+    that run must stay linear."""
+    start = time.perf_counter()
+    run = "a='" * 100_000
     assert extract_trailers("Reviewed-by: " + run) == []
     assert extract_trailers("Reviewed-by: " + run + " <j@x.org>") == [
         ("Reviewed-by", run, "j@x.org")

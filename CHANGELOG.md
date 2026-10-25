@@ -16,6 +16,27 @@ changes, not internal refactors. Categories: **Added**,
 - The fold toggle's first button is a disclosure triangle again: ▶ when the
   box is closed, ▼ when it is open (partial or expanded), on the thread view
   and on `/merge-window`. 3.29.0 always showed ▶. This corrects #890 (#930).
+- Review trailers whose address uses `=`, `'` or another character RFC 5322
+  allows before the `@` are indexed under the whole address and name.
+  `Reviewed-by: X <x=y@example.com>` was stored as the name `X <x=` and the
+  address `y@example.com`, so it counted toward the wrong reviewer on reviewer
+  and subsystem pages and in the maintainer pickup flag. This closes the 3.29.0
+  known gap: the review tooltip and the thread `.md` status line no longer show
+  a name fragment such as `Alice <alice.smith=`. A trailer whose address holds
+  a character outside that set (such as `"`), or is joined to the name by
+  punctuation (`Name:a@example.com`), is now skipped instead of split (#913).
+- `backfill-article-trailers --reprocess` now removes an article's trailer rows
+  when its body no longer yields any, instead of keeping the old ones (#913).
+
+### Upgrade notes
+
+- Run `backfill-article-trailers --reprocess` after the deploy to re-split
+  trailers stored before it. Until the run reaches an article, that article
+  keeps the old split. A plain run skips articles that already have rows. The
+  run resumes across broker restarts; a full `--reprocess` has taken most of
+  two days (3.14.0 figure, not re-measured for this command). Message and
+  thread pages get a new ETag as each article is rewritten; subsystem
+  dashboards and the maintainer directory follow within their one-hour cache.
 
 ## [3.29.0] - 2026-10-25
 

@@ -538,6 +538,37 @@ def test_format_tooltip_pending_returns_none():
     assert tip is None
 
 
+def test_tooltip_does_not_show_part_of_an_address_the_trailer_line_hides(
+    client, monkeypatch
+):
+    """3.29.0 known gap: the trailer line hides `alice.smith=lkml@...`
+    (#922), but the parser stored the name `Alice <alice.smith=`, which
+    the tooltip and the thread `.md` status line printed (#913)."""
+    from mimir.config import settings
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from mimir.rendering.linkify import plain_line
+    from mimir.trailers import extract_trailers
+    from mimir.web.filters import _redact_trailer_address
+
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    line = "Reviewed-by: Alice <alice.smith=lkml@example.com>"
+    with client.application.test_request_context():
+        shown_line = plain_line(line, _redact_trailer_address)
+        ((_role, name, _addr),) = extract_trailers(line)
+        tooltip = _format_tooltip(
+            state=LifecycleStatus.REVIEWED,
+            linus_sha=None,
+            linus_committed_at=None,
+            earliest_other_sha=None,
+            earliest_other_at=None,
+            superseded_by_version=None,
+            superseded_by_posted_at=None,
+            reviewers=[(name, False)],
+        )
+    assert "alice.smith" not in shown_line  # precondition: the line hides it
+    assert tooltip == "Alice"
+
+
 def test_bulk_uncached_returns_reviewer_counts(session):
     """The bulk fetcher surfaces review-trailer counts (total +
     maintainer-subset) per article alongside the state derivation."""
