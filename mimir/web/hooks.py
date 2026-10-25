@@ -252,7 +252,13 @@ def _crawler_budget_gate():
     only rewrites Cache-Control on 200/301/302/304, so it stays."""
     if request.endpoint in EXEMPT_ENDPOINTS:
         return None
-    if _crawler_gate.check(request.headers.get("User-Agent")) is None:
+    h = request.headers
+    if (
+        _crawler_gate.check(
+            h.get("User-Agent"), h.get("Sec-Fetch-Site"), h.get("Referer")
+        )
+        is None
+    ):
         return None
     return Response(
         "Too Many Requests\n",
