@@ -11,6 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-10-25
+
+No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`
+or run `mimir analyze --full`, both removed (see Removed).
+
 ### Added
 
 - Requests that send `Sec-Fetch-Site: none` with a `Referer`, a pair no browser
@@ -69,7 +74,8 @@ changes, not internal refactors. Categories: **Added**,
   `ANALYZE_LIMIT` in an environment or `.env` is ignored and does not stop
   startup; delete it. `mimir analyze --full`, for example in a cron job,
   now fails with "no such option": drop `--full`, the pass is the same.
-  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged.
+  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged; its log
+  line now reads `analyze: ok` instead of `analyze --full: ok`.
 
 ### Fixed
 
@@ -99,7 +105,7 @@ changes, not internal refactors. Categories: **Added**,
 - Review trailer parsing at ingest and in `backfill-article-trailers` now
   takes linear time. A long trailer line, such as a run of spaces or of
   address characters, took time that grew with the square of its length:
-  about 22 s for one 40,000-character line (measured on develop). Trailers
+  about 22 s for one 40,000-character line (measured on 3.28.0). Trailers
   parse as before (#921).
 
 ### Security
