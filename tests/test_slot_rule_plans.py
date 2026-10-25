@@ -93,6 +93,6 @@ def test_the_validator_series_query_seeks_both_indexes(seeded_db):
         plan = plan_of(
             s,
             lambda: render_state_tag(s, viewed.id, viewed.message_id),
-            "article_files.article_id = articles.id",
+            "EXISTS",
         )
     _assert_seeks(plan)
