@@ -544,26 +544,6 @@ def test_an_ingest_re_chain_between_read_and_write_is_not_overwritten(
     assert heads["new@x"] == heads["new@x-p1"] == heads["new@x-p2"] == x_id
 
 
-def test_a_run_started_without_reprocess_resumes_with_it(
-    seeded_db, broker_active, monkeypatch
-):
-    """`--reprocess` changes nothing here, so it must not define the run
-    either: an interrupted run resumes whichever way it is invoked
-    again, instead of a second run walking from the newest article."""
-    _split_corpus(seeded_db)
-    _small_batches(monkeypatch)
-
-    limited = _invoke(backfill_series_chains_command, "--limit", "4")
-    assert limited.exit_code == 0, limited.output
-    assert _runs(seeded_db)[-1][4] is False  # precondition: unfinished
-
-    rest = _invoke(backfill_series_chains_command, "--reprocess")
-    assert rest.exit_code == 0, rest.output
-    assert _resumed_at(rest.output) is not None
-    runs = [r for r in _runs(seeded_db) if r[0] == "backfill_series_chains"]
-    assert len(runs) == 1 and runs[0][4] is True
-
-
 def test_a_failed_batch_writes_none_of_its_key_s_heads(
     seeded_db, broker_active, monkeypatch
 ):
@@ -587,9 +567,18 @@ def test_a_failed_batch_writes_none_of_its_key_s_heads(
     assert len(_split_count(seeded_db)) == 6
 
 
-def test_the_reprocess_flag_changes_nothing(seeded_db, broker_active):
+def test_the_command_has_no_reprocess_flag(seeded_db, broker_active):
+    """Every run chains whole keys afresh, so the flag was dropped (#889)."""
+    result = _invoke(backfill_series_chains_command, "--reprocess")
+    assert result.exit_code == 2
+    assert "No such option '--reprocess'" in result.output
+
+
+def test_the_run_key_is_the_one_runs_carried_before_the_flag_went(
+    seeded_db, broker_active
+):
+    """An unfinished run recorded by an earlier release resumes only if
+    the key still reads `reprocess: false`."""
     _split_corpus(seeded_db)
-    assert _invoke(backfill_series_chains_command, "--reprocess").exit_code == 0
-    first = _heads(seeded_db)
-    assert _invoke(backfill_series_chains_command, "--reprocess").exit_code == 0
-    assert _heads(seeded_db) == first
+    assert _invoke(backfill_series_chains_command).exit_code == 0
+    assert _runs(seeded_db)[-1][1] == ('{"inbox_filter": null, "reprocess": false}')
