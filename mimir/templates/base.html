@@ -120,11 +120,10 @@
         {% endif %}
       </ul>
       <ul>
-        {% if inboxes|length > 1 and not current_inbox %}
-        <li><small><a href="#inboxes">{{ inboxes|length }} inboxes</a></small></li>
-        {% elif current_inbox %}
-        <li><small>archive</small></li>
-        {% endif %}
+        {# The one site-wide page to browse; readers mostly arrive on a
+           thread from a search engine, never seeing the front page (#891). #}
+        {% set mw_url = url_for('web.merge_window_page') %}
+        <li><small><a href="{{ mw_url }}"{% if request.path == mw_url %} aria-current="page"{% endif %}>Merge window</a></small></li>
       </ul>
     </nav>
     {% block content %}{% endblock %}
