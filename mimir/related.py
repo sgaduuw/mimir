@@ -15,14 +15,14 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import DateTime, Select, TextualSelect, bindparam, or_, select, text
+from sqlalchemy import DateTime, TextualSelect, bindparam, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.config import settings
 from mimir.dashboard import _inbox_first
 from mimir.datetime_utils import aware_utc
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import Article, Inbox
 from mimir.threading import find_thread_root
 from mimir.web.urls import _msg_path
 
@@ -219,14 +219,20 @@ def _candidate_select(
     tokens: list[str],
     authors: set[str],
     min_date: datetime,
-) -> Select | TextualSelect | None:
+) -> TextualSelect | None:
     """The candidate query. The spec's three branches are OR
     predicates tested per row, over a walk of ix_articles_date
-    descending with LIMIT for a big list, or of the inbox's own
-    `article_lists` rows for a small one (`_inbox_first`, as in the
-    triage queues). Returns None when no predicate applies
-    (empty subject, no tokens, no authors). Exposed separately from
-    `_candidates` so the plan-pin test can EXPLAIN the compiled SQL.
+    descending with LIMIT for a big list, or an unpinned join the
+    planner drives for a small one (`_inbox_first`). Returns None
+    when no predicate applies (empty subject, no tokens, no authors).
+    Exposed separately from `_candidates` so the plan-pin test can
+    EXPLAIN the compiled SQL.
+
+    Raw SQL, because SQLAlchemy's SQLite dialect drops `with_hint`, so
+    the big list's `INDEXED BY` pin never reached SQLite (#835). Left
+    to the planner, statistics can make `article_lists` look
+    nearly free and it reads the whole list into a temp b-tree (6.6M
+    rows on lkml, 4.5 to 6.8 s, #785).
 
     Tokens may contain `_`, which LIKE treats as a single-char
     wildcard (so %spin_lock% also matches spinXlock). Accepted: the
@@ -235,52 +241,6 @@ def _candidate_select(
     """
     if not (subject_normalized or tokens or authors):
         return None
-    if not _inbox_first(inbox):
-        return _big_list_candidates(
-            inbox,
-            subject_normalized=subject_normalized,
-            tokens=tokens,
-            authors=authors,
-            min_date=min_date,
-        )
-    preds = []
-    if subject_normalized:
-        preds.append(Article.subject_normalized == subject_normalized)
-    for t in tokens:
-        preds.append(Article.subject_normalized.like(f"%{t}%"))
-    if authors:
-        preds.append(Article.author.in_(sorted(authors)))
-    stmt = (
-        select(
-            Article.id,
-            Article.message_id,
-            Article.subject_normalized,
-            Article.author,
-            Article.date,
-        )
-        .where(Article.date >= min_date, or_(*preds))
-        .order_by(Article.date.desc())
-        .limit(CANDIDATE_CAP)
-    )
-    return stmt.join(ArticleList, ArticleList.article_id == Article.id).where(
-        ArticleList.inbox_id == inbox.id
-    )
-
-
-def _big_list_candidates(
-    inbox: Inbox,
-    *,
-    subject_normalized: str,
-    tokens: list[str],
-    authors: set[str],
-    min_date: datetime,
-) -> TextualSelect:
-    """The big-list candidate query: walk `ix_articles_date` newest
-    first and probe the inbox link, stopping at the cap. Raw SQL because
-    SQLAlchemy's SQLite dialect drops `with_hint`, so the pin #785 meant
-    to add never reached SQLite (#835). Left to the planner, statistics
-    can make `article_lists` look nearly free and it reads the whole
-    list into a temp b-tree (6.6M rows on lkml, 4.5 to 6.8 s, #785)."""
     preds, binds = [], {}
     if subject_normalized:
         preds.append("a.subject_normalized = :subject")
@@ -291,15 +251,21 @@ def _big_list_candidates(
     if authors:
         preds.append("a.author IN :authors")
         binds["authors"] = sorted(authors)
+    if _inbox_first(inbox):
+        source = "articles a JOIN article_lists ON article_lists.article_id = a.id"
+        in_inbox = "article_lists.inbox_id = :inbox_id"
+    else:
+        source = "articles a INDEXED BY ix_articles_date"
+        in_inbox = """EXISTS (SELECT 1 FROM article_lists al
+                      WHERE al.article_id = a.id AND al.inbox_id = :inbox_id)"""
     return (
         text(
             f"""
         SELECT a.id, a.message_id, a.subject_normalized, a.author, a.date
-        FROM articles a INDEXED BY ix_articles_date
+        FROM {source}
         WHERE a.date >= :min_date
           AND ({" OR ".join(preds)})
-          AND EXISTS (SELECT 1 FROM article_lists al
-                      WHERE al.article_id = a.id AND al.inbox_id = :inbox_id)
+          AND {in_inbox}
         ORDER BY a.date DESC
         LIMIT :cap
         """
