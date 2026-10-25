@@ -21,6 +21,7 @@ _TRAILER_BODY = (
     b"Acked-by: Bob <bob@kernel.org>\n"
 )
 _PROSE_BODY = b"hello, no trailers here\n"
+_EQUALS_BODY = b"Reviewed-by: X <x=y@example.com>\n"
 
 
 def _rfc5322(msgid: str, body: bytes) -> bytes:
@@ -180,3 +181,57 @@ def test_backfill_reads_article_whose_canonical_inbox_is_not_filed(
         ("m0@example.com", "Acked-by", "bob@kernel.org"),
         ("m0@example.com", "Reviewed-by", "alice@example.com"),
     }
+
+
+def _store_trailer(seeded_db, name: str, address: str) -> None:
+    """Store a row as the parser before #913 did, on article m0."""
+    with seeded_db() as s:
+        art = s.execute(
+            select(Article).where(Article.message_id == "m0@example.com")
+        ).scalar_one()
+        s.add(
+            ArticleTrailer(
+                article_id=art.id,
+                role="Reviewed-by",
+                name=name,
+                address=address,
+                address_normalized=address.lower(),
+            )
+        )
+        s.commit()
+
+
+def _trailer_rows(seeded_db) -> list[tuple[str, str, str]]:
+    with seeded_db() as s:
+        return [
+            (t.name, t.address, t.address_normalized)
+            for t in s.execute(select(ArticleTrailer)).scalars()
+        ]
+
+
+def test_backfill_reprocess_resplits_a_trailer_stored_before_913(
+    seeded_db, tmp_path, broker_active
+):
+    _ingest_articles_without_trailers(seeded_db, tmp_path, _EQUALS_BODY)
+    _store_trailer(seeded_db, "X <x=", "y@example.com")
+    assert _trailer_rows(seeded_db) == [("X <x=", "y@example.com", "y@example.com")]
+
+    result = backfill_article_trailers(limit=1, reprocess=True)
+    assert result.indexed == 1
+    assert _trailer_rows(seeded_db) == [("X", "x=y@example.com", "x=y@example.com")]
+
+
+def test_backfill_reprocess_drops_rows_the_body_no_longer_yields(
+    seeded_db, tmp_path, broker_active
+):
+    """A row whose line the parser now skips (here `A <x"y@...>`, once
+    split as `A <x"`) must not outlive `--reprocess` just because the
+    article has no other trailer."""
+    _ingest_articles_without_trailers(seeded_db, tmp_path, _PROSE_BODY)
+    _store_trailer(seeded_db, 'A <x"', "y@example.com")
+    assert len(_trailer_rows(seeded_db)) == 1
+
+    result = backfill_article_trailers(limit=1, reprocess=True)
+    assert result.examined == 1
+    assert result.no_trailers == 1
+    assert _trailer_rows(seeded_db) == []
