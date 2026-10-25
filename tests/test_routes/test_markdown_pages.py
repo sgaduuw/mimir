@@ -71,8 +71,7 @@ class _VisibleText(HTMLParser):
 
 def _visible_html_text(page: str) -> str:
     """What a reader sees: no head (canonical, JSON-LD), no scripts, no
-    attributes. JSON-LD has its own known redaction gap, so letting it
-    into the oracle would excuse the same leak in the `.md`."""
+    attributes."""
     parser = _VisibleText()
     parser.feed(page)
     parser.close()
