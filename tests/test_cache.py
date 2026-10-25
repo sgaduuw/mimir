@@ -1493,3 +1493,41 @@ def test_purge_expired_via_writer_drops_expired_only(writer, seeded_db):
     assert fresh is not None
     assert stale_1 is None
     assert stale_2 is None
+
+
+def test_a_row_carrying_a_removed_field_still_decodes():
+    """#844 removed `PatchState.mainline_landings` and the
+    `StateMainlineLanding` it held. A row another version wrote can
+    still be read: a key without the version in it (the listing pill's
+    `lifecycle_status:<id>:i<inbox>`) or a rollback to the version
+    before, both within a TTL. `cls(**fields)` raised on the unknown
+    keyword, and decoding the field first raised on its unregistered
+    tag, so the page 500'd instead of missing the cache. This is the
+    row as the version before #844 Part 3 wrote it."""
+    from mimir.patch_state import PatchState
+
+    old_row = {
+        "__t": "PatchState",
+        "v": {
+            "is_patch": True,
+            "trailers": [],
+            "mainline_landings": [
+                {
+                    "__t": "StateMainlineLanding",
+                    "v": {
+                        "commit_sha": "a" * 40,
+                        "tree_name": "linus",
+                        "tree_label": "mainline (Linus)",
+                        "committed_at": None,
+                    },
+                }
+            ],
+            "series": [],
+            "days_since_last_reply": 3,
+        },
+    }
+    assert "StateMainlineLanding" not in _TYPES  # precondition: the tag is gone
+    out = _decode(json.loads(json.dumps(old_row)))
+    assert out == PatchState(
+        is_patch=True, trailers=[], series=[], days_since_last_reply=3
+    )

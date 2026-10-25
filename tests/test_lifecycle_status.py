@@ -910,10 +910,9 @@ def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
     sha and committed_at. With committed_at as the only order, the pill
     followed physical row order, which linux-next's daily DELETE and
     reinsert rewrites, while the page validator stayed put. The subsystem
-    tree wins the tie, in the pill and in the summary sentence alike."""
+    tree wins the tie, in the pill and in the status line's evidence,
+    which come from one row (#844)."""
     from sqlalchemy import delete
-
-    from mimir.patch_state import _mainline_landings
 
     art = _seed_article(session, "tie@x")
     at = datetime(2026, 9, 1, 12, tzinfo=UTC)
@@ -935,7 +934,7 @@ def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
         got = lifecycle_status_for_articles(session, [art.id], _lkml(session))[art.id]
         assert got.state == LifecycleStatus.QUEUED
         assert got.tree == "net-next"
-        assert _mainline_landings(session, art)[0].tree_name == "net-next"
+        assert got.commit_sha == "c" * 40
         # linux-next's daily rebuild: delete its rows, reinsert the same.
         session.execute(
             delete(MainlineCommit).where(MainlineCommit.tree_name == "linux-next")
@@ -1043,19 +1042,10 @@ def _tied_commits(session, message_id, tree_name):
 
 
 @pytest.mark.parametrize("tree_name", ["linus", "net-next"])
-def test_tied_commits_tooltip_matches_card(session, tree_name):
-    """The pill's tooltip and the card's sentence name the same commit
-    when one tree carries two at one committer date."""
-    from mimir.patch_state import _mainline_landings
-
+def test_tied_commits_tooltip_matches_the_status_evidence(session, tree_name):
+    """The pill's tooltip and the status line's commit name the same
+    commit when one tree carries two at one committer date."""
     art = _tied_commits(session, f"tie-{tree_name}@x", tree_name)
-    card = next(
-        c
-        for c in _mainline_landings(session, art)
-        if (c.tree_name == "linus") == (tree_name == "linus")
-    )
-    tip = lifecycle_status_for_articles(session, [art.id], _lkml(session))[
-        art.id
-    ].tooltip
-    assert card.commit_sha == "a" * 40  # precondition: the tie is broken by sha
-    assert tip.split(" · ")[0] == card.commit_sha[:12]
+    info = lifecycle_status_for_articles(session, [art.id], _lkml(session))[art.id]
+    assert info.commit_sha == "a" * 40  # precondition: the tie is broken by sha
+    assert info.tooltip.split(" · ")[0] == info.commit_sha[:12]
