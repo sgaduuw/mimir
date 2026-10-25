@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The series diff page heading names the series, both versions and the
+  position, the same text as its title, instead of a generic
+  "Inter-revision diff: cover letter" (or "patch N") (#880).
+
 ## [3.28.0] - 2026-10-25
 
 ### Changed
