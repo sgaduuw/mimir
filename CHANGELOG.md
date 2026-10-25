@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.29.0] - 2026-10-25
+
+No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`,
+run `mimir analyze --full`, or run `mimir init-db`, all removed (see Removed).
+
+Known gap: a review trailer whose address has a character such as `=` before
+the `@` is still split at ingest (`Alice <alice.smith=` / `lkml@example.com`),
+so the review tooltip and the thread `.md` status line can show that name
+fragment although the trailer line itself now hides the address. 3.28.0 showed
+the whole address. #913 fixes the parsing, followed by a trailer backfill.
+
 ### Added
 
 - Requests that send `Sec-Fetch-Site: none` with a `Referer`, a pair no browser
@@ -33,7 +44,8 @@ changes, not internal refactors. Categories: **Added**,
   `Link: rel="canonical"` header naming the HTML page's canonical, and the
   sitemaps do not list `.md` URLs. The crawler budget applies to them as to
   the HTML pages; a user-initiated agent such as `Claude-User` is not a
-  recognised crawler and is not gated on either.
+  recognised crawler and is not gated by its `User-Agent` on either; the
+  impossible-headers bucket (#903) still applies.
 - `/llms.txt`, for AI agents: what the site is, the page URL shapes with
   their `.md` forms, and pointers to the sitemap and the privacy page
   (#884). It repeats the `Content-Signal` of `robots.txt`'s `*` stanza as
@@ -69,7 +81,8 @@ changes, not internal refactors. Categories: **Added**,
   `ANALYZE_LIMIT` in an environment or `.env` is ignored and does not stop
   startup; delete it. `mimir analyze --full`, for example in a cron job,
   now fails with "no such option": drop `--full`, the pass is the same.
-  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged.
+  The weekly scheduled pass and `ANALYZE_FULL_EVERY` are unchanged; its log
+  line now reads `analyze: ok` instead of `analyze --full: ok`.
 
 ### Fixed
 
@@ -82,8 +95,8 @@ changes, not internal refactors. Categories: **Added**,
   before the `@` (`Signed-off-by: X <x=y@example.com>`) is hidden like any
   other, and so is an address used as the name or written bare
   (`Signed-off-by: joe@example.com <joe@example.com>`). The lifecycle tooltip
-  drops such a reviewer name. This covers the HTML pages and the `.md` pages
-  (#902).
+  drops such a reviewer name. This covers the HTML pages, the `.md` pages and
+  the JSON-LD `text` (#902).
 - The thread view no longer repeats the diff line anchors (`h-1`, `h-1-L4`)
   once per message, which made duplicate `id`s on one page and sent a
   `#h-1-L4` fragment to the wrong message. Those anchors now exist only on
@@ -99,7 +112,7 @@ changes, not internal refactors. Categories: **Added**,
 - Review trailer parsing at ingest and in `backfill-article-trailers` now
   takes linear time. A long trailer line, such as a run of spaces or of
   address characters, took time that grew with the square of its length:
-  about 22 s for one 40,000-character line (measured on develop). Trailers
+  about 22 s for one 40,000-character line (measured on 3.28.0). Trailers
   parse as before (#921).
 
 ### Security

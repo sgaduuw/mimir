@@ -27,7 +27,8 @@ message bodies and attachments from the mirrors when you open them.
 - **Archive several lists.** Cross-posted messages share an index entry,
   while each list keeps its own thread view. Updates are incremental.
 - **Make the archive discoverable.** Atom feeds, sitemaps, stable message
-  links, and structured metadata are included.
+  links, structured metadata, Markdown versions of message and thread pages,
+  and `/llms.txt` are included.
 
 Mimir is designed for a single host with SQLite and a local mirror directory.
 The mirrors must remain available while the site runs. The web interface
