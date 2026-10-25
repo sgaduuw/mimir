@@ -9,7 +9,6 @@ import re
 
 import pytest
 
-from mimir.inboxes import inbox_names
 from tests.test_routes._helpers import (
     _build_app_with_hops,
     _ingest_one_article,
@@ -779,7 +778,6 @@ def test_nav_links_the_merge_window_from_every_page(client, tmp_path, inbox_name
         "/merge-window": ['<a href="/merge-window" aria-current="page">'],
     }
     bodies = {path: client.get(path).data.decode() for path in pages}
-    assert len(inbox_names()) > 1  # precondition: the count would render
     assert {path: _nav_right_items(b) for path, b in bodies.items()} == {
         path: ["Merge window"] for path in pages
     }

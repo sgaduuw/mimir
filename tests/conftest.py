@@ -269,7 +269,6 @@ def _reset_db():
 
     from sqlalchemy import delete
 
-    import mimir.inboxes
     from mimir.extensions import SessionLocal
     from mimir.models import (
         Article,
@@ -314,8 +313,6 @@ def _reset_db():
     import mimir.robots
 
     mimir.robots.reset_rules()
-
-    mimir.inboxes._INBOX_NAMES[:] = []
 
     with SessionLocal() as s:
         # `last_article_date` mirrors what real ingest would set, so
@@ -425,7 +422,6 @@ def _reset_db():
         )
         s.commit()
 
-    mimir.inboxes.refresh_inbox_names()
     yield
 
 
