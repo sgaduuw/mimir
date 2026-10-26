@@ -170,10 +170,10 @@ def _replay_loop(
                             {
                                 "article_id": new_article_id,
                                 "path": p,
-                                "insertions": (counts or (None, None))[0],
-                                "deletions": (counts or (None, None))[1],
+                                "insertions": ins,
+                                "deletions": dels,
                             }
-                            for p, counts in rec.touched_paths.items()
+                            for p, (ins, dels) in rec.touched_paths.items()
                         ]
                     )
                 )

@@ -56,7 +56,7 @@ class _ArticleFilesPending:
 
     article_id: int
     delete_first: bool = False
-    files: dict[str, tuple[int, int] | None] = field(default_factory=dict)
+    files: dict[str, tuple[int | None, int | None]] = field(default_factory=dict)
 
 
 @dataclass
@@ -167,8 +167,7 @@ def _submit_article_files_batch(
                 conn.execute(
                     delete(ArticleFile).where(ArticleFile.article_id == p.article_id)
                 )
-            for path, counts in p.files.items():
-                ins, dels = counts or (None, None)
+            for path, (ins, dels) in p.files.items():
                 conn.execute(
                     sqlite_insert(ArticleFile)
                     .values(
