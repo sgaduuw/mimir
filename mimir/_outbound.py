@@ -15,7 +15,7 @@ And two validators delegate to it:
 
 The shape is three pieces working together:
 
-- `validate_outbound_url(url, *, allow_http=False)` for the
+- `validate_outbound_url(url)` for the
   scheme + host + IP-literal checks. Reduces SSRF surface when
   operator-controlled URL config crosses any boundary that is
   less trusted than the operator (today: CLI-only; tomorrow: the
@@ -63,15 +63,15 @@ class OutboundUrlError(ValueError):
     (e.g. `InboxValidationError`) should wrap and re-raise."""
 
 
-def validate_outbound_url(url: str, *, allow_http: bool = False) -> str:
+def validate_outbound_url(url: str) -> str:
     """Validate `url` as a safe target for an operator-supplied
     outbound fetch. Returns the stripped URL on success; raises
     `OutboundUrlError` on any rejection.
 
     Rejects:
     - Non-string / empty / whitespace-only input.
-    - Schemes other than `https` (or `http` when `allow_http=True`).
-      Refuses `file://`, `git://`, `data:`, anything else.
+    - Schemes other than `https`. Refuses `http://`, `file://`,
+      `git://`, `data:`, anything else.
     - Empty / missing host.
     - Hostnames `localhost` / `localhost.localdomain`.
     - IP literals in any non-public range: loopback (127.0.0.0/8,
@@ -93,10 +93,8 @@ def validate_outbound_url(url: str, *, allow_http: bool = False) -> str:
     if not url:
         raise OutboundUrlError("url must not be empty")
     parsed = urlparse(url)
-    allowed_schemes = ("https", "http") if allow_http else ("https",)
-    if parsed.scheme not in allowed_schemes:
-        joined = " or ".join(repr(s) for s in allowed_schemes)
-        raise OutboundUrlError(f"url scheme must be {joined} (got {parsed.scheme!r})")
+    if parsed.scheme != "https":
+        raise OutboundUrlError(f"url scheme must be 'https' (got {parsed.scheme!r})")
     host = parsed.hostname
     if not host:
         raise OutboundUrlError("url must include a host")

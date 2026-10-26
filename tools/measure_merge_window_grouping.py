@@ -29,7 +29,7 @@ from sqlalchemy import func, select, text
 
 from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.models import ArticleFile, SubsystemPath
+from mimir.models import Article, ArticleFile, SubsystemPath
 from mimir.subsystems import subsystems_for_article
 
 BUDGET_SEC = float(os.environ.get("BUDGET_SEC", "600"))
@@ -116,8 +116,9 @@ with SessionLocal() as s:
     for aid in sorted(with_files):
         if time.perf_counter() - started > BUDGET_SEC:
             break
+        article = s.get(Article, aid)
         t1 = time.perf_counter()
-        hits = subsystems_for_article(s, aid)
+        hits = subsystems_for_article(s, article)
         timings.append(time.perf_counter() - t1)
         per_patch.append(len(hits))
         for h in hits:

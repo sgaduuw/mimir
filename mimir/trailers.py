@@ -26,6 +26,7 @@ from sqlalchemy import select
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
 from mimir.models import Article, ArticleTrailer
+from mimir.rendering.linkify import EMAIL_LOCAL_PART
 from mimir.store import read_first_readable
 
 logger = logging.getLogger(__name__)
@@ -51,20 +52,20 @@ _INDEXED_TRAILER_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 # Match "Display Name <addr@host>" or bare "<addr@host>" / "addr@host",
-# anchored at the line's end: the address is the run of local-part characters
-# before the line's last "@", and the name is whatever precedes it (or
-# its "<"). A character outside the local-part class ends the address
-# there, so `X <x=y@example.com>` splits as `X <x=` / `y@example.com`
-# (#913). The address starts at a "<" or where that run starts, never
-# inside it: an unanchored scan would otherwise rescan the run from each
-# of its characters, which is quadratic on hostile input (#921). `rest`
-# keeps the line's trailing whitespace for the `\s*$` here, as a lazy
-# `rest` before its own `\s*$` was quadratic on a whitespace run.
+# anchored at the line's end: the address is the last token, and the
+# name is whatever precedes it (or its "<"). The local part is the one
+# rendering uses, so parsing and display agree on what an address is.
+# The address starts only after whitespace, after "<" or at the line's
+# start. A token that reaches the "@" any other way (`A <x"y@...>`,
+# `Name:a@...`) is skipped, not split inside it as the parser did
+# before #913 (`X <x=` / `y@example.com`). The same boundary keeps the
+# search linear: it never restarts inside a run (#921). `rest` keeps the
+# line's trailing whitespace for the `\s*$` here, as a lazy `rest`
+# before its own `\s*$` was quadratic on a whitespace run.
 # The address is stored verbatim; redaction is a render-time concern
 # (see CONTEXT.md "Redaction is a display-time decision").
 _TRAILER_NAME_ADDR_RE = re.compile(
-    r"(?:<|(?<![A-Za-z0-9._%+\-]))"
-    r"(?P<addr>[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+)>?\s*$"
+    r"(?:(?<!\S)<?|<)(?P<addr>" + EMAIL_LOCAL_PART + r"@[A-Za-z0-9.\-]+)>?\s*$"
 )
 
 
@@ -157,7 +158,8 @@ def backfill_article_trailers(
 def _process_one(session, article: Article, reprocess: bool) -> tuple[str, object]:
     """Per-article work for `backfill_article_trailers`. Returns
     `(bucket, pending_payload)` where pending_payload is None for
-    no-write buckets, otherwise an `_ArticleTrailersPending` instance.
+    no-write buckets, otherwise an `_ArticleTrailersPending` instance
+    (with no trailers when reprocess only deletes stale rows).
 
     The return-type annotation is `tuple[str, object]` (not the more
     precise `tuple[str, _ArticleTrailersPending | None]`) because
@@ -201,6 +203,12 @@ def _process_one(session, article: Article, reprocess: bool) -> tuple[str, objec
 
     trailers = extract_trailers(parsed.body)
     if not trailers:
+        # Reprocess still clears rows an older parser stored from a line
+        # this one skips (#913).
+        if has_rows and reprocess:
+            return "no_trailers", _ArticleTrailersPending(
+                article_id=article.id, delete_first=True
+            )
         return "no_trailers", None
 
     return "indexed", _ArticleTrailersPending(

@@ -93,16 +93,25 @@ _COLUMNS = (
 )
 
 
-def params_key(*, reprocess: bool, inbox_filter: str | None = None) -> str:
+def params_key(
+    *,
+    reprocess: bool = False,
+    inbox_filter: str | None = None,
+    patch_subjects: bool = False,
+) -> str:
     """The parameters that define which articles a run walks, as a
     canonical string. The ONE builder of the key, for both the lookup
     and the insert in `resolve`.
 
     `limit` is deliberately absent: it caps a session, not a run, so a
-    run started with `--limit` continues without one."""
-    return json.dumps(
-        {"inbox_filter": inbox_filter, "reprocess": reprocess}, sort_keys=True
-    )
+    run started with `--limit` continues without one.
+
+    `patch_subjects` is present only when set, so every other run keeps
+    the key it was stored under and an unfinished one still resumes."""
+    params: dict = {"inbox_filter": inbox_filter, "reprocess": reprocess}
+    if patch_subjects:
+        params["patch_subjects"] = True
+    return json.dumps(params, sort_keys=True)
 
 
 @dataclass(frozen=True)

@@ -2393,3 +2393,159 @@ def test_index_reads_cached_children_in_bounded_batches(client, tmp_path, monkey
     )
     _index_lastmods(client)
     assert sum(sizes) >= 20 and max(sizes) <= 16, sizes
+
+
+def _seed_roots_fixture(tmp_path):
+    """Two inboxes, replies, ties, month edges, a cross-posted root, and a
+    root whose materialised `thread_root_id` is NULL while its reply still
+    names it. Returns `(alpha, beta, when)`: article ids by message id per
+    inbox, and the date set on each."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+    from tests.test_routes._helpers import seed_thread_shape
+
+    when = {
+        "a1@x": datetime(2020, 1, 31, 23, 59, 59, tzinfo=UTC),
+        "a2@x": datetime(2020, 2, 1, tzinfo=UTC),
+        "a3@x": datetime(2020, 2, 1, tzinfo=UTC),  # ties a2
+        "a4@x": datetime(2020, 2, 20, tzinfo=UTC),
+        "a5@x": datetime(2020, 12, 31, 23, 59, 59, tzinfo=UTC),
+        "a6@x": datetime(2021, 1, 1, tzinfo=UTC),
+        "a7@x": datetime(2020, 2, 21, tzinfo=UTC),  # NULL root below
+        "x1@x": datetime(2020, 3, 1, tzinfo=UTC),  # root in both inboxes
+        "b1@x": datetime(2020, 2, 2, tzinfo=UTC),
+    }
+    edges = [(m, None) for m in when if m.startswith(("a", "x"))]
+    # Replies, not roots. r7 keeps naming a7 after a7's own row is NULLed.
+    edges += [("r1@x", "a2@x"), ("r2@x", "a4@x"), ("r7@x", "a7@x")]
+    for sub in ("a", "b"):
+        (tmp_path / sub).mkdir()
+    a = seed_thread_shape(tmp_path / "a", "alpha", edges)
+    b = seed_thread_shape(tmp_path / "b", "beta", [("b1@x", None), ("x1@x", None)])
+    for mid, art in {**a, **b}.items():
+        when.setdefault(mid, datetime(2020, 2, 3, tzinfo=UTC))
+        _set_article_date(art[0], when[mid])
+    with SessionLocal() as s:
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == a["a7@x"][0])
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    alpha = {m: v[0] for m, v in a.items()}
+    beta = {m: v[0] for m, v in b.items()}
+    return alpha, beta, when
+
+
+def test_archive_roots_query_matches_the_date_driven_form(client, tmp_path):
+    """#947: the inbox-driven rewrite must return exactly what the
+    date-driven query did, rows and order, for every year and month. The
+    reference is the pre-#947 SQL, which the month branch still is, so
+    months are also checked against roots worked out from the fixture."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.seo.sitemaps import _archive_bounds, _archive_roots_query
+
+    alpha, beta, when = _seed_roots_fixture(tmp_path)
+    roots = {
+        "alpha": {m: i for m, i in alpha.items() if m[0] in "ax" and m != "a7@x"},
+        "beta": beta,
+    }
+
+    def reference(inbox, year, month):
+        start, end = _archive_bounds(year, month)
+        return (
+            select(Article.id, Article.date)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id == Article.id,
+                Article.date >= start,
+                Article.date < end,
+            )
+            .order_by(Article.date.desc(), Article.id.desc())
+        )
+
+    def expected(name, year, month):
+        start, end = _archive_bounds(year, month)
+        dated = [(when[m], i) for m, i in roots[name].items()]
+        return [i for d, i in sorted(dated, reverse=True) if start <= d < end]
+
+    checked = 0
+    with SessionLocal() as s:
+        thread_roots = dict(
+            s.execute(
+                select(ArticleList.article_id, ArticleList.thread_root_id).where(
+                    ArticleList.article_id.in_([alpha["a7@x"], alpha["r7@x"]])
+                )
+            ).all()
+        )
+        inbox_ids = {
+            i.name: i.id for i in s.scalars(select(Inbox).where(Inbox.name.in_(roots)))
+        }
+        for name in ("alpha", "beta"):
+            inbox = s.scalar(select(Inbox).where(Inbox.name == name))
+            for year, month in [(2020, None), (2021, None), (2019, None)] + [
+                (2020, m) for m in range(1, 13)
+            ]:
+                want = s.execute(reference(inbox, year, month)).all()
+                got = s.execute(_archive_roots_query(inbox, year, month)).all()
+                assert got == want, (name, year, month)
+                assert [r[0] for r in got] == expected(name, year, month), (
+                    name,
+                    year,
+                    month,
+                )
+                checked += 1
+        cross = s.execute(
+            select(ArticleList.inbox_id).where(
+                ArticleList.article_id == alpha["x1@x"],
+                ArticleList.thread_root_id == alpha["x1@x"],
+            )
+        ).scalars()
+        cross_inboxes = set(cross)
+    assert checked == 30
+    # Preconditions: the fixture built what the comparison relies on.
+    assert len({when["a2@x"], when["a3@x"]}) == 1  # a tie
+    assert beta["x1@x"] == alpha["x1@x"]  # a cross-post, one article
+    assert cross_inboxes == {inbox_ids["alpha"], inbox_ids["beta"]}
+    # A NULL root that a reply still names: only the own-root predicate
+    # keeps it out of the year.
+    assert thread_roots == {alpha["a7@x"]: None, alpha["r7@x"]: alpha["a7@x"]}
+    assert expected("alpha", 2020, None)  # the oracle is not vacuous
+
+
+def test_year_and_month_roots_plans_under_production_statistics(client, tmp_path):
+    """#947, AGENTS.md check 6. A year is driven from this inbox's
+    `article_lists`, so its cost follows the inbox. A month keeps the
+    date-driven plan, which is cheaper on a very large inbox; pinning it
+    makes a later change to either plan show up here."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.seo.sitemaps import archive_sitemap_xml
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    _seed_roots_fixture(tmp_path)
+    _clear_sitemap_cache()
+    plans = {}
+    with planner_stats(SessionLocal, PRODUCTION_STATS), SessionLocal() as s:
+        inbox = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        for month in (None, 2):
+            plans[month] = plan_of(
+                s,
+                lambda m=month: archive_sitemap_xml(
+                    s, inbox, 2020, m, 1, "", force=True
+                ),
+                "articles.date >=",
+            )
+    assert "ix_article_lists_thread_root (inbox_id=?" in plans[None], plans[None]
+    assert "ix_articles_date" not in plans[None], plans[None]
+    assert "ix_articles_date (date>? AND date<?)" in plans[2], plans[2]

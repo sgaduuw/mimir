@@ -235,7 +235,11 @@ def handle_backfill_article_files(req: BackfillArticleFilesRequest) -> Reply:
     from mimir.patches import backfill_article_files
 
     return _run_backfill_chunk(
-        req, "backfill_article_files", backfill_article_files, reprocess=req.reprocess
+        req,
+        "backfill_article_files",
+        backfill_article_files,
+        reprocess=req.reprocess,
+        patch_subjects=req.patch_subjects,
     )
 
 
@@ -265,17 +269,10 @@ def handle_backfill_patch_series(req: BackfillPatchSeriesRequest) -> Reply:
 
 def handle_backfill_series_chains(req: BackfillSeriesChainsRequest) -> Reply:
     """Chunked backfill of `patch_series_head_id` (#816): splits keys
-    that hold unrelated postings under one cover title. `reprocess` is
-    pinned to False rather than read from the request: it changes
-    nothing here, and taken from the request it would make
-    `--reprocess` key a second run instead of resuming the first. False
-    keeps the key of a run started without it. The request keeps the
-    field for the CLI shape the backfills share."""
+    that hold unrelated postings under one cover title."""
     from mimir.patch_series_chains import backfill_series_chains
 
-    return _run_backfill_chunk(
-        req, "backfill_series_chains", backfill_series_chains, reprocess=False
-    )
+    return _run_backfill_chunk(req, "backfill_series_chains", backfill_series_chains)
 
 
 def handle_backfill_canonicals(req: BackfillCanonicalsRequest) -> Reply:

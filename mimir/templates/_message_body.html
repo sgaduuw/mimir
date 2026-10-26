@@ -32,26 +32,6 @@
          not as a floating aside above the body. Silently skipped
          for non-patch articles. #}
       {% if subsystem_hits %}
-      {# Collect (name, address) rather than names alone so each
-         maintainer can link to their profile page. Deduped on ADDRESS,
-         not name: the address is the profile's identity, and two
-         sections can spell the same person's name differently. #}
-      {% set _maints = [] %}
-      {% set _maint_seen = [] %}
-      {% for hit in subsystem_hits %}
-        {% for _role, _name, _addr in hit.maintainers %}
-          {# Keyed on the address when there is one, else on the name.
-             MAINTAINERS permits a bare `M:` line with no address (rare
-             but legal), and requiring one here dropped those people
-             from the header entirely, where they used to render as
-             plain text. They simply do not get a link. #}
-          {% set _key = (_addr|lower) if _addr else ('name:' ~ _name) %}
-          {% if _role == 'M' and _name and _key not in _maint_seen %}
-            {% set _ = _maint_seen.append(_key) %}
-            {% set _ = _maints.append((_name, _addr)) %}
-          {% endif %}
-        {% endfor %}
-      {% endfor %}
       <br><strong>Subsystem:</strong>
       {# Linkify each subsystem name to its dashboard so the patch
          page acts as a launch pad into the broader subsystem
@@ -63,17 +43,14 @@
          route cannot serve still has to render as text here, because
          the chip is what tells the reader which subsystems the patch
          touches. #}
-      {% from "_subsystem_link.html" import subsystem_link %}
+      {% from "_subsystem_link.html" import maintainer_links, subsystem_link %}
       {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
-      {% if _maints %}
-        &middot; <strong>Maintainer{{ '' if _maints|length == 1 else 's' }}:</strong>
-        {% for _name, _addr in _maints %}{% set _url = _addr | maintainer_link_url %}{% if _url %}<a
-          href="{{ _url }}">{{ _name }}</a>{% else %}{{ _name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
-      {% endif %}
+      {{ maintainer_links(subsystem_hits) }}
       {% endif %}
     </p>
   </header>
 
+  {% include "_status_line.html" %}
   {% set synthesis = patch_state|patch_synthesis %}
   {% if synthesis %}
   <p><small>{{ synthesis }}</small></p>
@@ -113,3 +90,9 @@
   </ul>
   {% endif %}
 </article>
+{# HTMX swaps only #msg, so refresh the nav menu with it (#892). Never on a
+   full page: the menu is already in base.html and the id must stay unique. #}
+{% if request.headers.get('HX-Request') == 'true' %}
+{% from "_subsystems_dd_menu.html" import subsystems_dd_menu %}
+{{ subsystems_dd_menu(subsystem_hits, current_inbox, oob=true) }}
+{% endif %}

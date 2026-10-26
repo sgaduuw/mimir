@@ -6,9 +6,21 @@
 
 {% if subsystem_hits %}
 - Subsystems: {{ subsystem_hits|map(attribute='name')|join(', ')|md_escape }}
+{% set maints = subsystem_hits|subsystem_maintainers %}
+{% if maints %}
+- Maintainers: {{ maints|map('first')|join(', ')|md_escape }}
+{% endif %}
+{% endif %}
+{% if series_totals and series_totals[0] %}
+{% set _patches, _files = series_totals %}
+- Series: {{ _patches }} patch{{ '' if _patches == 1 else 'es' }}{% if _files %} touching {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif +%}
 {% endif %}
 {% if patch_state and patch_state.is_patch and lifecycle_status and lifecycle_status.state.value != 'pending' %}
 - Status: {{ lifecycle_status.pill_label|md_escape }}{{ lifecycle_status.count_suffix|md_escape }}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
+{% endif %}
+{% set status_sentence = lifecycle_status|status_line if patch_state and patch_state.is_patch else "" %}
+{% if status_sentence %}
+- {{ status_sentence|md_escape }}
 {% endif %}
 {% set synthesis = patch_state|patch_synthesis %}
 {% if synthesis %}

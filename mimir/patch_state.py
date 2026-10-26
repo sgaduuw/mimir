@@ -1,12 +1,11 @@
 """Per-patch state aggregation for the message-page state card (#208).
 
-The card consolidates four signals readers want at a glance when
+The card consolidates three signals readers want at a glance when
 landing on a patch page:
 
 - Trailer roll-up across `article_trailers`, with a maintainer-vs-
   random-reviewer distinction sourced from `subsystem_maintainers`.
-- Mainline-landing record from `mainline_commits` reverse lookup.
-- Patch-series timeline (v1, v2, v3) with `[diff vs current]` links,
+- Patch-series timeline (v1, v2, v3) with diff-against-previous links,
   carried over from #210 so the new card REPLACES the existing
   patch-series sidebar without losing the diff navigation.
 - Thread activity (days since last reply), derived from the already-
@@ -18,11 +17,9 @@ isn't already available there. Resulting `PatchState` round-trips
 through `mimir.cache` so the state card can be served from cache
 within the message-page TTL.
 
-Wording note: the "Not in mainline as of <timestamp>" framing from
-the issue is deferred. `mainline_state` carries SHA cursors only;
-adding a timestamp column for that one render-side wording is out
-of scope here. We show the landing row when landed and omit when
-not, which reads as "still in flight" without explicit framing.
+The landing record is not here: the status line reads it from the
+lifecycle row (`LifecycleStatusInfo`), the same row the pill reads, so
+the two cannot name different commits (#844).
 
 Nack/NAK trailers are NOT in `trailers.INDEXED_TRAILER_ROLES` today
 and so don't surface in the roll-up. Indexing them needs a parser
@@ -30,7 +27,7 @@ extension + a backfill; that's its own follow-up.
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import func, select
@@ -42,11 +39,16 @@ from mimir.models import (
     Article,
     ArticleList,
     ArticleTrailer,
-    MainlineCommit,
     SubsystemMaintainer,
 )
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
-from mimir.patch_series import parse_cover_letter, same_series
+from mimir.patch_series import (
+    adjacent_versions,
+    parse_cover_letter,
+    same_series,
+    slot_rank,
+)
+from mimir.patches import article_has_files
 from mimir.trailers import INDEXED_TRAILER_ROLES
 from mimir.web.urls import _canonical_url_for, _series_diff_url
 
@@ -64,22 +66,26 @@ class StateTrailerCount:
 
 
 @dataclass
-class StateMainlineLanding:
-    """One mainline-commit landing for the patch. Mirrors the
-    fields the existing `mainline_applications` aside renders so
-    we don't lose information when consolidating."""
+class StateRepost:
+    """A row of a series slot that lost to the slot's patch (#861): the
+    same version posted again. Listed under the version's entry."""
 
-    commit_sha: str
-    tree_name: str
-    tree_label: str  # user-facing display name; falls back to tree_name slug
-    committed_at: datetime | None
+    article_id: int
+    date: datetime | None
+    url: str
+    is_current: bool
 
 
 @dataclass
 class StateSeriesEntry:
-    """One revision in the series timeline. Carries everything the
-    template needs to render either the bold current-revision marker
-    or the link + `[diff vs current]` chip, without re-querying."""
+    """One revision in the series timeline: the patch of the version's
+    slot (`patch_series.slot_rank`), with the slot's other rows as
+    `reposts`. Carries everything the template needs to render either
+    the bold current-revision marker or the link, plus the
+    diff-against-previous link, without re-querying. `is_current` holds
+    when the viewed article is the patch or any re-post. `diff_url` diffs
+    the previous revision against this one, and is None for the first
+    revision and for a resend."""
 
     version: str
     article_id: int
@@ -87,6 +93,7 @@ class StateSeriesEntry:
     url: str
     is_current: bool
     diff_url: str | None
+    reposts: list[StateRepost] = field(default_factory=list)
 
 
 @dataclass
@@ -97,13 +104,12 @@ class PatchState:
 
     is_patch: bool
     trailers: list[StateTrailerCount]
-    mainline_landings: list[StateMainlineLanding]
     series: list[StateSeriesEntry]
     days_since_last_reply: int | None
 
 
 cache.register("StateTrailerCount", StateTrailerCount)
-cache.register("StateMainlineLanding", StateMainlineLanding)
+cache.register("StateRepost", StateRepost)
 cache.register("StateSeriesEntry", StateSeriesEntry)
 cache.register("PatchState", PatchState)
 
@@ -111,6 +117,15 @@ cache.register("PatchState", PatchState)
 # Same TTL as the threading helpers feeding the activity row; the
 # state card's freshness doesn't need to outrun the data it summarises.
 PATCH_STATE_CACHE_TTL_SEC = 300
+
+
+def _not_a_patch() -> PatchState:
+    return PatchState(
+        is_patch=False,
+        trailers=[],
+        series=[],
+        days_since_last_reply=None,
+    )
 
 
 def _is_patch_subject(subject: str | None) -> bool:
@@ -208,51 +223,12 @@ def _resolve_tree_label(tree_name: str) -> str:
     return cfg.display_name
 
 
-def _mainline_landings(
-    session: Session,
-    article: Article,
-) -> list[StateMainlineLanding]:
-    """Mainline-tree commits referencing this article via `Link:`
-    trailer. Mirrors the existing `mainline_applications` query;
-    same ordering."""
-    rows = (
-        session.execute(
-            select(MainlineCommit)
-            .where(MainlineCommit.message_id == article.message_id)
-            .order_by(
-                MainlineCommit.committed_at.asc(),
-                # Same tiebreak as lifecycle_status's `mc` CTE, so the
-                # summary sentence names the tree the pill names.
-                MainlineCommit.tree_name == "linux-next",
-                MainlineCommit.tree_name,
-                # Two commits in one tree at one time: the pill's
-                # tooltip breaks the tie on sha too.
-                MainlineCommit.commit_sha,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [
-        StateMainlineLanding(
-            commit_sha=c.commit_sha,
-            tree_name=c.tree_name,
-            tree_label=_resolve_tree_label(c.tree_name),
-            committed_at=c.committed_at,
-        )
-        for c in rows
-    ]
-
-
-def _series_timeline(
-    session: Session,
-    article: Article,
-    inbox_name: str,
-) -> list[StateSeriesEntry]:
-    """Build the revision timeline + per-revision `[diff vs current]`
-    links for the current article's series position. Returns an
-    empty list when the article isn't a series patch (NULL
-    `patch_series_key`).
+def _series_rows(session: Session, article: Article) -> list[tuple[Article, bool]]:
+    """`(row, has_diff)` for every row of the article's series at its
+    position, oldest first, the id breaking ties as `adjacent_versions`
+    does so versions come out in the order its steps are linked. Empty
+    when the article has no series key. One read for the fold and the
+    slot check, so the state card costs no statement more (#861).
 
     Same-position filter (`patch_series_position`) is essential
     after #212: in-series patches now also carry `patch_series_key`,
@@ -260,32 +236,53 @@ def _series_timeline(
     revision. The position filter narrows to "every revision of THIS
     patch" (e.g. all `[PATCH N/M v*] foo: add bar` rows across v1,
     v2, v3). Cover letters get `position = 0` and the same filter
-    surfaces their cross-revision timeline as before.
+    surfaces their cross-revision timeline as before."""
+    if not article.patch_series_key:
+        return []
+    return [
+        (rev, has_diff)
+        for rev, has_diff in session.execute(
+            select(Article, article_has_files())
+            .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
+            .where(
+                same_series(article.patch_series_key, article.patch_series_head_id),
+                # NULL is 0, as in `patch_series.newer_revision_sql`, so
+                # the fold lists what the pill counts.
+                func.coalesce(Article.patch_series_position, 0)
+                == (article.patch_series_position or 0),
+            )
+            .order_by(Article.date.asc().nulls_last(), Article.id)
+        ).all()
+    ]
+
+
+def _series_timeline(
+    article: Article,
+    inbox_name: str,
+    rows: list[tuple[Article, bool]],
+) -> list[StateSeriesEntry]:
+    """Build the revision timeline + per-revision diff-against-previous
+    links for the current article's series position. Returns an
+    empty list when the article isn't a series patch (`rows`, from
+    `_series_rows`, is empty) or the series holds under two versions.
 
     `diff_url` carries `pos=cover` for the cover row and `pos=N`
     for in-series patches, matching the `series_diff` route's
     request shape (see `mimir/web/routes/series_diff.py`).
     """
-    if not article.patch_series_key:
+    # One entry per version (#861): rows sharing a version are one slot,
+    # a patch and its re-posts. Dict order is each version's first row.
+    slots: dict[str | None, list[tuple[Article, bool]]] = {}
+    for rev, has_diff in rows:
+        slots.setdefault(rev.patch_series_version, []).append((rev, has_diff))
+    if len(slots) < 2:
         return []
-    revisions = list(
-        session.execute(
-            select(Article)
-            .options(selectinload(Article.lists).selectinload(ArticleList.inbox))
-            .where(
-                same_series(article.patch_series_key, article.patch_series_head_id),
-                # Same-position filter, see docstring. NULL is 0, as in
-                # `patch_series.newer_revision_sql`, so the fold lists
-                # what the pill counts.
-                func.coalesce(Article.patch_series_position, 0)
-                == (article.patch_series_position or 0),
-            )
-            .order_by(Article.date.asc().nulls_last())
-        ).scalars()
-    )
-    if len(revisions) < 2:
-        return []
-    current_version = article.patch_series_version
+    previous = {
+        newer: older
+        for older, newer in adjacent_versions(
+            (rev.date, rev.id, rev.patch_series_version) for rev, _ in rows
+        )
+    }
     # `pos=cover` vs `pos=N` matches the `series_diff` route's
     # accepted shape; covers have position 0 and the route accepts
     # both `cover` and `0`, we use the friendlier alias. Defensive
@@ -294,41 +291,63 @@ def _series_timeline(
     # but a partially-rolled-out deploy could observe the NULL state
     # briefly.
     pos = article.patch_series_position
-    to_slot = [r for r in revisions if r.patch_series_version == current_version]
-    out: list[StateSeriesEntry] = []
-    for rev in revisions:
+
+    def url_of(rev: Article) -> str:
         link_set = [(al.inbox_id, al.inbox.name) for al in rev.lists]
-        url = _canonical_url_for(rev, link_set, base="") or ""
-        is_current = rev.id == article.id
+        return _canonical_url_for(rev, link_set, base="") or ""
+
+    out: list[StateSeriesEntry] = []
+    for version, slot in slots.items():
+        winner = min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]
+        older = previous.get(version)
         diff_url: str | None = None
-        # A resend shares the current version string, and the route
-        # 404s on `from == to`, so it gets no link (#661).
-        if (
-            not is_current
-            and rev.patch_series_version
-            and current_version
-            and rev.patch_series_version != current_version
-        ):
+        if older is not None:
             diff_url = _series_diff_url(
-                to_slot,
+                winner,
                 article.patch_series_key,
-                rev.patch_series_version,
-                current_version,
+                older,
+                version,
                 pos,
                 head_id=article.patch_series_head_id,
                 fallback_inbox=inbox_name,
             )
         out.append(
             StateSeriesEntry(
-                version=rev.patch_series_version or "?",
-                article_id=rev.id,
-                date=rev.date,
-                url=url,
-                is_current=is_current,
+                version=version or "?",
+                article_id=winner.id,
+                date=winner.date,
+                url=url_of(winner),
+                is_current=any(rev.id == article.id for rev, _ in slot),
                 diff_url=diff_url,
+                reposts=[
+                    StateRepost(
+                        article_id=rev.id,
+                        date=rev.date,
+                        url=url_of(rev),
+                        is_current=rev.id == article.id,
+                    )
+                    for rev, _ in slot
+                    if rev is not winner
+                ],
             )
         )
     return out
+
+
+def _loses_slot_without_diff(
+    article: Article, rows: list[tuple[Article, bool]]
+) -> bool:
+    """True when `article` has no diff and another row of its series
+    slot has one (#861): that row is the slot's patch, and this one is
+    a reply that repeats the bracketed subject, not a patch. A row with
+    a diff is always a patch, a re-post included. `rows` is
+    `_series_rows`."""
+    slot = [
+        (rev.id, has_diff)
+        for rev, has_diff in rows
+        if rev.patch_series_version == article.patch_series_version
+    ]
+    return (article.id, False) in slot and any(has_diff for _, has_diff in slot)
 
 
 def _days_since_last_reply(
@@ -404,13 +423,7 @@ def patch_state_for_article(
     """
     is_patch = _is_patch_subject(article.subject) and not _is_reply_to_patch(article)
     if not is_patch:
-        return PatchState(
-            is_patch=False,
-            trailers=[],
-            mainline_landings=[],
-            series=[],
-            days_since_last_reply=None,
-        )
+        return _not_a_patch()
 
     # Capture thread dates outside the cache closure. The iterable
     # would otherwise be exhausted before the compute function ran
@@ -419,11 +432,17 @@ def patch_state_for_article(
     subsystem_ids_list = list(subsystem_ids)
 
     def compute() -> PatchState:
+        # Inside the cache: the state key carries every slot row's diff
+        # (`render_state_tag`), so a row gaining its diff re-decides this.
+        rows = _series_rows(session, article)
+        # A cover never has a diff of its own, so only an in-series
+        # position can lose its slot to a row that has one.
+        if article.patch_series_position and _loses_slot_without_diff(article, rows):
+            return _not_a_patch()
         return PatchState(
             is_patch=True,
             trailers=_trailer_roll_up(session, article, subsystem_ids_list),
-            mainline_landings=_mainline_landings(session, article),
-            series=_series_timeline(session, article, inbox_name),
+            series=_series_timeline(article, inbox_name, rows),
             days_since_last_reply=_days_since_last_reply(article, thread_dates_list),
         )
 
@@ -445,7 +464,7 @@ def patch_state_for_article(
 __all__ = [
     "PATCH_STATE_CACHE_TTL_SEC",
     "PatchState",
-    "StateMainlineLanding",
+    "StateRepost",
     "StateSeriesEntry",
     "StateTrailerCount",
     "patch_state_for_article",

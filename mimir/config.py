@@ -39,7 +39,7 @@ class InboxConfig(BaseModel):
     def _validate_upstream_url(cls, v: str) -> str:
         # Same validator the admin CLI uses; fail fast at config-load
         # rather than letting a bad URL reach `sync.fetch_manifest`.
-        return validate_outbound_url(v, allow_http=False)
+        return validate_outbound_url(v)
 
 
 class TreeConfig(BaseModel):
@@ -67,7 +67,7 @@ class TreeConfig(BaseModel):
     @field_validator("url")
     @classmethod
     def _validate_url(cls, v: str) -> str:
-        return validate_outbound_url(v, allow_http=False)
+        return validate_outbound_url(v)
 
 
 def _curated_default_trees() -> dict[str, TreeConfig]:
@@ -543,7 +543,7 @@ class Settings(BaseSettings):
         # loopback / link-local / RFC 1918 / ULA / etc. so a
         # mistyped or attacker-controlled env doesn't aim mimir at
         # the deploy's internal network or cloud-metadata service.
-        return validate_outbound_url(v, allow_http=False)
+        return validate_outbound_url(v)
 
     # security.txt (RFC 9116). Setting `security_contact` enables
     # /security.txt and /.well-known/security.txt; the routes 404 when

@@ -11,7 +11,7 @@ from sqlalchemy import select
 
 from mimir import patch_revisions
 from mimir.extensions import SessionLocal
-from mimir.models import Article, ArticleList, Inbox
+from mimir.models import Article, ArticleFile, ArticleList, Inbox
 from tests.test_routes._helpers import _ingest_series_pair, _seed_resends
 
 
@@ -209,8 +209,8 @@ def test_series_diff_missing_inbox_404(client, tmp_path):
 
 def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
     """Viewing a cover letter that has revisions, the patch-state
-    card's Series-revisions row renders a `diff vs current` link
-    per non-current revision pointing at the new route."""
+    card's Series-revisions row renders a `diff against previous`
+    link per revision after the first, pointing at the new route."""
     author = "Alice <a@example>"
     series_key = _ingest_series_pair(
         tmp_path,
@@ -237,7 +237,7 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
     # Badge redesign: series revisions moved from the aside into
     # `_revisions_fold.html`; scope the assertions to that fold.
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
-    assert "diff vs current" in fold
+    assert "diff against previous" in fold
     assert f"/alpha/series/{series_key}/diff" in fold
     assert "from=v1" in fold
     assert "to=v2" in fold
@@ -560,10 +560,10 @@ def test_series_diff_one_canonical_across_inboxes(client, tmp_path):
     assert _canonical(a.data.decode()) == _canonical(b.data.decode())
 
 
-def test_series_diff_url_nominates_inbox_of_lowest_id_in_slot():
-    """The panel and the route hand the helper the `to` slot in
-    different orders; the nominated inbox must not follow that order.
-    The lower-id article lives in beta only, the other in alpha only."""
+def test_series_diff_url_nominates_inbox_of_the_slot_patch():
+    """The panel and the route hand the helper the slot's patch; the
+    nominated inbox is that article's. The lower-id article lives in
+    beta only, the other in alpha only."""
     from mimir.web.urls import _series_diff_url
 
     _seed_resends([["beta"], ["alpha"]])
@@ -576,9 +576,9 @@ def test_series_diff_url_nominates_inbox_of_lowest_id_in_slot():
         )
         assert {al.inbox.name for al in low.lists} == {"beta"}  # precondition
         assert {al.inbox.name for al in high.lists} == {"alpha"}
-        urls = {
+        urls = [
             _series_diff_url(
-                slot,
+                winner,
                 "k",
                 "v1",
                 "v2",
@@ -587,9 +587,13 @@ def test_series_diff_url_nominates_inbox_of_lowest_id_in_slot():
                 fallback_inbox="zeta",
                 base="https://x",
             )
-            for slot in ([high, low], [low, high])
-        }
-    assert urls == {"https://x/beta/series/k/diff?from=v1&to=v2&pos=cover"}
+            for winner in (low, high, None)
+        ]
+    assert urls == [
+        "https://x/beta/series/k/diff?from=v1&to=v2&pos=cover",
+        "https://x/alpha/series/k/diff?from=v1&to=v2&pos=cover",
+        "https://x/zeta/series/k/diff?from=v1&to=v2&pos=cover",
+    ]
 
 
 def test_series_diff_canonical_serves_when_heuristic_path_used(client, tmp_path):
@@ -708,12 +712,64 @@ def test_series_diff_rejects_a_bad_or_unknown_series_head(client, tmp_path, s_va
     assert resp.status_code == 404
 
 
-def test_series_diff_cache_misses_after_a_slot_change(client, tmp_path, monkeypatch):
-    """The cached diff is keyed by what it was computed from, the slots'
-    article ids, not by the series identity in the URL (#816). A resend
-    joining the `to` slot changes which article the body may be read
-    from, so the next request must compute again rather than serve the
-    old pair for 24 hours."""
+def _two_row_slot(tmp_path):
+    """v1 with one cover, v2 with two covers (a resend with its own body),
+    all in alpha. Returns `(series_key, low_id, high_id)`, the v2 slot's
+    ids. Asserts the slot holds two rows and neither has a diff."""
+    author = "Alice <a@example>"
+    key = _ingest_series_pair(
+        tmp_path,
+        "alpha",
+        v1_messages=[("v1-cv@x", "[PATCH 0/1] series", None, b"v1 cover\n", author)],
+        v2_messages=[
+            ("v2-cv@x", "[PATCH v2 0/1] series", None, b"v2 low body\n", author),
+            ("v2-cv-b@x", "[PATCH v2 0/1] series", None, b"v2 high body\n", author),
+        ],
+    )
+    with SessionLocal() as s:
+        slot = (
+            s.execute(
+                select(Article).where(
+                    Article.patch_series_key == key,
+                    Article.patch_series_version == "v2",
+                    Article.patch_series_position == 0,
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(slot) == 2, slot  # precondition: two rows, one slot
+        assert not any(a.files for a in slot)
+        low, high = sorted(a.id for a in slot)
+    return key, low, high
+
+
+def _give_a_diff(article_id):
+    with SessionLocal() as s:
+        s.add(ArticleFile(article_id=article_id, path="fs/foo.c"))
+        s.commit()
+
+
+def test_series_diff_serves_the_lowest_id_row_with_a_diff(client, tmp_path):
+    """#861: with no diff in the slot the lowest id is the patch; a row
+    gaining one takes over, whatever the ids. Primed with a normal
+    request, so a cache key that missed the diff would serve the old
+    body."""
+    key, low, high = _two_row_slot(tmp_path)
+    url = f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover"
+    first = client.get(url).get_data(as_text=True)
+    assert "v2 low body" in first and "v2 high body" not in first
+    _give_a_diff(high)
+    second = client.get(url).get_data(as_text=True)
+    assert "v2 high body" in second and "v2 low body" not in second
+    _give_a_diff(low)  # both have one: the lowest id again
+    third = client.get(url).get_data(as_text=True)
+    assert "v2 low body" in third and "v2 high body" not in third
+
+
+def test_series_diff_ignores_a_re_post_that_cannot_win(client, tmp_path, monkeypatch):
+    """#861: the cache key is the winner ids, so a row joining the slot
+    that loses it computes nothing again."""
     from mimir.web.routes import series_diff as route
 
     calls = []
@@ -724,29 +780,65 @@ def test_series_diff_cache_misses_after_a_slot_change(client, tmp_path, monkeypa
         return real(*args, **kwargs)
 
     monkeypatch.setattr(route, "compute_revision_diff", counting)
-    key = _cross_list_series(tmp_path)
+    key, low, _high = _two_row_slot(tmp_path)
     url = f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover"
     assert client.get(url).status_code == 200
     assert client.get(url).status_code == 200
-    assert len(calls) == 1  # precondition: the second request was a hit
+    assert calls == [low]  # precondition: the second request was a hit
     with SessionLocal() as s:
-        v2 = s.execute(
-            select(Article).where(Article.message_id == "v2-cv@x")
-        ).scalar_one()
         s.add(
             Article(
-                message_id="v2-cv-resend@x",
-                subject=v2.subject,
-                author=v2.author,
-                date=v2.date,
-                patch_series_key=v2.patch_series_key,
+                message_id="v2-cv-late@x",
+                subject="[PATCH v2 0/1] series",
+                author="Alice <a@example>",
+                patch_series_key=key,
                 patch_series_version="v2",
                 patch_series_position=0,
             )
         )
         s.commit()
     assert client.get(url).status_code == 200
-    assert len(calls) == 2
+    assert calls == [low]
+
+
+def test_series_diff_canonical_and_sitemap_name_the_same_slot_patch(client, tmp_path):
+    """#861: the page's canonical and the sitemap entry are byte for
+    byte one URL on a two-row slot, and both follow the row with a
+    diff. The lower row's canonical inbox is alpha, the higher row,
+    filed in beta only, nominates beta."""
+    from tests.test_routes._helpers import _clear_sitemap_cache
+
+    key, low, high = _two_row_slot(tmp_path)
+    with SessionLocal() as s:
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        beta.mirror_path = str(tmp_path)
+        art = s.get(Article, high)
+        (alpha_link,) = art.lists
+        s.add(
+            ArticleList(
+                article_id=high,
+                inbox_id=beta.id,
+                epoch=alpha_link.epoch,
+                commit_sha=alpha_link.commit_sha,
+            )
+        )
+        s.flush()
+        s.delete(alpha_link)
+        art.canonical_inbox_id = beta.id
+        s.commit()
+    _give_a_diff(high)
+    path = f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover"
+    # The page is served from alpha, where the winner is not filed:
+    # read it through beta, which both rows' bodies are readable from.
+    page = client.get(path.replace("/alpha/", "/beta/"))
+    assert page.status_code == 200
+    canonical = _canonical(page.get_data(as_text=True))
+    _clear_sitemap_cache()
+    xml = client.get(f"/sitemap-series-diffs-{key[0]}.xml").get_data(as_text=True)
+    locs = [html_lib.unescape(m) for m in re.findall(r"<loc>([^<]+)</loc>", xml)]
+    mine = [loc for loc in locs if f"/series/{key}/" in loc]
+    assert mine == [canonical]
+    assert "/beta/series/" in canonical  # the winner's inbox, not the low row's
 
 
 @pytest.mark.parametrize("param", ["s", "pos"])

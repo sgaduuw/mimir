@@ -660,7 +660,7 @@ def message(
         # Resolved before the JSON-LD build (rather than with the rest
         # of the patch-page surfaces below) because `about` / `keywords`
         # carry the subsystem names. Same query either way.
-        subsystem_hits = subsystems_for_article(session, article.id)
+        subsystem_hits = subsystems_for_article(session, article)
         # Replies to THIS message, not the whole thread: the
         # DiscussionForumPosting entity is the single message, so the
         # thread total would be inaccurate on every reply page.

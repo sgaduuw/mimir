@@ -24,7 +24,7 @@ op. See `handlers.LONG_OPS` for the routing set.
 
 from typing import Annotated, Any, ClassVar, Literal
 
-from pydantic import AfterValidator, BaseModel, Field, field_validator
+from pydantic import AfterValidator, BaseModel, Field
 
 from mimir._inbox_name import INBOX_NAME_RE
 from mimir.robots import CONTENT_SIGNAL_KEYS, CONTENT_SIGNAL_VALUES, PATH_RE, UA_RE
@@ -74,19 +74,11 @@ class _BrokerRequest(BaseModel):
 class CacheSetRequest(_BrokerRequest):
     op: Literal["cache_set"] = "cache_set"
     key: str = Field(min_length=1, max_length=512)
-    value_json: str
+    # Non-empty: an empty string would round-trip as JSON `null` and
+    # collapse later cache.get calls into `None`-on-hit, which is
+    # indistinguishable from a miss.
+    value_json: str = Field(min_length=1)
     ttl: int = Field(ge=0)
-
-    @field_validator("value_json")
-    @classmethod
-    def _value_json_nonempty(cls, v: str) -> str:
-        # Empty `value_json` would round-trip as JSON `null` and
-        # collapse later cache.get calls into `None`-on-hit which
-        # is indistinguishable from miss. Reject at the boundary so
-        # the broker doesn't store useless rows.
-        if not v:
-            raise ValueError("value_json must be a non-empty JSON string")
-        return v
 
 
 class CacheDeleteRequest(_BrokerRequest):
@@ -156,8 +148,8 @@ class BootstrapInboxesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 60.0
 
 
-# Phase 2.2 long ops: the four backfills. Each shares the same RPC
-# shape (limit + reprocess + start) because each one's CLI loop
+# Phase 2.2 long ops: the backfills. Each shares the same RPC
+# shape (limit + start, and reprocess where it means something) because each one's CLI loop
 # wants the same thing: ask the broker for a chunk, get back
 # per-chunk counters, repeat until done.
 #
@@ -191,6 +183,9 @@ class BackfillArticleFilesRequest(_BrokerRequest):
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
     reprocess: bool = False
+    # Read the body of in-series patches only (#874). A broker that
+    # predates the field drops it and walks every article, a plain run.
+    patch_subjects: bool = False
     start: Literal["resume", "restart", "force_restart"] | None = None
 
 
@@ -211,14 +206,13 @@ class BackfillPatchSeriesRequest(_BrokerRequest):
 
 
 class BackfillSeriesChainsRequest(_BrokerRequest):
-    """Chunked `backfill_series_chains` (#816). `reprocess` is carried
-    for the shared RPC shape and changes nothing: every run recomputes
-    whole keys."""
+    """Chunked `backfill_series_chains` (#816). No `reprocess`: every
+    run recomputes whole keys. A request from a CLI that still sends it
+    parses, the unknown key dropped."""
 
     op: Literal["backfill_series_chains"] = "backfill_series_chains"
     timeout: ClassVar[float] = 3600.0
     limit: int | None = Field(default=None, ge=0)
-    reprocess: bool = False
     start: Literal["resume", "restart", "force_restart"] | None = None
 
 
