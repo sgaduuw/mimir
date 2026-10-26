@@ -372,12 +372,31 @@ def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
     across page boundaries.
     """
     start, end = _archive_bounds(year, month)
-    # Driven from this inbox's roots, not from the date range. A bare
-    # date range makes the planner start at `ix_articles_date` across
-    # every inbox's articles for the period (#947); the grouped
+    if month is not None:
+        # Months keep the date-driven plan on purpose. The inbox-driven
+        # form below costs a whole inbox scan whatever the period, so a
+        # month on an lkml-sized inbox was 7x slower in a local bench
+        # (38 ms to 271 ms per child, 2.5M members, production
+        # statistics), while this form costs one month of every
+        # inbox's articles.
+        return (
+            select(Article.id, Article.date)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id == Article.id,
+                Article.date >= start,
+                Article.date < end,
+            )
+            .order_by(Article.date.desc(), Article.id.desc())
+        )
+    # A year is driven from this inbox's roots (#947). A bare date range
+    # starts at `ix_articles_date` across every inbox's articles for the
+    # year, 280 to 440 ms per child whatever the inbox; the grouped
     # subquery is a co-routine SQLite cannot flatten, so it scans the
-    # covering `ix_article_lists_thread_root` for this inbox first.
-    # `own` keeps the exact old predicate: a root must be its own member.
+    # covering `ix_article_lists_thread_root` for this inbox first (a
+    # 8k-member inbox: 283 ms to 1.4 ms). `own` keeps the old predicate:
+    # a root must be its own member.
     roots = (
         select(ArticleList.thread_root_id.label("root"))
         .where(

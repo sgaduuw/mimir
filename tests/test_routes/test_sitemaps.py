@@ -2479,10 +2479,11 @@ def test_archive_roots_query_matches_the_date_driven_form(client, tmp_path):
     assert ids["a1@x"] not in feb and ids["a6@x"] not in feb
 
 
-def test_year_and_month_roots_search_the_inbox_not_the_date_index(client, tmp_path):
-    """#947, AGENTS.md check 6: under production statistics the roots
-    query must be driven from this inbox's `article_lists`, so its cost
-    follows the inbox and not every inbox's articles for the year."""
+def test_year_and_month_roots_plans_under_production_statistics(client, tmp_path):
+    """#947, AGENTS.md check 6. A year is driven from this inbox's
+    `article_lists`, so its cost follows the inbox. A month keeps the
+    date-driven plan, which is cheaper on a very large inbox; pinning it
+    makes a later change to either plan show up here."""
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
@@ -2492,20 +2493,17 @@ def test_year_and_month_roots_search_the_inbox_not_the_date_index(client, tmp_pa
 
     _seed_roots_fixture(tmp_path)
     _clear_sitemap_cache()
-    plans = []
+    plans = {}
     with planner_stats(SessionLocal, PRODUCTION_STATS), SessionLocal() as s:
         inbox = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
         for month in (None, 2):
-            plans.append(
-                plan_of(
-                    s,
-                    lambda m=month: archive_sitemap_xml(
-                        s, inbox, 2020, m, 1, "", force=True
-                    ),
-                    "articles.date >=",
-                )
+            plans[month] = plan_of(
+                s,
+                lambda m=month: archive_sitemap_xml(
+                    s, inbox, 2020, m, 1, "", force=True
+                ),
+                "articles.date >=",
             )
-    assert len(plans) == 2
-    for plan in plans:
-        assert "ix_article_lists_thread_root (inbox_id=?" in plan, plan
-        assert "ix_articles_date" not in plan, plan
+    assert "ix_article_lists_thread_root (inbox_id=?" in plans[None], plans[None]
+    assert "ix_articles_date" not in plans[None], plans[None]
+    assert "ix_articles_date (date>? AND date<?)" in plans[2], plans[2]
