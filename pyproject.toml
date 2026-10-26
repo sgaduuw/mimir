@@ -29,7 +29,7 @@ mimir-broker-ping = "mimir_broker_ping:main"
 dev = [
     "ruff>=0.17.0,<0.18",
     "pytest>=9.1.1,<10",
-    "pillow>=12.3.0,<13",
+    "pillow>=13.0.0,<14",
     "freezegun>=1.5.5,<2",
 ]
 
