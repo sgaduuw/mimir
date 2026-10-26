@@ -50,12 +50,13 @@ class _ArticleFilesPending:
 
     `delete_first=True` instructs the WriteOp closure to DELETE existing
     `ArticleFile` rows for this article_id before INSERTing the new
-    `paths`. Used by `--reprocess`.
+    `files`, a map of path to line counts as `extract_touched_paths`
+    returns it. Used by `--reprocess`.
     """
 
     article_id: int
     delete_first: bool = False
-    paths: list[str] = field(default_factory=list)
+    files: dict[str, tuple[int, int] | None] = field(default_factory=dict)
 
 
 @dataclass
@@ -155,8 +156,9 @@ def _submit_article_files_batch(
 
     The closure iterates `payloads` in order. For each:
     - if `delete_first`, issue `DELETE FROM article_files WHERE article_id = ?`.
-    - then issue `INSERT INTO article_files (article_id, path) VALUES (?, ?)
-      ON CONFLICT (article_id, path) DO NOTHING` for each path.
+    - then issue `INSERT INTO article_files (article_id, path, insertions,
+      deletions) VALUES (?, ?, ?, ?) ON CONFLICT (article_id, path) DO
+      NOTHING` for each file.
     """
 
     def _fn(conn):
@@ -165,10 +167,16 @@ def _submit_article_files_batch(
                 conn.execute(
                     delete(ArticleFile).where(ArticleFile.article_id == p.article_id)
                 )
-            for path in p.paths:
+            for path, counts in p.files.items():
+                ins, dels = counts or (None, None)
                 conn.execute(
                     sqlite_insert(ArticleFile)
-                    .values(article_id=p.article_id, path=path)
+                    .values(
+                        article_id=p.article_id,
+                        path=path,
+                        insertions=ins,
+                        deletions=dels,
+                    )
                     .on_conflict_do_nothing(index_elements=["article_id", "path"])
                 )
 

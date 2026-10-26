@@ -349,8 +349,8 @@ def _process_one(
         return "skipped", None
     parsed = read[1]
 
-    paths = extract_touched_paths(parsed.body)
-    if not paths:
+    files = extract_touched_paths(parsed.body)
+    if not files:
         # An older extractor may have stored rows for this body; with no
         # diff to replace them, reprocess must still drop them (#923).
         if has_rows:
@@ -362,7 +362,7 @@ def _process_one(
     return "indexed", _ArticleFilesPending(
         article_id=article.id,
         delete_first=(has_rows and reprocess),
-        paths=sorted(paths),
+        files=files,
     )
 
 
