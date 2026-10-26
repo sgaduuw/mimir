@@ -6,12 +6,17 @@ unknown tags raise, unknown types raise. This test pins the contract
 so future drift gets caught the moment someone runs the suite.
 """
 
+import dataclasses
+import hashlib
+import importlib
 import json
+import pkgutil
 from datetime import UTC, date, datetime, timezone
 
 import pytest
 from sqlalchemy import text
 
+import mimir
 from mimir import cache
 from mimir.cache import _TAGS, _TYPES, _decode, _encode
 from mimir.dashboard import ArchiveStats, ArticleSummary, DailyVolume, MonthlyVolume
@@ -1497,13 +1502,14 @@ def test_purge_expired_via_writer_drops_expired_only(writer, seeded_db):
 
 def test_a_row_carrying_a_removed_field_still_decodes():
     """#844 removed `PatchState.mainline_landings` and the
-    `StateMainlineLanding` it held. A row another version wrote can
-    still be read: a key without the version in it (the listing pill's
-    `lifecycle_status:<id>:i<inbox>`) or a rollback to the version
-    before, both within a TTL. `cls(**fields)` raised on the unknown
-    keyword, and decoding the field first raised on its unregistered
-    tag, so the page 500'd instead of missing the cache. This is the
-    row as the version before #844 Part 3 wrote it."""
+    `StateMainlineLanding` it held, without a `NAMESPACE_VERSION` bump.
+    After the deploy the new release read the old release's rows within
+    their TTL. `cls(**fields)` raised on the unknown keyword, and
+    decoding the field first raised on its unregistered tag, so the page
+    500'd instead of missing the cache. This is the row as the version
+    before #844 Part 3 wrote it. The reverse, an older release reading a
+    newer one's rows, needs the bump that
+    `test_a_cached_field_change_bumps_the_namespace` enforces."""
     from mimir.patch_state import PatchState
 
     old_row = {
@@ -1530,4 +1536,35 @@ def test_a_row_carrying_a_removed_field_still_decodes():
     out = _decode(json.loads(json.dumps(old_row)))
     assert out == PatchState(
         is_patch=True, trailers=[], series=[], days_since_last_reply=3
+    )
+
+
+def _registered_field_signature() -> str:
+    """Digest of every registered cache type's tag, field names and
+    field types. Imports every `mimir` module first, so the registry is
+    complete whichever tests ran before."""
+    for mod in pkgutil.walk_packages(mimir.__path__, "mimir."):
+        importlib.import_module(mod.name)
+    sig = []
+    for tag, cls in sorted(_TYPES.items()):
+        if dataclasses.is_dataclass(cls):
+            fields = [(f.name, str(f.type)) for f in dataclasses.fields(cls)]
+        else:
+            fields = [(n, str(f.annotation)) for n, f in cls.model_fields.items()]
+        sig.append((tag, fields))
+    return hashlib.sha256(repr(sig).encode()).hexdigest()[:16]
+
+
+def test_a_cached_field_change_bumps_the_namespace():
+    """A key carries no release, so an older release reads a newer
+    one's rows on a rollback or while both run during a deploy. 3.29.0
+    raised on the fields 3.30.0 added to `LifecycleStatusInfo` and
+    500'd the listing pages (#957). A `NAMESPACE_VERSION` bump moves
+    every key, so the older release misses instead.
+
+    Changed a registered type's fields, their types, or the set of
+    tags? Bump `cache.NAMESPACE_VERSION` and record the new digest."""
+    assert (cache.NAMESPACE_VERSION, _registered_field_signature()) == (
+        3,
+        "829af76821ba8b86",
     )
