@@ -1202,7 +1202,15 @@ its callers).
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
-match and age out via `purge_expired`.
+match and age out via `purge_expired`. Most keys name no release:
+`patch_state`, the page-level `lifecycle_status:...:{state_key}`,
+`merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
+pills, sitemaps and dashboards do not. So an older release reads a
+newer one's rows on rollback or while both run during a deploy, and can
+fail on a changed field (#957).
+`test_a_cached_field_change_bumps_the_namespace` pins a digest of every
+registered type's fields beside `NAMESPACE_VERSION` and fails until a
+field change bumps it. A bump cold-starts the whole cache once.
 
 `cache.get_or_compute(session, key, ttl, fn)` is the high-level API;
 `force=True` on dashboard helpers bypasses the cache and recomputes
