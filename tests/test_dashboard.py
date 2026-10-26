@@ -917,7 +917,8 @@ def test_inbox_first_pin_holds_under_hostile_stats(seeded_db, listing):
     index or takes the other index."""
     alpha = _inbox(seeded_db, "alpha")
     dear = {
-        "ix_article_lists_inbox_id": "29764294 29764294",
+        # Still narrows: an older SQLite drops an equality its stats call useless.
+        "ix_article_lists_inbox_id": "29764294 14762147",
         "ix_articles_date": "50 1",
     }
     hostile = tuple(
