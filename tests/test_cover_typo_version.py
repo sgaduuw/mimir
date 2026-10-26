@@ -4,7 +4,7 @@ A cover that says v2 over patches that all say v3 is a typo in the
 cover, so the posting is v3. The re-chain owns the version: ingest,
 replay and `backfill-patch-series` store each subject's own, and the
 `rechain_keys` that ends each of their transactions writes the resolved
-one, the same way `backfill-series-chains` does.
+one.
 """
 
 from datetime import UTC, datetime
@@ -16,7 +16,8 @@ from mimir.broker._context import get_active_writer
 from mimir.broker.writes import WriteOp
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series, posting_version, series_key
-from mimir.patch_series_chains import backfill_series_chains, rechain_keys
+from mimir.patch_series_chains import rechain_keys
+from tests._helpers import rechain_all
 from tests.test_chain_reply_patches import AUTHOR, _chain, _msg, _series
 from tests.test_ingest.test_series_rechain import T2026, _arrive, _heads
 
@@ -102,11 +103,6 @@ def _versions(seeded_db, *ids):
     return {m: row[1] for m, row in _series(seeded_db, *ids).items()}
 
 
-def _planned():
-    result = backfill_series_chains()
-    return result.heads_planned, result.versions_planned
-
-
 def test_patches_arriving_after_a_typo_cover_set_its_version(
     seeded_db, tmp_path, broker_active
 ):
@@ -116,7 +112,7 @@ def test_patches_arriving_after_a_typo_cover_set_its_version(
         "ty-p1@x": (KEY, "v3", 1),
         "ty-p2@x": (KEY, "v3", 2),
     }
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_a_cover_arriving_after_its_patches(seeded_db, tmp_path, broker_active):
@@ -133,7 +129,7 @@ def test_a_cover_arriving_after_its_patches(seeded_db, tmp_path, broker_active):
     backfill_patch_series()
 
     assert _versions(seeded_db, *IDS) == dict.fromkeys(IDS, "v3")
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_a_late_patch_without_a_version_flips_the_posting_back(
@@ -146,7 +142,7 @@ def test_a_late_patch_without_a_version_flips_the_posting_back(
 
     ids = (*IDS, "ty-p3@x")
     assert _versions(seeded_db, *ids) == dict.fromkeys(ids, "v2")
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_a_chain_reply_patch_takes_the_resolved_version(
@@ -159,7 +155,7 @@ def test_a_chain_reply_patch_takes_the_resolved_version(
 
     ids = ("cr@x", "cr-p1@x", "cr-p2@x", "cr-p3@x")
     assert _versions(seeded_db, *ids) == dict.fromkeys(ids, "v3")
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_ingest_and_both_backfills_agree(seeded_db, tmp_path, broker_active):
@@ -168,7 +164,7 @@ def test_ingest_and_both_backfills_agree(seeded_db, tmp_path, broker_active):
     assert {row[2] for row in before} == {"v3"}  # precondition
 
     backfill_patch_series(reprocess=True)
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _snapshot(seeded_db, IDS) == before
 
 
@@ -296,7 +292,7 @@ def test_patches_of_the_cover_s_version_keep_the_split(seeded_db, broker_active)
 
 def test_a_key_of_one_cover_with_a_typo_is_written(seeded_db, broker_active):
     """A key of one cover has no heads to change, so before this the
-    chain pass skipped it."""
+    re-chain skipped it."""
     when = datetime(2024, 1, 1, tzinfo=UTC)
     key = series_key("solo title", AUTHOR)
     with seeded_db() as s:
@@ -314,18 +310,18 @@ def test_a_key_of_one_cover_with_a_typo_is_written(seeded_db, broker_active):
             )
         s.commit()
 
-    assert _planned() == (0, 3)
+    assert rechain_all(seeded_db) == (0, 3)
 
     ids = ("so@x", "so-p1@x", "so-p2@x")
     assert _versions(seeded_db, *ids) == dict.fromkeys(ids, "v3")
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_rows_stored_before_the_fix_converge(seeded_db, tmp_path, broker_active):
     """Production's starting state: every row of a posting carries its
     cover's parsed version. The reprocess finds nothing to change on those
-    rows, so the first chain pass writes the versions, on a key of several
-    postings and on a key of one, and every later pass plans nothing.
+    rows, so the first re-chain writes the versions, on a key of several
+    postings and on a key of one, and every later one plans nothing.
     From Granny's review of #870."""
     day = 86400
 
@@ -361,11 +357,11 @@ def test_rows_stored_before_the_fix_converge(seeded_db, tmp_path, broker_active)
         s.commit()
 
     backfill_patch_series(reprocess=True)
-    _heads_planned, versions = _planned()
+    _heads_planned, versions = rechain_all(seeded_db)
     assert versions == 7  # ty and its three patches, so and its two
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _snapshot(seeded_db) == fixed
 
     backfill_patch_series(reprocess=True)
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _snapshot(seeded_db) == fixed

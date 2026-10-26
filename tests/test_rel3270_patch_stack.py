@@ -2,15 +2,15 @@
 #860, #862, #869, #870 parser, #870 cover typo).
 
 One thread holds every shape at once, and ingest, `--reprocess`, a plain
-run and the chain pass must give each row one answer; the second chain
-pass plans nothing.
+run and a fresh re-chain must give each row one answer; the second
+re-chain plans nothing.
 """
 
 from sqlalchemy import delete, select
 
 from mimir.models import Article, ArticleFile
 from mimir.patch_series import backfill_patch_series, series_key
-from mimir.patch_series_chains import backfill_series_chains
+from tests._helpers import rechain_all
 from tests.test_chain_reply_patches import AUTHOR, _chain, _msg
 from tests.test_ingest.test_series_rechain import T2026, _arrive
 
@@ -54,11 +54,6 @@ def _snapshot(seeded_db):
         ).all()
 
 
-def _planned():
-    r = backfill_series_chains()
-    return r.heads_planned, r.versions_planned
-
-
 EXPECTED = {
     "c@x": (KEY, "v3", 0),
     "c-p1@x": (KEY, "v3", 1),
@@ -86,12 +81,12 @@ def test_one_answer_across_ingest_reprocess_plain_and_chain(
     assert _snapshot(seeded_db) == ingested
     backfill_patch_series()
     assert _snapshot(seeded_db) == ingested
-    assert _planned() == (0, 0)
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _snapshot(seeded_db) == ingested
 
     backfill_patch_series(reprocess=True)
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _snapshot(seeded_db) == ingested
 
 
@@ -119,7 +114,7 @@ def test_cover_after_its_chain_with_replies(seeded_db, tmp_path, broker_active):
     backfill_patch_series()
     linked = _snapshot(seeded_db)
     assert {r[0]: tuple(r[1:4]) for r in linked} == EXPECTED
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     backfill_patch_series(reprocess=True)
-    assert _planned() == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _snapshot(seeded_db) == linked

@@ -173,6 +173,31 @@ def series_columns(session_factory, *message_ids):
     return {r[0]: tuple(r[1:]) for r in rows}
 
 
+def rechain_all(session_factory) -> tuple[int, int]:
+    """Re-chain every series key on the writer, as ingest and
+    `backfill-patch-series` re-chain the keys they touch, and return the
+    `(heads, versions)` the read found to change. `(0, 0)` means the
+    archive already holds what a fresh chain would write."""
+    from mimir.broker._context import get_active_writer
+    from mimir.broker.writes import WriteOp
+    from mimir.models import Article
+    from mimir.patch_series_chains import head_updates, rechain_keys
+
+    with session_factory() as s:
+        keys = set(
+            s.scalars(
+                select(Article.patch_series_key)
+                .where(Article.patch_series_key.is_not(None))
+                .distinct()
+            )
+        )
+        planned = [head_updates(s, key) or ((), ()) for key in keys]
+    get_active_writer().submit(
+        WriteOp(label="test:rechain_all", fn=lambda conn: rechain_keys(conn, keys))
+    ).result(timeout=10)
+    return sum(len(p[0]) for p in planned), sum(len(p[1]) for p in planned)
+
+
 def add_commit(repo, author, parents, message, *, when=1700000000, tz=0, encoding=None):
     """Add an empty-tree commit to a dulwich `repo` and return it. `author`
     is bytes, `parents` a list of commit ids, `when` the author and commit
