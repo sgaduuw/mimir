@@ -123,6 +123,24 @@ def representative_key(version: str | None, date, article_id: int) -> tuple:
     return (not numbered, date is None, date, article_id)
 
 
+def slot_rank(article_id: int, has_diff: bool) -> tuple[bool, int]:
+    """Sort key choosing the patch of a series slot (#861), the rows
+    sharing `(key, head, version, position)`: the lowest id among the
+    rows with a diff, else the lowest id. Every other row is a re-post.
+    `has_diff` is `patches.has_article_files`, the same predicate
+    `_reply_to_patch_in_db` decides a patch by.
+
+    It differs from `representative_key`, which folds postings by
+    `(date, id)`, on purpose. This pick is computed at render, never
+    stored, and an id never changes, so the pick is stable. The date is
+    the mirror's commit time, not reliably the send date, so ranking by
+    it would move the pick on a re-ingest. Measured 2026-10-25, ranking
+    by lowest id changes today's pick in 163 patch and 81 cover slots,
+    where today's pick has no diff; ranking by newest date would move
+    72,532 patch picks, mostly to an identical resend."""
+    return (not has_diff, article_id)
+
+
 # A series is (patch_series_key, COALESCE(patch_series_head_id, 0))
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's

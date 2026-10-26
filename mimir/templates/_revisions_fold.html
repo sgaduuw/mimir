@@ -1,10 +1,12 @@
 {# Foldable Revisions timeline. Renders only when patch_state.series
    has at least 2 entries (single-revision patches get no fold).
-   Summary shows the revision count; expanded body is a timeline
-   with one entry per revision: date, version label, and a
+   Summary shows the version count; expanded body is a timeline
+   with one entry per version (#861): date, version label, and a
    [diff against previous] link wherever `entry.diff_url` is set (not
-   on the first revision, nor on a resend). The links are the URLs the
-   series diff sitemap lists (#844, `patch_series.adjacent_versions`).
+   on the first version, nor on a resend). The same version posted
+   again is listed under its entry as a re-post. The links are the
+   URLs the series diff sitemap lists (#844,
+   `patch_series.adjacent_versions`).
    A caller sets `revisions_open` to render it unfolded.
 #}
 {%- if patch_state and patch_state.series and patch_state.series|length >= 2 -%}
@@ -24,6 +26,11 @@
         {%- if entry.diff_url %}
         <a href="{{ entry.diff_url }}" title="show what changed in {{ entry.version }} since the previous revision">[diff against previous]</a>
         {%- endif %}
+        {%- for repost in entry.reposts %}
+        <span class="rev-repost">re-posted <time datetime="{{ repost.date.isoformat() if repost.date else '' }}">{{ repost.date.strftime('%Y-%m-%d') if repost.date else '?' }}</time>
+          {%- if repost.is_current %} <span class="rev-current-marker">current</span>
+          {%- else %} <a href="{{ repost.url }}">go to this post</a>{% endif %}</span>
+        {%- endfor %}
       </li>
       {%- endfor %}
     </ol>

@@ -195,3 +195,102 @@ def test_a_status_change_moves_the_etag_and_the_line(client, tmp_path, change):
     assert after.status_code == 200
     assert after.headers["ETag"] != before.headers["ETag"]
     assert _status(after.get_data(as_text=True))[0] == want
+
+
+def _add_v2_repost(seeded):
+    """A second v2 of the same patch, newer than `v2@x` and filed in
+    alpha, so it is a re-post: the slot's patch stays `v2@x` (lowest id,
+    no diff in either), while the pill, which ranks by date, names this
+    one. Returns its id."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList, Inbox
+
+    with SessionLocal() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        late = Article(
+            message_id="v2-late@x",
+            subject="[PATCH v2 1/1] foo: bar",
+            subject_normalized="foo: bar",
+            date=datetime(2024, 1, 9, tzinfo=UTC),
+            patch_series_key=KEY,
+            patch_series_version="v2",
+            patch_series_position=1,
+            lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20)],
+        )
+        s.add(late)
+        s.commit()
+        return late.id
+
+
+def test_superseded_link_names_the_copy_the_pill_dated(client, tmp_path):
+    """#861: a v2 posted again gives the revisions timeline one entry,
+    the slot's patch (`v2@x`, lowest id). The pill and its "(posted ...)"
+    date name the newest copy, so the link must go there too, and a new
+    re-post moves the ETag."""
+    seeded = _seed(tmp_path, v2=True)
+    url = seeded["p@x"][1] + "/t"
+    before = client.get(url)
+    patch_id, patch_url = seeded["v2@x"]
+    assert _status(before.get_data(as_text=True)) == (
+        "Superseded by v2 (posted 2024-01-08).",
+        patch_url,
+    )  # precondition: one v2, the link names it
+    late_id = _add_v2_repost(seeded)
+    assert late_id > patch_id  # precondition: the winner is the lower id
+
+    after = client.get(url, headers={"If-None-Match": before.headers["ETag"]})
+    assert after.status_code == 200
+    assert after.headers["ETag"] != before.headers["ETag"]
+    sentence, link = _status(after.get_data(as_text=True))
+    assert sentence == "Superseded by v2 (posted 2024-01-09)."
+    assert link.endswith(f"/{late_id}"), link
+    assert link != patch_url
+
+
+def _status_html(app, info, series):
+    from flask import render_template
+
+    from mimir.patch_state import PatchState
+
+    state = PatchState(
+        is_patch=True, trailers=[], series=series, days_since_last_reply=None
+    )
+    with app.test_request_context():
+        return render_template(
+            "_status_line.html", lifecycle_status=info, patch_state=state
+        )
+
+
+@pytest.mark.parametrize(
+    ("named", "want"), [(12, "/late"), (11, "/patch"), (None, "/patch")]
+)
+def test_the_superseded_link_follows_the_id_and_falls_back_to_the_patch(
+    client, named, want
+):
+    """The pill names a copy by id (`/late` is a re-post, `/patch` the
+    slot's patch). A row cached before the id existed has None, and the
+    link falls back to the version's entry, the slot's patch."""
+    from mimir.lifecycle_status import LifecycleStatusInfo
+    from mimir.patch_state import StateRepost, StateSeriesEntry
+
+    series = [
+        StateSeriesEntry("v1", 1, None, "/v1", True, None),
+        StateSeriesEntry(
+            "v2",
+            11,
+            None,
+            "/patch",
+            False,
+            "/diff",
+            reposts=[StateRepost(12, None, "/late", False)],
+        ),
+    ]
+    info = LifecycleStatusInfo(
+        state_value="superseded",
+        superseded_by_version="v2",
+        superseded_at=datetime(2024, 1, 9, tzinfo=UTC),
+        superseded_by_id=named,
+    )
+    assert _status(_status_html(client.application, info, series))[1] == want

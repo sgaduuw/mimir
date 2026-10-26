@@ -39,7 +39,8 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.models import Article, ArticleList, Inbox
-from mimir.patch_series import adjacent_versions, series_head
+from mimir.patch_series import adjacent_versions, series_head, slot_rank
+from mimir.patches import article_has_files
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -1054,6 +1055,7 @@ def series_diff_sitemap_xml(
                 series_head(),
                 Article.patch_series_version,
                 Article.date,
+                article_has_files(),
             ).where(
                 Article.patch_series_key >= bucket,
                 Article.patch_series_key < chr(ord(bucket) + 1),
@@ -1068,26 +1070,29 @@ def series_diff_sitemap_xml(
             )
         ).all()
         series: dict[tuple[str, int], list] = {}
-        for art_id, key, head, version, date in rows:
+        has_diff = {art_id: diff for art_id, *_, diff in rows}
+        for art_id, key, head, version, date, _diff in rows:
             series.setdefault((key, head), []).append((date, art_id, version))
 
         pairs = []
         for (key, head), covers in sorted(series.items()):
             slot_dates: dict[str, list] = {}
-            first_id: dict[str, int] = {}
+            slot_ids: dict[str, list[int]] = {}
             for date, art_id, version in covers:
                 slot_dates.setdefault(version, []).append(date)
-                first_id[version] = min(first_id.get(version, art_id), art_id)
+                slot_ids.setdefault(version, []).append(art_id)
             # A version with no cover is absent here, so v1, v2 (no cover),
             # v3 pairs v1 with v3: adjacent among the revisions the route
             # can diff, and that page exists.
             for older, newer in adjacent_versions(covers):
                 dates = [d for v in (older, newer) for d in slot_dates[v] if d]
                 lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
-                pairs.append((key, head, older, newer, first_id[newer], lastmod))
+                to_id = min(slot_ids[newer], key=lambda i: slot_rank(i, has_diff[i]))
+                pairs.append((key, head, older, newer, to_id, lastmod))
 
-        # The page nominates the canonical inbox of the lowest-id cover in
-        # its `to` slot; this resolves the same rule for the whole bucket.
+        # The page nominates the canonical inbox of the patch of its `to`
+        # slot (`slot_rank`); this resolves the same rule for the whole
+        # bucket.
         to_ids = [p[4] for p in pairs]
         inbox_of: dict[int, str] = {}
         for offset in range(0, len(to_ids), SITEMAP_URLS_PER_PAGE):

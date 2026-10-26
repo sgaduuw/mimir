@@ -1083,6 +1083,46 @@ def _mutate_series_head(seeded):
         s.commit()
 
 
+def _prepare_slot_rows(seeded):
+    """The thread's two articles become two rows of one series slot,
+    neither with a diff, beside a v2 so the page carries a revision
+    sentence (#861)."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        for mid in ("root@x", "reply@x"):
+            art = s.get(Article, seeded[mid][0])
+            art.patch_series_key = "slotkey"
+            art.patch_series_version = "v1"
+            art.patch_series_position = 1
+        s.add(
+            Article(
+                message_id="v2@x",
+                subject="[PATCH v2] foo: bar",
+                author="A <a@x>",
+                patch_series_key="slotkey",
+                patch_series_version="v2",
+                patch_series_position=1,
+            )
+        )
+        s.commit()
+
+
+def _mutate_slot_diff(seeded):
+    """The later row of the slot gains a diff, which makes it the slot's
+    patch and the viewed (earlier) root a no-diff row that lost: not a
+    patch, so no card and no revision sentence. Its path is no input of
+    the viewed article, so the files tag, the series columns and the
+    revision ids do not move; only the has-diff of a sibling does."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleFile
+
+    with SessionLocal() as s:
+        s.add(ArticleFile(article_id=seeded["reply@x"][0], path="fs/foo.c"))
+        s.commit()
+
+
 def test_newer_revision_renders_the_superseded_pill(client, tmp_path):
     """Stored versions are `vN`, which SQLite casts to 0, so for a
     while no page ever showed SUPERSEDED (#677)."""
@@ -1130,6 +1170,7 @@ _RENDER_STATE_CASES = [
     ("trailer_rewrite", _prepare_review_trailer, _mutate_trailer_in_place),
     ("newer_revision", _prepare_series, _mutate_series),
     ("series_head", _prepare_two_revisions, _mutate_series_head),
+    ("slot_row_gains_a_diff", _prepare_slot_rows, _mutate_slot_diff),
 ]
 
 
@@ -2336,8 +2377,8 @@ def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(
     """v1 has no previous revision, so no link. A bare "resend" and a
     NULL version are not revisions the route can diff, so they neither
     get a link nor count as the previous one. A second v2 is a resend of
-    the first and is not a step, so only the first v2 links (v1 to v2).
-    v3 links v2 to v3. Every emitted link is served. The sitemap's query
+    the first and is not a step: it is no entry of its own (#861) but is
+    listed under the first v2, which links v1 to v2. v3 links v2 to v3. Every emitted link is served. The sitemap's query
     drops the bare and NULL versions itself, so only this test holds
     `adjacent_versions` to dropping them."""
     import html as htmllib
@@ -2347,7 +2388,9 @@ def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(
     seeded = _seed_cover_series(tmp_path, "c" * 40, versions)
     fold = _fold(client.get(seeded["c5@x"][1] + "/t").get_data(as_text=True))
     rows = re.findall(r"<li[^>]*>(.*?)</li>", fold, re.DOTALL)
-    assert len(rows) == len(versions), rows  # precondition: one row per cover
+    # Precondition: one row per version, the second v2 listed under the first.
+    assert len(rows) == len(set(versions)), rows
+    assert fold.count("re-posted") == 1, fold
 
     pairs = []
     for row in rows:
@@ -2360,7 +2403,7 @@ def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(
         q = parse_qs(urlparse(link).query)
         pairs.append((q["from"][0], q["to"][0]))
         assert client.get(link).status_code == 200, link
-    assert pairs == [None, None, None, ("v1", "v2"), None, ("v2", "v3")]
+    assert pairs == [None, None, None, ("v1", "v2"), ("v2", "v3")]
 
 
 def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(

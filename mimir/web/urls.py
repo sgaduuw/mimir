@@ -230,7 +230,7 @@ def _canonical_url_for(
 
 
 def _series_diff_url(
-    to_slot: list[Article],
+    to_winner: Article | None,
     series_key: str,
     from_version: str,
     to_version: str,
@@ -246,12 +246,13 @@ def _series_diff_url(
     must share one validity rule").
 
     The diff renders under any inbox name, so the page needs one to
-    nominate. It is the canonical inbox of the lowest-id article in the
-    `to` slot (`to_slot`, every article at `(series_key, to_version,
-    pos)`), chosen by `_canonical_inbox_name` like every other page.
-    The slot, not the article being viewed, decides: a resend viewed
-    from the panel and the route must agree. `fallback_inbox` covers an
-    empty slot (a position still awaiting backfill). `pos` of None or 0
+    nominate. It is the canonical inbox of the patch of the `to` slot
+    (`to_winner`, `patch_series.slot_rank` over every article at
+    `(series_key, to_version, pos)`), chosen by `_canonical_inbox_name`
+    like every other page. The slot, not the article being viewed,
+    decides: a resend viewed from the panel and the route must agree.
+    `fallback_inbox` covers an empty slot (`to_winner` None, a position
+    still awaiting backfill). `pos` of None or 0
     is the cover letter and is spelled `cover`.
 
     `head_id` is the series head (#816), spelled `s=` and omitted when
@@ -259,10 +260,9 @@ def _series_diff_url(
     before heads existed. Required, so no caller can drop it.
     """
     inbox_name = None
-    if to_slot:
-        art = min(to_slot, key=lambda a: a.id)
+    if to_winner is not None:
         inbox_name = _canonical_inbox_name(
-            art, [(al.inbox_id, al.inbox.name) for al in art.lists]
+            to_winner, [(al.inbox_id, al.inbox.name) for al in to_winner.lists]
         )
     return _spell_series_diff_url(
         inbox_name or fallback_inbox,
