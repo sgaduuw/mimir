@@ -78,7 +78,7 @@ def _heads(seeded_db):
 
 def _read(seeded_db, msgid):
     """The backfill's read of one row, planned from the state before any
-    chain pass (every head NULL)."""
+    re-chain (every head NULL)."""
     with seeded_db() as s:
         article = s.execute(
             select(Article).where(Article.message_id == msgid)
@@ -233,6 +233,6 @@ def test_a_patch_whose_cover_is_not_in_its_key_is_left_alone(seeded_db, broker_a
         )
         _add(s, inbox, "rcp@x", "[PATCH 1/2] ipvs: x", 1, NEW, "rc@x")
         s.commit()
-        updates, _versions, _split = head_updates(s, KEY)
+        updates, _versions = head_updates(s, KEY)
     assert _id(seeded_db, "rcp@x") not in {i for i, _ in updates}
     assert updates  # precondition: the key's own rows were chained
