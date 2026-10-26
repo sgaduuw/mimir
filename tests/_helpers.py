@@ -191,7 +191,7 @@ def rechain_all(session_factory) -> tuple[int, int]:
                 .distinct()
             )
         )
-        planned = [head_updates(s, key) or ((), (), False) for key in keys]
+        planned = [head_updates(s, key) or ((), ()) for key in keys]
     get_active_writer().submit(
         WriteOp(label="test:rechain_all", fn=lambda conn: rechain_keys(conn, keys))
     ).result(timeout=10)
