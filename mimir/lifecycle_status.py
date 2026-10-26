@@ -23,7 +23,13 @@ from mimir import cache
 from mimir.datetime_utils import aware_utc as _aware_utc
 from mimir.datetime_utils import coerce_dt
 from mimir.models import ArticleList
-from mimir.patch_series import newer_revision_sql, version_number_sql
+from mimir.parser import unfold
+from mimir.patch_series import (
+    newer_revision_sql,
+    parse_cover_letter,
+    same_series_sql,
+    version_number_sql,
+)
 from mimir.threading import unmaterialised_roots
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
@@ -65,7 +71,13 @@ class LifecycleStatusInfo:
     the pill: the Linus commit for LANDED, the earliest other tree's
     for QUEUED (`tree`), and the newest revision for SUPERSEDED (`superseded_by_id` is
     the slot's patch of that revision (#949), None on a row cached
-    before it existed)."""
+    before it existed).
+
+    `rollup` is a cover's progress when its patches differ (#938), like
+    "3 of 5 landed": the state is the lowest rung every patch of the
+    posting reached, and this counts the patches that reached the highest
+    rung above it. None for a patch, and for a cover whose patches are
+    level."""
 
     state_value: str
     tree: str | None = None
@@ -79,6 +91,7 @@ class LifecycleStatusInfo:
     superseded_by_version: str | None = None
     superseded_at: datetime | None = None
     superseded_by_id: int | None = None
+    rollup: str | None = None
 
     @property
     def state(self) -> LifecycleStatus:
@@ -114,6 +127,14 @@ _REVIEW_ROLES_PARAM = bindparam(
 # from rc so the state derivation doesn't pay the COUNT cost when
 # rc is None).
 #
+# `rollup` is a cover's progress (#938): its posting's slot winners
+# (#861), each probed for a Linus landing, another tree's, a review
+# trailer and a newer revision of its own. The unary plus on `tree_name`
+# keeps the probes on `ix_mainline_commits_message_id`: without
+# statistics the planner seeks the tree index and walks every Linus
+# commit per patch (measured only on the test database, where
+# `mainline_commits` has no statistics row; production's is unmeasured).
+#
 # `sup` compares revision numbers, not strings, so v10 > v9, and takes
 # the newest revision's own version and date for the SUPERSEDED
 # tooltip and the status line, so the two always describe one real
@@ -134,6 +155,14 @@ _REVIEW_ROLES_PARAM = bindparam(
 # of its own to keep in step (#844).
 _V2 = version_number_sql("a2.patch_series_version")
 _NEWER = newer_revision_sql("a1", "a2")
+# A cover's posting (#938): the patches of its series and version string
+# (`patch_series.same_posting`, in SQL), and a patch's own newer revision.
+_POSTING = (
+    same_series_sql("p", "c")
+    + " AND p.patch_series_version = c.patch_series_version"
+    + " AND p.patch_series_position > 0"
+)
+_NEWER_PATCH = newer_revision_sql("p", "a2")
 
 _BULK_SQL = text(f"""
 WITH
@@ -204,8 +233,49 @@ newer AS (
 ),
 sup AS (
     SELECT leaf, sup_by_version, sup_by_date, sup_by_id FROM newer WHERE rn = 1
+),
+posting AS (
+    SELECT c.id AS cover,
+           p.id AS patch,
+           ROW_NUMBER() OVER (
+               PARTITION BY c.id, p.patch_series_position
+               ORDER BY NOT EXISTS (SELECT f.article_id FROM article_files f
+                                     WHERE f.article_id = p.id),
+                        p.id
+           ) AS rn
+      FROM articles c
+      JOIN articles p ON {_POSTING}
+     WHERE c.id IN :ids
+       AND c.patch_series_key IS NOT NULL
+       AND COALESCE(c.patch_series_position, 0) = 0
+),
+rollup AS (
+    SELECT cover,
+           COUNT(*) AS slots,
+           SUM(landed) AS n_landed,
+           SUM(landed OR (live AND other)) AS n_queued,
+           SUM(landed OR (live AND (other OR reviewed))) AS n_reviewed
+      FROM (
+        SELECT po.cover AS cover,
+               EXISTS (SELECT 1 FROM mainline_commits m
+                        WHERE m.message_id = p.message_id
+                          AND +m.tree_name = 'linus') AS landed,
+               EXISTS (SELECT 1 FROM mainline_commits m
+                        WHERE m.message_id = p.message_id
+                          AND +m.tree_name != 'linus') AS other,
+               EXISTS (SELECT t.article_id FROM article_trailers t
+                        WHERE t.article_id = p.id
+                          AND t.role IN :review_roles) AS reviewed,
+               NOT EXISTS (SELECT 1 FROM articles a2
+                            WHERE {_NEWER_PATCH}) AS live
+          FROM posting po
+          JOIN articles p ON p.id = po.patch
+         WHERE po.rn = 1
+      )
+     GROUP BY cover
 )
 SELECT a.id,
+       a.subject,
        a.date AS article_date,
        COALESCE(mc.in_linus, 0) AS in_linus,
        mc.linus_sha,
@@ -218,12 +288,17 @@ SELECT a.id,
        sup.sup_by_version,
        sup.sup_by_date,
        sup.sup_by_id,
+       ru.slots,
+       ru.n_landed,
+       ru.n_queued,
+       ru.n_reviewed,
        COALESCE(rc.review_total, 0) AS review_total,
        COALESCE(rc.review_maintainer, 0) AS review_maintainer
   FROM articles a
   LEFT JOIN mc ON mc.article_id = a.id
   LEFT JOIN at_review ON at_review.article_id = a.id
   LEFT JOIN sup ON sup.leaf = a.id
+  LEFT JOIN rollup ru ON ru.cover = a.id
   LEFT JOIN rc ON rc.article_id = a.id
  WHERE a.id IN :ids
 """).bindparams(bindparam("ids", expanding=True), _REVIEW_ROLES_PARAM)
@@ -368,8 +443,7 @@ def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
     if state == LifecycleStatus.PENDING:
         return ""
     if state == LifecycleStatus.QUEUED:
-        tree_label = (tree or "").upper()
-        return f"IN {tree_label}".strip()
+        return f"IN {tree.upper()}" if tree else "QUEUED"
     return state.value.upper()
 
 
@@ -479,6 +553,41 @@ def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
     return f": {total} ({maintainer_count}M)"
 
 
+def _cover_rollup(
+    own: LifecycleStatus, subject: str | None, row
+) -> tuple[LifecycleStatus, str | None]:
+    """A cover's state and `rollup` from its posting's patches (#938), or
+    its own state and None when no patch of the posting is stored.
+
+    The state is the lowest rung every patch reached (landed, queued,
+    reviewed, else pending), over the cover's declared total, so a patch
+    missing from the archive counts as pending. A cover superseded by a
+    newer cover stays superseded and only adds the landed count. The count
+    names the highest rung above the state that any patch reached. A cover
+    never names a tree: its patches may sit in several."""
+    if not row.slots:
+        return own, None
+    cover = parse_cover_letter(unfold(subject))
+    total = max(row.slots, cover.total if cover else 0)
+    # Patches that reached each rung or a higher one, highest rung first.
+    rungs = (
+        (LifecycleStatus.LANDED, row.n_landed),
+        (LifecycleStatus.QUEUED, row.n_queued),
+        (LifecycleStatus.REVIEWED, row.n_reviewed),
+    )
+    if own == LifecycleStatus.SUPERSEDED:
+        state = own
+        above = rungs[:1]
+    else:
+        state = next((rung for rung, n in rungs if n == total), LifecycleStatus.PENDING)
+        order = [r for r, _ in rungs]
+        above = rungs[: order.index(state)] if state in order else rungs
+    count = next(((rung, n) for rung, n in above if n), None)
+    if count is None:
+        return state, None
+    return state, f"{count[1]} of {total} {count[0].value}"
+
+
 def _bulk_uncached(
     session: Session,
     article_ids: list[int],
@@ -529,6 +638,11 @@ def _bulk_uncached(
             state = LifecycleStatus.PENDING
             tree = None
 
+        rollup = None
+        if row.slots:
+            state, rollup = _cover_rollup(state, row.subject, row)
+            tree = None
+
         # Thread-activity → heat. Compute days from the SQL-derived
         # `last_thread_date` (NULL when the article has no replies).
         # Treat last_thread_date <= article_date as "no replies"
@@ -549,6 +663,8 @@ def _bulk_uncached(
         heat, detail = _activity_heat(days)
 
         pill_label = _format_pill_label(state, tree)
+        if rollup and state == LifecycleStatus.PENDING:
+            pill_label = "PENDING"
         count_suffix = _format_count_suffix(
             row.review_total or 0,
             row.review_maintainer or 0,
@@ -586,6 +702,7 @@ def _bulk_uncached(
             superseded_by_version=row.sup_by_version if superseded else None,
             superseded_at=coerce_dt(row.sup_by_date) if superseded else None,
             superseded_by_id=row.sup_by_id if superseded else None,
+            rollup=rollup,
         )
     return out
 

@@ -497,7 +497,8 @@ def _patch_synthesis_filter(patch_state) -> str:
 @bp_web.app_template_filter("status_line")
 def _status_line_filter(status) -> str:
     """The lifecycle state as a sentence with its evidence (#844), or ""
-    for PENDING (silence, as on the pill) and for no status. Reads only
+    for PENDING (silence, as on the pill, unless a cover shows progress,
+    #938) and for no status. Reads only
     the pill's own `LifecycleStatusInfo`, so the state, the commit and
     the newer revision are the ones the pill decided on, in the pill's
     precedence (LANDED > SUPERSEDED > QUEUED > REVIEWED > PENDING)."""
@@ -507,20 +508,24 @@ def _status_line_filter(status) -> str:
     commit = f" as {status.commit_sha[:12]}" if status.commit_sha else ""
     if status.committed_at:
         commit += f" on {status.committed_at:%Y-%m-%d}"
+    # A cover's progress (#938), appended to its state's sentence.
+    progress = f", {status.rollup}" if status.rollup else ""
     if state == LifecycleStatus.LANDED:
         return f"Landed in mainline{commit}."
     if state == LifecycleStatus.QUEUED:
-        return f"Queued in {_resolve_tree_label(status.tree or '')}{commit}."
+        # A cover names no tree: its patches may sit in several.
+        where = f" in {_resolve_tree_label(status.tree)}" if status.tree else ""
+        return f"Queued{where}{commit}{progress}."
     if state == LifecycleStatus.SUPERSEDED:
         if not status.superseded_by_version:
-            return "Superseded."
+            return f"Superseded{progress}."
         posted = (
             f" (posted {status.superseded_at:%Y-%m-%d})" if status.superseded_at else ""
         )
-        return f"Superseded by {status.superseded_by_version}{posted}."
+        return f"Superseded by {status.superseded_by_version}{posted}{progress}."
     if state == LifecycleStatus.REVIEWED:
-        return "Reviewed."
-    return ""
+        return f"Reviewed{progress}."
+    return f"Pending{progress}." if status.rollup else ""
 
 
 @bp_web.app_template_filter("is_allowlisted_address")

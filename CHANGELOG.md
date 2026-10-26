@@ -13,6 +13,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- A cover letter's pill states what every patch of its posting reached,
+  with a count when they differ: "Queued · 3 of 5 landed", or "Pending ·
+  3 of 5 landed" where a cover used to show nothing. The cover's declared
+  total is the denominator, so a patch missing from the archive counts as
+  pending, and a patch posted twice counts once. A cover names no tree,
+  since its patches may sit in several, and a cover superseded by a newer
+  one stays "Superseded" and adds the landed count only when it is above
+  0. It shows on the thread view, the cover's message page, its Markdown
+  form, listings and triage, and the status line gains the same count. A
+  patch landing moves the cover's ETag. The roll-up is computed on read in
+  the listing statement, so there is no backfill and no new statement
+  (#938).
 - The lifecycle pill's "Superseded by vN" tooltip and the status line's
   "(posted <date>)" now name the copy of vN the revisions list shows: a
   copy with a diff first, then the lowest id (the series slot rule, #861),
@@ -57,6 +69,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Upgrade notes
 
+- The cache version moves from 3 to 4 (the lifecycle pill gains a field),
+  so the cache starts cold once on deploy: the first requests after it
+  recompute pills, thread state and sitemaps. Rolling back to the release
+  before this one reads nothing from the new namespace and starts cold
+  too. Nothing to backfill (#938).
 - Run `backfill-article-files --patch-subjects --reprocess` after the
   deploy to count the lines of patches stored before it. Until the run
   reaches a posting, its cover shows its totals without "+N/-M". A run
