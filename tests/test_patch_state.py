@@ -12,14 +12,12 @@ from mimir.models import (
     ArticleList,
     ArticleTrailer,
     Inbox,
-    MainlineCommit,
     Subsystem,
     SubsystemMaintainer,
     SubsystemPath,
 )
 from mimir.patch_state import (
     PatchState,
-    StateMainlineLanding,
     StateSeriesEntry,
     StateTrailerCount,
     _is_patch_subject,
@@ -167,7 +165,6 @@ def test_patch_state_for_non_patch_returns_empty(seeded_db):
         )
     assert state.is_patch is False
     assert state.trailers == []
-    assert state.mainline_landings == []
     assert state.series == []
     assert state.days_since_last_reply is None
 
@@ -312,55 +309,6 @@ def test_patch_state_no_trailers_no_subsystems_skips_row(seeded_db):
             force=True,
         )
     assert state.trailers == []
-
-
-def test_patch_state_surfaces_mainline_landing(seeded_db):
-    """A `mainline_commits` row referencing this article's
-    message_id surfaces in `mainline_landings`."""
-    with seeded_db() as s:
-        art = _add_alpha_article(s, "landed@x", "[PATCH 1/2] foo: land")
-        s.add(
-            MainlineCommit(
-                commit_sha="deadbeef" * 5,
-                tree_name="linus",
-                message_id="landed@x",
-                committed_at=datetime(2024, 7, 1, 0, 0, tzinfo=UTC),
-            )
-        )
-        s.commit()
-        state = patch_state_for_article(
-            s,
-            art,
-            thread_dates=[art.date],
-            subsystem_ids=[],
-            inbox_name="alpha",
-            state_key="t",
-            force=True,
-        )
-    assert len(state.mainline_landings) == 1
-    landing = state.mainline_landings[0]
-    assert isinstance(landing, StateMainlineLanding)
-    assert landing.commit_sha == "deadbeef" * 5
-    assert landing.tree_name == "linus"
-    assert landing.committed_at.date() == datetime(2024, 7, 1).date()
-
-
-def test_patch_state_landing_row_empty_when_not_landed(seeded_db):
-    """No mainline_commits row → empty `mainline_landings`. The
-    template skips the row rather than rendering "Not in mainline"."""
-    with seeded_db() as s:
-        art = _add_alpha_article(s, "in-flight@x", "[PATCH 1/2] foo: WIP")
-        s.commit()
-        state = patch_state_for_article(
-            s,
-            art,
-            thread_dates=[art.date],
-            subsystem_ids=[],
-            inbox_name="alpha",
-            state_key="t",
-            force=True,
-        )
-    assert state.mainline_landings == []
 
 
 def test_patch_state_series_timeline_with_diff_links(seeded_db):
@@ -666,50 +614,18 @@ def test_patch_state_trailer_count_is_serializable_dataclass():
     import dataclasses
 
     assert dataclasses.is_dataclass(StateTrailerCount)
-    assert dataclasses.is_dataclass(StateMainlineLanding)
     assert dataclasses.is_dataclass(StateSeriesEntry)
     assert dataclasses.is_dataclass(PatchState)
 
 
-def test_state_mainline_landing_has_tree_label(session):
-    """StateMainlineLanding carries a user-facing tree_label derived
-    from Settings.trees[tree_name].display_name (falls back to slug)."""
-    art = _seed_article(session, "tl@x")
-    session.add(
-        MainlineCommit(
-            commit_sha="f" * 40,
-            message_id="tl@x",
-            tree_name="net-next",
-            committed_at=datetime.now(UTC),
-        )
-    )
-    session.commit()
-    from mimir.patch_state import _mainline_landings
+def test_resolve_tree_label_uses_the_display_name_or_the_slug():
+    """The status line's "Queued in <label>" (#844): Linus's TreeConfig
+    sets display_name='mainline (Linus)'; subsystem trees default to
+    display_name=None and fall back to the slug."""
+    from mimir.patch_state import _resolve_tree_label
 
-    landings = _mainline_landings(session, art)
-    assert landings[0].tree_name == "net-next"
-    # Display label: TreeConfig defaults set display_name=None for
-    # subsystem trees; falls back to the slug.
-    assert landings[0].tree_label == "net-next"
-
-
-def test_state_mainline_landing_uses_linus_display_name(session):
-    """Linus's TreeConfig sets display_name='mainline (Linus)';
-    the label uses it."""
-    art = _seed_article(session, "tl2@x")
-    session.add(
-        MainlineCommit(
-            commit_sha="g" * 40,
-            message_id="tl2@x",
-            tree_name="linus",
-            committed_at=datetime.now(UTC),
-        )
-    )
-    session.commit()
-    from mimir.patch_state import _mainline_landings
-
-    landings = _mainline_landings(session, art)
-    assert landings[0].tree_label == "mainline (Linus)"
+    assert _resolve_tree_label("linus") == "mainline (Linus)"
+    assert _resolve_tree_label("net-next") == "net-next"
 
 
 # --- _activity_heat (pure function; no DB) ---
