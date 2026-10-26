@@ -97,7 +97,7 @@ def _filter_maintainer_acked(
     `subsystem_maintainers`, and a maintainer-Ack from any
     subsystem usually does mean pickup, so the looser global check
     matches the operational intent. The strict per-article path-
-    walk variant is `subsystems_for_paths(...)` but that's a
+    walk variant is `subsystems_for_article(...)` but that's a
     Python-side glob match against ~10k rules per article, an N+1
     waiting to happen for a triage list.
     """

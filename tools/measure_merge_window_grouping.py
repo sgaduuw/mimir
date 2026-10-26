@@ -14,8 +14,8 @@ that every subsystem page already reads and fills.
 
 Results on 2026-10-12 are recorded on mimir#703.
 
-Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_article` (now
-`subsystems_for_paths`) uses the indexed matcher itself (#705), so a rerun no longer reproduces
+Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_article`
+uses the indexed matcher itself (#705), so a rerun no longer reproduces
 the 2026-10-12 baselines: Option B then times the
 indexed matcher, not the ~75 ms rule walk it measured then.
 """
@@ -30,7 +30,7 @@ from sqlalchemy import func, select, text
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleFile, SubsystemPath
-from mimir.subsystems import article_paths, subsystems_for_paths
+from mimir.subsystems import subsystems_for_article
 
 BUDGET_SEC = float(os.environ.get("BUDGET_SEC", "600"))
 CURATED = sorted(t for t in settings.trees if t not in ("linus", "linux-next"))
@@ -118,9 +118,7 @@ with SessionLocal() as s:
             break
         article = s.get(Article, aid)
         t1 = time.perf_counter()
-        hits = subsystems_for_paths(
-            s, [row[2] for row in article_paths(s, article) if row[2]]
-        )
+        hits = subsystems_for_article(s, article)
         timings.append(time.perf_counter() - t1)
         per_patch.append(len(hits))
         for h in hits:

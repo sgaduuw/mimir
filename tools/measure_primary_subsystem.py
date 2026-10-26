@@ -6,11 +6,11 @@ Run in the tasks container:
     podman exec -i "$MIMIR_TASKS" python - < tools/measure_primary_subsystem.py
 
 Optional env: SAMPLE=<n> (default 300) patches cross-checked against
-mimir's own `subsystems_for_paths`, to prove the fast matcher gives
+mimir's own `subsystems_for_article`, to prove the fast matcher gives
 the same answers.
 
 Primary subsystem: of the subsystems a patch's files match (F: minus
-X:, exactly as `subsystems_for_paths`), the one whose matching F:
+X:, exactly as `subsystems_for_article`), the one whose matching F:
 rule has the longest fixed prefix, i.e. the most specific. THE REST
 (the MAINTAINERS catch-all) is never primary; a patch only it matches
 lands in "(other)".
@@ -21,8 +21,8 @@ the subsystem pages already fill (only during the cross-check).
 Results on 2026-10-12 are recorded on mimir#703; the matcher is the
 basis of mimir#705.
 
-Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_article` (now
-`subsystems_for_paths`) uses the indexed matcher itself (#705), so a rerun no longer reproduces
+Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_article`
+uses the indexed matcher itself (#705), so a rerun no longer reproduces
 the 2026-10-12 baselines: the cross-check then compares this matcher
 with the same algorithm, and agreement proves nothing.
 """
@@ -36,7 +36,7 @@ from sqlalchemy import select, text
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleFile, Inbox, Subsystem, SubsystemPath
-from mimir.subsystems import article_paths, path_matches_glob, subsystems_for_paths
+from mimir.subsystems import path_matches_glob, subsystems_for_article
 
 SAMPLE = int(os.environ.get("SAMPLE", "300"))
 CATCH_ALL = "THE REST"
@@ -139,12 +139,11 @@ with SessionLocal() as s:
         f"({t_match / max(len(matches), 1) * 1000:.2f} ms per patch)"
     )
 
-    section(f"Cross-check against subsystems_for_paths ({SAMPLE} patches)")
+    section(f"Cross-check against subsystems_for_article ({SAMPLE} patches)")
     mismatches = []
     for aid in sorted(matches)[:SAMPLE]:
         ours = {names[sid] for sid in matches[aid]}
-        paths = [row[2] for row in article_paths(s, s.get(Article, aid)) if row[2]]
-        theirs = {h.name for h in subsystems_for_paths(s, paths)}
+        theirs = {h.name for h in subsystems_for_article(s, s.get(Article, aid))}
         if ours != theirs:
             mismatches.append((aid, sorted(ours ^ theirs)[:5]))
     print(f"mismatches: {len(mismatches)} of {min(SAMPLE, len(matches))}")
