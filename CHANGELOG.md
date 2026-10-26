@@ -88,6 +88,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A year sitemap's roots query now starts from the inbox's own threads, not
+  from every inbox's articles for that year (#947). On a local synthetic
+  archive under production planner statistics, an 8k-member inbox's year
+  went from 283 ms to 1.4 ms and a 150k-member inbox's from 320 ms to 21 ms.
+  A 2.5M-member inbox's year went from 442 ms to 322 ms. Month sitemaps keep
+  the old plan: the new one scanned the whole inbox per month and was 7x
+  slower on that large inbox. Output is unchanged.
 - A patch orphaned by #862 is linked to its own revision's cover when
   that cover is among the old cover's direct replies: same key, same
   total, within a day of the patch (the earliest wins). This is the common
