@@ -318,8 +318,8 @@ def _sitemap_entries_for_roots(
     unrankable_roots: set[int],
     inbox_name: str,
     base: str,
-) -> tuple[list[SitemapEntry], str | None]:
-    """Tagged entries for thread roots, plus the newest lastmod.
+) -> list[SitemapEntry]:
+    """Tagged entries for thread roots.
 
     Each entry carries the branch taken, `KIND_THREAD` or
     `KIND_MESSAGE`, and the priority that kind ranks at. Callers read
@@ -350,7 +350,6 @@ def _sitemap_entries_for_roots(
 
     cap = settings.thread_view_render_cap
     entries: list[SitemapEntry] = []
-    newest: str | None = None
     for art_id, date in roots:
         loc = base + _msg_path(art_id, date, inbox_name)
         activity = last_activity.get(art_id)
@@ -412,9 +411,7 @@ def _sitemap_entries_for_roots(
                         KIND_THREAD,
                     )
                 )
-        if newest is None or stamp > newest:
-            newest = stamp
-    return entries, newest
+    return entries
 
 
 def _archive_bounds(year: int, month: int | None) -> tuple[datetime, datetime]:
@@ -830,7 +827,7 @@ def _archive_entries(
         unmaterialised_roots(session, inbox.id, page_ids),
         inbox.name,
         base,
-    )[0]
+    )
 
 
 # The `split` keys hold both trees of a file, `(thread, message)`. New
@@ -1474,7 +1471,7 @@ def inbox_sitemap_xml(
             session, inbox, [art_id for art_id, _ in recent_roots]
         )
         recent_root_ids = [art_id for art_id, _ in recent_roots]
-        root_entries, _newest = _sitemap_entries_for_roots(
+        root_entries = _sitemap_entries_for_roots(
             recent_roots,
             singleton_ids,
             last_activity,
