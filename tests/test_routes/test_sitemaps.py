@@ -148,11 +148,13 @@ def test_meta_sitemap_lastmod_is_global_max(client):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 2
+    assert len(urls) == 3
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
     assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
     assert urls[1].find("s:lastmod", ns) is None
+    assert urls[2].find("s:loc", ns).text.endswith("/llms.txt")
+    assert urls[2].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
@@ -547,12 +549,22 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
     locs = [u.find("s:loc", ns).text.replace("http://localhost", "") for u in root]
+    priorities = {
+        u.find("s:loc", ns).text.replace("http://localhost", ""): u.find(
+            "s:priority", ns
+        ).text
+        for u in root
+    }
 
     checked = 0
     for loc in locs:
         page = loc.removesuffix("/t")
         if page not in ours:
             continue  # conftest rows have synthetic blobs and 404
+        # The priority follows the branch taken, which is the URL listed:
+        # mid-backfill an unrankable multi-message thread is listed by
+        # its root MESSAGE url and so ranks as a message, not as `/t`.
+        assert priorities[loc] == ("0.9" if loc.endswith("/t") else "0.3"), loc
         html = client.get(page).get_data(as_text=True)
         m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
         assert m, f"{page} emitted no canonical"
@@ -1411,7 +1423,7 @@ def test_sitemap_subsystem_lastmod_is_that_subsystems_last_activity(client, tmp_
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     block = re.search(
         r"<url><loc>http://localhost/alpha/subsystem/bcachefs/</loc>"
-        r"<lastmod>(\d{4}-\d{2}-\d{2})</lastmod></url>",
+        r"<lastmod>(\d{4}-\d{2}-\d{2})</lastmod><priority>[^<]+</priority></url>",
         xml,
     )
     assert block, f"no dated subsystem entry in:\n{xml[:400]}"
@@ -2285,7 +2297,8 @@ def test_subsystem_index_entry_is_its_canonical_dated_and_linked_back(client, tm
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     entry = re.search(
-        r"<url><loc>([^<]*/alpha/subsystem/)</loc><lastmod>([^<]+)</lastmod></url>",
+        r"<url><loc>([^<]*/alpha/subsystem/)</loc><lastmod>([^<]+)</lastmod>"
+        r"<priority>[^<]+</priority></url>",
         xml,
     )
     assert entry, "the subsystem index is listed without a <lastmod>"
@@ -2549,3 +2562,196 @@ def test_year_and_month_roots_plans_under_production_statistics(client, tmp_path
     assert "ix_article_lists_thread_root (inbox_id=?" in plans[None], plans[None]
     assert "ix_articles_date" not in plans[None], plans[None]
     assert "ix_articles_date (date>? AND date<?)" in plans[2], plans[2]
+
+
+def _urlset_priorities(client, path):
+    """`{path: priority text | None}` for one urlset."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get(path).get_data())
+    out = {}
+    for u in root.findall("s:url", ns):
+        el = u.find("s:priority", ns)
+        out[urlparse(u.find("s:loc", ns).text).path] = (
+            el.text if el is not None else None
+        )
+    return out
+
+
+def _expected_priority(path):
+    """The issue's table, keyed by URL shape. Deliberately written from
+    the paths, not from the kind tag the emitter uses, so the two cannot
+    agree by sharing a bug."""
+    if path in ("/", "/merge-window", "/llms.txt"):
+        return "1.0"
+    if path.startswith("/maintainers/"):
+        return "0.7"
+    if re.fullmatch(r"/[^/]+/subsystem/.*", path):
+        return "0.9"
+    if re.fullmatch(r"/[^/]+/", path):
+        return "0.7"
+    if re.fullmatch(r"/[^/]+/\d{4}/", path):
+        return "0.1"
+    if re.fullmatch(r"/[^/]+/\d{4}/\d{2}/", path):
+        return "0.2"
+    if re.fullmatch(r".*/t(/\d+)?", path):
+        return "0.9"
+    if re.fullmatch(r"/[^/]+/\d{4}/\d{2}/\d+", path):
+        return "0.3"
+    raise AssertionError(f"no priority rule for {path}")
+
+
+def test_every_emitted_priority_matches_the_table(client, tmp_path):
+    """Crawl `/sitemap.xml` and every urlset it lists, and check each
+    URL's priority against the table for its kind. The index itself
+    carries none: `<priority>` is not valid in a `<sitemapindex>`."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        ["fs/bcachefs/"],
+        maintainers=[("M", "Alice Maintainer", "alice@example.com")],
+    )
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "pr@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    warm_subsystem_activity("alpha")
+    _clear_sitemap_cache()
+    warm_subsystem_activity("alpha")
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    index = ET.fromstring(client.get("/sitemap.xml").get_data())
+    assert index.findall(".//s:sitemap/s:priority", ns) == []
+
+    seen = {}
+    for sm in index.findall("s:sitemap", ns):
+        child = urlparse(sm.find("s:loc", ns).text).path
+        for path, priority in _urlset_priorities(client, child).items():
+            assert priority == _expected_priority(path), (child, path, priority)
+            seen[path] = priority
+
+    # Every kind in the table was actually crawled, or this proves
+    # nothing about the kinds that never showed up.
+    assert {"/", "/merge-window", "/llms.txt"} <= set(seen)
+    assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.3", "0.2", "0.1"}
+    assert any(p.endswith("/t") for p in seen), "no /t page crawled"
+    assert any(p.startswith("/maintainers/") for p in seen)
+    assert "/alpha/subsystem/bcachefs/" in seen
+    assert "/alpha/subsystem/" in seen
+
+
+def test_meta_sitemap_lists_llms_txt_without_a_lastmod(client):
+    """No cheap date is truthful for `/llms.txt`: it is a template, and
+    its text moves with deploys and robots rules rather than with data."""
+    import xml.etree.ElementTree as ET
+
+    _clear_sitemap_cache()
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get("/meta-sitemap.xml").get_data())
+    (llms,) = [
+        u
+        for u in root.findall("s:url", ns)
+        if u.find("s:loc", ns).text.endswith("/llms.txt")
+    ]
+    assert llms.find("s:lastmod", ns) is None
+    assert llms.find("s:priority", ns).text == "1.0"
+
+
+def _archive_lastmods(client, inbox):
+    """`{path: lastmod}` for the year and month archive pages in one
+    inbox sitemap."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    _clear_sitemap_cache()
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get(f"/{inbox}/sitemap.xml").get_data())
+    out = {}
+    for u in root.findall("s:url", ns):
+        path = urlparse(u.find("s:loc", ns).text).path
+        if re.fullmatch(rf"/{inbox}/\d{{4}}/(\d{{2}}/)?", path):
+            lm = u.find("s:lastmod", ns)
+            out[path] = lm.text if lm is not None else None
+    return out
+
+
+def test_a_closed_month_or_year_archive_is_dated_its_last_day(client):
+    """Closed periods never change, so they carry the period's last
+    day, not the date of any message in them. beta's 2024-02 is the
+    leap-year check: the last day is the 29th."""
+    alpha = _archive_lastmods(client, "alpha")
+    assert alpha["/alpha/2024/01/"] == "2024-01-31"
+    assert alpha["/alpha/2024/03/"] == "2024-03-31"
+    assert alpha["/alpha/2024/"] == "2024-12-31"
+    assert _archive_lastmods(client, "beta")["/beta/2024/02/"] == "2024-02-29"
+
+
+def _move_alpha_into_the_current_month(when, inbox_latest):
+    """art3, a cross-posted singleton, becomes a message dated `when`
+    (so alpha has data in the current month and year), and alpha's
+    cheap newest-date column is set to `inbox_latest`."""
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+
+    with SessionLocal() as s:
+        art3 = s.scalar(
+            select(Article.id).where(Article.message_id == "art3@example.com")
+        )
+        s.execute(update(Article).where(Article.id == art3).values(date=when))
+        s.execute(
+            update(Inbox)
+            .where(Inbox.name == "alpha")
+            .values(last_article_date=inbox_latest)
+        )
+        s.commit()
+
+
+def test_the_current_period_archive_is_dated_the_inboxs_newest_message(client):
+    """The current month and year are still changing, so they carry the
+    inbox's newest message date. The first of the month is used so that
+    it cannot be mistaken for the period's last day."""
+    from datetime import datetime
+
+    now = datetime.now(UTC)
+    first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    _move_alpha_into_the_current_month(first, first)
+
+    lastmods = _archive_lastmods(client, "alpha")
+    stamp = first.strftime("%Y-%m-%d")
+    assert lastmods[f"/alpha/{now:%Y}/{now:%m}/"] == stamp
+    assert lastmods[f"/alpha/{now:%Y}/"] == stamp
+    # Older periods are unaffected by the newer data.
+    assert lastmods["/alpha/2024/01/"] == "2024-01-31"
+
+
+def test_the_current_period_archive_is_capped_at_its_last_day(client):
+    """A message dated past the period's end (a mis-dated mail, or the
+    next month's first arrival) must not date the period after its own
+    last day."""
+    import calendar
+    from datetime import datetime
+
+    now = datetime.now(UTC)
+    first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    future = datetime(now.year + 1, 1, 10, 12, tzinfo=UTC)
+    _move_alpha_into_the_current_month(first, future)
+
+    lastmods = _archive_lastmods(client, "alpha")
+    month_end = f"{now:%Y-%m}-{calendar.monthrange(now.year, now.month)[1]:02d}"
+    assert lastmods[f"/alpha/{now:%Y}/{now:%m}/"] == month_end
+    assert lastmods[f"/alpha/{now:%Y}/"] == f"{now.year}-12-31"
