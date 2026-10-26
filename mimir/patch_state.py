@@ -66,7 +66,6 @@ class StateTrailerCount:
 
 
 @dataclass
-@dataclass
 class StateRepost:
     """A row of a series slot that lost to the slot's patch (#861): the
     same version posted again. Listed under the version's entry."""
