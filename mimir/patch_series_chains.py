@@ -209,8 +209,10 @@ def _load_key(
         return rows.get(message_id) or _parent(session, message_id)
 
     def replies_of(message_id):
-        # Covers of this key only: the sibling is under the old cover's
-        # key (#871).
+        # Covers of this key only: a patch is stored under its cover's
+        # key, so the cover it was linked to is among them, whichever key
+        # the old cover had (#871, #941). A row linked under an older rule
+        # is left to a `--reprocess`: a plain run skips a keyed row.
         return [r for r in cover_rows if r.thread_parent == message_id]
 
     titles: dict[str, list[str]] = {}
