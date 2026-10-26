@@ -70,7 +70,8 @@ changes, not internal refactors. Categories: **Added**,
   hunks, so binary files, pure renames and mode changes count 0. The
   "+14/-3" part shows only once every file of the posting has a count,
   so a posting stored before this release shows it after the backfill in
-  the upgrade notes reaches it. The totals now count only the patches'
+  the upgrade notes reaches it. It stays hidden for a series with a file
+  whose diff mimir cannot read. The totals now count only the patches'
   files: a cover's own diff, such as an interdiff, is left out of the
   file count too. `article_files` gains nullable `insertions` and
   `deletions` columns (the migration only adds them, so it is quick on a
