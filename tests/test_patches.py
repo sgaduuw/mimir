@@ -230,7 +230,7 @@ def test_extract_unified_paths_with_spaces_and_crlf():
 
 
 # Per-file line counts (#939): `(insertions, deletions)` per path, read
-# from the diff hunks, or None when a hunk is malformed.
+# from the diff hunks, or (None, None) when a hunk is malformed.
 
 
 def test_counts_each_file_from_its_own_hunks():
@@ -346,7 +346,7 @@ def test_counts_survive_mail_damage_git_apply_accepts():
 
 def test_a_malformed_hunk_leaves_its_file_uncounted():
     """A partial count would be a wrong number shown as a fact, so the
-    file gets None. The next file's count is unaffected, including when
+    file gets (None, None). The next file's count is unaffected, including when
     the broken hunk runs into that file's header."""
     for broken in (
         "@@ -1,5 +1,5 @@\n-a\n+b\n",  # ends early
@@ -361,7 +361,10 @@ def test_a_malformed_hunk_leaves_its_file_uncounted():
             + broken
             + "diff --git a/good.c b/good.c\n@@ -1 +1 @@\n-a\n+b\n"
         )
-        assert extract_touched_paths(body) == {"bad.c": None, "good.c": (1, 1)}, broken
+        assert extract_touched_paths(body) == {
+            "bad.c": (None, None),
+            "good.c": (1, 1),
+        }, broken
 
 
 def test_counts_sum_a_repeated_path_and_skip_a_headerless_hunk():
@@ -398,10 +401,10 @@ def test_counting_is_linear_on_hostile_hunks():
     n = 300_000
     git = "diff --git a/f b/f\n"
     cases = [
-        (git + "@@ -1,999999999 +1,999999999 @@\n" + "+x\n" * n, {"f": None}),
+        (git + "@@ -1,999999999 +1,999999999 @@\n" + "+x\n" * n, {"f": (None, None)}),
         (git + "@@ -1 +1 @@\n-a\n+b\n" * n, {"f": (n, n)}),
         ((git + "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n") * n, {"f": (n, n)}),
-        (git + "@@ -1," + "1" * n + " +1 @@\n-a\n+b\n", {"f": None}),
+        (git + "@@ -1," + "1" * n + " +1 @@\n-a\n+b\n", {"f": (None, None)}),
     ]
     for body, expected in cases:
         started = time.monotonic()

@@ -74,7 +74,9 @@ class _ArticleInsert:
     patch_series_key: str | None = None
     patch_series_version: str | None = None
     patch_series_position: int | None = None
-    touched_paths: dict[str, tuple[int, int] | None] = field(default_factory=dict)
+    touched_paths: dict[str, tuple[int | None, int | None]] = field(
+        default_factory=dict
+    )
     trailer_rows: list[tuple[str, str, str]] = field(default_factory=list)
     repick: Callable[[frozenset[int]], int | None] | None = None
 
@@ -382,8 +384,7 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
             # (article_id, path) PK means repeated ingest of the same
             # message is idempotent (on_conflict_do_nothing).
             if article_id is not None and art.touched_paths:
-                for path, counts in art.touched_paths.items():
-                    ins, dels = counts or (None, None)
+                for path, (ins, dels) in art.touched_paths.items():
                     conn.execute(
                         sqlite_insert(ArticleFile)
                         .values(

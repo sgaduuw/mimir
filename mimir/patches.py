@@ -105,7 +105,9 @@ MAX_TOUCHED_PATHS = 1000
 _HUNK_RE = re.compile(r"@@ -\d{1,9}(?:,(\d{1,9}))? \+\d{1,9}(?:,(\d{1,9}))? @@")
 
 
-def extract_touched_paths(body: str | None) -> dict[str, tuple[int, int] | None]:
+def extract_touched_paths(
+    body: str | None,
+) -> dict[str, tuple[int | None, int | None]]:
     """Map each post-rename path the patch body touches to the
     `(insertions, deletions)` its hunks make there (#939).
 
@@ -128,7 +130,7 @@ def extract_touched_paths(body: str | None) -> dict[str, tuple[int, int] | None]
     exists to bound work from a hostile or malformed message.
 
     The counts are `_count_lines`'s; a file whose hunks are malformed
-    maps to None."""
+    maps to `(None, None)`."""
     if not body:
         return {}
     headers = [(m.start(), m.group("new")) for m in _DIFF_GIT_RE.finditer(body)]
@@ -148,7 +150,7 @@ def extract_touched_paths(body: str | None) -> dict[str, tuple[int, int] | None]
 
 def _count_lines(
     body: str, paths: set[str], headers: list[tuple[int, str | None]]
-) -> dict[str, tuple[int, int] | None]:
+) -> dict[str, tuple[int | None, int | None]]:
     """`(insertions, deletions)` per path, from the hunks after each of
     its file headers (`headers`: `(offset, path)`, sorted).
 
@@ -162,7 +164,8 @@ def _count_lines(
     A file with a header and no hunk (binary, pure rename, mode change)
     counts 0/0, as `git diff --shortstat` does. A hunk that ends early,
     holds a line that is no hunk line, or whose header does not parse,
-    makes its file None: a partial count would be shown as the total.
+    makes its file `(None, None)`: a partial count would be shown as
+    the total.
     An empty line is a context line whose space a mailer stripped, which
     `git apply` accepts too.
 
@@ -217,7 +220,7 @@ def _count_lines(
         new = int(m[2]) if m[2] is not None else 1
     if (old or new) and path is not None:
         counts[path] = None  # the body ended inside a hunk
-    return {p: (c[0], c[1]) if c is not None else None for p, c in counts.items()}
+    return {p: (c[0], c[1]) if c else (None, None) for p, c in counts.items()}
 
 
 def has_article_files(session, article_id: int) -> bool:

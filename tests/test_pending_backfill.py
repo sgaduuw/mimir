@@ -25,10 +25,12 @@ def test_submit_article_files_batch_inserts_rows(writer, seeded_db):
 
     payloads = [
         _ArticleFilesPending(
-            article_id=a, files=dict.fromkeys(["fs/foo/a.c", "fs/foo/b.c"])
+            article_id=a,
+            files=dict.fromkeys(["fs/foo/a.c", "fs/foo/b.c"], (None, None)),
         ),
         _ArticleFilesPending(
-            article_id=b, files=dict.fromkeys(["arch/x86/y.c", "arch/x86/z.c"])
+            article_id=b,
+            files=dict.fromkeys(["arch/x86/y.c", "arch/x86/z.c"], (None, None)),
         ),
     ]
     _submit_article_files_batch(writer, payloads).result(timeout=10)
@@ -60,7 +62,7 @@ def test_submit_article_files_batch_delete_first_replaces_rows(writer, seeded_db
         _ArticleFilesPending(
             article_id=article_id,
             delete_first=True,
-            files=dict.fromkeys(["fresh/new.c"]),
+            files=dict.fromkeys(["fresh/new.c"], (None, None)),
         )
     ]
     _submit_article_files_batch(writer, payloads).result(timeout=10)
@@ -550,7 +552,9 @@ def test_submit_batch_issues_exactly_one_writeop(backfill_name, writer, seeded_d
             _ArticleFilesPending(
                 article_id=article_id,
                 delete_first=False,
-                files=dict.fromkeys(["one-writeop/a.c", "one-writeop/b.c"]),
+                files=dict.fromkeys(
+                    ["one-writeop/a.c", "one-writeop/b.c"], (None, None)
+                ),
             )
         ]
         submit_fn = _submit_article_files_batch
