@@ -17,7 +17,7 @@ import hashlib
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from mimir.config import settings
+from mimir.config import _resolve_tree_label, settings
 from mimir.models import (
     Article,
     ArticleList,
@@ -26,7 +26,6 @@ from mimir.models import (
     MainlineState,
 )
 from mimir.patch_series import same_series
-from mimir.patch_state import _resolve_tree_label
 from mimir.patches import article_has_files
 from mimir.subsystems import article_paths
 

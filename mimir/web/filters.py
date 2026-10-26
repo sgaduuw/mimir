@@ -25,8 +25,9 @@ from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 
 from mimir import maintainer_allowlist
-from mimir.config import settings
+from mimir.config import _resolve_tree_label, settings
 from mimir.datetime_utils import aware_utc
+from mimir.lifecycle_status import LifecycleStatus
 from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
@@ -500,10 +501,6 @@ def _status_line_filter(status) -> str:
     the pill's own `LifecycleStatusInfo`, so the state, the commit and
     the newer revision are the ones the pill decided on, in the pill's
     precedence (LANDED > SUPERSEDED > QUEUED > REVIEWED > PENDING)."""
-    # Function-local: `mimir.patch_state` imports `mimir.web.urls`.
-    from mimir.lifecycle_status import LifecycleStatus
-    from mimir.patch_state import _resolve_tree_label
-
     if status is None:
         return ""
     state = status.state

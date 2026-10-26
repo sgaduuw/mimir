@@ -1,6 +1,6 @@
 """Tests for mimir/subsystems.py: the article-level path-
 matching primitives. `path_matches_glob` (directory /
-exact-file / wildcard variants), `subsystems_for_article`
+exact-file / wildcard variants), `subsystems_for_paths`
 (F:/X: glob resolution), and `recent_patches_touching`
 (reverse lookup from article to other patches touching
 the same path)."""
@@ -15,9 +15,10 @@ from mimir.models import (
     Inbox,
 )
 from mimir.subsystems import (
+    article_paths,
     path_matches_glob,
     recent_patches_touching,
-    subsystems_for_article,
+    subsystems_for_paths,
 )
 from tests.test_subsystems._helpers import _add_patch_article, _add_subsystem
 
@@ -54,8 +55,14 @@ def test_wildcard_glob_via_fnmatch():
     assert path_matches_glob("aN.c", "a[NM].c")
 
 
-# `subsystems_for_article` integration, uses the seeded DB and
-# inserts MAINTAINERS-shaped fixtures inline.
+# `subsystems_for_paths` over an article's `article_paths`, uses the
+# seeded DB and inserts MAINTAINERS-shaped fixtures inline.
+
+
+def _hits_for_article(session, article):
+    return subsystems_for_paths(
+        session, [row[2] for row in article_paths(session, article) if row[2]]
+    )
 
 
 def test_subsystems_for_article_directory_match(seeded_db):
@@ -70,7 +77,7 @@ def test_subsystems_for_article_directory_match(seeded_db):
         art_id = _add_patch_article(s, "p1@x", ["fs/bcachefs/super.c"])
         s.commit()
 
-        hits = subsystems_for_article(s, s.get(Article, art_id))
+        hits = _hits_for_article(s, s.get(Article, art_id))
     assert len(hits) == 1
     assert hits[0].name == "BCACHEFS"
     assert hits[0].status == "Maintained"
@@ -94,7 +101,7 @@ def test_subsystems_for_article_multi_subsystem(seeded_db):
             ],
         )
         s.commit()
-        hits = subsystems_for_article(s, s.get(Article, art_id))
+        hits = _hits_for_article(s, s.get(Article, art_id))
     assert [h.name for h in hits] == ["BCACHEFS", "BTRFS"]
 
 
@@ -111,7 +118,7 @@ def test_subsystems_for_article_exclude_vetoes_match(seeded_db):
         )
         art_id = _add_patch_article(s, "p3@x", ["fs/btrfs/tests/runner.c"])
         s.commit()
-        hits = subsystems_for_article(s, s.get(Article, art_id))
+        hits = _hits_for_article(s, s.get(Article, art_id))
     assert hits == []
 
 
@@ -136,7 +143,7 @@ def test_subsystems_for_article_exclude_only_vetoes_its_own_subsystem(
         )
         art_id = _add_patch_article(s, "p4@x", ["fs/btrfs/tests/runner.c"])
         s.commit()
-        hits = subsystems_for_article(s, s.get(Article, art_id))
+        hits = _hits_for_article(s, s.get(Article, art_id))
     assert [h.name for h in hits] == ["BTRFS-TESTS"]
 
 
@@ -147,14 +154,14 @@ def test_subsystems_for_article_no_paths_returns_empty(seeded_db):
         _add_subsystem(s, "BTRFS", "Maintained", files=["fs/btrfs/"])
         art_id = _add_patch_article(s, "p5@x", [])
         s.commit()
-        hits = subsystems_for_article(s, s.get(Article, art_id))
+        hits = _hits_for_article(s, s.get(Article, art_id))
     assert hits == []
 
 
 def test_subsystems_for_article_uses_cached_rule_snapshot(seeded_db):
     """The rule set (~15k rows on the kernel tree) is fetched from
     the cross-process cache, not pulled per call. After a first
-    `subsystems_for_article` populates the cache, adding a new
+    `_hits_for_article` populates the cache, adding a new
     subsystem WITHOUT invalidating the cache must NOT show up in
     a subsequent lookup, the cached snapshot is what's read. This
     pins the caching contract; `invalidate_rules_snapshot()` is
@@ -167,7 +174,7 @@ def test_subsystems_for_article_uses_cached_rule_snapshot(seeded_db):
         s.commit()
 
         # Prime the cache.
-        first = subsystems_for_article(s, s.get(Article, art1))
+        first = _hits_for_article(s, s.get(Article, art1))
         assert [h.name for h in first] == ["ORIGINAL"]
 
         # Add a new subsystem WITHOUT invalidating; the cached
@@ -177,7 +184,7 @@ def test_subsystems_for_article_uses_cached_rule_snapshot(seeded_db):
         _add_subsystem(s, "STALE", "Maintained", files=["drivers/stale/"])
         art2 = _add_patch_article(s, "p-cache-2@x", ["drivers/stale/y.c"])
         s.commit()
-        stale_hits = subsystems_for_article(s, s.get(Article, art2))
+        stale_hits = _hits_for_article(s, s.get(Article, art2))
         assert stale_hits == [], (
             "rule snapshot should still be cached; STALE should not "
             "appear yet without an explicit invalidate"
@@ -187,7 +194,7 @@ def test_subsystems_for_article_uses_cached_rule_snapshot(seeded_db):
         # does after a MAINTAINERS reload. The next read picks up
         # the new subsystem.
         invalidate_rules_snapshot()
-        fresh_hits = subsystems_for_article(s, s.get(Article, art2))
+        fresh_hits = _hits_for_article(s, s.get(Article, art2))
         assert [h.name for h in fresh_hits] == ["STALE"]
 
 
@@ -469,8 +476,7 @@ def test_indexed_match_agrees_with_the_rule_walk_on_tricky_shapes(seeded_db):
         ]
         s.commit()
         got = [
-            sorted(h.name for h in subsystems_for_article(s, s.get(Article, i)))
-            for i in ids
+            sorted(h.name for h in _hits_for_article(s, s.get(Article, i))) for i in ids
         ]
     want = [_reference(_TRICKY_RULES, paths) for paths in _TRICKY_PATHS]
     assert any(len(w) > 2 for w in want)  # precondition: real overlap exercised
@@ -510,8 +516,7 @@ def test_indexed_match_agrees_with_the_rule_walk_on_random_rules(seeded_db):
         ids = [_add_patch_article(s, f"rand{n}@x", p) for n, p in enumerate(paths)]
         s.commit()
         got = [
-            sorted(h.name for h in subsystems_for_article(s, s.get(Article, i)))
-            for i in ids
+            sorted(h.name for h in _hits_for_article(s, s.get(Article, i))) for i in ids
         ]
     want = [_reference(rules, p) for p in paths]
     assert sum(1 for w in want if w) > 50  # precondition: most paths match something
@@ -541,27 +546,27 @@ def test_rules_index_is_built_once_per_rules_version(seeded_db, monkeypatch):
         s.commit()
 
         for _ in range(3):
-            subsystems_for_article(s, s.get(Article, art))
+            _hits_for_article(s, s.get(Article, art))
         assert len(builds) == 1
 
         s.get(MainlineState, "linus").last_commit_sha = "b" * 40
         s.commit()
-        subsystems_for_article(s, s.get(Article, art))
+        _hits_for_article(s, s.get(Article, art))
         assert len(builds) == 2
 
         subsystems.invalidate_rules_snapshot()
-        subsystems_for_article(s, s.get(Article, art))
+        _hits_for_article(s, s.get(Article, art))
         assert len(builds) == 3
 
         s.get(MainlineState, "linus").last_commit_sha = None
         s.commit()
-        subsystems_for_article(s, s.get(Article, art))
-        subsystems_for_article(s, s.get(Article, art))
+        _hits_for_article(s, s.get(Article, art))
+        _hits_for_article(s, s.get(Article, art))
         assert len(builds) == 5
 
 
 def _names(s, art):
-    return sorted(h.name for h in subsystems_for_article(s, s.get(Article, art)))
+    return sorted(h.name for h in _hits_for_article(s, s.get(Article, art)))
 
 
 def test_index_does_not_outlive_a_reload_seen_mid_invalidation(seeded_db):

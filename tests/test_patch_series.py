@@ -443,7 +443,9 @@ def test_reply_to_cover_table():
     ]
     for subject, author, parent_subject, parent_author, expected in rows:
         assert parse_cover_letter(subject) is not None, subject
-        got = reply_to_cover(subject, author, parent_subject, parent_author)
+        got = reply_to_cover(
+            parse_cover_letter(subject), subject, author, parent_subject, parent_author
+        )
         assert got is expected, (subject, author, parent_subject)
 
 
@@ -502,7 +504,9 @@ def test_reply_to_patch_table():
 def test_reply_to_patch_leaves_covers_to_reply_to_cover():
     """A cover answering a cover is #820's rule, not this one."""
     cover = "[PATCH v2 0/3] foo: add bar"
-    assert reply_to_cover(cover, "Bob <b@x>", cover, "Al <a@x>")
+    assert reply_to_cover(
+        parse_cover_letter(cover), cover, "Bob <b@x>", cover, "Al <a@x>"
+    )
     assert not reply_to_patch(cover, "Bob <b@x>", cover, "Al <a@x>", False)
 
 

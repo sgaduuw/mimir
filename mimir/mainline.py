@@ -904,7 +904,7 @@ def load_maintainers(
     # Invalidate the two derived caches that key off MAINTAINERS:
     # the dynamic-allowlist (M:/R: address set, used by From-line +
     # DCO-trailer redaction) and the subsystems-rule snapshot (used
-    # by `subsystems_for_article` on every message page). The cache
+    # by `subsystems_for_paths` on every message page). The cache
     # table is shared across processes, so these deletes from the
     # sidecar / broker reach the web container too.
     from mimir import maintainer_allowlist, subsystems

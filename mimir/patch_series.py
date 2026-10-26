@@ -141,6 +141,11 @@ def slot_rank(article_id: int, has_diff: bool) -> tuple[bool, int]:
     return (not has_diff, article_id)
 
 
+def slot_winner(slot: list[tuple[Article, bool]]) -> Article:
+    """The patch `slot_rank` picks from a slot's `(row, has_diff)` pairs."""
+    return min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]
+
+
 # A series is (patch_series_key, COALESCE(patch_series_head_id, 0))
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's
@@ -372,18 +377,19 @@ def _repeats_parent(
 
 
 def reply_to_cover(
+    cover: CoverLetter | None,
     subject: str | None,
     author: str | None,
     parent_subject: str | None,
     parent_author: str | None,
 ) -> bool:
-    """Whether a cover-shaped `subject` is really a reply to its thread
-    parent (#820), by `_repeats_parent`. Reviewers on some lists answer
-    with the cover's subject as is, without "Re:". A reply from the
-    cover's own address is left a cover: telling it from a re-post of
-    the series needs the patches actually posted, which nothing here
-    can see."""
-    return parse_cover_letter(unfold(subject)) is not None and _repeats_parent(
+    """Whether a cover-shaped `subject`, already parsed as `cover`, is
+    really a reply to its thread parent (#820), by `_repeats_parent`.
+    Reviewers on some lists answer with the cover's subject as is,
+    without "Re:". A reply from the cover's own address is left a
+    cover: telling it from a re-post of the series needs the patches
+    actually posted, which nothing here can see."""
+    return cover is not None and _repeats_parent(
         subject, author, parent_subject, parent_author
     )
 
@@ -571,12 +577,12 @@ def in_series_link(
     )
     if cover is None:
         return None
+    parsed = parse_cover_letter(unfold(cover.subject))
     above = parent_of(cover.thread_parent) if cover.thread_parent else None
     if above is not None and reply_to_cover(
-        cover.subject, cover.author, above.subject, above.author
+        parsed, cover.subject, cover.author, above.subject, above.author
     ):
         return None
-    parsed = parse_cover_letter(unfold(cover.subject))
     return series_key(parsed.title, cover.author), parsed.version
 
 
@@ -699,7 +705,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     cover = parse_cover_letter(subject)
     parent = _parent(session, article.thread_parent) if cover is not None else None
     if parent is not None and reply_to_cover(
-        subject, article.author, parent.subject, parent.author
+        cover, subject, article.author, parent.subject, parent.author
     ):
         # An already cleared reply is never "fully resolved", so every
         # plain run meets it again, and writes nothing unless the
