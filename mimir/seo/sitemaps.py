@@ -413,16 +413,17 @@ def _archive_lastmod(
 
     A closed period (last day before `today`) can no longer gain
     messages, so it is dated its last day. The current period is still
-    changing, so it gets the inbox's newest message date, capped at the
-    period's last day and at `today`: a page cannot have changed in the
-    future, and one mis-dated mail (lore carries 2037s) would otherwise
-    date the current month and year after today. Without a newest date it
-    gets none, rather than a guess. ISO dates compare as strings.
+    changing, so it gets the inbox's newest message date, capped at
+    `today`, which is never past the period's last day here: a page
+    cannot have changed in the future, and one mis-dated mail (lore
+    carries 2037s) would otherwise date the current month and year after
+    today. Without a newest date it gets none, rather than a guess. ISO
+    dates compare as strings.
     """
     last_day = (_archive_bounds(year, month)[1] - timedelta(days=1)).date().isoformat()
     if last_day < today:
         return last_day
-    return min(newest, last_day, today) if newest else None
+    return min(newest, today) if newest else None
 
 
 def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
@@ -1278,14 +1279,14 @@ def inbox_sitemap_xml(
             .order_by("y", "m")
         ).all()
         years_with_data: set[str] = {y for y, _ in year_month_rows}
-        # The dashboard's own date, so the archives agree with it.
-        newest = inbox_latest
+        # `inbox_latest`, the dashboard's own date, so the archives agree
+        # with it.
         today = datetime.now(UTC).date().isoformat()
         for y in sorted(years_with_data, reverse=True):
             entries.append(
                 SitemapEntry(
                     f"{base}/{inbox.name}/{y}/",
-                    _archive_lastmod(int(y), None, today, newest),
+                    _archive_lastmod(int(y), None, today, inbox_latest),
                     PRIORITY_YEAR,
                 )
             )
@@ -1293,7 +1294,7 @@ def inbox_sitemap_xml(
             entries.append(
                 SitemapEntry(
                     f"{base}/{inbox.name}/{y}/{m}/",
-                    _archive_lastmod(int(y), int(m), today, newest),
+                    _archive_lastmod(int(y), int(m), today, inbox_latest),
                     PRIORITY_MONTH,
                 )
             )
