@@ -65,7 +65,7 @@ def _hits_for_article(session, article):
     )
 
 
-def test_subsystems_for_article_directory_match(seeded_db):
+def test_subsystems_for_paths_directory_match(seeded_db):
     with seeded_db() as s:
         _add_subsystem(
             s,
@@ -86,7 +86,7 @@ def test_subsystems_for_article_directory_match(seeded_db):
     ]
 
 
-def test_subsystems_for_article_multi_subsystem(seeded_db):
+def test_subsystems_for_paths_multi_subsystem(seeded_db):
     """A patch touching two unrelated subsystems lands both in the
     result, sorted by name for a stable header."""
     with seeded_db() as s:
@@ -105,7 +105,7 @@ def test_subsystems_for_article_multi_subsystem(seeded_db):
     assert [h.name for h in hits] == ["BCACHEFS", "BTRFS"]
 
 
-def test_subsystems_for_article_exclude_vetoes_match(seeded_db):
+def test_subsystems_for_paths_exclude_vetoes_match(seeded_db):
     """`X:` (exclude) entries veto a `F:` match within the same
     subsystem. `fs/btrfs/tests/` should NOT pull in BTRFS-MAIN."""
     with seeded_db() as s:
@@ -122,7 +122,7 @@ def test_subsystems_for_article_exclude_vetoes_match(seeded_db):
     assert hits == []
 
 
-def test_subsystems_for_article_exclude_only_vetoes_its_own_subsystem(
+def test_subsystems_for_paths_exclude_only_vetoes_its_own_subsystem(
     seeded_db,
 ):
     """X: in subsystem A doesn't affect subsystem B. If A and B both
@@ -147,7 +147,7 @@ def test_subsystems_for_article_exclude_only_vetoes_its_own_subsystem(
     assert [h.name for h in hits] == ["BTRFS-TESTS"]
 
 
-def test_subsystems_for_article_no_paths_returns_empty(seeded_db):
+def test_subsystems_for_paths_no_paths_returns_empty(seeded_db):
     """A non-patch article (no ArticleFile rows) returns no
     subsystems, the cheap-path early return matters at scale."""
     with seeded_db() as s:
@@ -158,7 +158,7 @@ def test_subsystems_for_article_no_paths_returns_empty(seeded_db):
     assert hits == []
 
 
-def test_subsystems_for_article_uses_cached_rule_snapshot(seeded_db):
+def test_subsystems_for_paths_uses_cached_rule_snapshot(seeded_db):
     """The rule set (~15k rows on the kernel tree) is fetched from
     the cross-process cache, not pulled per call. After a first
     `_hits_for_article` populates the cache, adding a new
