@@ -514,12 +514,8 @@ def test_the_re_chain_reads_a_key_s_patches_by_the_key_index(seeded_db):
     from mimir.patch_series_chains import head_updates
     from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
 
-    stats = (
-        *PRODUCTION_STATS,
-        ("articles", "ix_articles_patch_series_key", "17797373 66"),
-    )
     key = series_key("generic title", AUTHOR)
-    with planner_stats(seeded_db, stats), seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         plan = plan_of(
             s, lambda: head_updates(s, key), "articles.patch_series_position >"
         )

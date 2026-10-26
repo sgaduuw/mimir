@@ -12,6 +12,7 @@ from mimir.patch_series import (
     reply_to_cover,
     reply_to_patch,
     series_key,
+    slot_rank,
 )
 
 # parse_cover_letter, recognising shapes.
@@ -503,3 +504,16 @@ def test_reply_to_patch_leaves_covers_to_reply_to_cover():
     cover = "[PATCH v2 0/3] foo: add bar"
     assert reply_to_cover(cover, "Bob <b@x>", cover, "Al <a@x>")
     assert not reply_to_patch(cover, "Bob <b@x>", cover, "Al <a@x>", False)
+
+
+# slot_rank, the patch of a series slot (#861).
+
+
+def test_slot_rank_prefers_a_diff_then_the_lowest_id():
+    """A row with a diff beats any row without, whatever the ids; among
+    equals the lowest id wins. A slot with no diff at all falls back to
+    its lowest id."""
+    rows = [(5, False), (9, True), (7, True), (2, False)]
+    ranked = sorted(rows, key=lambda r: slot_rank(*r))
+    assert ranked == [(7, True), (9, True), (2, False), (5, False)]
+    assert min([(8, False), (3, False)], key=lambda r: slot_rank(*r)) == (3, False)
