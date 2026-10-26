@@ -188,7 +188,7 @@ newer AS (
            a2.id AS sup_by_id,
            ROW_NUMBER() OVER (
                PARTITION BY a1.id
-               ORDER BY {_V2} DESC, a2.date DESC
+               ORDER BY {_V2} DESC, a2.date DESC, a2.id DESC
            ) AS rn
       FROM articles a1
       JOIN articles a2 ON {_NEWER}
