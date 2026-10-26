@@ -1,13 +1,22 @@
 {# The lifecycle state with its evidence (#844), from the pill's own
    row (`status_line`), so it cannot disagree with the pill. For a
-   superseded revision it links the newer one: the last entry of that
-   version in the revisions timeline, the newest copy, as the pill's
-   SQL picks it. Nothing for pending, as on the pill. #}
+   superseded revision it links the newer one: the very copy the
+   pill's SQL named (`superseded_by_id`), the newest copy of the highest
+   version, whether the timeline lists it as a version's patch or a re-post. Nothing for pending, as on the pill. #}
 {%- set _sentence = lifecycle_status|status_line if patch_state and patch_state.is_patch else "" -%}
 {%- if _sentence %}
 <p class="status-line"><small><strong>Status:</strong> {{ _sentence }}
 {%- if lifecycle_status.superseded_by_version %}
+{#- The copy the pill named: its article id, among the timeline's patches
+    and re-posts. Without one (a row cached before the id existed) the last
+    entry of that version, which is the slot's patch. #}
+{%- set _target = namespace(url="") %}
+{%- for _e in patch_state.series %}
+{%- if _e.article_id == lifecycle_status.superseded_by_id %}{% set _target.url = _e.url %}{% endif %}
+{%- for _r in _e.reposts if _r.article_id == lifecycle_status.superseded_by_id %}{% set _target.url = _r.url %}{% endfor %}
+{%- endfor %}
 {%- set _newer = patch_state.series|selectattr("version", "equalto", lifecycle_status.superseded_by_version)|list|last %}
-{%- if _newer and _newer.url %} <a href="{{ _newer.url }}">[go to {{ _newer.version }}]</a>{% endif %}
+{%- if not _target.url and _newer %}{% set _target.url = _newer.url %}{% endif %}
+{%- if _target.url %} <a href="{{ _target.url }}">[go to {{ lifecycle_status.superseded_by_version }}]</a>{% endif %}
 {%- endif %}</small></p>
 {%- endif %}
