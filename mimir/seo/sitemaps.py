@@ -372,15 +372,53 @@ def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
     across page boundaries.
     """
     start, end = _archive_bounds(year, month)
+    if month is not None:
+        # Months keep the date-driven plan on purpose. The inbox-driven
+        # form below costs a whole inbox scan whatever the period. In a
+        # local synthetic bench (5.4M rows, about 30% of production
+        # scale, production planner statistics, 2026-10-26) a month on a
+        # 2.5M-member inbox went from 38 ms to 271 ms per child, 7x
+        # worse. This form costs one month of every inbox's articles.
+        return (
+            select(Article.id, Article.date)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id == Article.id,
+                Article.date >= start,
+                Article.date < end,
+            )
+            .order_by(Article.date.desc(), Article.id.desc())
+        )
+    # A year is driven from this inbox's roots (#947). A bare date range
+    # starts at `ix_articles_date` across every inbox's articles for the
+    # year. In the same local synthetic bench (about 30% of production
+    # scale, measured 2026-10-26) that cost 280 to 440 ms per child
+    # whatever the inbox. The grouped subquery is a co-routine SQLite
+    # cannot flatten, so it scans the covering
+    # `ix_article_lists_thread_root` for this inbox first: an
+    # 8k-member inbox went from 283 ms to 1.4 ms. `own` keeps the old
+    # predicate: a root must be its own member.
+    roots = (
+        select(ArticleList.thread_root_id.label("root"))
+        .where(
+            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
+        )
+        .group_by(ArticleList.thread_root_id)
+        .subquery()
+    )
+    own = aliased(ArticleList)
     return (
         select(Article.id, Article.date)
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id == Article.id,
-            Article.date >= start,
-            Article.date < end,
+        .select_from(roots)
+        .join(Article, Article.id == roots.c.root)
+        .join(
+            own,
+            (own.article_id == Article.id)
+            & (own.inbox_id == inbox.id)
+            & (own.thread_root_id == Article.id),
         )
+        .where(Article.date >= start, Article.date < end)
         .order_by(Article.date.desc(), Article.id.desc())
     )
 
