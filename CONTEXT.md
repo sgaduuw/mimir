@@ -2679,6 +2679,20 @@ pages stays the snapshot ("where is this now"); the lifecycle
 timeline below the card renders the chronological journey
 ("how did it get here").
 
+**A cover's pill rolls up its posting (#938).** A cover is never
+committed itself, so its pill states what every patch of its posting
+(`same_posting`, patches only) reached: the lowest rung (landed, queued,
+reviewed, pending) all of them reached, over the cover's declared total,
+so a patch missing from the archive counts as pending. A re-post counts
+once, by the slot rule (#861), computed in the listing statement as the
+`rollup` CTE, so a listing pays no extra statement. `rollup` names the
+highest rung above that state some patches reached ("Queued · 3 of 5
+landed"); a pending cover with progress shows "Pending · 3 of 5 landed";
+a cover superseded by a newer cover stays superseded and adds the landed
+count only. A cover never names a tree, because its patches may sit in
+several. The validator carries it: for a cover `render_state_tag` reads
+the landings and trailers of the whole posting in the same statements.
+
 Three design decisions worth their own paragraphs:
 
 **Env-driven dict-of-trees, no DB table.** Matches the
