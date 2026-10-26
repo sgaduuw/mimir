@@ -47,9 +47,9 @@ class _ArticleInsert:
     composite WriteOp fills it from the RETURNING clause and the matching
     `_ArticleListInsert` rows pick it up by index.
 
-    `touched_paths` carries the `diff --git b/<path>` paths from
-    `extract_touched_paths`; each becomes one `ArticleFile` row keyed on
-    the returned `article_id`. Empty list for non-patch articles.
+    `touched_paths` is `extract_touched_paths`'s map of `diff --git
+    b/<path>` paths to their line counts; each becomes one `ArticleFile`
+    row keyed on the returned `article_id`. Empty for non-patch articles.
 
     `trailer_rows` carries `(role, name, address)` tuples from
     `extract_trailers`; each becomes one `ArticleTrailer` row keyed on
@@ -74,7 +74,7 @@ class _ArticleInsert:
     patch_series_key: str | None = None
     patch_series_version: str | None = None
     patch_series_position: int | None = None
-    touched_paths: list[str] = field(default_factory=list)
+    touched_paths: dict[str, tuple[int, int] | None] = field(default_factory=dict)
     trailer_rows: list[tuple[str, str, str]] = field(default_factory=list)
     repick: Callable[[frozenset[int]], int | None] | None = None
 
@@ -382,10 +382,16 @@ def _submit_ingest_batch(writer, pending: _PendingWrites) -> WriteFuture:
             # (article_id, path) PK means repeated ingest of the same
             # message is idempotent (on_conflict_do_nothing).
             if article_id is not None and art.touched_paths:
-                for path in art.touched_paths:
+                for path, counts in art.touched_paths.items():
+                    ins, dels = counts or (None, None)
                     conn.execute(
                         sqlite_insert(ArticleFile)
-                        .values(article_id=article_id, path=path)
+                        .values(
+                            article_id=article_id,
+                            path=path,
+                            insertions=ins,
+                            deletions=dels,
+                        )
                         .on_conflict_do_nothing(index_elements=["article_id", "path"])
                     )
 
