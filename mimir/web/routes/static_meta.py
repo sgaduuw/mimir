@@ -63,9 +63,12 @@ def robots_txt():
     stanza each; the `*` row is seeded by the migration with the
     same values the previous hardcoded template used. Operator
     mutates via `admin robots {add,update,remove,reset}`."""
-    sitemap_url = _site_base() + "/sitemap.xml"
+    # Both indexes (#964): pages mimir adds, then message pages.
+    base = _site_base()
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, sitemap_url)
+        body = robots.render_robots_txt(
+            session, [f"{base}/sitemap.xml", f"{base}/messages-sitemap.xml"]
+        )
     return Response(body, mimetype="text/plain")
 
 

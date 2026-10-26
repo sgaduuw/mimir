@@ -1677,6 +1677,30 @@ afterthought:
   root expands to; see the ETag section for the surface that was
   missed the first time.
 
+  **Two indexes, split by page value (#964).** `/sitemap.xml` lists
+  the pages mimir adds over lore.kernel.org: meta, inbox files,
+  maintainers, series diffs, and the archive files, which hold `/t`
+  URLs only. `/messages-sitemap.xml` is a second, independent index
+  (neither references the other, so it is not nesting) of each archive
+  file's `messages-` sibling, with the same names and page numbers.
+  Those hold message URLs: single-message threads, and threads listed
+  by their root while the backfill has not reached them. Replies are
+  in neither, because they canonicalise to `/t`. The split costs
+  nothing to build: `_sitemap_entries_for_roots` tags each entry with
+  its kind, which is the one `/t`-versus-message decision, and
+  `_split_by_kind` cuts one build into both files. So there is one
+  `_month_counts` pass, one build and one cache row per bucket, and one
+  cache row for both indexes; the layout is decided on all roots, which
+  is why the trees share page numbers. Do not filter on anything but
+  the tag: any second test, such as "the thread has more than one
+  member", disagrees with the pages' canonicals mid-backfill. A bucket
+  whose roots are all one kind serves an empty urlset for the other
+  kind rather than a 404, because the index names both files. No count
+  column skips those files, since it would be that second test. The
+  point of the split is per-set coverage in Search Console, and the
+  option to drop message pages later by removing one index and one
+  robots.txt line.
+
   Note the flat-index constraint is Google's, not the protocol's:
   sitemaps.org explicitly permits more than one index file. Every
   copy of this claim in the tree credited sitemaps.org until

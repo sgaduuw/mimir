@@ -82,11 +82,13 @@ EXEMPT_ENDPOINTS = frozenset(
         "static",
         "web.robots_txt",
         "web.sitemap",
+        "web.messages_sitemap",
         "web.meta_sitemap",
         "web.maintainers_sitemap",
         "web.series_diff_sitemap",
         "web.inbox_sitemap",
         "web.archive_sitemap",
+        "web.archive_messages_sitemap",
         "web.healthz",
         "web.readyz",
     }

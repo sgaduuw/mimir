@@ -11,6 +11,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `/messages-sitemap.xml`, a second sitemap index, lists message pages:
+  single-message threads, and threads still being backfilled. Each year
+  and month sitemap file now has a `messages-sitemap.xml` sibling (and
+  `messages-sitemap-2.xml` and later pages) with the same page numbers.
+  `/sitemap.xml` keeps the pages mimir adds over lore.kernel.org, and its
+  year and month files now list thread pages only. The recent-thread list
+  in `/<inbox>/sitemap.xml` lists thread pages only. robots.txt names
+  both indexes. A year or month whose threads are all single messages
+  serves an empty thread file. Submit `/messages-sitemap.xml` in Search
+  Console after the deploy (#964).
+
 ### Changed
 
 - The sitemaps now give every URL a `<priority>`: 1.0 for `/`,

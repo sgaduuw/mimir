@@ -105,17 +105,22 @@ the root message URL until their membership can be determined.
 
 | Path | Contents |
 | --- | --- |
-| `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root and `/merge-window` |
-| `/<inbox>/sitemap.xml` | Inbox, archive pages, active subsystems, and recent threads |
-| `/<inbox>/<YYYY>/sitemap.xml` | A year's thread URLs |
-| `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread URLs |
+| `/sitemap.xml` | Index of the following sitemap surfaces, except the message files |
+| `/messages-sitemap.xml` | Index of the `messages-sitemap.xml` files |
+| `/meta-sitemap.xml` | Site root, `/merge-window` and `/llms.txt` |
+| `/<inbox>/sitemap.xml` | Inbox, archive pages, active subsystems, and recent thread pages |
+| `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
+| `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
+| `/<inbox>/<YYYY>/messages-sitemap.xml` | A year's message pages: single-message threads, and threads still being backfilled |
+| `/<inbox>/<YYYY>/<MM>/messages-sitemap.xml` | A month's message pages |
 | `/sitemap-maintainers.xml` | Supported maintainer profiles |
 | `/sitemap-series-diffs-<h>.xml` | Cover-letter diffs between adjacent revisions of each series whose key starts with `<h>` (`0` to `f`) |
 
-Archive sitemaps can use `sitemap-2.xml` and later pages. The index chooses a
+Archive sitemaps can use `sitemap-2.xml` and later pages, and the message files
+`messages-sitemap-2.xml` with the same numbering. The index chooses a
 yearly bucket only when its root count and expanded thread-page count fit the
-limits; otherwise it lists monthly buckets. Monthly routes remain available
+limits; otherwise it lists monthly buckets. A bucket whose roots are all of one
+kind serves an empty file for the other kind. Monthly routes remain available
 when the index advertises a year. See [sitemaps.py](../mimir/seo/sitemaps.py) for
 page-size and protocol bounds.
 
