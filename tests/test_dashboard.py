@@ -909,6 +909,31 @@ def test_small_inbox_listing_drives_from_the_inbox(seeded_db, listing):
 
 
 @pytest.mark.parametrize("listing", _LISTING_FNS)
+def test_inbox_first_pin_holds_under_hostile_stats(seeded_db, listing):
+    """Under production stats the planner picks the inbox index unaided,
+    so they cannot show the `INDEXED BY` and `CROSS JOIN` pins are there.
+    Make the inbox seek look as dear as a full scan and the date walk
+    nearly free: without either pin the planner then walks the date
+    index or takes the other index."""
+    alpha = _inbox(seeded_db, "alpha")
+    dear = {
+        "ix_article_lists_inbox_id": "29764294 29764294",
+        "ix_articles_date": "50 1",
+    }
+    hostile = tuple(
+        (tbl, idx, dear.get(idx, stat)) for tbl, idx, stat in PRODUCTION_STATS
+    )
+    assert hostile != PRODUCTION_STATS
+    with planner_stats(seeded_db, hostile), seeded_db() as s:
+        _cache_total(alpha, INBOX_FIRST_BELOW_ARTICLES - 1)
+        plan = _listing_plan(s, listing, alpha)
+    assert plan.splitlines()[0].startswith(
+        "SEARCH al USING INDEX ix_article_lists_inbox_id"
+    ), plan
+    assert "ix_articles_date" not in plan, plan
+
+
+@pytest.mark.parametrize("listing", _LISTING_FNS)
 def test_big_inbox_listing_keeps_the_date_walk(seeded_db, listing):
     """On the biggest lists the 180-day floor bounds the date walk and
     inbox-first is the slower shape (lkml: 0.00 s vs 1.34 s)."""
