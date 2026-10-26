@@ -314,6 +314,12 @@ class ArticleFile(Base):
     # MAINTAINERS' `F:` patterns interprets directory semantics.
     # Indexed for the "other patches touching <path>" reverse query.
     path: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    # Lines the patch adds and removes in this file, from its diff hunks
+    # (#939). NULL is "not counted": a row stored before the counts
+    # existed, or a malformed hunk. 0 is a real count (a binary file, a
+    # pure rename, a mode change).
+    insertions: Mapped[int | None] = mapped_column(default=None)
+    deletions: Mapped[int | None] = mapped_column(default=None)
 
     article: Mapped[Article] = relationship(back_populates="files")
 

@@ -328,8 +328,10 @@ per-subsystem dashboards:
 
 - **`article_files`**, `(article_id, path)`, the post-rename
   paths a patch body touches (extracted from `diff --git a/x b/y`
-  headers in `mimir/patches.py`). Powers the subsystem-header
-  per-path reverse lookup.
+  headers in `mimir/patches.py`), with the lines the patch inserts
+  and deletes there (nullable: NULL is "not counted", #939). Powers
+  the subsystem-header per-path reverse lookup and a cover's series
+  totals.
 - **`article_trailers`**, DCO / review trailers
   (`Signed-off-by:`, `Reviewed-by:`, `Acked-by:`, `Tested-by:`,
   `Reported-by:`) parsed out by `mimir/trailers.py`. Stores

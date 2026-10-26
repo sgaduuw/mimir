@@ -396,16 +396,29 @@ def thread_view(
         # is the posting, and the validator digests the same rows.
         root_paths = article_paths(session, root_node)
         subsystem_hits = subsystems_for_paths(
-            session, [path for _, _, path in root_paths if path]
+            session, [row[2] for row in root_paths if row[2]]
         )
         subsystem_names = [h.name for h in subsystem_hits]
         # Only for a cover: a single patch carries git's diffstat in its
-        # own body, so a total there would copy lore.
+        # own body, so a total there would copy lore. The patches' rows
+        # only: a cover can carry an interdiff, whose lines would count
+        # twice (#939).
         series_totals = None
         if is_cover(root_node):
+            files = [
+                (path, ins, dels)
+                for _, pos, path, ins, dels in root_paths
+                if pos and path
+            ]
+            # Line counts only once every file has one: a posting the
+            # backfill has not reached in full would show a part as the
+            # total.
+            counted = bool(files) and all(ins is not None for _, ins, _ in files)
             series_totals = (
-                len({pos for _, pos, _ in root_paths if pos}),
-                len({path for _, _, path in root_paths if path}),
+                len({row[1] for row in root_paths if row[1]}),
+                len({path for path, _, _ in files}),
+                sum(ins for _, ins, _ in files) if counted else None,
+                sum(dels for _, _, dels in files) if counted else None,
             )
 
         # The root's patch surfaces. Message pages in a multi-message

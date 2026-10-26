@@ -12,8 +12,8 @@
 {% endif %}
 {% endif %}
 {% if series_totals and series_totals[0] %}
-{% set _patches, _files = series_totals %}
-- Series: {{ _patches }} patch{{ '' if _patches == 1 else 'es' }}{% if _files %} touching {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif +%}
+{% set _patches, _files, _ins, _dels = series_totals %}
+- Series: {{ _patches }} patch{{ '' if _patches == 1 else 'es' }}{% if _files %} touching {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif %}{% if _ins is not none %}, +{{ _ins }}/-{{ _dels }}{% endif +%}
 {% endif %}
 {% if patch_state and patch_state.is_patch and lifecycle_status and lifecycle_status.state.value != 'pending' %}
 - Status: {{ lifecycle_status.pill_label|md_escape }}{{ lifecycle_status.count_suffix|md_escape }}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
