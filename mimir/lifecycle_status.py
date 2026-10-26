@@ -63,7 +63,8 @@ class LifecycleStatusInfo:
     The evidence fields are the state's own row, for the status line
     (#844), so it can never name a different commit or revision than
     the pill: the Linus commit for LANDED, the earliest other tree's
-    for QUEUED (`tree`), and the newest revision for SUPERSEDED."""
+    for QUEUED (`tree`), and the newest revision for SUPERSEDED (`superseded_by_id` is
+    that copy's article id, None on a row cached before it existed)."""
 
     state_value: str
     tree: str | None = None
@@ -76,6 +77,7 @@ class LifecycleStatusInfo:
     committed_at: datetime | None = None
     superseded_by_version: str | None = None
     superseded_at: datetime | None = None
+    superseded_by_id: int | None = None
 
     @property
     def state(self) -> LifecycleStatus:
@@ -183,6 +185,7 @@ newer AS (
     SELECT a1.id AS leaf,
            a2.patch_series_version AS sup_by_version,
            a2.date AS sup_by_date,
+           a2.id AS sup_by_id,
            ROW_NUMBER() OVER (
                PARTITION BY a1.id
                ORDER BY {_V2} DESC, a2.date DESC
@@ -192,7 +195,7 @@ newer AS (
      WHERE a1.id IN :ids
 ),
 sup AS (
-    SELECT leaf, sup_by_version, sup_by_date FROM newer WHERE rn = 1
+    SELECT leaf, sup_by_version, sup_by_date, sup_by_id FROM newer WHERE rn = 1
 )
 SELECT a.id,
        a.date AS article_date,
@@ -206,6 +209,7 @@ SELECT a.id,
        (sup.leaf IS NOT NULL) AS superseded,
        sup.sup_by_version,
        sup.sup_by_date,
+       sup.sup_by_id,
        COALESCE(rc.review_total, 0) AS review_total,
        COALESCE(rc.review_maintainer, 0) AS review_maintainer
   FROM articles a
@@ -573,6 +577,7 @@ def _bulk_uncached(
             committed_at=coerce_dt(committed_at),
             superseded_by_version=row.sup_by_version if superseded else None,
             superseded_at=coerce_dt(row.sup_by_date) if superseded else None,
+            superseded_by_id=row.sup_by_id if superseded else None,
         )
     return out
 
