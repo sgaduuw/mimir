@@ -246,8 +246,10 @@ def _timeline_v2(article_id):
         ([("late@x", 9, False)], "v2@x"),
         # The lowest id has no diff and a later copy has: that one.
         ([("mid@x", 9, True), ("late@x", 10, False)], "mid@x"),
+        # A later id dated before the lowest: the id decides, not the date.
+        ([("early@x", 7, False)], "v2@x"),
     ],
-    ids=["lowest-id", "the-copy-with-a-diff"],
+    ids=["lowest-id", "the-copy-with-a-diff", "id-not-date"],
 )
 def test_pill_timeline_and_link_name_the_slot_winner(client, tmp_path, copies, winner):
     """#949: a v2 posted again is one slot, and the slot rule (#861) picks
