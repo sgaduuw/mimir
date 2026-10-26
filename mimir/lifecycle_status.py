@@ -549,11 +549,9 @@ def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
     return f": {total} ({maintainer_count}M)"
 
 
-def _cover_rollup(
-    own: LifecycleStatus, subject: str | None, row
-) -> tuple[LifecycleStatus, str | None]:
-    """A cover's state and `rollup` from its posting's patches (#938), or
-    its own state and None when no patch of the posting is stored.
+def _cover_rollup(own: LifecycleStatus, row) -> tuple[LifecycleStatus, str | None]:
+    """A cover's state and `rollup` from its posting's patches (#938).
+    `row` is a bulk row with at least one stored patch (`row.slots`).
 
     The state is the lowest rung every patch reached (landed, queued,
     reviewed, else pending), over the cover's declared total, so a patch
@@ -561,9 +559,7 @@ def _cover_rollup(
     newer cover stays superseded and only adds the landed count. The count
     names the highest rung above the state that any patch reached. A cover
     never names a tree: its patches may sit in several."""
-    if not row.slots:
-        return own, None
-    cover = parse_cover_letter(unfold(subject))
+    cover = parse_cover_letter(unfold(row.subject))
     total = max(row.slots, cover.total if cover else 0)
     # Patches that reached each rung or a higher one, highest rung first.
     rungs = (
@@ -575,9 +571,9 @@ def _cover_rollup(
         state = own
         above = rungs[:1]
     else:
-        state = next((rung for rung, n in rungs if n == total), LifecycleStatus.PENDING)
-        order = [r for r, _ in rungs]
-        above = rungs[: order.index(state)] if state in order else rungs
+        i = next((i for i, (_, n) in enumerate(rungs) if n == total), len(rungs))
+        state = rungs[i][0] if i < len(rungs) else LifecycleStatus.PENDING
+        above = rungs[:i]
     count = next(((rung, n) for rung, n in above if n), None)
     if count is None:
         return state, None
@@ -636,7 +632,7 @@ def _bulk_uncached(
 
         rollup = None
         if row.slots:
-            state, rollup = _cover_rollup(state, row.subject, row)
+            state, rollup = _cover_rollup(state, row)
             tree = None
 
         # Thread-activity → heat. Compute days from the SQL-derived

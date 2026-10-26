@@ -11,9 +11,10 @@ import re
 from datetime import UTC, datetime
 
 import pytest
+from sqlalchemy import func, select
 
 from mimir.lifecycle_status import LifecycleStatus, _bulk_uncached
-from mimir.models import ArticleFile, ArticleTrailer, MainlineCommit
+from mimir.models import Article, ArticleFile, ArticleTrailer, Inbox, MainlineCommit
 from tests.test_lifecycle_status import _lkml, _seed_article
 
 KEY = "ab" * 20
@@ -147,12 +148,6 @@ def test_a_patch_missing_from_the_archive_counts_as_pending(session):
     assert got.pill_label == "PENDING"
 
 
-def test_a_pending_cover_shows_progress(session):
-    cover, _ = _posting(session, ["linus", "linus", None, None, None])
-    got = _pill(session, cover)
-    assert (got.state, got.rollup) == (LifecycleStatus.PENDING, "2 of 5 landed")
-
-
 @pytest.mark.parametrize(
     ("trees", "state", "rollup"),
     [
@@ -190,8 +185,8 @@ def test_a_superseded_unlanded_patch_has_reached_nothing(session):
     the cover is not superseded and the patch is. It counts for no rung."""
     cover, _ = _posting(session, ["net-next"] * 5)
     _patch(session, "b", 2, version="v3")
-    assert _pill(session, cover).state != LifecycleStatus.SUPERSEDED  # precondition
     got = _pill(session, cover)
+    assert got.state != LifecycleStatus.SUPERSEDED  # precondition
     assert (got.state, got.rollup) == (LifecycleStatus.PENDING, "4 of 5 queued")
 
 
@@ -227,10 +222,6 @@ def test_another_posting_of_the_series_is_not_counted(session):
 
 
 def _count_rows(session):
-    from sqlalchemy import func, select
-
-    from mimir.models import Article
-
     return session.scalar(select(func.count()).where(Article.patch_series_position > 0))
 
 
@@ -240,7 +231,6 @@ def _count_rows(session):
 def _seed_thread(tmp_path):
     """A cover `c@x` and two patches in one thread, all in alpha."""
     from mimir.extensions import SessionLocal
-    from mimir.models import Article
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(
@@ -307,7 +297,6 @@ def test_a_newer_revision_of_one_patch_moves_the_covers_etag(client, tmp_path):
     roll-up changes: the cover's ETag, and the pill cached under it, must
     move with it, not stay on a 304 with the old pill."""
     from mimir.extensions import SessionLocal
-    from mimir.models import Article
     from tests.test_routes._helpers import _seed_mainline_commit
 
     seeded = _seed_thread(tmp_path)
@@ -349,13 +338,7 @@ def test_a_covers_own_commit_is_not_paired_with_the_postings_state(
     _seed_mainline_commit("c@x", own_sha, "net-next", WHEN)  # the cover's own
     _seed_mainline_commit("p1@x", patch_sha, "net-next", WHEN)
     _seed_mainline_commit("p2@x", patch_sha[::-1], "net-next", WHEN)
-    from sqlalchemy import select
-
-    from mimir.models import Article
-
     cover_id = session.scalar(select(Article.id).where(Article.message_id == "c@x"))
-    from mimir.models import Inbox
-
     alpha = session.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
     got = _bulk_uncached(session, [cover_id], alpha)[cover_id]
     assert got.state == LifecycleStatus.QUEUED  # precondition: rolled up
