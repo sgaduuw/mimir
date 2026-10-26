@@ -371,15 +371,32 @@ def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
     across page boundaries.
     """
     start, end = _archive_bounds(year, month)
+    # Driven from this inbox's roots, not from the date range. A bare
+    # date range makes the planner start at `ix_articles_date` across
+    # every inbox's articles for the period (#947); the grouped
+    # subquery is a co-routine SQLite cannot flatten, so it scans the
+    # covering `ix_article_lists_thread_root` for this inbox first.
+    # `own` keeps the exact old predicate: a root must be its own member.
+    roots = (
+        select(ArticleList.thread_root_id.label("root"))
+        .where(
+            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
+        )
+        .group_by(ArticleList.thread_root_id)
+        .subquery()
+    )
+    own = aliased(ArticleList)
     return (
         select(Article.id, Article.date)
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id == Article.id,
-            Article.date >= start,
-            Article.date < end,
+        .select_from(roots)
+        .join(Article, Article.id == roots.c.root)
+        .join(
+            own,
+            (own.article_id == Article.id)
+            & (own.inbox_id == inbox.id)
+            & (own.thread_root_id == Article.id),
         )
+        .where(Article.date >= start, Article.date < end)
         .order_by(Article.date.desc(), Article.id.desc())
     )
 
