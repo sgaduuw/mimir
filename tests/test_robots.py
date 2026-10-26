@@ -181,7 +181,7 @@ def test_render_matches_seeded_defaults():
     with SessionLocal() as session:
         body = robots.render_robots_txt(
             session,
-            "https://example.com/sitemap.xml",
+            ["https://example.com/sitemap.xml"],
         )
     assert body == (
         robots._ROBOTS_PREAMBLE
@@ -202,7 +202,7 @@ def test_render_preamble_emitted_when_any_signal_present():
     (compilation right) instead of 2019/790 (TDM opt-out) since
     mimir mirrors third-party authors' work."""
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+        body = robots.render_robots_txt(session, ["https://example.com/sm.xml"])
     assert "Copyright in individual messages belongs to their authors" in body
     assert "EU Directive 96/9/EC" in body
     # Don't accidentally regress to the Cloudflare-verbatim wording
@@ -218,7 +218,7 @@ def test_render_preamble_suppressed_when_no_signals_anywhere():
     robots.update_rule("*", clear_all_content_signals=True)
 
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+        body = robots.render_robots_txt(session, ["https://example.com/sm.xml"])
     assert "Content-Signal" not in body
     assert "EU Directive" not in body
     # The stanza itself still renders.
@@ -231,7 +231,7 @@ def test_render_emits_per_ua_stanzas():
     robots.add_rule("ClaudeBot", disallow=["/", "/api/"], crawl_delay=20)
 
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+        body = robots.render_robots_txt(session, ["https://example.com/sm.xml"])
 
     # `*` first, then alphabetical (ClaudeBot < GPTBot). Preamble at
     # the top because the seeded `*` row carries Content-Signal.
@@ -263,7 +263,7 @@ def test_render_skips_degenerate_rows():
     robots.add_rule("EmptyBot")  # nothing at all
 
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+        body = robots.render_robots_txt(session, ["https://example.com/sm.xml"])
 
     assert "EmptyBot" not in body
 
@@ -274,7 +274,7 @@ def test_render_keeps_stanza_with_only_content_signals():
     robots.add_rule("MysteryBot", content_signals={"ai-train": "no"})
 
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+        body = robots.render_robots_txt(session, ["https://example.com/sm.xml"])
 
     assert "User-agent: MysteryBot\n" in body
     assert "Content-Signal: ai-train=no\n" in body
@@ -296,9 +296,17 @@ def test_render_with_only_degenerate_rows_still_emits_sitemap():
     )
 
     with SessionLocal() as session:
-        body = robots.render_robots_txt(session, "https://example.com/sm.xml")
+        body = robots.render_robots_txt(session, ["https://example.com/sm.xml"])
 
     assert body == "Sitemap: https://example.com/sm.xml\n"
+
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(
+            session, ["https://example.com/a.xml", "https://example.com/b.xml"]
+        )
+    assert body == (
+        "Sitemap: https://example.com/a.xml\nSitemap: https://example.com/b.xml\n"
+    )
 
 
 # ----- Content Signals --------------------------------------------------
