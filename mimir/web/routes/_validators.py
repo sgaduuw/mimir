@@ -126,8 +126,9 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # themselves are the truthful input, read through the same
     # `article_paths` the page renders from: for a cover that is every
     # patch of its posting, with the position, since the series totals
-    # count patches as well as files (#844). `get` is the route's own
-    # loaded row, so it costs no statement.
+    # count patches as well as files (#844), and the line counts they
+    # add (#939). `get` is the route's own loaded row, so it costs no
+    # statement.
     files_tag = _digest(
         repr(row) for row in article_paths(session, session.get(Article, article_id))
     )
