@@ -11,6 +11,44 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.30.0] - 2026-10-26
+
+Upgrade steps, after deploying, in this order, one at a time. Do not run
+them alongside another long backfill. There is no migration.
+
+1. Run `backfill-article-files --patch-subjects` once, unless a full
+   `backfill-article-files` run has completed since 3.27.0. It gives file
+   rows to stored in-series patches whose diff is in quilt, `diff -u` or
+   `Index:` format (#869), reading only the bodies of in-series patches
+   (#874). Its duration on a full archive is unmeasured.
+2. Run a plain `backfill-patch-series` once (no `--reprocess`). It
+   re-links the patches step 1 gave file rows to, which earlier runs
+   cleared as replies (#874), and the patches #862 orphaned under an older
+   revision's cover to their own revision's cover, with that cover's
+   series head (#871). A plain run reaches both: neither kind of row
+   counts as resolved. It skips every row that already has a key, so it
+   is much shorter than a `--reprocess`.
+3. Run `backfill-article-trailers --reprocess` once to re-split trailers
+   stored before this release (#913). Until the run reaches an article,
+   that article keeps the old split. A plain run skips articles that
+   already have rows. The run resumes across broker restarts; a full
+   `--reprocess` has taken most of two days (3.14.0 figure, not
+   re-measured for this command). Message and thread pages get a new
+   ETag as each article is rewritten; subsystem dashboards and the
+   maintainer directory follow within their one-hour cache.
+
+#923 needs no run of its own: stale file rows are cleared by the next
+`backfill-article-files --reprocess`, whenever one is run.
+
+Rolling back to 3.29.0 needs no migration, and every row these runs
+rewrite is valid under 3.29.0. For up to five minutes after a rollback,
+pages that list patches with lifecycle pills (inbox dashboards, day,
+month and year views, search) can return 500: 3.29.0 cannot read the
+pill cache rows 3.30.0 wrote, which carry new fields (#844). They expire
+within five minutes; to avoid the window, stop the broker and delete the
+`cache` rows whose key starts with `v3:lifecycle_status:` before starting
+3.29.0.
+
 ### Added
 
 - `mimir backfill-article-files --patch-subjects` reads the body only of
@@ -21,8 +59,9 @@ changes, not internal refactors. Categories: **Added**,
   article. It is a run of its own: it never resumes a plain run's position, and
   a plain run never resumes it. With `--reprocess` it re-extracts those patches
   only and leaves every other article's rows alone. To correct history after
-  #869, run `backfill-article-files --patch-subjects`, then
-  `backfill-patch-series --reprocess`. Known limit: a solo `[PATCH]` and a
+  #869, run `backfill-article-files --patch-subjects`, then a plain
+  `backfill-patch-series` (it re-checks every patch cleared as a reply;
+  `--reprocess` is not needed). Known limit: a solo `[PATCH]` and a
   non-series quilt patch get no file rows from this option, so the per-path
   lookup and subsystem attribution stay incomplete for them until a plain
   `backfill-article-files` run. A CLI with this option sent to a broker that
@@ -59,11 +98,13 @@ changes, not internal refactors. Categories: **Added**,
 - The revisions list links each revision to a diff against the previous
   one, in place of a diff against the current revision. These are the
   URLs the series diff sitemap lists, so the page and the sitemap now name
-  the same diffs. A resend gets no link. On the thread view the list is
+  the same diffs. A re-post is listed under its version (#861) and has no
+  diff link of its own. On the thread view the list is
   open by default; the message page keeps it folded (#844).
 - The patch summary sentence reads "Revision v7 (5 revisions archived)"
   instead of "Revision v7 of 5 in this series". The number counts the
-  revisions the archive holds, not the length of the series (#844).
+  versions the archive holds, a re-post once, not the length of the series
+  (#844, #861).
 
 ### Removed
 
@@ -129,21 +170,10 @@ changes, not internal refactors. Categories: **Added**,
   punctuation (`Name:a@example.com`), is now skipped instead of split (#913).
 - `backfill-article-trailers --reprocess` now removes an article's trailer rows
   when its body no longer yields any, instead of keeping the old ones (#913).
-
 - `dev-seed-thread` works again. It failed on every path: a read-only
   database outside the broker, and no writer inside it. It now sends the
   inbox and the ingest to the running broker, so it needs one, and stores
   the mirror path as an absolute path (#932).
-
-### Upgrade notes
-
-- Run `backfill-article-trailers --reprocess` after the deploy to re-split
-  trailers stored before it. Until the run reaches an article, that article
-  keeps the old split. A plain run skips articles that already have rows. The
-  run resumes across broker restarts; a full `--reprocess` has taken most of
-  two days (3.14.0 figure, not re-measured for this command). Message and
-  thread pages get a new ETag as each article is rewritten; subsystem
-  dashboards and the maintainer directory follow within their one-hour cache.
 
 ## [3.29.0] - 2026-10-25
 
