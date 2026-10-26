@@ -258,7 +258,7 @@ def _to_article_insert(
         parent = _thread_parent(session, thread_parent, pending_articles)
     if cover is not None:
         if parent is None or not reply_to_cover(
-            cover, parsed.subject, parsed.author, parent.subject, parent.author
+            parsed.subject, parsed.author, parent.subject, parent.author
         ):
             series_key_val = series_key(cover.title, parsed.author)
             series_version = cover.version
