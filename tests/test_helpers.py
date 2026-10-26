@@ -5,8 +5,6 @@ end. This file pins the error paths and the privacy / RFC-6266
 edge cases that would never surface from real-data smoke runs.
 """
 
-from datetime import UTC
-
 import pytest
 from sqlalchemy import select
 
@@ -436,7 +434,7 @@ def test_redact_trailer_address_lookalike_domain_is_redacted(monkeypatch):
 # web.filters._patch_synthesis_filter (SEO W3b synthesis prose)
 
 
-def _patch_state(*, is_patch=True, trailers=(), landings=(), series=()):
+def _patch_state(*, is_patch=True, trailers=(), series=()):
     """Build a PatchState with only the fields the synthesis line
     reads. Constructed directly rather than via `patch_state_for_article`
     so each case pins one branch without seeding a corpus."""
@@ -445,7 +443,6 @@ def _patch_state(*, is_patch=True, trailers=(), landings=(), series=()):
     return PatchState(
         is_patch=is_patch,
         trailers=list(trailers),
-        mainline_landings=list(landings),
         series=list(series),
         days_since_last_reply=None,
     )
@@ -466,23 +463,10 @@ def _rev(version, *, current):
     )
 
 
-def _landing(tree, sha, when=None):
-    """A mainline landing. `tree_label` mirrors `tree_name` here; the
-    real resolver prettifies it, which the synthesis doesn't depend on."""
-    from mimir.patch_state import StateMainlineLanding
-
-    return StateMainlineLanding(
-        commit_sha=sha, tree_name=tree, tree_label=tree, committed_at=when
-    )
-
-
-def test_patch_synthesis_composes_revision_review_and_landing_clauses():
-    """The full sentence: revision position, review-trailer roll-up
-    with the maintainer subset, and the mainline landing. This is the
-    indexable restatement of the badges, so the facts have to match
-    what the pills claim."""
-    from datetime import datetime
-
+def test_patch_synthesis_composes_revision_and_review_clauses():
+    """The full sentence: revision position and review-trailer roll-up
+    with the maintainer subset. Where the patch landed is the status
+    line's, from the pill's own row (#844), so no landing clause here."""
     from mimir.patch_state import StateTrailerCount
     from mimir.web.filters import _patch_synthesis_filter
 
@@ -494,15 +478,11 @@ def test_patch_synthesis_composes_revision_review_and_landing_clauses():
             # Authorship, not review: must not inflate the count.
             StateTrailerCount(role="Signed-off-by", total=5, maintainer_count=5),
         ],
-        landings=[
-            _landing("linus", "abc123def4567890", datetime(2026, 6, 1, tzinfo=UTC))
-        ],
     )
     out = _patch_synthesis_filter(state)
     assert out == (
         "Revision v2 (2 revisions archived); 4 review trailers "
-        "(2 from subsystem maintainers); landed in mainline as "
-        "abc123def456 on 2026-06-01."
+        "(2 from subsystem maintainers)."
     )
 
 
@@ -515,49 +495,6 @@ def test_patch_synthesis_counts_archived_revisions_not_the_version():
     versions = ["v1", "v2", "v5", "v6", "v7"]
     state = _patch_state(series=[_rev(v, current=v == "v7") for v in versions])
     assert _patch_synthesis_filter(state) == "Revision v7 (5 revisions archived)."
-
-
-def test_patch_synthesis_prefers_linus_landing_over_earlier_subsystem_tree():
-    """A patch that reached mainline carries SEVERAL landings (subsystem
-    tree, then linux-next, then Linus), ordered oldest-first. Reporting
-    the first row would say "queued in net-next" directly beneath a
-    LANDED badge showing the Linus sha, getting wrong the one fact
-    ("did this land?") the sentence exists to answer.
-
-    Mirrors `lifecycle_status`'s tree priority: Linus wins when present.
-    """
-    from datetime import datetime
-
-    from mimir.web.filters import _patch_synthesis_filter
-
-    state = _patch_state(
-        landings=[
-            _landing("net-next", "n" * 16, datetime(2026, 6, 1, tzinfo=UTC)),
-            _landing("linus", "1" * 16, datetime(2026, 6, 20, tzinfo=UTC)),
-        ],
-    )
-    assert _patch_synthesis_filter(state) == (
-        "Landed in mainline as 111111111111 on 2026-06-20."
-    )
-
-
-def test_patch_synthesis_reports_earliest_tree_as_queued_when_not_in_mainline():
-    """With no Linus landing the patch has NOT landed, so the sentence
-    says "queued", matching the QUEUED badge, and names the earliest
-    non-Linus tree (again mirroring the badge)."""
-    from datetime import datetime
-
-    from mimir.web.filters import _patch_synthesis_filter
-
-    state = _patch_state(
-        landings=[
-            _landing("net-next", "a" * 16, datetime(2026, 6, 1, tzinfo=UTC)),
-            _landing("linux-next", "b" * 16, datetime(2026, 6, 5, tzinfo=UTC)),
-        ],
-    )
-    assert _patch_synthesis_filter(state) == (
-        "Queued in net-next as aaaaaaaaaaaa on 2026-06-01."
-    )
 
 
 def test_patch_synthesis_empty_for_non_patch_and_bare_patch():
