@@ -1503,7 +1503,7 @@ def test_purge_expired_via_writer_drops_expired_only(writer, seeded_db):
 def test_a_row_carrying_a_removed_field_still_decodes():
     """#844 removed `PatchState.mainline_landings` and the
     `StateMainlineLanding` it held, without a `NAMESPACE_VERSION` bump.
-    After the deploy the new release read the old release's rows within
+    A redeploy that kept the version read the old build's rows within
     their TTL. `cls(**fields)` raised on the unknown keyword, and
     decoding the field first raised on its unregistered tag, so the page
     500'd instead of missing the cache. This is the row as the version
@@ -1556,14 +1556,18 @@ def _registered_field_signature() -> str:
 
 
 def test_a_cached_field_change_bumps_the_namespace():
-    """A key carries no release, so an older release reads a newer
-    one's rows on a rollback or while both run during a deploy. 3.29.0
-    raised on the fields 3.30.0 added to `LifecycleStatusInfo` and
-    500'd the listing pages (#957). A `NAMESPACE_VERSION` bump moves
-    every key, so the older release misses instead.
+    """Most keys carry no release (listing pills, sitemaps, dashboards;
+    `patch_state` and the page-level `lifecycle_status` carry
+    `mimir.__version__`), so an older release reads a newer one's rows
+    on a rollback or while both run during a deploy. 3.29.0 raised on
+    the fields 3.30.0 added to `LifecycleStatusInfo` and 500'd the
+    listing pages (#957). A `NAMESPACE_VERSION` bump moves every key,
+    so the older release misses instead.
 
     Changed a registered type's fields, their types, or the set of
-    tags? Bump `cache.NAMESPACE_VERSION` and record the new digest."""
+    tags? Bump `cache.NAMESPACE_VERSION` and record the new digest.
+    A Python upgrade or an annotation-style change can also move the
+    digest: confirm no field changed, then record the new one."""
     assert (cache.NAMESPACE_VERSION, _registered_field_signature()) == (
         3,
         "829af76821ba8b86",

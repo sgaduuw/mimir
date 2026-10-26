@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 # and get cleaned up by `purge_expired`. A change to a registered
 # type's fields fails `test_a_cached_field_change_bumps_the_namespace`
 # until this is bumped: an older release reads the cache on rollback.
+# Plain container values and encoder changes still need a bump by hand.
 NAMESPACE_VERSION = 3
 
 # Proactive-refresh window threaded through to `get_or_compute` via a
