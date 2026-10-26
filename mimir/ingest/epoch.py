@@ -48,6 +48,7 @@ from mimir.parser import ParsedArticle, normalize_subject, parse_message
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     _parent,
+    _replies,
     in_series_link,
     parse_cover_letter,
     reply_to_cover,
@@ -195,6 +196,14 @@ def _thread_parent(session: Session, message_id: str, pending_articles: list | N
     return _parent(session, message_id)
 
 
+def _replies_to(session: Session, message_id: str, pending_articles: list | None):
+    """The rows answering `message_id`: the current batch's, which are not
+    committed yet, then the stored ones (#871)."""
+    return [
+        art for art in pending_articles or () if art.thread_parent == message_id
+    ] + list(_replies(session, message_id))
+
+
 def _to_article_insert(
     parsed: ParsedArticle,
     inbox_id: int,
@@ -278,6 +287,7 @@ def _to_article_insert(
                 else _thread_parent(session, mid, pending_articles)
             ),
             date,
+            replies_of=lambda mid: _replies_to(session, mid, pending_articles),
         )
         if link is not None:
             series_key_val, series_version = link

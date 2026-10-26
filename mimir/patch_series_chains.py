@@ -208,6 +208,11 @@ def _load_key(
     def parent_of(message_id):
         return rows.get(message_id) or _parent(session, message_id)
 
+    def replies_of(message_id):
+        # Covers of this key only: the sibling is under the old cover's
+        # key (#871).
+        return [r for r in cover_rows if r.thread_parent == message_id]
+
     titles: dict[str, list[str]] = {}
     subjects: dict[str, list[str]] = {}
     patches = []
@@ -216,7 +221,12 @@ def _load_key(
         if posting is None or posting[0] == 0:
             continue
         cover = cover_of_patch(
-            row.thread_parent, parent_of, posting, row.subject, row.date
+            row.thread_parent,
+            parent_of,
+            posting,
+            row.subject,
+            row.date,
+            replies_of=replies_of,
         )
         if cover is None:
             continue
