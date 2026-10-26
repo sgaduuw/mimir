@@ -130,11 +130,11 @@ within five minutes; to avoid the window, stop the broker and delete the
   files", across the posting's patches. The Markdown view carries both
   as lines (#844).
 - The revisions list links each revision to a diff against the previous
-  one, in place of a diff against the current revision. These are the
-  URLs the series diff sitemap lists, so the page and the sitemap now name
-  the same diffs. A re-post is listed under its version (#861) and has no
-  diff link of its own. On the thread view the list is
-  open by default; the message page keeps it folded (#844).
+  one, in place of a diff against the current revision. A cover's links
+  are the URLs the series diff sitemap lists; a patch's links are not in
+  it, the sitemap holds cover diffs only. A re-post is listed under its
+  version (#861) and has no diff link of its own. On the thread view the
+  list is open by default; the message page keeps it folded (#844).
 - The patch summary sentence reads "Revision v7 (5 revisions archived)"
   instead of "Revision v7 of 5 in this series". The number counts the
   versions the archive holds, a re-post once, not the length of the series
