@@ -3,6 +3,8 @@ security.txt, favicon.svg, og-image.png, theme-color,
 generator meta, and the OG / Twitter Card / canonical /
 alternate-feed `<link>` tags wired into base.html."""
 
+import re
+
 from tests.test_routes._helpers import _ingest_one_article, _meta_value
 
 
@@ -12,8 +14,11 @@ def test_robots_txt(client):
     assert r.mimetype == "text/plain"
     body = r.get_data(as_text=True)
     assert "User-agent: *" in body
-    assert "Sitemap:" in body
-    assert "/sitemap.xml" in body
+    # Both indexes (#964), in this order, each exactly once.
+    assert re.findall(r"^Sitemap: (.*)$", body, re.MULTILINE) == [
+        "http://localhost/sitemap.xml",
+        "http://localhost/messages-sitemap.xml",
+    ]
 
 
 def test_robots_txt_reflects_admin_added_rule(client):
