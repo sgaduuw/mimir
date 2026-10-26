@@ -501,7 +501,7 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
     old = parse_cover_letter(unfold(old_cover.subject))
     old_key = series_key(old.title, old_cover.author)
     version = _explicit_version(subject)
-    best = best_rank = None
+    ranked = []
     for row in replies:
         cover = parse_cover_letter(unfold(row.subject))
         if (
@@ -517,9 +517,8 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
             aware_utc(row.date),
             row.message_id,
         )
-        if best_rank is None or rank < best_rank:
-            best, best_rank = row, rank
-    return best
+        ranked.append((rank, row))
+    return min(ranked, key=lambda pair: pair[0], default=(None, None))[1]
 
 
 def cover_of_patch(
