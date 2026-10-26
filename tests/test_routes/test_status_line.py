@@ -274,13 +274,14 @@ def test_pill_timeline_and_link_name_the_slot_winner(client, tmp_path, copies, w
         info = _bulk_uncached(s, [p_id], inbox_id)[p_id]
         won = s.get(Article, ids[winner])
     assert info.superseded_by_id == ids[winner]
-    assert _timeline_v2(p_id).article_id == ids[winner]
+    v2 = _timeline_v2(p_id)
+    assert v2.article_id == ids[winner]
     assert info.superseded_at.date() == won.date.date()
 
     html = client.get(seeded["p@x"][1] + "/t").get_data(as_text=True)
     sentence, link = _status(html)
     assert sentence == f"Superseded by v2 (posted 2024-01-{won.date.day:02d})."
-    assert link == _timeline_v2(p_id).url
+    assert link == v2.url
     assert link.endswith(f"/{ids[winner]}"), link
 
 
