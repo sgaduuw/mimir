@@ -23,7 +23,8 @@ from mimir.patch_series import (
     in_series_link,
     series_key,
 )
-from mimir.patch_series_chains import _load_key, backfill_series_chains
+from mimir.patch_series_chains import _load_key
+from tests._helpers import rechain_all
 from tests.test_ingest._helpers import _rfc5322
 from tests.test_ingest.test_series_rechain import T2021, T2026, _arrive, _heads
 
@@ -460,7 +461,7 @@ def test_a_chain_reply_patch_takes_its_cover_s_head_at_ingest(
     heads = _heads(seeded_db)
     assert heads["new@x"] == "new@x"  # precondition: the key split
     assert heads["new-p1@x"] == heads["new-p2@x"] == "new@x"
-    assert backfill_series_chains().heads_planned == 0
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_titles_of_chain_reply_patches_split_two_postings(
@@ -504,7 +505,7 @@ def test_a_re_post_links_through_a_cleared_reply(seeded_db, tmp_path, broker_act
     heads = _heads(seeded_db)
     assert heads["rp@x"] == "rp@x"  # precondition: the key split
     assert heads["rp-re@x"] == "rp@x"
-    assert backfill_series_chains().heads_planned == 0
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_the_re_chain_reads_a_key_s_patches_by_the_key_index(seeded_db):
