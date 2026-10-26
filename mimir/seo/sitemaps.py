@@ -191,9 +191,9 @@ KIND_MESSAGE = "message"
 PRIORITY_SITE = 1.0  # `/`, `/merge-window`, `/llms.txt`
 PRIORITY_PAGE = 0.9  # `/t` pages, series diffs, subsystem dashboards
 PRIORITY_HUB = 0.7  # inbox dashboards, maintainer pages
+PRIORITY_MESSAGE = 0.3
 PRIORITY_MONTH = 0.2
 PRIORITY_YEAR = 0.1
-_PRIORITY_BY_KIND = {KIND_THREAD: PRIORITY_PAGE, KIND_MESSAGE: 0.3}
 
 
 class SitemapEntry(NamedTuple):
@@ -348,9 +348,7 @@ def _sitemap_entries_for_roots(
             # thread never had. Self-corrects when the backfill
             # completes and the root leaves this branch.
             stamp = date.strftime("%Y-%m-%d")
-            entries.append(
-                SitemapEntry(loc, stamp, _PRIORITY_BY_KIND[KIND_MESSAGE], KIND_MESSAGE)
-            )
+            entries.append(SitemapEntry(loc, stamp, PRIORITY_MESSAGE, KIND_MESSAGE))
         else:
             stamp = (activity or date).strftime("%Y-%m-%d")
             # EVERY page, not just the first. Since 3.8.0 the thread
@@ -382,7 +380,7 @@ def _sitemap_entries_for_roots(
                     SitemapEntry(
                         base + thread_page_url(art_id, date, inbox_name, pg),
                         stamp,
-                        _PRIORITY_BY_KIND[KIND_THREAD],
+                        PRIORITY_PAGE,
                         KIND_THREAD,
                     )
                 )
@@ -416,14 +414,15 @@ def _archive_lastmod(
     A closed period (last day before `today`) can no longer gain
     messages, so it is dated its last day. The current period is still
     changing, so it gets the inbox's newest message date, capped at the
-    period's last day: a mis-dated future mail must not date the period
-    after its own end. Without a newest date it gets none, rather than
-    a guess. ISO dates compare as strings.
+    period's last day and at `today`: a page cannot have changed in the
+    future, and one mis-dated mail (lore carries 2037s) would otherwise
+    date the current month and year after today. Without a newest date it
+    gets none, rather than a guess. ISO dates compare as strings.
     """
     last_day = (_archive_bounds(year, month)[1] - timedelta(days=1)).date().isoformat()
     if last_day < today:
         return last_day
-    return min(newest, last_day) if newest else None
+    return min(newest, last_day, today) if newest else None
 
 
 def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
@@ -1279,8 +1278,8 @@ def inbox_sitemap_xml(
             .order_by("y", "m")
         ).all()
         years_with_data: set[str] = {y for y, _ in year_month_rows}
-        # The cheap per-inbox column, not a new `max(Article.date)` join.
-        newest = _per_inbox_latest_date(session).get(inbox.name)
+        # The dashboard's own date, so the archives agree with it.
+        newest = inbox_latest
         today = datetime.now(UTC).date().isoformat()
         for y in sorted(years_with_data, reverse=True):
             entries.append(
