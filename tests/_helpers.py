@@ -129,11 +129,14 @@ def plan_of(session, call, match):
     )
 
 
-# Production's sqlite_stat1 rows for article_lists, article_trailers and
-# the date index, for plan tests that must see the plan production gets.
-# Full-sample figures (ANALYZE with no analysis_limit, #817), measured
-# read-only 2026-10-23. A capped pass would read 4001 where these read
-# 146622, 146622 and 508750.
+# Production's sqlite_stat1 rows for article_lists, article_trailers, the
+# date index and the series key and article_files indexes, for plan tests
+# that must see the plan production gets. Full-sample figures (ANALYZE
+# with no analysis_limit, #817), measured read-only 2026-10-23 (the three
+# `articles` and `article_files` series rows 2026-10-24). A capped pass
+# would read 4001 where these read 146622, 146622 and 508750. The 66 on
+# the key index averages over NULL keys too (only 3,920,935 rows have a
+# key, across 270,999 keys), so it overstates rows per real key.
 PRODUCTION_STATS = (
     ("article_lists", "ix_article_lists_inbox_id", "29764294 146622"),
     ("article_lists", "ix_article_lists_thread_root", "29764294 146622 5"),
@@ -141,6 +144,9 @@ PRODUCTION_STATS = (
     ("article_trailers", "ix_article_trailers_article_id", "3561252 2"),
     ("article_trailers", "ix_article_trailers_role_addr", "3561252 508750 40"),
     ("articles", "ix_articles_date", "17790565 1"),
+    ("articles", "ix_articles_patch_series_key", "17797373 66"),
+    ("article_files", "sqlite_autoindex_article_files_1", "15194624 3 1"),
+    ("article_files", "ix_article_files_path", "15194624 24"),
 )
 
 

@@ -197,14 +197,7 @@ def test_the_bucket_query_seeks_the_series_key_index(seeded_db):
     from mimir.seo.sitemaps import series_diff_sitemap_xml
     from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
 
-    # Production's row for the key index, read-only 2026-10-24. The 66
-    # averages over NULL keys too (only 3,920,935 rows have a key, across
-    # 270,999 keys), so it overstates rows per real key.
-    stats = (
-        *PRODUCTION_STATS,
-        ("articles", "ix_articles_patch_series_key", "17797373 66"),
-    )
-    with planner_stats(seeded_db, stats), seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         plan = plan_of(
             s,
             lambda: series_diff_sitemap_xml(s, "a", "", force=True),
