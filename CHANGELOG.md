@@ -30,6 +30,19 @@ changes, not internal refactors. Categories: **Added**,
   both columns, which rewrites the `article_files` table; its time on a
   full archive is unmeasured (#939).
 
+### Fixed
+
+- A patch orphaned by #862 is now also linked to its own revision's cover
+  when that cover has another title or sender, so another series key
+  (#941). The cover must still be a direct reply of the old cover, name
+  the patch's version, have its total and sit within a day of the patch.
+  A cover under the old cover's key is still preferred, then the earliest
+  wins. A retitled cover, a changed address or both no longer leave the
+  posting's patches orphaned. Measured read-only on production
+  2026-10-26: 416 orphans on 71 postings; all 71 were judged by hand to
+  belong to the sibling's posting, and none of the 116,427 existing
+  links in that population moves.
+
 ### Upgrade notes
 
 - Run `backfill-article-files --patch-subjects --reprocess` after the
@@ -44,6 +57,11 @@ changes, not internal refactors. Categories: **Added**,
   likely half a day (estimated from 4.5M in-series patches counted
   2026-10-26). Cover thread pages get a new ETag as their patches are
   rewritten; patch pages keep theirs (#939).
+- Then run a plain `backfill-patch-series` (no `--reprocess`) to link the
+  patches the fix above reaches. It links the stored orphans, and its
+  re-chain gives them their head. About 16 minutes on 2026-10-26 (the
+  archive then held the 416 orphans); that figure was measured once and
+  grows with the archive.
 
 ## [3.30.0] - 2026-10-26
 
