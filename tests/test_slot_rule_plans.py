@@ -15,6 +15,7 @@ FILES_SEEK = (
     "SEARCH article_files USING COVERING INDEX sqlite_autoindex_article_files_1"
     " (article_id=?)"
 )
+F_SEEK = "SEARCH f USING COVERING INDEX sqlite_autoindex_article_files_1 (article_id=?)"
 
 
 def _seed_slot(s):
@@ -108,7 +109,7 @@ def test_the_lifecycle_pill_query_seeks_the_files_index(seeded_db):
         viewed = _seed_slot(s)
         inbox_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
         plan = plan_of(s, lambda: _bulk_uncached(s, [viewed.id], inbox_id), "sup_by_id")
-    assert FILES_SEEK.replace("article_files", "f", 1) in plan, plan
+    assert F_SEEK in plan, plan
 
 
 def _seed_posting(s):
@@ -169,7 +170,7 @@ def test_the_cover_rollup_probes_seek_their_indexes(seeded_db):
         plan = plan_of(s, lambda: _bulk_uncached(s, [cover.id], inbox_id), "sup_by_id")
     rollup = plan.split("MATERIALIZE rollup")[1].split("MATERIALIZE rc")[0]
     assert "SEARCH p USING INDEX ix_articles_patch_series_key" in rollup, rollup
-    assert FILES_SEEK.replace("article_files", "f", 1) in rollup, rollup
+    assert F_SEEK in rollup, rollup
     assert "SEARCH m USING INDEX ix_mainline_commits_message_id" in rollup, rollup
     assert "ix_mainline_commits_tree_name" not in rollup, rollup
     assert "SEARCH t USING INDEX ix_article_trailers_article_id" in rollup, rollup
