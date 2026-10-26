@@ -490,14 +490,18 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
     posting under it, and #862 orphans the patches of that posting.
 
     The sibling is a cover naming the patch's explicit version (never the
-    bare bracket's v1) and its total, under the old cover's own key
-    (another title or sender is another series, which is not re-keyed
-    here), dated within `SIBLING_COVER_WINDOW` of the patch on either side.
-    The earliest by `(date, message_id)` wins, whatever order `replies`
-    comes in. Reads subjects, never stored series columns, like the walk."""
+    bare bracket's v1) and its total, dated within `SIBLING_COVER_WINDOW`
+    of the patch on either side. Its title and sender may differ from the
+    old cover's, so its key may (#941): a retitled cover or a changed
+    address is still the same posting, and no same-sender test is made
+    because it would break links the key rule already makes. A sibling
+    under the old cover's key is preferred, then the earliest by
+    `(date, message_id)` wins, whatever order `replies` comes in. Reads
+    subjects, never stored series columns, like the walk."""
     old = parse_cover_letter(unfold(old_cover.subject))
+    old_key = series_key(old.title, old_cover.author)
     version = _explicit_version(subject)
-    best = None
+    best = best_rank = None
     for row in replies:
         cover = parse_cover_letter(unfold(row.subject))
         if (
@@ -505,16 +509,16 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
             or row.date is None
             or _explicit_version(row.subject) != version
             or cover.total != posting[1]
-            or series_key(cover.title, row.author)
-            != series_key(old.title, old_cover.author)
             or abs(aware_utc(date) - aware_utc(row.date)) > SIBLING_COVER_WINDOW
         ):
             continue
-        if best is None or (aware_utc(row.date), row.message_id) < (
-            aware_utc(best.date),
-            best.message_id,
-        ):
-            best = row
+        rank = (
+            series_key(cover.title, row.author) != old_key,
+            aware_utc(row.date),
+            row.message_id,
+        )
+        if best_rank is None or rank < best_rank:
+            best, best_rank = row, rank
     return best
 
 

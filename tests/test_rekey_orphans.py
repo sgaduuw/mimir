@@ -68,8 +68,6 @@ def test_the_own_version_cover_among_the_old_covers_replies_is_found():
     "sibling",
     [
         _row("sib@x", "[PATCH v3 0/3] t", "old@x", 2),  # another total
-        _row("sib@x", "[PATCH v3 0/2] other", "old@x", 2),  # another key
-        _row("sib@x", "[PATCH v3 0/2] t", "old@x", 2, author="z@b.example"),
         _row("sib@x", "[PATCH v4 0/2] t", "old@x", 2),  # another version
         _row("sib@x", "[PATCH 0/2] t", "old@x", 2),  # names no version
         _row("sib@x", "[PATCH v3 0/2] t", "old@x", 2 + 24 * 2),  # days away
@@ -78,8 +76,6 @@ def test_the_own_version_cover_among_the_old_covers_replies_is_found():
     ],
     ids=[
         "total",
-        "title",
-        "author",
         "version",
         "unversioned",
         "far",
@@ -89,6 +85,53 @@ def test_the_own_version_cover_among_the_old_covers_replies_is_found():
 )
 def test_a_cover_that_does_not_match_is_not_taken(sibling):
     assert sibling.thread_parent != "x"  # precondition: a real candidate row
+    assert _link([OLD, sibling]) is None
+
+
+RETITLED = _row("sib@x", "[PATCH v3 0/2] other", "old@x", 2)
+OTHER_SENDER = _row("sib@x", "[PATCH v3 0/2] t", "old@x", 2, author="z@b.example")
+
+
+@pytest.mark.parametrize("sibling", [RETITLED, OTHER_SENDER], ids=["title", "sender"])
+def test_a_sibling_under_another_key_is_taken(sibling):
+    """#941: title and sender may differ, so the key may. Production had 416
+    such orphans (read-only, 2026-10-26)."""
+    assert series_key(*_title_author(sibling)) != series_key(*_title_author(OLD))
+    assert _link([OLD, sibling]) is sibling
+
+
+def _title_author(row):
+    from mimir.patch_series import parse_cover_letter, unfold
+
+    return parse_cover_letter(unfold(row.subject)).title, row.author
+
+
+def test_a_sibling_under_the_old_covers_key_wins_even_when_later():
+    same_key = _row("same@x", "[PATCH v3 0/2] t", "old@x", 20)
+    assert _title_author(same_key) == _title_author(OLD)  # precondition
+    assert RETITLED.date < same_key.date  # precondition: the other is earlier
+    assert _link([OLD, RETITLED, same_key]) is same_key
+    assert _link([OLD, same_key, RETITLED]) is same_key
+
+
+def test_among_siblings_under_other_keys_the_earliest_wins():
+    later = _row("a@x", "[PATCH v3 0/2] third", "old@x", 3)
+    assert _link([OLD, later, RETITLED]) is RETITLED
+
+
+@pytest.mark.parametrize(
+    "sibling",
+    [
+        _row("sib@x", "[PATCH v3 0/3] other", "old@x", 2),  # another total
+        _row("sib@x", "[PATCH v4 0/2] other", "old@x", 2),  # another version
+        _row("sib@x", "[PATCH 0/2] other", "old@x", 2),  # names no version
+        _row("sib@x", "[PATCH v3 0/2] other", "old@x", 2 + 24 * 2),  # days away
+        _row("sib@x", "[PATCH v3 0/2] other", "other@x", 2),  # not a reply of it
+    ],
+    ids=["total", "version", "unversioned", "far", "elsewhere"],
+)
+def test_a_retitled_cover_that_does_not_match_is_not_taken(sibling):
+    assert sibling.subject != OLD.subject  # precondition: another key
     assert _link([OLD, sibling]) is None
 
 
@@ -203,10 +246,9 @@ def test_a_stored_orphan_is_re_linked_by_a_plain_run_once_the_cover_exists(
     "sibling",
     [
         ("[PATCH v3 0/3] t", 2 * HOUR),
-        ("[PATCH v3 0/2] other title", 2 * HOUR),
         ("[PATCH v3 0/2] t", 2 * HOUR + 3 * 86400),
     ],
-    ids=["total", "key", "far"],
+    ids=["total", "far"],
 )
 def test_a_sibling_that_does_not_match_leaves_the_patches_orphaned(
     seeded_db, tmp_path, broker_active, sibling
@@ -221,6 +263,34 @@ def test_a_sibling_that_does_not_match_leaves_the_patches_orphaned(
     backfill_patch_series()
     backfill_patch_series(reprocess=True)
     assert _series(seeded_db, "p1@x", "p2@x")["p1@x"] == (None, None, 1)
+
+
+@pytest.mark.parametrize(
+    ("subject", "sender"),
+    [("[PATCH v3 0/2] other", None), ("[PATCH v3 0/2] t", "z@b.example")],
+    ids=["retitled", "sender"],
+)
+def test_a_re_keyed_sibling_is_linked_at_ingest_and_by_the_chain_loader(
+    seeded_db, tmp_path, broker_active, subject, sender
+):
+    """#941, end to end: the patches take the sibling's key (not the old
+    cover's), a plain run keeps them there, and `_load_key` of the new key
+    attributes them to the sibling and gives them its head."""
+    msgs = _under_the_old_cover()
+    msgs[1] = _msg("sib@x", subject, "old@x", body=b"cover", sender=sender)
+    new_key = series_key("other" if sender is None else "t", sender or AUTHOR)
+    assert new_key != KEY  # precondition: the sibling is under another key
+    _arrive(seeded_db, tmp_path, "0.git", T2026, msgs, TIMES)
+    linked = {m: (new_key, v, p) for m, (_k, v, p) in LINKED.items()}
+    assert _series(seeded_db, *linked) == linked
+    backfill_patch_series()
+    assert _series(seeded_db, *linked) == linked
+    heads = _heads(seeded_db)
+    assert heads["sib@x"] == heads["p1@x"] == heads["p1b@x"] == heads["p2@x"]
+    with seeded_db() as s:
+        patches = _load_key(s, new_key)[2]
+    assert len(patches) == 3  # the guard on the assertion below
+    assert {parent for _id, parent, _head, _v in patches} == {"sib@x"}
 
 
 def test_the_chain_loader_attributes_the_patch_to_the_sibling_cover(
