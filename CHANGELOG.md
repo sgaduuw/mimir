@@ -159,10 +159,11 @@ changes, not internal refactors. Categories: **Added**,
   counts nothing. If a `--patch-subjects --reprocess` run started before
   this release is unfinished, add `--restart --yes`: resuming it would
   leave the articles it already passed uncounted. The run resumes across
-  broker restarts. It reads the body of every in-series patch and pages
-  every article by subject; its time on a full archive is unmeasured.
-  Cover thread pages get a new ETag as their patches are rewritten; patch
-  pages keep theirs (#939).
+  broker restarts. It reads the body of every in-series patch, rewrites
+  their file rows and pages every article by subject: several hours,
+  likely half a day (estimated from 4.5M in-series patches counted
+  2026-10-26). Cover thread pages get a new ETag as their patches are
+  rewritten; patch pages keep theirs (#939).
 
 ## [3.29.0] - 2026-10-25
 
