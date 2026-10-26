@@ -419,7 +419,7 @@ _ROBOTS_PREAMBLE = """\
 """
 
 
-def render_robots_txt(session: Session, sitemap_url: str) -> str:
+def render_robots_txt(session: Session, sitemap_urls: list[str]) -> str:
     """Produce the rendered robots.txt body.
 
     File shape, top to bottom:
@@ -432,7 +432,7 @@ def render_robots_txt(session: Session, sitemap_url: str) -> str:
        alphabetical), blank line between. Inside each stanza:
        `User-agent:`, `Content-Signal:` (when set), `Crawl-delay:`
        (when set), then any `Disallow:` lines.
-    3. Trailing `Sitemap:` line."""
+    3. One trailing `Sitemap:` line per URL, in order."""
     rules = list_rules(session)
     has_signals = any(rule.content_signals for rule in rules)
 
@@ -460,5 +460,6 @@ def render_robots_txt(session: Session, sitemap_url: str) -> str:
             out.write(f"Disallow: {p}\n")
     if not first:
         out.write("\n")
-    out.write(f"Sitemap: {sitemap_url}\n")
+    for url in sitemap_urls:
+        out.write(f"Sitemap: {url}\n")
     return out.getvalue()

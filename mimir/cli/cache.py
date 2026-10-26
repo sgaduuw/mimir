@@ -45,7 +45,7 @@ from mimir.web import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
-    sitemap_index_xml,
+    sitemap_indexes_xml,
 )
 from mimir.web.routes.dashboards import SUBSYSTEM_RECENT_PATCHES_LIMIT
 from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
@@ -229,12 +229,13 @@ def _build_inbox_targets(
 def _build_fast_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
-    """Fast tier global warm targets: `sitemap:index` alone.
+    """Fast tier global warm targets: `sitemap:index` alone, which
+    builds `/sitemap.xml` and `/messages-sitemap.xml` together (#964).
 
     It is the most expensive warm target there is (41 s cold in
     production on 2026-10-07, about 10 s after #640), so it looks out of place
     next to targets budgeted at 100 ms. It is here for freshness, not
-    speed. The target calls `sitemap_index_xml` WITHOUT `force=True`,
+    speed. The target calls `sitemap_indexes_xml` WITHOUT `force=True`,
     so a warm row costs nothing and the per-minute tick refreshes it
     only inside `WARM_CACHE_REFRESH_WITHIN_SEC` of its one-hour TTL:
     one rebuild an hour. On the slow tier it ran after a 30 to 50
@@ -245,7 +246,7 @@ def _build_fast_global_targets(
     render-cap change (#589)."""
     if not sitemap_base:
         return []
-    return [("sitemap:index", lambda s, b=sitemap_base: sitemap_index_xml(s, b))]
+    return [("sitemap:index", lambda s, b=sitemap_base: sitemap_indexes_xml(s, b))]
 
 
 def _build_slow_global_targets(
