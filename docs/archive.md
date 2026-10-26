@@ -198,7 +198,10 @@ reads `article_files`, so `backfill-article-files` must be complete first.
 To fill it for in-series patches only, run `backfill-article-files
 --patch-subjects` instead: it skips every other article without reading its
 body, and leaves solo `[PATCH]` mails and non-series quilt patches without
-file rows. Use `--help` for per-command options.
+file rows. File rows carry the lines each patch inserts and deletes in the
+file, which a cover's series totals add up (#939). Rows stored before the
+counts existed have none until `backfill-article-files --patch-subjects
+--reprocess` rewrites them. Use `--help` for per-command options.
 
 `backfill-series-chains` splits a cover title that one sender reused for
 unrelated postings into separate series. It also gives a posting whose cover

@@ -11,6 +11,40 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- A cover letter's series totals add the lines its patches insert and
+  delete: "2 patches touching 3 files, +14/-3", on the thread view and in
+  its Markdown view. Ingest counts the lines from each patch's diff
+  hunks, so binary files, pure renames and mode changes count 0. The
+  "+14/-3" part shows only once every file of the posting has a count,
+  so a posting stored before this release shows it after the backfill in
+  the upgrade notes reaches it. It stays hidden for a series with a file
+  whose diff mimir cannot read. The totals now count only the patches'
+  files: a cover's own diff, such as an interdiff, is left out of the
+  file count too. `article_files` gains nullable `insertions` and
+  `deletions` columns (the migration only adds them, so it is quick on a
+  full archive). Rolling back needs `alembic downgrade 4c1d816a0b2e`, run
+  from this image before the older image starts (the older broker does
+  not know the new revision and refuses to start). The downgrade drops
+  both columns, which rewrites the `article_files` table; its time on a
+  full archive is unmeasured (#939).
+
+### Upgrade notes
+
+- Run `backfill-article-files --patch-subjects --reprocess` after the
+  deploy to count the lines of patches stored before it. Until the run
+  reaches a posting, its cover shows its totals without "+N/-M". A run
+  without `--reprocess` skips articles that already have file rows, so it
+  counts nothing. If a `--patch-subjects --reprocess` run started before
+  this release is unfinished, add `--restart --yes`: resuming it would
+  leave the articles it already passed uncounted. The run resumes across
+  broker restarts. It reads the body of every in-series patch, rewrites
+  their file rows and pages every article by subject: several hours,
+  likely half a day (estimated from 4.5M in-series patches counted
+  2026-10-26). Cover thread pages get a new ETag as their patches are
+  rewritten; patch pages keep theirs (#939).
+
 ## [3.30.0] - 2026-10-26
 
 Upgrade steps, after deploying, in this order, one at a time. Do not run

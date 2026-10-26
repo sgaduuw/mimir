@@ -71,7 +71,7 @@ def test_extract_touched_paths_caps_at_max():
     crafted body that floods `article_files` with synthetic rows."""
     lines = [f"diff --git a/x{i}.c b/x{i}.c" for i in range(MAX_TOUCHED_PATHS + 50)]
     body = "\n".join(lines)
-    paths = extract_touched_paths(body)
+    paths = set(extract_touched_paths(body))
     assert len(paths) == MAX_TOUCHED_PATHS
 
 
@@ -83,7 +83,7 @@ def test_extract_touched_paths_normal_patch_passes():
         "diff --git a/b.c b/b.c\n"
         "diff --git a/sub/c.c b/sub/c.c\n"
     )
-    assert extract_touched_paths(body) == {"a.c", "b.c", "sub/c.c"}
+    assert set(extract_touched_paths(body)) == {"a.c", "b.c", "sub/c.c"}
 
 
 # ----- rendering: Pygments block-size clamp -------------------------------
