@@ -1072,8 +1072,18 @@ order).
   links as a second row there (#861). The cover hop is guarded only
   against a later revision: a patch of another explicit version posted
   over an hour after its cover is orphaned (#862); closer pairs stay
-  linked, a cover typo takes its patches' version (#870), and a patch is
-  not re-keyed to its own revision (#871).
+  linked, a cover typo takes its patches' version (#870), and a patch
+  whose own revision has a cover among the old cover's direct replies,
+  under the same key, with the same total, within a day of the patch, is
+  linked to that cover instead (#871; the earliest by date and message id).
+  `cover_of_patch` takes a `replies_of` lookup beside `parent_of`, and
+  ingest (the batch first), `backfill-patch-series` and `_load_key` (the
+  key's own covers) each pass theirs. Known gaps: a posting whose cover
+  comes after its patches in the mirror (in the same batch or a later
+  one) stays orphaned until the next `backfill-patch-series` run (plain,
+  no `--reprocess`); a sibling under another key (a retitled cover) is
+  not re-keyed (#941); and a sibling that is a #870 cover typo flips its
+  posting back to the version its subject names.
 - **The re-chain is the last writer of a posting's version (#870).**
   Ingest, replay and `backfill-patch-series` write the subject's own
   version (a patch, its cover's); the `rechain_keys` that ends each of
