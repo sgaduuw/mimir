@@ -96,3 +96,16 @@ def test_the_validator_series_query_seeks_both_indexes(seeded_db):
             "EXISTS",
         )
     _assert_seeks(plan)
+
+
+def test_the_lifecycle_pill_query_seeks_the_files_index(seeded_db):
+    """#949: the pill's superseding copy asks `article_files` per candidate
+    row, on every listing page, so that EXISTS must seek the primary key
+    index (covering) under production statistics."""
+    from mimir.lifecycle_status import _bulk_uncached
+
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
+        viewed = _seed_slot(s)
+        inbox_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        plan = plan_of(s, lambda: _bulk_uncached(s, [viewed.id], inbox_id), "sup_by_id")
+    assert FILES_SEEK.replace("article_files", "f", 1) in plan, plan

@@ -64,7 +64,8 @@ class LifecycleStatusInfo:
     (#844), so it can never name a different commit or revision than
     the pill: the Linus commit for LANDED, the earliest other tree's
     for QUEUED (`tree`), and the newest revision for SUPERSEDED (`superseded_by_id` is
-    that copy's article id, None on a row cached before it existed)."""
+    the slot's patch of that revision (#949), None on a row cached
+    before it existed)."""
 
     state_value: str
     tree: str | None = None
@@ -116,8 +117,12 @@ _REVIEW_ROLES_PARAM = bindparam(
 # `sup` compares revision numbers, not strings, so v10 > v9, and takes
 # the newest revision's own version and date for the SUPERSEDED
 # tooltip and the status line, so the two always describe one real
-# posting. The Linus sha and date in `mc` come from one row for the same
-# reason: the earliest, which is the landing the status line names.
+# posting. Within that version it picks by the slot rule (#861, #949):
+# a copy with a diff first, then the lowest id, so the pill, the
+# timeline's entry and the status line's link name one article and the
+# date is when the version was first posted with a diff. The Linus sha
+# and date in `mc` come from one row for the same reason: the earliest,
+# which is the landing the status line names.
 #
 # The `mc` CTE's "earliest other tree" orders by committed_at, then
 # prefers a subsystem tree over linux-next, then the name. A subsystem
@@ -188,7 +193,10 @@ newer AS (
            a2.id AS sup_by_id,
            ROW_NUMBER() OVER (
                PARTITION BY a1.id
-               ORDER BY {_V2} DESC, a2.date DESC, a2.id DESC
+               ORDER BY {_V2} DESC,
+                        NOT EXISTS (SELECT f.article_id FROM article_files f
+                                     WHERE f.article_id = a2.id),
+                        a2.id
            ) AS rn
       FROM articles a1
       JOIN articles a2 ON {_NEWER}

@@ -13,6 +13,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The lifecycle pill's "Superseded by vN" tooltip and the status line's
+  "(posted <date>)" now name the copy of vN the revisions list shows: a
+  copy with a diff first, then the lowest id (the series slot rule, #861),
+  not the newest re-post. They show when vN was first posted with a diff.
+  The status line's link goes to that revision's entry, so the pill, the
+  list and the line name one article (#949). Cached pills keep their old
+  copy for up to 5 minutes after the deploy.
 - A cover letter's series totals add the lines its patches insert and
   delete: "2 patches touching 3 files, +14/-3", on the thread view and in
   its Markdown view. Ingest counts the lines from each patch's diff
