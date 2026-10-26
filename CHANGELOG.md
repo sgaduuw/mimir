@@ -42,6 +42,11 @@ changes, not internal refactors. Categories: **Added**,
   2026-10-26: 416 orphans on 71 postings; all 71 were judged by hand to
   belong to the sibling's posting, and none of the 116,427 existing
   links in that population moves.
+  5 of the 416 land in an occupied slot (#861), measured 2026-10-26: in
+  one the pick moves to the orphan, an earlier send than the resend that
+  holds the slot; in one a 2018 and a 2020 posting already collide and
+  the pick moves to the 2018 orphan; one stays as it is (the same patch
+  sent twice, 3 minutes apart).
 
 ### Upgrade notes
 
