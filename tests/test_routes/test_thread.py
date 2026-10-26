@@ -1083,6 +1083,46 @@ def _mutate_series_head(seeded):
         s.commit()
 
 
+def _prepare_slot_rows(seeded):
+    """The thread's two articles become two rows of one series slot,
+    neither with a diff, beside a v2 so the page carries a revision
+    sentence (#861)."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        for mid in ("root@x", "reply@x"):
+            art = s.get(Article, seeded[mid][0])
+            art.patch_series_key = "slotkey"
+            art.patch_series_version = "v1"
+            art.patch_series_position = 1
+        s.add(
+            Article(
+                message_id="v2@x",
+                subject="[PATCH v2] foo: bar",
+                author="A <a@x>",
+                patch_series_key="slotkey",
+                patch_series_version="v2",
+                patch_series_position=1,
+            )
+        )
+        s.commit()
+
+
+def _mutate_slot_diff(seeded):
+    """The later row of the slot gains a diff, which makes it the slot's
+    patch and the viewed (earlier) root a no-diff row that lost: not a
+    patch, so no card and no revision sentence. Its path is no input of
+    the viewed article, so the files tag, the series columns and the
+    revision ids do not move; only the has-diff of a sibling does."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleFile
+
+    with SessionLocal() as s:
+        s.add(ArticleFile(article_id=seeded["reply@x"][0], path="fs/foo.c"))
+        s.commit()
+
+
 def test_newer_revision_renders_the_superseded_pill(client, tmp_path):
     """Stored versions are `vN`, which SQLite casts to 0, so for a
     while no page ever showed SUPERSEDED (#677)."""
@@ -1130,6 +1170,7 @@ _RENDER_STATE_CASES = [
     ("trailer_rewrite", _prepare_review_trailer, _mutate_trailer_in_place),
     ("newer_revision", _prepare_series, _mutate_series),
     ("series_head", _prepare_two_revisions, _mutate_series_head),
+    ("slot_row_gains_a_diff", _prepare_slot_rows, _mutate_slot_diff),
 ]
 
 
@@ -2212,7 +2253,7 @@ def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
 def test_fold_diff_link_resolves_for_a_null_position_cover(
     client, tmp_path, v1_position
 ):
-    """Every [diff vs current] link the revisions fold emits must
+    """Every [diff against previous] link the revisions fold emits must
     resolve. The fold treats a NULL position as 0, so the diff route
     must too."""
     import html as htmllib
@@ -2266,3 +2307,161 @@ def test_thread_view_links_the_series_diff_through_the_revisions_fold(client, tm
     link = htmllib.unescape(links[0])
     assert "from=v1&to=v2&pos=cover" in link
     assert client.get(link).status_code == 200
+
+
+def _seed_cover_series(tmp_path, key, versions):
+    """One cover letter per entry of `versions`, posted a day apart in
+    list order, plus a reply to the last so its `/t` is a real thread.
+    Returns `seed_thread_shape`'s map; message ids are `c<i>@x`."""
+    from mimir.extensions import SessionLocal
+    from tests.test_routes._helpers import seed_thread_shape
+
+    mids = [f"c{i}@x" for i in range(len(versions))]
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [(m, None) for m in mids] + [("reply@x", mids[-1])],
+        date_for={
+            m: f"Mon, {i + 1} Jan 2024 00:00:00 +0000" for i, m in enumerate(mids)
+        },
+    )
+    with SessionLocal() as s:
+        for mid, version in zip(mids, versions, strict=True):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = f"[PATCH {version or ''} 0/1] foo: bar"
+            a.patch_series_key = key
+            a.patch_series_version = version
+            a.patch_series_position = 0
+        s.commit()
+    return seeded
+
+
+def _fold(html):
+    """The revisions fold's markup, so links elsewhere cannot count."""
+    return html.split('class="revisions-fold"')[1].split("</details>")[0]
+
+
+def test_fold_diff_links_are_the_sitemap_s_urls_byte_for_byte(client, tmp_path):
+    """#844: the fold links each revision's diff against the previous
+    one, which is exactly the set of URLs the series diff sitemap
+    advertises (#846). Both come from `adjacent_versions`, and a link
+    and a sitemap entry must be the same bytes, not equivalent ones."""
+    import html as htmllib
+
+    from tests.test_routes._helpers import _clear_sitemap_cache
+
+    key = "b" * 40
+    seeded = _seed_cover_series(tmp_path, key, ["v1", "v2", "v3"])
+    page = client.get(seeded["c2@x"][1] + "/t").get_data(as_text=True)
+    links = [
+        htmllib.unescape(h)
+        for h in re.findall(r'href="([^"]*/series/[^"]*)"', _fold(page))
+    ]
+
+    _clear_sitemap_cache()
+    xml = client.get("/sitemap-series-diffs-b.xml").get_data(as_text=True)
+    # Absolute in the sitemap, site-relative on the page: compare what
+    # follows the origin, which both build through `_spell_series_diff_url`.
+    locs = [htmllib.unescape(loc) for loc in re.findall(r"<loc>([^<]+)</loc>", xml)]
+    sitemap_paths = [
+        re.sub(r"^https?://[^/]+", "", loc) for loc in locs if f"/series/{key}/" in loc
+    ]
+
+    assert len(sitemap_paths) == 2, sitemap_paths  # precondition: v1-v2, v2-v3
+    assert sorted(links) == sorted(sitemap_paths)
+
+
+def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(
+    client, tmp_path
+):
+    """v1 has no previous revision, so no link. A bare "resend" and a
+    NULL version are not revisions the route can diff, so they neither
+    get a link nor count as the previous one. A second v2 is a resend of
+    the first and is not a step: it is no entry of its own (#861) but is
+    listed under the first v2, which links v1 to v2. v3 links v2 to v3. Every emitted link is served. The sitemap's query
+    drops the bare and NULL versions itself, so only this test holds
+    `adjacent_versions` to dropping them."""
+    import html as htmllib
+    from urllib.parse import parse_qs, urlparse
+
+    versions = ["v1", "resend", None, "v2", "v2", "v3"]
+    seeded = _seed_cover_series(tmp_path, "c" * 40, versions)
+    fold = _fold(client.get(seeded["c5@x"][1] + "/t").get_data(as_text=True))
+    rows = re.findall(r"<li[^>]*>(.*?)</li>", fold, re.DOTALL)
+    # Precondition: one row per version, the second v2 listed under the first.
+    assert len(rows) == len(set(versions)), rows
+    assert fold.count("re-posted") == 1, fold
+
+    pairs = []
+    for row in rows:
+        hrefs = re.findall(r'href="([^"]*/series/[^"]*)"', row)
+        assert len(hrefs) <= 1, row
+        if not hrefs:
+            pairs.append(None)
+            continue
+        link = htmllib.unescape(hrefs[0])
+        q = parse_qs(urlparse(link).query)
+        pairs.append((q["from"][0], q["to"][0]))
+        assert client.get(link).status_code == 200, link
+    assert pairs == [None, None, None, ("v1", "v2"), ("v2", "v3")]
+
+
+def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
+    client, tmp_path
+):
+    """#844: on `/t` the revisions are visible without a click, since the
+    series diff is the most original page mimir serves. The message page
+    keeps its fold closed."""
+    seeded = _seed_cover_series(tmp_path, "d" * 40, ["v1", "v2"])
+    url = seeded["c1@x"][1]
+
+    def fold_tag(html):
+        tags = re.findall(r'<details class="revisions-fold"[^>]*>', html)
+        assert len(tags) == 1, tags
+        return tags[0]
+
+    assert re.search(
+        r"\sopen\b", fold_tag(client.get(url + "/t").get_data(as_text=True))
+    )
+    assert not re.search(r"\sopen\b", fold_tag(client.get(url).get_data(as_text=True)))
+
+
+# Statements one `/t` request runs for a two-revision cover with one
+# reply, counted 2026-10-25 on develop e36429e before #844: a full
+# render with caches cleared, and the 304 that revalidates it. The
+# revisions block is a render of data the page already reads, so it
+# must add none (#844 budget: +0 for both). 32 since #844 Part 3: the
+# status line reads the lifecycle row the pill already fetched, and the
+# card's own landing query is gone.
+THREAD_VIEW_STATEMENTS_200 = 32
+THREAD_VIEW_STATEMENTS_304 = 15
+
+
+def test_thread_view_statement_budget(client, tmp_path):
+    from sqlalchemy import event
+
+    from mimir.extensions import engine
+
+    seeded = _seed_cover_series(tmp_path, "e" * 40, ["v1", "v2"])
+    url = seeded["c1@x"][1] + "/t"
+    statements: list[str] = []
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        full = _get(client, url)
+        n_full = len(statements)
+        statements.clear()
+        revalidated = client.get(url, headers={"If-None-Match": full.headers["ETag"]})
+        n_304 = len(statements)
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+
+    assert full.status_code == 200
+    assert revalidated.status_code == 304
+    assert (n_full, n_304) == (
+        THREAD_VIEW_STATEMENTS_200,
+        THREAD_VIEW_STATEMENTS_304,
+    )

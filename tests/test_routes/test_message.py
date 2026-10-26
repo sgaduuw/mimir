@@ -7,9 +7,11 @@ identity contract)."""
 
 import re
 from datetime import UTC
+from pathlib import Path
 
 import pytest
 
+import mimir
 from mimir.config import settings
 from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
@@ -427,13 +429,34 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     )
 
 
-def test_message_page_closed_fold_button_points_right(client, tmp_path):
-    """A triangle pointing down means "open", so the closed button shows
-    the collapsed glyph ▶, not ▼ (#890)."""
+def test_message_page_closed_fold_button_renders_open_triangle(client, tmp_path):
+    """Pages render partial, so the closed button shows ▼ on first paint
+    (#930); CSS swaps it to ▶ when the box is closed. The title doubles as
+    aria-label so the glyph never becomes the accessible name."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
     body = client.get(msgs["root"][1]).data.decode()
-    assert re.search(r'data-fold-set="closed"[^>]*>▶&#xFE0E;</button>', body)
-    assert "▼" not in body
+    assert re.search(
+        r'data-fold-set="closed" title="([^"]+)" aria-label="\1">▼</button>', body
+    )
+    assert "▶" not in body
+
+
+def test_thread_closed_state_css_swaps_to_right_triangle():
+    """The ▶ lives in CSS: dropping the closed-state rule leaves ▼ on a
+    closed thread box (#930)."""
+    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    rule = re.search(
+        r'html\[data-thread-fold="closed"\][^{}]*\[data-fold-set="closed"\]::before\s*'
+        r'\{[^}]*content:\s*"\\25B6\\FE0E"',
+        css,
+    )
+    assert rule
+    # The ▼ stays in the HTML; without this rule a closed box shows both.
+    assert re.search(
+        r'html\[data-thread-fold="closed"\][^{}]*\[data-fold-set="closed"\][^{}]*'
+        r"\{\s*font-size:\s*0;",
+        css,
+    )
 
 
 def test_message_page_thread_fold_links_carry_htmx_attrs(
@@ -1198,9 +1221,8 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
     assert 'class="rev-label" href=' in fold and ">v1</a>" in fold
     assert '<span class="rev-label">v2</span>' in fold
-    # The prior revision (v1) carries a diff link; v2 carries the
-    # "current" marker instead.
-    assert "[diff vs current]" in fold
+    # v2 carries the "current" marker and the diff against v1 (#844).
+    assert "[diff against previous]" in fold
     assert "rev-current-marker" in fold
 
 
@@ -2787,8 +2809,8 @@ def test_message_page_patch_metadata_is_inside_swap_target(
     for marker in (
         'class="msg-badges"',
         'class="badge badge-lifecycle-landed"',
-        "of 2 in this series",
-        "landed in mainline as aabbccddeeff",
+        "(2 revisions archived)",
+        "Landed in mainline as aabbccddeeff",
         'class="revisions-fold"',
         'class="revisions-count">(2)',
     ):
@@ -2880,8 +2902,8 @@ def test_message_page_revisions_fold_links_non_current_versions(
     assert '<span class="rev-label">v2</span>' in fold, (
         "current revision label (v2) must stay a plain span, not a link"
     )
-    # And the [diff vs current] link on v1 is preserved.
-    assert "[diff vs current]" in fold
+    # And the diff from v1 sits on v2, the revision it leads to (#844).
+    assert "[diff against previous]" in fold
 
 
 # ---------------------------------------------------------------------------

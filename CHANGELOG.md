@@ -11,6 +11,170 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.30.0] - 2026-10-26
+
+Upgrade steps, after deploying, in this order, one at a time. Do not run
+them alongside another long backfill. There is no migration.
+
+1. Run `backfill-article-files --patch-subjects` once, unless a full
+   `backfill-article-files` run has completed since 3.27.0. It gives file
+   rows to stored in-series patches whose diff is in quilt, `diff -u` or
+   `Index:` format (#869), reading only the bodies of in-series patches
+   (#874). Its duration on a full archive is unmeasured.
+2. Run a plain `backfill-patch-series` once (no `--reprocess`). It
+   re-links the patches step 1 gave file rows to, which earlier runs
+   cleared as replies (#874), and the patches #862 orphaned under an older
+   revision's cover to their own revision's cover, with that cover's
+   series head (#871). A plain run reaches both: neither kind of row
+   counts as resolved. It skips every row that already has a key, so it
+   is much shorter than a `--reprocess`.
+3. Run `backfill-article-trailers --reprocess` once to re-split trailers
+   stored before this release (#913). Until the run reaches an article,
+   that article keeps the old split. A plain run skips articles that
+   already have rows. The run resumes across broker restarts; a full
+   `--reprocess` has taken most of two days (3.14.0 figure, not
+   re-measured for this command). Message and thread pages get a new
+   ETag as each article is rewritten; subsystem dashboards and the
+   maintainer directory follow within their one-hour cache.
+
+#923 needs no run of its own: stale file rows are cleared by the next
+`backfill-article-files --reprocess`, whenever one is run.
+
+Rolling back to 3.29.0 needs no migration, and every row these runs
+rewrite is valid under 3.29.0. For up to five minutes after a rollback,
+pages that list patches with lifecycle pills (inbox dashboards, day,
+month and year views, search) can return 500: 3.29.0 cannot read the
+pill cache rows 3.30.0 wrote, which carry new fields (#844). They expire
+within five minutes; to avoid the window, stop the broker and delete the
+`cache` rows whose key starts with `v3:lifecycle_status:` before starting
+3.29.0.
+
+### Added
+
+- `mimir backfill-article-files --patch-subjects` reads the body only of
+  articles whose subject is an in-series patch (`[PATCH 2/5]`), and counts every
+  other article as `skipped` from its subject alone, without fetching its
+  blob. It fills the file rows the reply rule needs for history that predates
+  #869's quilt and plain-diff extraction, without the plain run's read of every
+  article. It is a run of its own: it never resumes a plain run's position, and
+  a plain run never resumes it. With `--reprocess` it re-extracts those patches
+  only and leaves every other article's rows alone. To correct history after
+  #869, run `backfill-article-files --patch-subjects`, then a plain
+  `backfill-patch-series` (it re-checks every patch cleared as a reply;
+  `--reprocess` is not needed). Known limit: a solo `[PATCH]` and a
+  non-series quilt patch get no file rows from this option, so the per-path
+  lookup and subsystem attribution stay incomplete for them until a plain
+  `backfill-article-files` run. A CLI with this option sent to a broker that
+  predates it is not refused: the broker drops the field and walks every
+  article, as a plain run, or as a full `--reprocess` if that was given.
+  Upgrade the broker first (#874).
+- The inbox nav has a "subsystems" dropdown after "yesterday". It opens on
+  hover, or by tap or Enter, and lists the current message's subsystems (at
+  most 8) above an "all subsystems" link. On pages with no message or no
+  subsystems it holds only "all subsystems". No new query and no JavaScript
+  (#892).
+
+### Changed
+
+- Patch pages and the thread view show a status line under the badges:
+  "Landed in mainline as <sha> on <date>", "Queued in <tree> as <sha> on
+  <date>", "Superseded by v8 (posted <date>)" with a link to that
+  revision, or "Reviewed". It reads the same row as the lifecycle pill,
+  so the two cannot disagree. The summary sentence no longer carries
+  the landing clause, which the status line now holds. The Markdown
+  thread view carries the status line too (#844).
+- A cover letter's subsystems are now those of its patches. A cover
+  carries no diff, so its thread view and its message page showed no
+  subsystem line at all. Both now list the subsystems the posting's
+  patches touch, its review summary counts the maintainers of those
+  subsystems, and the page validator covers those files, so a patch
+  that gains a file moves the cover's ETag (#844).
+- The thread view shows the subsystem maintainers next to the
+  subsystems, as the message page already did: `M:` entries only, each
+  linked to its profile page where one exists, no addresses as text.
+  For a cover letter it adds the series totals, "2 patches touching 3
+  files", across the posting's patches. The Markdown view carries both
+  as lines (#844).
+- The revisions list links each revision to a diff against the previous
+  one, in place of a diff against the current revision. These are the
+  URLs the series diff sitemap lists, so the page and the sitemap now name
+  the same diffs. A re-post is listed under its version (#861) and has no
+  diff link of its own. On the thread view the list is
+  open by default; the message page keeps it folded (#844).
+- The patch summary sentence reads "Revision v7 (5 revisions archived)"
+  instead of "Revision v7 of 5 in this series". The number counts the
+  versions the archive holds, a re-post once, not the length of the series
+  (#844, #861).
+
+### Removed
+
+- `mimir backfill-series-chains --reprocess`. It never had an effect: every run
+  chains whole keys afresh. A CLI that still sends it to the broker is not
+  refused; the broker ignores the field, as it always pinned it to false (#889).
+
+### Fixed
+
+- A year sitemap's roots query now starts from the inbox's own threads, not
+  from every inbox's articles for that year (#947). On a local synthetic
+  archive under production planner statistics, an 8k-member inbox's year
+  went from 283 ms to 1.4 ms and a 150k-member inbox's from 320 ms to 21 ms.
+  A 2.5M-member inbox's year went from 442 ms to 322 ms. Month sitemaps keep
+  the old plan: the new one scanned the whole inbox per month and was 7x
+  slower on that large inbox. Output is unchanged.
+- A patch orphaned by #862 is linked to its own revision's cover when
+  that cover is among the old cover's direct replies: same key, same
+  total, within a day of the patch (the earliest wins). This is the common
+  shape of a v3 sent in reply to the v2 cover. Ingest links new ones; a
+  plain `backfill-patch-series` run (no `--reprocess`) links the stored
+  ones, and its re-chain gives them their head. A cover that arrives after
+  its patches (later in the mirror, in the same batch or a later one) heals
+  on that run too. Measured
+  read-only on production 2026-10-25: 2,984 orphans on 474 covers, of
+  which the rule re-attaches 1,761; 412 sit under a retitled cover and
+  stay orphaned (#941). 87 land on an occupied slot, all with a diff on
+  both sides, where #861's rule keeps the original; 14 attach to a cover
+  typo (#870) and flip its posting back to the version its subject names (#871).
+- When two copies of the newer version share the newest date, the pill and
+  the status line name the higher id, not whichever the scan met first
+  (#871).
+- A series slot, the rows sharing a key, series, version and position
+  (a version posted again), now has one patch: its lowest-id row with a
+  diff, else its lowest-id row. The series diff page, its canonical URL,
+  the series diff sitemap, the revisions list, the summary sentence and
+  the state card all use it, and the page ETag carries which rows have a
+  diff. The revisions list shows one entry per version, with the re-posts
+  listed under it, and appears from two versions on. The summary sentence
+  counts versions: v1, v2 and a resend of v2 read "Revision v2 (2
+  revisions archived)". At a patch position, a reply that repeats the
+  bracketed subject, has no diff and shares the slot of a row that has
+  one no longer gets a state card. A re-post is not treated as superseded. Measured on
+  2026-10-25: 87,354 patch slots and 18,780 cover slots hold more than
+  one row, and the rule changes today's pick in 163 patch and 81 cover
+  slots, where today's pick has no diff (#861).
+- `backfill-article-files --reprocess` now deletes an article's stored file
+  rows when its body no longer yields a diff. It used to keep rows an older
+  extractor had written. No migration. Stale rows already stored are cleared
+  by the next `backfill-article-files --reprocess`; no separate run is needed
+  for this fix (#923).
+- The fold toggle's first button is a disclosure triangle again: ▶ when the
+  box is closed, ▼ when it is open (partial or expanded), on the thread view
+  and on `/merge-window`. 3.29.0 always showed ▶. This corrects #890 (#930).
+- Review trailers whose address uses `=`, `'` or another character RFC 5322
+  allows before the `@` are indexed under the whole address and name.
+  `Reviewed-by: X <x=y@example.com>` was stored as the name `X <x=` and the
+  address `y@example.com`, so it counted toward the wrong reviewer on reviewer
+  and subsystem pages and in the maintainer pickup flag. This closes the 3.29.0
+  known gap: the review tooltip and the thread `.md` status line no longer show
+  a name fragment such as `Alice <alice.smith=`. A trailer whose address holds
+  a character outside that set (such as `"`), or is joined to the name by
+  punctuation (`Name:a@example.com`), is now skipped instead of split (#913).
+- `backfill-article-trailers --reprocess` now removes an article's trailer rows
+  when its body no longer yields any, instead of keeping the old ones (#913).
+- `dev-seed-thread` works again. It failed on every path: a read-only
+  database outside the broker, and no writer inside it. It now sends the
+  inbox and the ingest to the running broker, so it needs one, and stores
+  the mirror path as an absolute path (#932).
+
 ## [3.29.0] - 2026-10-25
 
 No migration and no backfill. Operators act only if they set `ANALYZE_LIMIT`,

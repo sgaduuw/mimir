@@ -32,11 +32,20 @@ from mimir.cli._common import (
 
 
 @click.command("backfill-article-files")
+@click.option(
+    "--patch-subjects",
+    is_flag=True,
+    help="Read only articles whose subject is an in-series patch "
+    "([PATCH 2/5]). Solo [PATCH] mails and non-series quilt patches are "
+    "left alone. Runs apart from one without this flag. With --reprocess, "
+    "only those patches are redone.",
+)
 @backfill_options(
     reprocess_help="Re-extract for articles that already have rows (deletes "
     "existing rows first). Use after an extractor change.",
 )
 def backfill_article_files_command(
+    patch_subjects: bool,
     limit: int | None,
     reprocess: bool,
     restart: bool,
@@ -61,6 +70,7 @@ def backfill_article_files_command(
             reprocess=reprocess,
             restart=restart,
             yes=yes,
+            extra={"patch_subjects": patch_subjects},
         )
     except BrokerUnavailable as exc:
         raise click.ClickException(f"broker backfill_article_files failed: {exc}")
@@ -162,13 +172,9 @@ def backfill_patch_series_command(
 
 
 @click.command("backfill-series-chains")
-@backfill_options(
-    reprocess_help="No effect: every run chains whole keys afresh and writes "
-    "only the heads that change.",
-)
+@backfill_options(reprocess_help=None)
 def backfill_series_chains_command(
     limit: int | None,
-    reprocess: bool,
     restart: bool,
     yes: bool,
     verbose: int,
@@ -189,7 +195,6 @@ def backfill_series_chains_command(
             BackfillSeriesChainsRequest,
             BackfillResult,
             limit=limit,
-            reprocess=reprocess,
             restart=restart,
             yes=yes,
         )

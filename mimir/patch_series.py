@@ -23,6 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
 from email.utils import parseaddr
+from itertools import pairwise
 
 from sqlalchemy import and_, literal_column, select
 
@@ -122,6 +123,24 @@ def representative_key(version: str | None, date, article_id: int) -> tuple:
     return (not numbered, date is None, date, article_id)
 
 
+def slot_rank(article_id: int, has_diff: bool) -> tuple[bool, int]:
+    """Sort key choosing the patch of a series slot (#861), the rows
+    sharing `(key, head, version, position)`: the lowest id among the
+    rows with a diff, else the lowest id. Every other row is a re-post.
+    `has_diff` is `patches.has_article_files`, the same predicate
+    `_reply_to_patch_in_db` decides a patch by.
+
+    It differs from `representative_key`, which folds postings by
+    `(date, id)`, on purpose. This pick is computed at render, never
+    stored, and an id never changes, so the pick is stable. The date is
+    the mirror's commit time, not reliably the send date, so ranking by
+    it would move the pick on a re-ingest. Measured 2026-10-25, ranking
+    by lowest id changes today's pick in 163 patch and 81 cover slots,
+    where today's pick has no diff; ranking by newest date would move
+    72,532 patch picks, mostly to an identical resend."""
+    return (not has_diff, article_id)
+
+
 # A series is (patch_series_key, COALESCE(patch_series_head_id, 0))
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's
@@ -153,6 +172,39 @@ def series_head():
 def same_series(key: str, head_id: int | None):
     """ORM condition: an `Article` is in the series `(key, head_id)`."""
     return and_(Article.patch_series_key == key, series_head() == (head_id or 0))
+
+
+def same_posting(article: Article):
+    """ORM condition: an `Article` was posted with `article`, meaning the
+    same series and the same version string, cover and patches alike.
+    The string, not the revision number `version_number_sql` gives:
+    that folds an `rfc` posting into the `v1` after it (#691), and this
+    asks which patches went out together. A resend of one version within
+    the same series reads as the same posting. Only for an article with a
+    key and a version; a NULL version would compare as `IS NULL`."""
+    return and_(
+        same_series(article.patch_series_key, article.patch_series_head_id),
+        Article.patch_series_version == article.patch_series_version,
+    )
+
+
+def adjacent_versions(revisions) -> list[tuple[str, str]]:
+    """`(older, newer)` version pairs, one per step between adjacent
+    revisions, from `(date, article_id, version)` rows of one series and
+    one position. The revisions fold links each step and the series diff
+    sitemap lists the same steps (#844, #846), so a link and a sitemap
+    entry come out byte-identical.
+
+    Oldest first, undated last, the id breaking ties. A version posted
+    again is a resend, folded into its first appearance. A NULL or bare
+    `resend` version is dropped, because the diff route matches version
+    strings exactly and cannot serve either.
+    """
+    ordered = sorted(
+        (r for r in revisions if r[2] and r[2] != "resend"),
+        key=lambda r: (r[0] is None, r[0], r[1]),
+    )
+    return list(pairwise(dict.fromkeys(r[2] for r in ordered)))
 
 
 def newer_revision_sql(older: str, newer: str) -> str:
@@ -421,11 +473,55 @@ def posting_version(cover_subject, patch_subjects, stored=None) -> str | None:
     return version if int(version[1:]) > int(mine[1:]) else base
 
 
-def cover_of_patch(thread_parent, parent_of, posting, subject, date):
+# A patch posted this close to a cover of its own explicit version, among
+# the old cover's replies, belongs to that cover (#871).
+SIBLING_COVER_WINDOW = timedelta(days=1)
+
+
+def _sibling_cover(old_cover, replies, posting, subject, date):
+    """The cover of the patch's own revision among `replies`, the direct
+    replies of the `old_cover` it answers, or None (#871). An author who
+    sends v3 with `--in-reply-to` the v2 cover threads the whole new
+    posting under it, and #862 orphans the patches of that posting.
+
+    The sibling is a cover naming the patch's explicit version (never the
+    bare bracket's v1) and its total, under the old cover's own key
+    (another title or sender is another series, which is not re-keyed
+    here), dated within `SIBLING_COVER_WINDOW` of the patch on either side.
+    The earliest by `(date, message_id)` wins, whatever order `replies`
+    comes in. Reads subjects, never stored series columns, like the walk."""
+    old = parse_cover_letter(unfold(old_cover.subject))
+    version = _explicit_version(subject)
+    best = None
+    for row in replies:
+        cover = parse_cover_letter(unfold(row.subject))
+        if (
+            cover is None
+            or row.date is None
+            or _explicit_version(row.subject) != version
+            or cover.total != posting[1]
+            or series_key(cover.title, row.author)
+            != series_key(old.title, old_cover.author)
+            or abs(aware_utc(date) - aware_utc(row.date)) > SIBLING_COVER_WINDOW
+        ):
+            continue
+        if best is None or (aware_utc(row.date), row.message_id) < (
+            aware_utc(best.date),
+            best.message_id,
+        ):
+            best = row
+    return best
+
+
+def cover_of_patch(
+    thread_parent, parent_of, posting, subject, date, *, replies_of=None
+):
     """The cover an in-series patch answers, or None. `posting` is the
     patch's `_posting`, `subject` and `date` its own, `parent_of(message_id)`
     a row with `message_id`, `subject`, `author`, `date` and
-    `thread_parent`, or None.
+    `thread_parent`, or None. `replies_of(message_id)` lists the rows
+    whose `thread_parent` is that message, for `_sibling_cover`; without it
+    a refused cover is simply None.
 
     Follows parents through in-series patches with the patch's total and
     version (`git send-email --chain-reply-to` threads each patch under
@@ -434,8 +530,10 @@ def cover_of_patch(thread_parent, parent_of, posting, subject, date):
     The cover itself is not compared, as it always was, except for a
     patch posted well after a cover of another explicit version
     (`_answers_old_revision`): that is a later revision answering an old
-    thread, and has no cover here. Reads subjects, never stored series columns,
-    so the answer does not depend on which rows were linked first."""
+    thread. It has no cover here, unless that cover's own replies hold a
+    cover of the patch's revision (`_sibling_cover`, #871). Reads subjects,
+    never stored series columns, so the answer does not depend on which
+    rows were linked first."""
     seen = set()
     for _ in range(PATCH_WALK_HOPS):
         if thread_parent is None or thread_parent in seen:
@@ -446,21 +544,31 @@ def cover_of_patch(thread_parent, parent_of, posting, subject, date):
         if parent is None:
             return None
         if parent[0] == 0:
-            return None if _answers_old_revision(subject, date, row) else row
+            if not _answers_old_revision(subject, date, row):
+                return row
+            if replies_of is None:
+                return None
+            return _sibling_cover(
+                row, replies_of(row.message_id), posting, subject, date
+            )
         if parent[1:3] != posting[1:3]:
             return None
         thread_parent = row.thread_parent
     return None
 
 
-def in_series_link(subject, thread_parent, parent_of, date) -> tuple[str, str] | None:
+def in_series_link(
+    subject, thread_parent, parent_of, date, *, replies_of=None
+) -> tuple[str, str] | None:
     """`(patch_series_key, patch_series_version)` for an in-series patch:
     its cover's (`cover_of_patch`), or None. A cover that is a reply to
     its own parent has no series (#820), so its patches have none."""
     posting = _posting(subject)
     if posting is None or posting[0] == 0:
         return None
-    cover = cover_of_patch(thread_parent, parent_of, posting, subject, date)
+    cover = cover_of_patch(
+        thread_parent, parent_of, posting, subject, date, replies_of=replies_of
+    )
     if cover is None:
         return None
     above = parent_of(cover.thread_parent) if cover.thread_parent else None
@@ -487,6 +595,20 @@ def _parent(session, thread_parent):
             Article.thread_parent,
         ).where(Article.message_id == thread_parent)
     ).one_or_none()
+
+
+def _replies(session, message_id):
+    """The rows whose thread parent is `message_id`, by one select on the
+    indexed `thread_parent`, with the columns `_sibling_cover` reads."""
+    return session.execute(
+        select(
+            Article.message_id,
+            Article.subject,
+            Article.author,
+            Article.date,
+            Article.thread_parent,
+        ).where(Article.thread_parent == message_id)
+    ).all()
 
 
 def _reply_to_patch_in_db(session, article, subject) -> bool:
@@ -599,6 +721,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
             article.thread_parent,
             lambda mid: _parent(session, mid),
             article.date,
+            replies_of=lambda mid: _replies(session, mid),
         )
         if link is not None:
             key, version = link

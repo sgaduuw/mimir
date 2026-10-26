@@ -80,17 +80,11 @@ def api_message_body(inbox_name: str, article_id: int):
     """
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        article = session.get(Article, article_id)
-        link = (
-            session.execute(
-                select(ArticleList.epoch, ArticleList.commit_sha).where(
-                    ArticleList.article_id == article_id,
-                    ArticleList.inbox_id == inbox.id,
-                )
-            ).one_or_none()
-            if article is not None
-            else None
-        )
+        link = session.execute(
+            select(Article.message_id, ArticleList.epoch, ArticleList.commit_sha)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(Article.id == article_id, ArticleList.inbox_id == inbox.id)
+        ).one_or_none()
         if link is None:
             abort(404)
         etag = hashlib.blake2s(
@@ -110,7 +104,7 @@ def api_message_body(inbox_name: str, article_id: int):
             response = Response(status=304)
         else:
             try:
-                parsed = read_message(session, inbox, article.message_id)
+                parsed = read_message(session, inbox, link.message_id)
             except MessageNotFound:
                 abort(404)
             body = render_body(

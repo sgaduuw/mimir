@@ -19,7 +19,7 @@ from dulwich.objects import Commit, Tree
 from dulwich.repo import Repo
 from sqlalchemy import create_engine, func, select, text
 
-from mimir.broker.writes import WriteOp, WriterThread
+from mimir.broker.writes import WriteOp
 from mimir.config import settings
 from mimir.mainline import _submit_mainline_batch, extract_message_ids, walk_commits
 from mimir.models import Inbox, MainlineCommit, MainlineState
@@ -827,11 +827,12 @@ def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path
     assert result.trees["fake"].skipped is True
 
 
-def test_update_mainline_per_tree_failure_isolated(seeded_db, monkeypatch, tmp_path):
+def test_update_mainline_per_tree_failure_isolated(
+    seeded_db, monkeypatch, tmp_path, writer
+):
     """One tree raising doesn't fail the others."""
     from mimir.broker import _context
     from mimir.broker.pools import ReadSessionPool
-    from mimir.broker.writes import WriterThread
     from mimir.config import TreeConfig, settings
     from mimir.mainline import WalkResult, update_mainline
 
@@ -864,14 +865,11 @@ def test_update_mainline_per_tree_failure_isolated(seeded_db, monkeypatch, tmp_p
     # Phase 3: update_mainline fetches the active pool + writer from
     # _context when skip_commits=False. Register them for this test.
     pool = ReadSessionPool.from_settings()
-    writer = WriterThread.from_settings()
-    writer.start()
     try:
         _context.set_active(pool, writer)
         result = update_mainline(skip_maintainers=True)
     finally:
         _context.clear_active()
-        writer.stop(timeout=10)
         pool.close()
 
     assert result.trees["bad"].ok is False
@@ -1562,108 +1560,93 @@ def _row(commit_sha: str, message_id: str, tree_name: str = "linus"):
     }
 
 
-def test_submit_mainline_batch_inserts_rows_via_writer(seeded_db):
+def test_submit_mainline_batch_inserts_rows_via_writer(seeded_db, writer):
     """_submit_mainline_batch composes a WriteOp wrapping the
     INSERT OR IGNORE for a batch of (commit_sha, message_id, tree_name) rows,
     submits it to the writer, and the rows appear after the writer
     drains."""
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        batch = [
-            _row("a" * 40, "msg-a@kernel.org"),
-            _row("b" * 40, "msg-b@kernel.org"),
-        ]
-        future = _submit_mainline_batch(writer, "linus", batch)
-        future.result(timeout=5)
+    batch = [
+        _row("a" * 40, "msg-a@kernel.org"),
+        _row("b" * 40, "msg-b@kernel.org"),
+    ]
+    future = _submit_mainline_batch(writer, "linus", batch)
+    future.result(timeout=5)
 
-        engine = create_engine(settings.database_url, future=True)
-        with engine.connect() as c:
-            count = c.execute(
-                text(
-                    "SELECT COUNT(*) FROM mainline_commits "
-                    "WHERE tree_name = 'linus' AND commit_sha IN (:a, :b)"
-                ),
-                {"a": "a" * 40, "b": "b" * 40},
-            ).scalar_one()
-            assert count == 2
-            # Commit the implicit read transaction before starting the
-            # cleanup DELETE; SQLAlchemy 2.0 autobegin means the SELECT
-            # above already opened a transaction on this connection.
-            c.commit()
-            c.execute(
-                text(
-                    "DELETE FROM mainline_commits "
-                    "WHERE tree_name = 'linus' AND commit_sha IN (:a, :b)"
-                ),
-                {"a": "a" * 40, "b": "b" * 40},
-            )
-            c.commit()
-        engine.dispose()
-    finally:
-        writer.stop(timeout=5)
+    engine = create_engine(settings.database_url, future=True)
+    with engine.connect() as c:
+        count = c.execute(
+            text(
+                "SELECT COUNT(*) FROM mainline_commits "
+                "WHERE tree_name = 'linus' AND commit_sha IN (:a, :b)"
+            ),
+            {"a": "a" * 40, "b": "b" * 40},
+        ).scalar_one()
+        assert count == 2
+        # Commit the implicit read transaction before starting the
+        # cleanup DELETE; SQLAlchemy 2.0 autobegin means the SELECT
+        # above already opened a transaction on this connection.
+        c.commit()
+        c.execute(
+            text(
+                "DELETE FROM mainline_commits "
+                "WHERE tree_name = 'linus' AND commit_sha IN (:a, :b)"
+            ),
+            {"a": "a" * 40, "b": "b" * 40},
+        )
+        c.commit()
+    engine.dispose()
 
 
-def test_submit_mainline_batch_is_idempotent_on_replay(seeded_db):
+def test_submit_mainline_batch_is_idempotent_on_replay(seeded_db, writer):
     """If a batch is submitted twice (e.g. the next tick re-walks
     after a crash), the on_conflict_do_nothing makes the second
     submission a no-op rather than a constraint error.
     Verified by re-submitting the same batch and asserting row
     count stays at the original size."""
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        batch = [
-            _row("c" * 40, "msg-c@kernel.org"),
-        ]
-        _submit_mainline_batch(writer, "linus", batch).result(timeout=5)
-        # Second submission: should not raise; should be a no-op.
-        _submit_mainline_batch(writer, "linus", batch).result(timeout=5)
+    batch = [
+        _row("c" * 40, "msg-c@kernel.org"),
+    ]
+    _submit_mainline_batch(writer, "linus", batch).result(timeout=5)
+    # Second submission: should not raise; should be a no-op.
+    _submit_mainline_batch(writer, "linus", batch).result(timeout=5)
 
-        engine = create_engine(settings.database_url, future=True)
-        with engine.connect() as c:
-            count = c.execute(
-                text(
-                    "SELECT COUNT(*) FROM mainline_commits "
-                    "WHERE tree_name = 'linus' AND commit_sha = :s"
-                ),
-                {"s": "c" * 40},
-            ).scalar_one()
-            assert count == 1
-            # Commit the implicit read transaction before starting the
-            # cleanup DELETE; same SQLAlchemy 2.0 autobegin reason as
-            # the first test.
-            c.commit()
-            c.execute(
-                text(
-                    "DELETE FROM mainline_commits "
-                    "WHERE tree_name = 'linus' AND commit_sha = :s"
-                ),
-                {"s": "c" * 40},
-            )
-            c.commit()
-        engine.dispose()
-    finally:
-        writer.stop(timeout=5)
+    engine = create_engine(settings.database_url, future=True)
+    with engine.connect() as c:
+        count = c.execute(
+            text(
+                "SELECT COUNT(*) FROM mainline_commits "
+                "WHERE tree_name = 'linus' AND commit_sha = :s"
+            ),
+            {"s": "c" * 40},
+        ).scalar_one()
+        assert count == 1
+        # Commit the implicit read transaction before starting the
+        # cleanup DELETE; same SQLAlchemy 2.0 autobegin reason as
+        # the first test.
+        c.commit()
+        c.execute(
+            text(
+                "DELETE FROM mainline_commits "
+                "WHERE tree_name = 'linus' AND commit_sha = :s"
+            ),
+            {"s": "c" * 40},
+        )
+        c.commit()
+    engine.dispose()
 
 
-def test_submit_mainline_batch_empty_batch_is_noop(seeded_db):
+def test_submit_mainline_batch_empty_batch_is_noop(seeded_db, writer):
     """Empty batch returns a pre-resolved future without submitting
     anything to the writer (so the writer doesn't get spurious
     no-op WriteOps that just waste a transaction)."""
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        future = _submit_mainline_batch(writer, "linus", [])
-        # Future should resolve immediately; .result() with timeout=0
-        # should work (would block if a real submit happened).
-        assert future.done()
-        assert future.result() is None
-    finally:
-        writer.stop(timeout=5)
+    future = _submit_mainline_batch(writer, "linus", [])
+    # Future should resolve immediately; .result() with timeout=0
+    # should work (would block if a real submit happened).
+    assert future.done()
+    assert future.result() is None
 
 
-def test_submit_mainline_cursor_update_advances_state_via_writer(seeded_db):
+def test_submit_mainline_cursor_update_advances_state_via_writer(seeded_db, writer):
     """_submit_mainline_cursor_update composes a WriteOp wrapping the
     MainlineState upsert for a tree's commits_walked_to_sha cursor,
     submits it to the writer, and the state row reflects the new
@@ -1673,55 +1656,46 @@ def test_submit_mainline_cursor_update_advances_state_via_writer(seeded_db):
     """
     from sqlalchemy import create_engine, text
 
-    from mimir.broker.writes import WriterThread
     from mimir.config import settings
     from mimir.mainline import _submit_mainline_cursor_update
 
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        # First update: row may or may not exist for tree "linus"
-        # from a prior test; either way the upsert should leave the
-        # cursor at "d" * 40.
-        future = _submit_mainline_cursor_update(writer, "linus", "d" * 40)
-        future.result(timeout=5)
+    # First update: row may or may not exist for tree "linus"
+    # from a prior test; either way the upsert should leave the
+    # cursor at "d" * 40.
+    future = _submit_mainline_cursor_update(writer, "linus", "d" * 40)
+    future.result(timeout=5)
 
-        engine = create_engine(settings.database_url, future=True)
-        with engine.connect() as c:
-            sha = c.execute(
-                text(
-                    "SELECT commits_walked_to_sha FROM mainline_state "
-                    "WHERE tree_name = 'linus'"
-                )
-            ).scalar_one_or_none()
-            assert sha == "d" * 40
-            c.commit()
-
-            # Reset for other tests: set cursor back to NULL.
-            c.execute(
-                text(
-                    "UPDATE mainline_state SET commits_walked_to_sha = NULL "
-                    "WHERE tree_name = 'linus'"
-                )
+    engine = create_engine(settings.database_url, future=True)
+    with engine.connect() as c:
+        sha = c.execute(
+            text(
+                "SELECT commits_walked_to_sha FROM mainline_state "
+                "WHERE tree_name = 'linus'"
             )
-            c.commit()
-        engine.dispose()
-    finally:
-        writer.stop(timeout=5)
+        ).scalar_one_or_none()
+        assert sha == "d" * 40
+        c.commit()
+
+        # Reset for other tests: set cursor back to NULL.
+        c.execute(
+            text(
+                "UPDATE mainline_state SET commits_walked_to_sha = NULL "
+                "WHERE tree_name = 'linus'"
+            )
+        )
+        c.commit()
+    engine.dispose()
 
 
-def test_submit_mainline_cursor_update_creates_row_when_missing(seeded_db):
+def test_submit_mainline_cursor_update_creates_row_when_missing(seeded_db, writer):
     """If MainlineState has no row for this tree yet, the upsert
     creates one with the cursor set. Covers the "new tree" boot
     case where MainlineState may be empty."""
     from sqlalchemy import create_engine, text
 
-    from mimir.broker.writes import WriterThread
     from mimir.config import settings
     from mimir.mainline import _submit_mainline_cursor_update
 
-    writer = WriterThread.from_settings()
-    writer.start()
     engine = create_engine(settings.database_url, future=True)
     try:
         # Ensure no row exists for tree "phase3-new".
@@ -1747,11 +1721,13 @@ def test_submit_mainline_cursor_update_creates_row_when_missing(seeded_db):
             c.commit()
     finally:
         engine.dispose()
-        writer.stop(timeout=5)
 
 
 def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
-    seeded_db, tmp_path, monkeypatch
+    seeded_db,
+    tmp_path,
+    monkeypatch,
+    writer,
 ):
     """Phase 3 contract: a crash between batch N and the cursor
     submission leaves the cursor at its old position, so the next
@@ -1770,7 +1746,6 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
     from sqlalchemy import create_engine
 
     import mimir.mainline as mainline_mod
-    from mimir.broker.writes import WriterThread
     from mimir.config import settings
     from mimir.mainline import walk_commits
     from mimir.models import MainlineCommit, MainlineState
@@ -1792,63 +1767,20 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
 
     tree_name = "crash-test"
 
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        # Walk 1: inject a failing cursor helper. The batch WriteOps
-        # have already committed before the cursor fires (per Phase 3's
-        # "cursor is the final WriteOp" design), so some MainlineCommit
-        # rows should be present after the exception propagates.
-        def _failing_cursor(w, tn, last_sha):
-            f: Future = Future()
-            f.set_exception(RuntimeError("simulated crash before cursor commit"))
-            return f
+    # Walk 1: inject a failing cursor helper. The batch WriteOps
+    # have already committed before the cursor fires (per Phase 3's
+    # "cursor is the final WriteOp" design), so some MainlineCommit
+    # rows should be present after the exception propagates.
+    def _failing_cursor(w, tn, last_sha):
+        f: Future = Future()
+        f.set_exception(RuntimeError("simulated crash before cursor commit"))
+        return f
 
-        monkeypatch.setattr(
-            mainline_mod, "_submit_mainline_cursor_update", _failing_cursor
-        )
+    monkeypatch.setattr(mainline_mod, "_submit_mainline_cursor_update", _failing_cursor)
 
-        import pytest as _pytest
+    import pytest as _pytest
 
-        with _pytest.raises(RuntimeError, match="simulated crash"):
-            with seeded_db() as session:
-                walk_commits(
-                    session,
-                    repo_path,
-                    tree_name=tree_name,
-                    writer=writer,
-                    batch_size=2,
-                    branch="HEAD",
-                )
-
-        # State A: some MainlineCommit rows committed (the batches before
-        # the cursor failed), but cursor still at the pre-walk value (NULL).
-        engine = create_engine(settings.database_url, future=True)
-        with engine.connect() as c:
-            rows_after_crash = c.execute(
-                sa.select(MainlineCommit.commit_sha).where(
-                    MainlineCommit.tree_name == tree_name
-                )
-            ).all()
-            state_after_crash = c.execute(
-                sa.select(MainlineState.commits_walked_to_sha).where(
-                    MainlineState.tree_name == tree_name
-                )
-            ).scalar_one_or_none()
-            c.commit()
-
-        assert len(rows_after_crash) > 0, (
-            "some batches should have committed before the cursor failure"
-        )
-        assert state_after_crash is None, (
-            "cursor must NOT have advanced if the final WriteOp failed"
-        )
-
-        # Walk 2: restore the real cursor helper and replay. The already-
-        # committed MainlineCommit rows are absorbed by on_conflict_do_nothing;
-        # the cursor should advance to HEAD.
-        monkeypatch.undo()
-
+    with _pytest.raises(RuntimeError, match="simulated crash"):
         with seeded_db() as session:
             walk_commits(
                 session,
@@ -1859,44 +1791,81 @@ def test_mid_walk_cursor_failure_leaves_cursor_at_old_position(
                 branch="HEAD",
             )
 
-        with engine.connect() as c:
-            rows_after_replay = c.execute(
-                sa.select(MainlineCommit.commit_sha).where(
-                    MainlineCommit.tree_name == tree_name
-                )
-            ).all()
-            state_after_replay = c.execute(
-                sa.select(MainlineState.commits_walked_to_sha).where(
-                    MainlineState.tree_name == tree_name
-                )
-            ).scalar_one_or_none()
-            c.commit()
-
-        # No duplicates: on_conflict_do_nothing absorbed the already-
-        # committed batches. The cursor advanced to HEAD.
-        assert len(rows_after_replay) == 5, (
-            f"expected exactly 5 rows (one per Link: commit), got {len(rows_after_replay)}"
-        )
-        assert state_after_replay is not None, (
-            "cursor should have advanced on the successful replay"
-        )
-
-        # Cleanup so other tests start clean.
-        with engine.connect() as c:
-            c.execute(
-                sa.delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+    # State A: some MainlineCommit rows committed (the batches before
+    # the cursor failed), but cursor still at the pre-walk value (NULL).
+    engine = create_engine(settings.database_url, future=True)
+    with engine.connect() as c:
+        rows_after_crash = c.execute(
+            sa.select(MainlineCommit.commit_sha).where(
+                MainlineCommit.tree_name == tree_name
             )
-            c.execute(
-                sa.delete(MainlineState).where(MainlineState.tree_name == tree_name)
+        ).all()
+        state_after_crash = c.execute(
+            sa.select(MainlineState.commits_walked_to_sha).where(
+                MainlineState.tree_name == tree_name
             )
-            c.commit()
-        engine.dispose()
-    finally:
-        writer.stop(timeout=10)
+        ).scalar_one_or_none()
+        c.commit()
+
+    assert len(rows_after_crash) > 0, (
+        "some batches should have committed before the cursor failure"
+    )
+    assert state_after_crash is None, (
+        "cursor must NOT have advanced if the final WriteOp failed"
+    )
+
+    # Walk 2: restore the real cursor helper and replay. The already-
+    # committed MainlineCommit rows are absorbed by on_conflict_do_nothing;
+    # the cursor should advance to HEAD.
+    monkeypatch.undo()
+
+    with seeded_db() as session:
+        walk_commits(
+            session,
+            repo_path,
+            tree_name=tree_name,
+            writer=writer,
+            batch_size=2,
+            branch="HEAD",
+        )
+
+    with engine.connect() as c:
+        rows_after_replay = c.execute(
+            sa.select(MainlineCommit.commit_sha).where(
+                MainlineCommit.tree_name == tree_name
+            )
+        ).all()
+        state_after_replay = c.execute(
+            sa.select(MainlineState.commits_walked_to_sha).where(
+                MainlineState.tree_name == tree_name
+            )
+        ).scalar_one_or_none()
+        c.commit()
+
+    # No duplicates: on_conflict_do_nothing absorbed the already-
+    # committed batches. The cursor advanced to HEAD.
+    assert len(rows_after_replay) == 5, (
+        f"expected exactly 5 rows (one per Link: commit), got {len(rows_after_replay)}"
+    )
+    assert state_after_replay is not None, (
+        "cursor should have advanced on the successful replay"
+    )
+
+    # Cleanup so other tests start clean.
+    with engine.connect() as c:
+        c.execute(
+            sa.delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+        )
+        c.execute(sa.delete(MainlineState).where(MainlineState.tree_name == tree_name))
+        c.commit()
+    engine.dispose()
 
 
 def test_update_mainline_uses_writer_thread_via_active_context(
-    seeded_db, tmp_path, monkeypatch
+    seeded_db,
+    tmp_path,
+    monkeypatch,
+    writer,
 ):
     """update_mainline dispatches its writes through the active writer
     thread. write_transaction was removed in Phase 6b; the behavioral
@@ -1914,7 +1883,6 @@ def test_update_mainline_uses_writer_thread_via_active_context(
     """
     from mimir.broker import _context
     from mimir.broker.pools import ReadSessionPool
-    from mimir.broker.writes import WriterThread
     from mimir.config import settings
     from tests.conftest import linus_tree
 
@@ -1923,8 +1891,6 @@ def test_update_mainline_uses_writer_thread_via_active_context(
     monkeypatch.setattr(settings, "trees", linus_tree(repo))
 
     pool = ReadSessionPool.from_settings()
-    writer = WriterThread.from_settings()
-    writer.start()
 
     try:
         _context.set_active(pool, writer)
@@ -1942,11 +1908,12 @@ def test_update_mainline_uses_writer_thread_via_active_context(
         assert result is not None
     finally:
         _context.clear_active()
-        writer.stop(timeout=10)
         pool.close()
 
 
-def test_walk_commits_rebases_dispatches_rebuild_then_cursor(seeded_db, tmp_path):
+def test_walk_commits_rebases_dispatches_rebuild_then_cursor(
+    seeded_db, tmp_path, writer
+):
     """`rebases=True` trees (linux-next, mm/mm-stable, etc.) must
     dispatch exactly two WriteOps, in this order:
 
@@ -1964,7 +1931,6 @@ def test_walk_commits_rebases_dispatches_rebuild_then_cursor(seeded_db, tmp_path
     from dulwich.repo import Repo
     from sqlalchemy import create_engine
 
-    from mimir.broker.writes import WriterThread
     from mimir.config import settings
     from mimir.mainline import walk_commits
     from mimir.models import MainlineCommit, MainlineState
@@ -1984,72 +1950,63 @@ def test_walk_commits_rebases_dispatches_rebuild_then_cursor(seeded_db, tmp_path
 
     tree_name = "rebases-sequence-test"
 
-    writer = WriterThread.from_settings()
-    writer.start()
+    real_submit = writer.submit
+    captured_labels: list[str] = []
+
+    def _recording_submit(op):
+        captured_labels.append(op.label)
+        return real_submit(op)
+
+    writer.submit = _recording_submit  # type: ignore[method-assign]
     try:
-        real_submit = writer.submit
-        captured_labels: list[str] = []
-
-        def _recording_submit(op):
-            captured_labels.append(op.label)
-            return real_submit(op)
-
-        writer.submit = _recording_submit  # type: ignore[method-assign]
-        try:
-            with seeded_db() as session:
-                walk_commits(
-                    session,
-                    repo_path,
-                    tree_name=tree_name,
-                    writer=writer,
-                    batch_size=2,
-                    branch="HEAD",
-                    rebases=True,
-                )
-        finally:
-            writer.submit = real_submit  # type: ignore[method-assign]
-
-        # Filter to labels for THIS tree only (the session broker may
-        # have unrelated WriteOps interleaved on its writer).
-        tree_labels = [
-            label
-            for label in captured_labels
-            if label.startswith(f"mainline:{tree_name}:")
-        ]
-
-        # One rebuild, then the cursor LAST. No pre-walk DELETE and no
-        # per-batch inserts: either exposes a partial tree to readers
-        # between commits (#671).
-        assert tree_labels == [
-            f"mainline:{tree_name}:rebuild",
-            f"mainline:{tree_name}:cursor",
-        ], tree_labels
         with seeded_db() as session:
-            mids = set(
-                session.execute(
-                    sa.select(MainlineCommit.message_id).where(
-                        MainlineCommit.tree_name == tree_name
-                    )
-                ).scalars()
+            walk_commits(
+                session,
+                repo_path,
+                tree_name=tree_name,
+                writer=writer,
+                batch_size=2,
+                branch="HEAD",
+                rebases=True,
             )
-        assert mids == {"m1@test", "m2@test", "m3@test"}
-
-        # Cleanup so the synthetic tree_name doesn't pollute subsequent tests.
-        engine = create_engine(settings.database_url, future=True)
-        with engine.connect() as c:
-            c.execute(
-                sa.delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
-            )
-            c.execute(
-                sa.delete(MainlineState).where(MainlineState.tree_name == tree_name)
-            )
-            c.commit()
-        engine.dispose()
     finally:
-        writer.stop(timeout=10)
+        writer.submit = real_submit  # type: ignore[method-assign]
+
+    # Filter to labels for THIS tree only (the session broker may
+    # have unrelated WriteOps interleaved on its writer).
+    tree_labels = [
+        label for label in captured_labels if label.startswith(f"mainline:{tree_name}:")
+    ]
+
+    # One rebuild, then the cursor LAST. No pre-walk DELETE and no
+    # per-batch inserts: either exposes a partial tree to readers
+    # between commits (#671).
+    assert tree_labels == [
+        f"mainline:{tree_name}:rebuild",
+        f"mainline:{tree_name}:cursor",
+    ], tree_labels
+    with seeded_db() as session:
+        mids = set(
+            session.execute(
+                sa.select(MainlineCommit.message_id).where(
+                    MainlineCommit.tree_name == tree_name
+                )
+            ).scalars()
+        )
+    assert mids == {"m1@test", "m2@test", "m3@test"}
+
+    # Cleanup so the synthetic tree_name doesn't pollute subsequent tests.
+    engine = create_engine(settings.database_url, future=True)
+    with engine.connect() as c:
+        c.execute(
+            sa.delete(MainlineCommit).where(MainlineCommit.tree_name == tree_name)
+        )
+        c.execute(sa.delete(MainlineState).where(MainlineState.tree_name == tree_name))
+        c.commit()
+    engine.dispose()
 
 
-def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
+def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path, writer):
     """Phase 3 contract: while walk_commits dispatches batches through
     the writer, concurrent cache-set writes drain between batches
     instead of head-of-line-stalling for the full walk.
@@ -2085,8 +2042,6 @@ def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
     tree_name = "ft-stress"
 
     # --- set up WriterThread and read session ----------------------------
-    writer = WriterThread.from_settings()
-    writer.start()
 
     # A writable engine for cleanup; reads come from seeded_db sessions.
     engine = create_engine(settings.database_url, future=True)
@@ -2176,7 +2131,6 @@ def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path):
             c.commit()
     finally:
         engine.dispose()
-        writer.stop(timeout=10)
 
     # --- assertions ------------------------------------------------------
     assert not walk_exc, f"walk_commits failed: {walk_exc[0]!r}"

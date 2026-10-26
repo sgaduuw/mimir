@@ -25,7 +25,7 @@ from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import partial
-from itertools import groupby, pairwise
+from itertools import groupby
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from sqlalchemy import func, select
@@ -39,7 +39,8 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.models import Article, ArticleList, Inbox
-from mimir.patch_series import series_head
+from mimir.patch_series import adjacent_versions, series_head, slot_rank
+from mimir.patches import article_has_files
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -371,15 +372,53 @@ def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
     across page boundaries.
     """
     start, end = _archive_bounds(year, month)
+    if month is not None:
+        # Months keep the date-driven plan on purpose. The inbox-driven
+        # form below costs a whole inbox scan whatever the period. In a
+        # local synthetic bench (5.4M rows, about 30% of production
+        # scale, production planner statistics, 2026-10-26) a month on a
+        # 2.5M-member inbox went from 38 ms to 271 ms per child, 7x
+        # worse. This form costs one month of every inbox's articles.
+        return (
+            select(Article.id, Article.date)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id == Article.id,
+                Article.date >= start,
+                Article.date < end,
+            )
+            .order_by(Article.date.desc(), Article.id.desc())
+        )
+    # A year is driven from this inbox's roots (#947). A bare date range
+    # starts at `ix_articles_date` across every inbox's articles for the
+    # year. In the same local synthetic bench (about 30% of production
+    # scale, measured 2026-10-26) that cost 280 to 440 ms per child
+    # whatever the inbox. The grouped subquery is a co-routine SQLite
+    # cannot flatten, so it scans the covering
+    # `ix_article_lists_thread_root` for this inbox first: an
+    # 8k-member inbox went from 283 ms to 1.4 ms. `own` keeps the old
+    # predicate: a root must be its own member.
+    roots = (
+        select(ArticleList.thread_root_id.label("root"))
+        .where(
+            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
+        )
+        .group_by(ArticleList.thread_root_id)
+        .subquery()
+    )
+    own = aliased(ArticleList)
     return (
         select(Article.id, Article.date)
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id == Article.id,
-            Article.date >= start,
-            Article.date < end,
+        .select_from(roots)
+        .join(Article, Article.id == roots.c.root)
+        .join(
+            own,
+            (own.article_id == Article.id)
+            & (own.inbox_id == inbox.id)
+            & (own.thread_root_id == Article.id),
         )
+        .where(Article.date >= start, Article.date < end)
         .order_by(Article.date.desc(), Article.id.desc())
     )
 
@@ -1031,9 +1070,10 @@ def series_diff_sitemap_xml(
     cover-letter diff between each pair of adjacent revisions of every
     series whose key starts with `bucket`.
 
-    Adjacent follows the revisions fold (`patch_state._series_timeline`):
-    a series' covers oldest first, undated last, a resend folded into the
-    first appearance of its version (an unversioned one is dropped).
+    Adjacent is `patch_series.adjacent_versions`, which the revisions
+    fold links through too (#844): a series' covers oldest first, undated
+    last, a resend folded into the first appearance of its version (an
+    unversioned one is dropped).
     Covers only, because both covers must exist for the route to serve
     the diff, and per-position diffs would be 1.47M URLs (measured
     2026-10-24). `<lastmod>` is the newest cover in either slot: the
@@ -1053,6 +1093,7 @@ def series_diff_sitemap_xml(
                 series_head(),
                 Article.patch_series_version,
                 Article.date,
+                article_has_files(),
             ).where(
                 Article.patch_series_key >= bucket,
                 Article.patch_series_key < chr(ord(bucket) + 1),
@@ -1067,27 +1108,29 @@ def series_diff_sitemap_xml(
             )
         ).all()
         series: dict[tuple[str, int], list] = {}
-        for art_id, key, head, version, date in rows:
+        has_diff = {art_id: diff for art_id, *_, diff in rows}
+        for art_id, key, head, version, date, _diff in rows:
             series.setdefault((key, head), []).append((date, art_id, version))
 
         pairs = []
         for (key, head), covers in sorted(series.items()):
-            covers.sort(key=lambda c: (c[0] is None, c[0], c[1]))
             slot_dates: dict[str, list] = {}
-            first_id: dict[str, int] = {}
+            slot_ids: dict[str, list[int]] = {}
             for date, art_id, version in covers:
                 slot_dates.setdefault(version, []).append(date)
-                first_id[version] = min(first_id.get(version, art_id), art_id)
+                slot_ids.setdefault(version, []).append(art_id)
             # A version with no cover is absent here, so v1, v2 (no cover),
             # v3 pairs v1 with v3: adjacent among the revisions the route
             # can diff, and that page exists.
-            for older, newer in pairwise(slot_dates):
+            for older, newer in adjacent_versions(covers):
                 dates = [d for v in (older, newer) for d in slot_dates[v] if d]
                 lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
-                pairs.append((key, head, older, newer, first_id[newer], lastmod))
+                to_id = min(slot_ids[newer], key=lambda i: slot_rank(i, has_diff[i]))
+                pairs.append((key, head, older, newer, to_id, lastmod))
 
-        # The page nominates the canonical inbox of the lowest-id cover in
-        # its `to` slot; this resolves the same rule for the whole bucket.
+        # The page nominates the canonical inbox of the patch of its `to`
+        # slot (`slot_rank`); this resolves the same rule for the whole
+        # bucket.
         to_ids = [p[4] for p in pairs]
         inbox_of: dict[int, str] = {}
         for offset in range(0, len(to_ids), SITEMAP_URLS_PER_PAGE):

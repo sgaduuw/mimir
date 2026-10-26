@@ -538,6 +538,37 @@ def test_format_tooltip_pending_returns_none():
     assert tip is None
 
 
+def test_tooltip_does_not_show_part_of_an_address_the_trailer_line_hides(
+    client, monkeypatch
+):
+    """3.29.0 known gap: the trailer line hides `alice.smith=lkml@...`
+    (#922), but the parser stored the name `Alice <alice.smith=`, which
+    the tooltip and the thread `.md` status line printed (#913)."""
+    from mimir.config import settings
+    from mimir.lifecycle_status import LifecycleStatus, _format_tooltip
+    from mimir.rendering.linkify import plain_line
+    from mimir.trailers import extract_trailers
+    from mimir.web.filters import _redact_trailer_address
+
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    line = "Reviewed-by: Alice <alice.smith=lkml@example.com>"
+    with client.application.test_request_context():
+        shown_line = plain_line(line, _redact_trailer_address)
+        ((_role, name, _addr),) = extract_trailers(line)
+        tooltip = _format_tooltip(
+            state=LifecycleStatus.REVIEWED,
+            linus_sha=None,
+            linus_committed_at=None,
+            earliest_other_sha=None,
+            earliest_other_at=None,
+            superseded_by_version=None,
+            superseded_by_posted_at=None,
+            reviewers=[(name, False)],
+        )
+    assert "alice.smith" not in shown_line  # precondition: the line hides it
+    assert tooltip == "Alice"
+
+
 def test_bulk_uncached_returns_reviewer_counts(session):
     """The bulk fetcher surfaces review-trailer counts (total +
     maintainer-subset) per article alongside the state derivation."""
@@ -879,10 +910,9 @@ def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
     sha and committed_at. With committed_at as the only order, the pill
     followed physical row order, which linux-next's daily DELETE and
     reinsert rewrites, while the page validator stayed put. The subsystem
-    tree wins the tie, in the pill and in the summary sentence alike."""
+    tree wins the tie, in the pill and in the status line's evidence,
+    which come from one row (#844)."""
     from sqlalchemy import delete
-
-    from mimir.patch_state import _mainline_landings
 
     art = _seed_article(session, "tie@x")
     at = datetime(2026, 9, 1, 12, tzinfo=UTC)
@@ -904,7 +934,7 @@ def test_queued_tree_tie_survives_a_linux_next_rebuild(session):
         got = lifecycle_status_for_articles(session, [art.id], _lkml(session))[art.id]
         assert got.state == LifecycleStatus.QUEUED
         assert got.tree == "net-next"
-        assert _mainline_landings(session, art)[0].tree_name == "net-next"
+        assert got.commit_sha == "c" * 40
         # linux-next's daily rebuild: delete its rows, reinsert the same.
         session.execute(
             delete(MainlineCommit).where(MainlineCommit.tree_name == "linux-next")
@@ -1012,19 +1042,10 @@ def _tied_commits(session, message_id, tree_name):
 
 
 @pytest.mark.parametrize("tree_name", ["linus", "net-next"])
-def test_tied_commits_tooltip_matches_card(session, tree_name):
-    """The pill's tooltip and the card's sentence name the same commit
-    when one tree carries two at one committer date."""
-    from mimir.patch_state import _mainline_landings
-
+def test_tied_commits_tooltip_matches_the_status_evidence(session, tree_name):
+    """The pill's tooltip and the status line's commit name the same
+    commit when one tree carries two at one committer date."""
     art = _tied_commits(session, f"tie-{tree_name}@x", tree_name)
-    card = next(
-        c
-        for c in _mainline_landings(session, art)
-        if (c.tree_name == "linus") == (tree_name == "linus")
-    )
-    tip = lifecycle_status_for_articles(session, [art.id], _lkml(session))[
-        art.id
-    ].tooltip
-    assert card.commit_sha == "a" * 40  # precondition: the tie is broken by sha
-    assert tip.split(" · ")[0] == card.commit_sha[:12]
+    info = lifecycle_status_for_articles(session, [art.id], _lkml(session))[art.id]
+    assert info.commit_sha == "a" * 40  # precondition: the tie is broken by sha
+    assert info.tooltip.split(" · ")[0] == info.commit_sha[:12]

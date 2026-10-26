@@ -444,13 +444,6 @@ def _relative_time_filter(then: datetime | None) -> str:
     return _relative_time(then)
 
 
-# Linus's tree is the one that means "mainline". Mirrors the
-# `tree_name = 'linus'` literal in `mimir/lifecycle_status.py`'s bulk
-# SQL, which is what decides LANDED vs QUEUED on the badge this
-# sentence restates.
-_LINUS_TREE_NAME = "linus"
-
-
 @bp_web.app_template_filter("patch_synthesis")
 def _patch_synthesis_filter(patch_state) -> str:
     """One-sentence, human-readable summary of a patch's lifecycle,
@@ -460,8 +453,9 @@ def _patch_synthesis_filter(patch_state) -> str:
     badges and the state card encode this same information as glyphs
     and pills, which read well for a human scanning but give a crawler
     nothing indexable. Rendering it once as prose gives the page
-    unique, query-matching text ("landed in net-next as abc123") that
-    no other LKML mirror emits, without changing what the badges do.
+    unique, query-matching text that no other LKML mirror emits,
+    without changing what the badges do. Where the patch landed is the
+    status line's (`status_line`), read from the pill's own row (#844).
 
     Returns "" for non-patch articles and for patches with nothing
     worth saying, so the template can render it unconditionally.
@@ -475,8 +469,11 @@ def _patch_synthesis_filter(patch_state) -> str:
     if len(revisions) >= 2:
         current = next((e for e in revisions if e.is_current), None)
         if current is not None:
+            # The count is the versions the archive holds, a resend of one
+            # counting once (#861), not the series' length: "v7 of 5" read
+            # as a contradiction (#844).
             clauses.append(
-                f"revision {current.version} of {len(revisions)} in this series"
+                f"revision {current.version} ({len(revisions)} revisions archived)"
             )
         else:
             clauses.append(f"one of {len(revisions)} revisions in this series")
@@ -490,32 +487,43 @@ def _patch_synthesis_filter(patch_state) -> str:
             clause += f" ({maintainer_reviews} from subsystem maintainers)"
         clauses.append(clause)
 
-    # Mirror the lifecycle badge's tree priority. A patch that reached
-    # mainline routinely carries several landings (subsystem tree, then
-    # linux-next, then Linus), ordered oldest-first, so taking the first
-    # row would report "landed in net-next" directly under a LANDED
-    # badge showing the Linus sha. Answering "did this land in
-    # mainline?" is the whole point of the sentence, so Linus wins when
-    # present; otherwise report the earliest other tree, which is what
-    # the QUEUED badge shows.
-    landings = patch_state.mainline_landings
-    landed = next((c for c in landings if c.tree_name == _LINUS_TREE_NAME), None)
-    queued = next((c for c in landings if c.tree_name != _LINUS_TREE_NAME), None)
-    if landed is not None:
-        clause = f"landed in mainline as {landed.commit_sha[:12]}"
-        if landed.committed_at is not None:
-            clause += f" on {landed.committed_at:%Y-%m-%d}"
-        clauses.append(clause)
-    elif queued is not None:
-        clause = f"queued in {queued.tree_label} as {queued.commit_sha[:12]}"
-        if queued.committed_at is not None:
-            clause += f" on {queued.committed_at:%Y-%m-%d}"
-        clauses.append(clause)
-
     if not clauses:
         return ""
     sentence = "; ".join(clauses)
     return sentence[0].upper() + sentence[1:] + "."
+
+
+@bp_web.app_template_filter("status_line")
+def _status_line_filter(status) -> str:
+    """The lifecycle state as a sentence with its evidence (#844), or ""
+    for PENDING (silence, as on the pill) and for no status. Reads only
+    the pill's own `LifecycleStatusInfo`, so the state, the commit and
+    the newer revision are the ones the pill decided on, in the pill's
+    precedence (LANDED > SUPERSEDED > QUEUED > REVIEWED > PENDING)."""
+    # Function-local: `mimir.patch_state` imports `mimir.web.urls`.
+    from mimir.lifecycle_status import LifecycleStatus
+    from mimir.patch_state import _resolve_tree_label
+
+    if status is None:
+        return ""
+    state = status.state
+    commit = f" as {status.commit_sha[:12]}" if status.commit_sha else ""
+    if status.committed_at:
+        commit += f" on {status.committed_at:%Y-%m-%d}"
+    if state == LifecycleStatus.LANDED:
+        return f"Landed in mainline{commit}."
+    if state == LifecycleStatus.QUEUED:
+        return f"Queued in {_resolve_tree_label(status.tree or '')}{commit}."
+    if state == LifecycleStatus.SUPERSEDED:
+        if not status.superseded_by_version:
+            return "Superseded."
+        posted = (
+            f" (posted {status.superseded_at:%Y-%m-%d})" if status.superseded_at else ""
+        )
+        return f"Superseded by {status.superseded_by_version}{posted}."
+    if state == LifecycleStatus.REVIEWED:
+        return "Reviewed."
+    return ""
 
 
 @bp_web.app_template_filter("is_allowlisted_address")
@@ -534,6 +542,31 @@ def _is_allowlisted_address_filter(address: str | None) -> bool:
     if not address:
         return False
     return _is_allowlisted(address)
+
+
+@bp_web.app_template_filter("subsystem_maintainers")
+def _subsystem_maintainers_filter(hits) -> list[tuple[str, str]]:
+    """`(name, address)` of each `M:` maintainer across `hits`, once
+    each, in hit order. `R:` reviewers are left out: the profile route
+    serves `M:` only (see `maintainer_link_url`).
+
+    Deduped on the ADDRESS, not the name: the address is the profile's
+    identity, and two sections can spell one person's name differently.
+    MAINTAINERS permits a bare `M:` line with no address (rare but
+    legal); that person is keyed on the name and keeps a plain-text
+    entry rather than being dropped."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for hit in hits:
+        for role, name, address in hit.maintainers:
+            # A name that is itself a non-allowlisted address is no name
+            # (#852), so it can never print an address as text.
+            name = _usable_name(name)
+            key = address.lower() if address else f"name:{name}"
+            if role == "M" and name and key not in seen:
+                seen.add(key)
+                out.append((name, address))
+    return out
 
 
 @bp_web.app_template_filter("maintainer_link_url")

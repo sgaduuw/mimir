@@ -34,7 +34,7 @@ from mimir.dashboard import (
 )
 from mimir.models import Article, ArticleList, Inbox
 from mimir.web.routes.dashboards import _fetch_recent
-from tests._helpers import _cache_total
+from tests._helpers import PRODUCTION_STATS, _cache_total, planner_stats
 
 
 def _inbox(seeded_db, name: str) -> Inbox:
@@ -901,10 +901,36 @@ def test_small_inbox_listing_drives_from_the_inbox(seeded_db, listing):
     first, until it has `limit` of this inbox's matches; a small list
     never does (#796)."""
     alpha = _inbox(seeded_db, "alpha")
-    with seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         _cache_total(alpha, INBOX_FIRST_BELOW_ARTICLES - 1)
         plan = _listing_plan(s, listing, alpha)
     assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
+    assert "ix_articles_date" not in plan, plan
+
+
+@pytest.mark.parametrize("listing", _LISTING_FNS)
+def test_inbox_first_pin_holds_under_hostile_stats(seeded_db, listing):
+    """Under production stats the planner picks the inbox index unaided,
+    so they cannot show the `INDEXED BY` and `CROSS JOIN` pins are there.
+    Make the inbox seek look as dear as a full scan and the date walk
+    nearly free: without either pin the planner then walks the date
+    index or takes the other index."""
+    alpha = _inbox(seeded_db, "alpha")
+    dear = {
+        # Still narrows: an older SQLite drops an equality its stats call useless.
+        "ix_article_lists_inbox_id": "29764294 14762147",
+        "ix_articles_date": "50 1",
+    }
+    hostile = tuple(
+        (tbl, idx, dear.get(idx, stat)) for tbl, idx, stat in PRODUCTION_STATS
+    )
+    assert hostile != PRODUCTION_STATS
+    with planner_stats(seeded_db, hostile), seeded_db() as s:
+        _cache_total(alpha, INBOX_FIRST_BELOW_ARTICLES - 1)
+        plan = _listing_plan(s, listing, alpha)
+    assert plan.splitlines()[0].startswith(
+        "SEARCH al USING INDEX ix_article_lists_inbox_id"
+    ), plan
     assert "ix_articles_date" not in plan, plan
 
 
@@ -913,7 +939,7 @@ def test_big_inbox_listing_keeps_the_date_walk(seeded_db, listing):
     """On the biggest lists the 180-day floor bounds the date walk and
     inbox-first is the slower shape (lkml: 0.00 s vs 1.34 s)."""
     alpha = _inbox(seeded_db, "alpha")
-    with seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         _cache_total(alpha, INBOX_FIRST_BELOW_ARTICLES)
         plan = _listing_plan(s, listing, alpha)
     assert "ix_articles_date" in plan, plan
@@ -969,7 +995,7 @@ def test_author_recent_always_drives_from_the_inbox(seeded_db, total):
     """No date floor, so a date-first walk reads the whole archive for a
     sparse author, on any list size (#796)."""
     alpha = _inbox(seeded_db, "alpha")
-    with seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         _cache_total(alpha, total)
         plan = _listing_plan(s, _author_listing, alpha)
     assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
@@ -979,7 +1005,7 @@ def test_author_recent_always_drives_from_the_inbox(seeded_db, total):
 @pytest.mark.parametrize("listing", _RECENT)
 def test_small_inbox_recent_drives_from_the_inbox(seeded_db, listing):
     alpha = _inbox(seeded_db, "alpha")
-    with seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         _cache_total(alpha, RECENT_INBOX_FIRST_BELOW_ARTICLES - 1)
         plan = _listing_plan(s, listing, alpha)
     assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
@@ -1000,7 +1026,7 @@ def test_bigger_inbox_recent_keeps_the_date_walk(seeded_db, listing, total):
     costs hundreds (u-boot, linux-fsdevel); the recent listing switches
     below the lower threshold, not at the 1M one."""
     alpha = _inbox(seeded_db, "alpha")
-    with seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         _cache_total(alpha, total)
         plan = _listing_plan(s, listing, alpha)
     assert "ix_articles_date" in plan, plan
@@ -1015,7 +1041,7 @@ def test_unknown_size_recent_keeps_the_date_walk(seeded_db, listing):
     never slower than before and instant on a busy list."""
     alpha = _inbox(seeded_db, "alpha")
     cache.delete(_archive_stats_key(alpha))
-    with seeded_db() as s:
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         plan = _listing_plan(s, listing, alpha)
     assert "ix_articles_date" in plan, plan
 

@@ -561,9 +561,9 @@ WriteOp per batch via `_submit_ingest_batch`, awaited via
 `.result()` before the next batch composes).
 
 - `ingest_epoch` takes a new `writer` kwarg with context fallback
-  (`_context.get_active_writer()`) and a `batch_flush_seconds`
-  kwarg sourced from `INGEST_BATCH_FLUSH_SECONDS` (new Settings
-  field, default 0.5, env-tunable).
+  (`_context.get_active_writer()`) and flushes on
+  `INGEST_BATCH_FLUSH_SECONDS` (new Settings field, default 0.5,
+  env-tunable).
 - The Article INSERTs use SQLite's `RETURNING id` so ArticleList
   / ArticleFile / ArticleTrailer rows land their FKs in the same
   closure. Same-batch cover-letter lookup checks the in-flight
@@ -835,11 +835,11 @@ state and continue to pass unchanged.
 Subtleties surfaced during the migration (worth durable
 documentation):
 
-- **`_publish_names` requires a Session.** The `inboxes.py` write
-  functions must refresh the in-memory `_INBOX_NAMES` nav cache.
-  Writer closures receive a Connection, not a Session, so each calls
-  the existing `refresh_inbox_names()` helper after `future.result()`
-  (a few ms after the commit lands; acceptable for a nav cache).
+- **The nav-name cache is gone (#895).** The `inboxes.py` write
+  functions used to refresh an in-memory `_INBOX_NAMES` list after
+  each commit. Only the broker runs them, so the web process always
+  rendered from an empty list. A page that needs inbox names queries
+  the DB.
 
 - **Tracker add/remove/clear are no longer broker ops (#708).**
   Phase 5 folded `add_tracked_author` and `remove_tracked_author`
@@ -1070,8 +1070,18 @@ order).
   links as a second row there (#861). The cover hop is guarded only
   against a later revision: a patch of another explicit version posted
   over an hour after its cover is orphaned (#862); closer pairs stay
-  linked, a cover typo takes its patches' version (#870), and a patch is
-  not re-keyed to its own revision (#871).
+  linked, a cover typo takes its patches' version (#870), and a patch
+  whose own revision has a cover among the old cover's direct replies,
+  under the same key, with the same total, within a day of the patch, is
+  linked to that cover instead (#871; the earliest by date and message id).
+  `cover_of_patch` takes a `replies_of` lookup beside `parent_of`, and
+  ingest (the batch first), `backfill-patch-series` and `_load_key` (the
+  key's own covers) each pass theirs. Known gaps: a posting whose cover
+  comes after its patches in the mirror (in the same batch or a later
+  one) stays orphaned until the next `backfill-patch-series` run (plain,
+  no `--reprocess`); a sibling under another key (a retitled cover) is
+  not re-keyed (#941); and a sibling that is a #870 cover typo flips its
+  posting back to the version its subject names.
 - **The re-chain is the last writer of a posting's version (#870).**
   Ingest, replay and `backfill-patch-series` write the subject's own
   version (a patch, its cover's); the `rechain_keys` that ends each of

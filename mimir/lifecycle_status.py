@@ -58,7 +58,13 @@ class LifecycleStatusInfo:
     The remaining display-derivation fields are pre-computed by
     `_bulk_uncached` so templates render without further
     Python-side logic. They default to dormant / empty so cache
-    rows from prior versions deserialize cleanly during rollout."""
+    rows from prior versions deserialize cleanly during rollout.
+
+    The evidence fields are the state's own row, for the status line
+    (#844), so it can never name a different commit or revision than
+    the pill: the Linus commit for LANDED, the earliest other tree's
+    for QUEUED (`tree`), and the newest revision for SUPERSEDED (`superseded_by_id` is
+    that copy's article id, None on a row cached before it existed)."""
 
     state_value: str
     tree: str | None = None
@@ -67,6 +73,11 @@ class LifecycleStatusInfo:
     pill_label: str = ""
     count_suffix: str | None = None
     tooltip: str | None = None
+    commit_sha: str | None = None
+    committed_at: datetime | None = None
+    superseded_by_version: str | None = None
+    superseded_at: datetime | None = None
+    superseded_by_id: int | None = None
 
     @property
     def state(self) -> LifecycleStatus:
@@ -104,17 +115,18 @@ _REVIEW_ROLES_PARAM = bindparam(
 #
 # `sup` compares revision numbers, not strings, so v10 > v9, and takes
 # the newest revision's own version and date for the SUPERSEDED
-# tooltip, so the two always describe one real posting. The Linus sha
-# and date in `mc` come from one row for the same reason: the earliest,
-# which is the landing the card's sentence names.
+# tooltip and the status line, so the two always describe one real
+# posting. The Linus sha and date in `mc` come from one row for the same
+# reason: the earliest, which is the landing the status line names.
 #
 # The `mc` CTE's "earliest other tree" orders by committed_at, then
 # prefers a subsystem tree over linux-next, then the name. A subsystem
 # tree's commit reaches linux-next with the same sha and committed_at,
 # so committed_at alone ties and the pill would follow the physical row
 # order that linux-next's daily rebuild rewrites, while the page
-# validator (row count, max date) stays put (#673).
-# `patch_state._mainline_landings` uses the same order.
+# validator (row count, max date) stays put (#673). The status line
+# reads these columns from `LifecycleStatusInfo`, so it has no ordering
+# of its own to keep in step (#844).
 _V2 = version_number_sql("a2.patch_series_version")
 _NEWER = newer_revision_sql("a1", "a2")
 
@@ -173,16 +185,17 @@ newer AS (
     SELECT a1.id AS leaf,
            a2.patch_series_version AS sup_by_version,
            a2.date AS sup_by_date,
+           a2.id AS sup_by_id,
            ROW_NUMBER() OVER (
                PARTITION BY a1.id
-               ORDER BY {_V2} DESC, a2.date DESC
+               ORDER BY {_V2} DESC, a2.date DESC, a2.id DESC
            ) AS rn
       FROM articles a1
       JOIN articles a2 ON {_NEWER}
      WHERE a1.id IN :ids
 ),
 sup AS (
-    SELECT leaf, sup_by_version, sup_by_date FROM newer WHERE rn = 1
+    SELECT leaf, sup_by_version, sup_by_date, sup_by_id FROM newer WHERE rn = 1
 )
 SELECT a.id,
        a.date AS article_date,
@@ -196,6 +209,7 @@ SELECT a.id,
        (sup.leaf IS NOT NULL) AS superseded,
        sup.sup_by_version,
        sup.sup_by_date,
+       sup.sup_by_id,
        COALESCE(rc.review_total, 0) AS review_total,
        COALESCE(rc.review_maintainer, 0) AS review_maintainer
   FROM articles a
@@ -545,6 +559,12 @@ def _bulk_uncached(
             reviewers=names_by_article.get(row.id, []),
         )
 
+        commit_sha = committed_at = None
+        if state == LifecycleStatus.LANDED:
+            commit_sha, committed_at = row.linus_sha, row.linus_committed_at
+        elif state == LifecycleStatus.QUEUED:
+            commit_sha, committed_at = row.earliest_other_sha, row.earliest_other_at
+        superseded = state == LifecycleStatus.SUPERSEDED
         out[row.id] = LifecycleStatusInfo(
             state_value=state.value,
             tree=tree,
@@ -553,6 +573,11 @@ def _bulk_uncached(
             pill_label=pill_label,
             count_suffix=count_suffix,
             tooltip=tooltip,
+            commit_sha=commit_sha,
+            committed_at=coerce_dt(committed_at),
+            superseded_by_version=row.sup_by_version if superseded else None,
+            superseded_at=coerce_dt(row.sup_by_date) if superseded else None,
+            superseded_by_id=row.sup_by_id if superseded else None,
         )
     return out
 

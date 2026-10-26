@@ -13,7 +13,6 @@ import pytest
 from sqlalchemy import text
 
 from mimir import cache
-from mimir.broker.writes import WriterThread
 from mimir.cache import _TAGS, _TYPES, _decode, _encode
 from mimir.dashboard import ArchiveStats, ArticleSummary, DailyVolume, MonthlyVolume
 from mimir.threading import ActiveThread
@@ -972,7 +971,7 @@ def test_cache_module_has_no_pickle_dependency():
 # --------------------------------------------------------------------------
 
 
-def test_cache_set_via_writer_commits_through_writer(seeded_db):
+def test_cache_set_via_writer_commits_through_writer(seeded_db, writer):
     """The writer helper composes a WriteOp wrapping the UPSERT and
     submits to the writer; the returned WriteFuture resolves once
     the writer commits. The row is then readable via cache.get_or_compute()
@@ -980,54 +979,44 @@ def test_cache_set_via_writer_commits_through_writer(seeded_db):
     from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        future = _set_via_writer_for_nskey(
-            writer, _ns("test-writer-key"), '{"v":1}', ttl=60
+    future = _set_via_writer_for_nskey(
+        writer, _ns("test-writer-key"), '{"v":1}', ttl=60
+    )
+    future.result(timeout=5)
+
+    # Read back via cache.get_or_compute (no compute should fire
+    # because the value is cached).
+    with SessionLocal() as s:
+        value = get_or_compute(
+            s,
+            "test-writer-key",
+            ttl=60,
+            fn=lambda: {"v": "MISS"},
         )
-        future.result(timeout=5)
-
-        # Read back via cache.get_or_compute (no compute should fire
-        # because the value is cached).
-        with SessionLocal() as s:
-            value = get_or_compute(
-                s,
-                "test-writer-key",
-                ttl=60,
-                fn=lambda: {"v": "MISS"},
-            )
-            assert value == {"v": 1}
-    finally:
-        writer.stop(timeout=5)
+        assert value == {"v": 1}
 
 
-def test_cache_set_via_writer_overwrites_existing_key(seeded_db):
+def test_cache_set_via_writer_overwrites_existing_key(seeded_db, writer):
     """Second write on the same key replaces the value
     (UPSERT semantics)."""
     from mimir.cache import _ns, _set_via_writer_for_nskey, get_or_compute
     from mimir.extensions import SessionLocal
 
-    writer = WriterThread.from_settings()
-    writer.start()
-    try:
-        nskey = _ns("overwrite-key")
-        _set_via_writer_for_nskey(writer, nskey, '{"v":1}', ttl=60).result(timeout=5)
-        _set_via_writer_for_nskey(writer, nskey, '{"v":2}', ttl=60).result(timeout=5)
+    nskey = _ns("overwrite-key")
+    _set_via_writer_for_nskey(writer, nskey, '{"v":1}', ttl=60).result(timeout=5)
+    _set_via_writer_for_nskey(writer, nskey, '{"v":2}', ttl=60).result(timeout=5)
 
-        with SessionLocal() as s:
-            value = get_or_compute(
-                s,
-                "overwrite-key",
-                ttl=60,
-                fn=lambda: {"v": "MISS"},
-            )
-            assert value == {"v": 2}
-    finally:
-        writer.stop(timeout=5)
+    with SessionLocal() as s:
+        value = get_or_compute(
+            s,
+            "overwrite-key",
+            ttl=60,
+            fn=lambda: {"v": "MISS"},
+        )
+        assert value == {"v": 2}
 
 
-def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
+def test_cache_set_routes_through_active_writer_when_registered(seeded_db, writer):
     """When _context.set_active() has registered a WriterThread,
     cache.set() dispatches the UPSERT through it; the row is
     readable after the writer drains. Verifies by registering a
@@ -1044,8 +1033,6 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
     saved_pool = _context._active_pool
     saved_writer = _context._active_writer
     pool = ReadSessionPool.from_settings()
-    writer = WriterThread.from_settings()
-    writer.start()
     try:
         _context.set_active(pool, writer)
         # Simulate being inside a broker handler dispatch so cache.set
@@ -1076,7 +1063,6 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db):
         finally:
             engine.dispose()
     finally:
-        writer.stop(timeout=5)
         pool.close()
         # Restore the session broker's registration so subsequent
         # tests can still reach the active pool.
@@ -1507,3 +1493,41 @@ def test_purge_expired_via_writer_drops_expired_only(writer, seeded_db):
     assert fresh is not None
     assert stale_1 is None
     assert stale_2 is None
+
+
+def test_a_row_carrying_a_removed_field_still_decodes():
+    """#844 removed `PatchState.mainline_landings` and the
+    `StateMainlineLanding` it held. A row another version wrote can
+    still be read: a key without the version in it (the listing pill's
+    `lifecycle_status:<id>:i<inbox>`) or a rollback to the version
+    before, both within a TTL. `cls(**fields)` raised on the unknown
+    keyword, and decoding the field first raised on its unregistered
+    tag, so the page 500'd instead of missing the cache. This is the
+    row as the version before #844 Part 3 wrote it."""
+    from mimir.patch_state import PatchState
+
+    old_row = {
+        "__t": "PatchState",
+        "v": {
+            "is_patch": True,
+            "trailers": [],
+            "mainline_landings": [
+                {
+                    "__t": "StateMainlineLanding",
+                    "v": {
+                        "commit_sha": "a" * 40,
+                        "tree_name": "linus",
+                        "tree_label": "mainline (Linus)",
+                        "committed_at": None,
+                    },
+                }
+            ],
+            "series": [],
+            "days_since_last_reply": 3,
+        },
+    }
+    assert "StateMainlineLanding" not in _TYPES  # precondition: the tag is gone
+    out = _decode(json.loads(json.dumps(old_row)))
+    assert out == PatchState(
+        is_patch=True, trailers=[], series=[], days_since_last_reply=3
+    )
