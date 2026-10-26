@@ -141,6 +141,11 @@ def slot_rank(article_id: int, has_diff: bool) -> tuple[bool, int]:
     return (not has_diff, article_id)
 
 
+def slot_winner(slot: list[tuple[Article, bool]]) -> Article:
+    """The patch `slot_rank` picks from a slot's `(row, has_diff)` pairs."""
+    return min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]
+
+
 # A series is (patch_series_key, COALESCE(patch_series_head_id, 0))
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's
