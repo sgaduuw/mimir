@@ -14,8 +14,8 @@ that every subsystem page already reads and fills.
 
 Results on 2026-10-12 are recorded on mimir#703.
 
-Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_paths`
-uses the indexed matcher itself (#705), so a rerun no longer reproduces
+Measured against 3.16.0 code. From 3.17.0 on, `subsystems_for_article` (now
+`subsystems_for_paths`) uses the indexed matcher itself (#705), so a rerun no longer reproduces
 the 2026-10-12 baselines: Option B then times the
 indexed matcher, not the ~75 ms rule walk it measured then.
 """
