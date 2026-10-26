@@ -182,6 +182,14 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         # each has a diff: a slot's patch is its lowest-id row with one
         # (`patch_series.slot_rank`, #861), so a backfill that gives a
         # row its diff moves the fold, the diff link and the state card.
+        revision_filter = [same_series(series[0], series[2])]
+        if posting is None:
+            revision_filter.append(
+                func.coalesce(Article.patch_series_position, 0) == (series[1] or 0)
+            )
+        # else: a cover's pill rolls up its posting (#938) and reads each
+        # patch's own newer revision, so a cover takes every position of
+        # the series, not only its own.
         revisions = session.execute(
             select(
                 Article.id,
@@ -191,10 +199,7 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
                 article_has_files(),
             )
             .outerjoin(ArticleList, ArticleList.article_id == Article.id)
-            .where(
-                same_series(series[0], series[2]),
-                func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
-            )
+            .where(*revision_filter)
             .order_by(Article.id, ArticleList.inbox_id)
         ).all()
         # The identity leads, because the fold's diff links spell it

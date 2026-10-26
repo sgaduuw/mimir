@@ -668,21 +668,26 @@ def _bulk_uncached(
         # `sup_by_date` and the committed_at fields likewise need
         # coercion: they're carried through CTE projections + outer
         # SELECTs, which SQLAlchemy can't type-annotate for raw text().
+        # A rolled-up cover names no commit: its own row is not the
+        # posting's evidence, and would be paired with the posting's state.
+        own_commits = not row.slots
         tooltip = _format_tooltip(
             state=state,
-            linus_sha=row.linus_sha,
-            linus_committed_at=coerce_dt(row.linus_committed_at),
-            earliest_other_sha=row.earliest_other_sha,
-            earliest_other_at=coerce_dt(row.earliest_other_at),
+            linus_sha=row.linus_sha if own_commits else None,
+            linus_committed_at=coerce_dt(row.linus_committed_at)
+            if own_commits
+            else None,
+            earliest_other_sha=row.earliest_other_sha if own_commits else None,
+            earliest_other_at=coerce_dt(row.earliest_other_at) if own_commits else None,
             superseded_by_version=row.sup_by_version,
             superseded_by_posted_at=coerce_dt(row.sup_by_date),
             reviewers=names_by_article.get(row.id, []),
         )
 
         commit_sha = committed_at = None
-        if state == LifecycleStatus.LANDED:
+        if own_commits and state == LifecycleStatus.LANDED:
             commit_sha, committed_at = row.linus_sha, row.linus_committed_at
-        elif state == LifecycleStatus.QUEUED:
+        elif own_commits and state == LifecycleStatus.QUEUED:
             commit_sha, committed_at = row.earliest_other_sha, row.earliest_other_at
         superseded = state == LifecycleStatus.SUPERSEDED
         out[row.id] = LifecycleStatusInfo(

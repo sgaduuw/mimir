@@ -300,3 +300,67 @@ def test_a_patch_landing_moves_the_covers_etag_and_pill(client, tmp_path):
     body = after.get_data(as_text=True)
     assert re.search(r'badge-lifecycle-landed"[^>]*>\s*LANDED', body), body
     assert "of 2 landed" not in body
+
+
+def test_a_newer_revision_of_one_patch_moves_the_covers_etag(client, tmp_path):
+    """A v3 of patch 2 with no v3 cover flips that patch's `live`, so the
+    roll-up changes: the cover's ETag, and the pill cached under it, must
+    move with it, not stay on a 304 with the old pill."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import _seed_mainline_commit
+
+    seeded = _seed_thread(tmp_path)
+    _seed_mainline_commit("p1@x", "1" * 40, "net-next", WHEN)
+    _seed_mainline_commit("p2@x", "2" * 40, "net-next", WHEN)
+    url = seeded["c@x"][1] + "/t"
+    before = client.get(url)
+    html = before.get_data(as_text=True)
+    assert re.search(r'badge-lifecycle-queued"[^>]*>\s*QUEUED', html)  # precondition
+    with SessionLocal() as s:
+        s.add(
+            Article(
+                message_id="p2-v3@x",
+                subject="[PATCH v3 2/2] t",
+                subject_normalized="t",
+                date=datetime(2024, 1, 9, tzinfo=UTC),
+                patch_series_key=KEY,
+                patch_series_version="v3",
+                patch_series_position=2,
+            )
+        )
+        s.commit()
+    after = client.get(url, headers={"If-None-Match": before.headers["ETag"]})
+    assert after.status_code == 200
+    assert after.headers["ETag"] != before.headers["ETag"]
+    assert "1 of 2 queued" in after.get_data(as_text=True)
+
+
+def test_a_covers_own_commit_is_not_paired_with_the_postings_state(
+    client, tmp_path, session
+):
+    """A cover with a mainline row of its own and a rolled-up posting: the
+    status line and the tooltip name no sha, because the cover's commit is
+    not the posting's evidence."""
+    from tests.test_routes._helpers import _seed_mainline_commit
+
+    seeded = _seed_thread(tmp_path)
+    own_sha, patch_sha = "a" * 40, "b" * 40
+    _seed_mainline_commit("c@x", own_sha, "net-next", WHEN)  # the cover's own
+    _seed_mainline_commit("p1@x", patch_sha, "net-next", WHEN)
+    _seed_mainline_commit("p2@x", patch_sha[::-1], "net-next", WHEN)
+    from sqlalchemy import select
+
+    from mimir.models import Article
+
+    cover_id = session.scalar(select(Article.id).where(Article.message_id == "c@x"))
+    from mimir.models import Inbox
+
+    alpha = session.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+    got = _bulk_uncached(session, [cover_id], alpha)[cover_id]
+    assert got.state == LifecycleStatus.QUEUED  # precondition: rolled up
+    assert got.commit_sha is None and got.committed_at is None
+    assert own_sha[:12] not in (got.tooltip or "")
+    html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    assert own_sha[:12] not in html
+    assert _line(html) == "Queued."
