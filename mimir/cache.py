@@ -39,7 +39,9 @@ logger = logging.getLogger(__name__)
 
 # Bump when cached value shapes change (query rewrites, dataclass
 # field renames, encoder changes). Old rows fall through to a miss
-# and get cleaned up by `purge_expired`.
+# and get cleaned up by `purge_expired`. A change to a registered
+# type's fields fails `test_a_cached_field_change_bumps_the_namespace`
+# until this is bumped: an older release reads the cache on rollback.
 NAMESPACE_VERSION = 3
 
 # Proactive-refresh window threaded through to `get_or_compute` via a
@@ -196,11 +198,14 @@ def _decode(obj: Any) -> Any:
     if cls is None:
         raise ValueError(f"cache: unknown tag {tag!r}")
     if dataclasses.is_dataclass(cls):
-        # A row another version wrote can carry a field this one removed
-        # (#844 dropped `PatchState.mainline_landings`): a key without the
-        # version in it, or a rollback, reads it within its TTL. Dropped
-        # before decoding, since the value's own tag may be gone too.
-        # Pydantic models already ignore extra fields.
+        # A row another release wrote can carry a field this one lacks
+        # (#844 dropped `PatchState.mainline_landings`) and is read within
+        # its TTL. Dropped before decoding, since the value's own tag may
+        # be gone too. This does not make field changes safe: a renamed
+        # field decodes as its default, or raises without one. Pydantic
+        # models ignore an extra scalar, but each value is decoded first,
+        # so a removed field holding a nested tag still raises. Hence a
+        # NAMESPACE_VERSION bump for every field change.
         names = {f.name for f in dataclasses.fields(cls)}
         v = {k: val for k, val in v.items() if k in names}
     return cls(**{k: _decode(val) for k, val in v.items()})
