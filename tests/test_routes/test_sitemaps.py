@@ -3062,7 +3062,7 @@ def test_the_split_reads_the_kind_tag_and_nothing_else(monkeypatch):
 
     monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
     when = datetime(2020, 1, 2, tzinfo=UTC)
-    entries, _ = sm._sitemap_entries_for_roots(
+    entries = sm._sitemap_entries_for_roots(
         [(1, when), (2, when), (3, when)],
         singleton_ids={1},
         last_activity={},
@@ -3162,3 +3162,66 @@ def test_the_recent_thread_list_keeps_only_thread_pages(client):
     assert "http://localhost/alpha/" in locs  # the hub stays
     singles = [loc for loc, _, _ in _urls(client, "/alpha/2024/messages-sitemap.xml")]
     assert f"http://localhost/alpha/2024/03/{art3}" in singles
+
+
+def test_a_paged_year_keeps_both_trees_on_one_page_numbering(
+    client, tmp_path, monkeypatch
+):
+    """A year that outgrows one file pages by URL. The pages are cut from
+    both trees together and then split, so page N of each tree is one half
+    of the pre-split page N. Cutting each tree on its own would number the
+    message pages differently, which the partition test cannot see
+    because its year never pages. (Granny, #964 slice 2 review.)"""
+    from collections import Counter
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", 2)
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
+    # Message, thread (one /t page), message, message: 4 URLs, 2 pages.
+    shapes = [
+        ([("yp-a@x", None)], 1),
+        ([("yp-b@x", None), ("yp-b1@x", "yp-b@x")], 2),
+        ([("yp-c@x", None)], 3),
+        ([("yp-d@x", None)], 4),
+    ]
+    for edges, month in shapes:
+        root = edges[0][0]
+        (tmp_path / root).mkdir()
+        seeded = seed_thread_shape(tmp_path / root, "alpha", edges)
+        _set_article_date(seeded[root][0], datetime(2012, month, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+
+    for path in ("/alpha/2012/sitemap.xml", "/alpha/2012/sitemap-2.xml"):
+        threads = _urls(client, path)
+        singles = _urls(client, _message_sibling(path))
+        assert Counter(threads + singles) == Counter(_single_tree_page(path)), path
+    for path in ("/alpha/2012/sitemap-3.xml", "/alpha/2012/messages-sitemap-3.xml"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_both_indexes_cost_one_month_counts_pass(client, monkeypatch):
+    """Both indexes come from one build and one cache row, so serving both
+    runs `_month_counts`, the slow part of the index, once per inbox. A
+    second build would double the fast-tier warm. (Granny, #964 slice 2
+    review.)"""
+    from sqlalchemy import func, select
+
+    import mimir.seo.sitemaps as sm
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    calls = []
+    real = sm._month_counts
+    monkeypatch.setattr(
+        sm, "_month_counts", lambda s, ib: calls.append(ib.name) or real(s, ib)
+    )
+    _clear_sitemap_cache()
+    for path in ("/sitemap.xml", "/messages-sitemap.xml", "/sitemap.xml"):
+        assert client.get(path).status_code == 200, path
+    with SessionLocal() as s:
+        inboxes = s.scalar(select(func.count()).select_from(Inbox))
+    assert inboxes >= 1, "precondition: an inbox to count"
+    assert len(calls) == inboxes, calls
