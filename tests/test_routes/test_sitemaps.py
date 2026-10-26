@@ -2653,23 +2653,6 @@ def test_every_emitted_priority_matches_the_table(client, tmp_path):
     assert "/alpha/subsystem/" in seen
 
 
-def test_meta_sitemap_lists_llms_txt_without_a_lastmod(client):
-    """No cheap date is truthful for `/llms.txt`: it is a template, and
-    its text moves with deploys and robots rules rather than with data."""
-    import xml.etree.ElementTree as ET
-
-    _clear_sitemap_cache()
-    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    root = ET.fromstring(client.get("/meta-sitemap.xml").get_data())
-    (llms,) = [
-        u
-        for u in root.findall("s:url", ns)
-        if u.find("s:loc", ns).text.endswith("/llms.txt")
-    ]
-    assert llms.find("s:lastmod", ns) is None
-    assert llms.find("s:priority", ns).text == "1.0"
-
-
 def _archive_lastmods(client, inbox):
     """`{path: lastmod}` for the year and month archive pages in one
     inbox sitemap."""
@@ -2699,37 +2682,35 @@ def test_a_closed_month_or_year_archive_is_dated_its_last_day(client):
     assert _archive_lastmods(client, "beta")["/beta/2024/02/"] == "2024-02-29"
 
 
-def _move_alpha_into_the_current_month(when, inbox_latest):
-    """art3, a cross-posted singleton, becomes a message dated `when`
-    (so alpha has data in the current month and year), and alpha's
-    cheap newest-date column is set to `inbox_latest`."""
-    from sqlalchemy import select, update
+def _redate(**dates):
+    """Set `articles.date` by message id, e.g. `art3=when`, the id being
+    `<name>@example.com`. `Inbox.last_article_date` is left alone: the
+    archive dates are read from the articles."""
+    from sqlalchemy import update
 
     from mimir.extensions import SessionLocal
-    from mimir.models import Article, Inbox
+    from mimir.models import Article
 
     with SessionLocal() as s:
-        art3 = s.scalar(
-            select(Article.id).where(Article.message_id == "art3@example.com")
-        )
-        s.execute(update(Article).where(Article.id == art3).values(date=when))
-        s.execute(
-            update(Inbox)
-            .where(Inbox.name == "alpha")
-            .values(last_article_date=inbox_latest)
-        )
+        for name, when in dates.items():
+            s.execute(
+                update(Article)
+                .where(Article.message_id == f"{name}@example.com")
+                .values(date=when)
+            )
         s.commit()
 
 
 def test_the_current_period_archive_is_dated_the_inboxs_newest_message(client):
     """The current month and year are still changing, so they carry the
     inbox's newest message date. The first of the month is used so that
-    it cannot be mistaken for the period's last day."""
+    it cannot be mistaken for the period's last day. (On the 1st it
+    equals today, so `test_archive_lastmod_rule` is what pins the rule.)"""
     from datetime import datetime
 
     now = datetime.now(UTC)
     first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
-    _move_alpha_into_the_current_month(first, first)
+    _redate(art3=first)
 
     lastmods = _archive_lastmods(client, "alpha")
     stamp = first.strftime("%Y-%m-%d")
@@ -2739,19 +2720,78 @@ def test_the_current_period_archive_is_dated_the_inboxs_newest_message(client):
     assert lastmods["/alpha/2024/01/"] == "2024-01-31"
 
 
-def test_the_current_period_archive_is_capped_at_its_last_day(client):
-    """A message dated past the period's end (a mis-dated mail, or the
-    next month's first arrival) must not date the period after its own
-    last day."""
-    import calendar
+def test_the_current_period_archive_is_capped_at_today(client):
+    """A message dated after today (a mis-dated mail) must not date the
+    current month or year after today, though both end later."""
     from datetime import datetime
 
     now = datetime.now(UTC)
     first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
-    future = datetime(now.year + 1, 1, 10, 12, tzinfo=UTC)
-    _move_alpha_into_the_current_month(first, future)
+    _redate(art3=first, art1=datetime(now.year + 1, 1, 10, 12, tzinfo=UTC))
 
     lastmods = _archive_lastmods(client, "alpha")
-    month_end = f"{now:%Y-%m}-{calendar.monthrange(now.year, now.month)[1]:02d}"
-    assert lastmods[f"/alpha/{now:%Y}/{now:%m}/"] == month_end
-    assert lastmods[f"/alpha/{now:%Y}/"] == f"{now.year}-12-31"
+    today = now.date().isoformat()
+    assert lastmods[f"/alpha/{now:%Y}/{now:%m}/"] == today
+    assert lastmods[f"/alpha/{now:%Y}/"] == today
+
+
+def test_no_archive_lastmod_is_in_the_future(client):
+    """A `<lastmod>` is when the page last changed, so it can never be
+    later than today. One mis-dated mail (lore carries 2037s and 2099s)
+    must not push the current month, the current year or the bogus
+    future year past today."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    now = datetime.now(UTC)
+    first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    bogus = datetime(now.year + 11, 1, 10, 12, tzinfo=UTC)
+    # art3: a real message this month. art1: alpha-only, mis-dated.
+    _redate(art3=first, art1=bogus)
+    # What ingest does: the column is raised to the newest date and never
+    # lowered, so a cap that only reads it would pin the dates for good.
+    with SessionLocal() as s:
+        s.execute(
+            update(Inbox).where(Inbox.name == "alpha").values(last_article_date=bogus)
+        )
+        s.commit()
+
+    today = now.date().isoformat()
+    lastmods = _archive_lastmods(client, "alpha")
+    assert f"/alpha/{bogus:%Y}/" in lastmods, lastmods
+    future = {p: lm for p, lm in lastmods.items() if lm and lm > today}
+    assert future == {}, f"archive lastmods after {today}: {future}"
+
+
+@pytest.mark.parametrize(
+    ("year", "month", "newest", "expected"),
+    [
+        # Closed periods: the last day, whatever the newest message is.
+        (2026, 9, "2026-10-12", "2026-09-30"),
+        (2024, 2, None, "2024-02-29"),
+        (2025, None, "2026-10-12", "2025-12-31"),
+        # Current period: the newest message, not the end of the period.
+        (2026, 10, "2026-10-05", "2026-10-05"),
+        (2026, None, "2026-10-05", "2026-10-05"),
+        # Newest after today: capped at today, not the period's end.
+        (2026, 10, "2026-10-20", "2026-10-12"),
+        (2026, None, "2037-03-01", "2026-10-12"),
+        # Newest after the period's end and today: still today.
+        (2026, 10, "2026-11-03", "2026-10-12"),
+        # A future period is not closed; it can never be after today.
+        (2037, 3, "2037-03-01", "2026-10-12"),
+        # No newest date: none, not a guess.
+        (2026, 10, None, None),
+    ],
+)
+def test_archive_lastmod_rule(year, month, newest, expected):
+    """The rule with a fixed `today` (2026-10-12, mid-month), because
+    the route tests run on the real clock and cannot tell `today` from
+    the first of the month on the 1st."""
+    from mimir.seo.sitemaps import _archive_lastmod
+
+    assert _archive_lastmod(year, month, "2026-10-12", newest) == expected

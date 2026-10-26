@@ -21,7 +21,7 @@ changes, not internal refactors. Categories: **Added**,
   also lists `/llms.txt`, without a `<lastmod>`. Month and year archive
   pages in `/<inbox>/sitemap.xml` now carry a `<lastmod>`: the last day
   of a closed period, and for the current one the inbox's newest message
-  date, never later than the period's last day. Cached sitemaps show the
+  date, never later than the period's last day or than today. Cached sitemaps show the
   old form for up to an hour after the deploy (#964).
 - The lifecycle pill's "Superseded by vN" tooltip and the status line's
   "(posted <date>)" now name the copy of vN the revisions list shows: a
