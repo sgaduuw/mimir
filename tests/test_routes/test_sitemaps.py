@@ -2393,3 +2393,119 @@ def test_index_reads_cached_children_in_bounded_batches(client, tmp_path, monkey
     )
     _index_lastmods(client)
     assert sum(sizes) >= 20 and max(sizes) <= 16, sizes
+
+
+def _seed_roots_fixture(tmp_path):
+    """Two inboxes, replies, ties, month edges and a root whose
+    materialised `thread_root_id` is NULL. Returns alpha's article ids by
+    message id."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+    from tests.test_routes._helpers import seed_thread_shape
+
+    when = {
+        "a1@x": datetime(2020, 1, 31, 23, 59, 59, tzinfo=UTC),
+        "a2@x": datetime(2020, 2, 1, tzinfo=UTC),
+        "a3@x": datetime(2020, 2, 1, tzinfo=UTC),  # ties a2
+        "a4@x": datetime(2020, 2, 20, tzinfo=UTC),
+        "a5@x": datetime(2020, 12, 31, 23, 59, 59, tzinfo=UTC),
+        "a6@x": datetime(2021, 1, 1, tzinfo=UTC),
+        "a7@x": datetime(2020, 2, 21, tzinfo=UTC),  # NULL root below
+        "b1@x": datetime(2020, 2, 2, tzinfo=UTC),
+    }
+    edges = [(m, None) for m in when if m.startswith("a")]
+    edges += [("r1@x", "a2@x"), ("r2@x", "a4@x")]  # replies, not roots
+    for sub in ("a", "b"):
+        (tmp_path / sub).mkdir()
+    a = seed_thread_shape(tmp_path / "a", "alpha", edges)
+    b = seed_thread_shape(tmp_path / "b", "beta", [("b1@x", None)])
+    for mid, art in {**a, **b}.items():
+        _set_article_date(art[0], when.get(mid, datetime(2020, 2, 3, tzinfo=UTC)))
+    with SessionLocal() as s:
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == a["a7@x"][0])
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    return {m: v[0] for m, v in a.items()}
+
+
+def test_archive_roots_query_matches_the_date_driven_form(client, tmp_path):
+    """#947: the inbox-driven rewrite must return exactly what the
+    date-driven query did, rows and order, for every year and month."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+    from mimir.seo.sitemaps import _archive_bounds, _archive_roots_query
+
+    ids = _seed_roots_fixture(tmp_path)
+
+    def reference(inbox, year, month):
+        start, end = _archive_bounds(year, month)
+        return (
+            select(Article.id, Article.date)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                ArticleList.inbox_id == inbox.id,
+                ArticleList.thread_root_id == Article.id,
+                Article.date >= start,
+                Article.date < end,
+            )
+            .order_by(Article.date.desc(), Article.id.desc())
+        )
+
+    checked = 0
+    with SessionLocal() as s:
+        for name in ("alpha", "beta"):
+            inbox = s.scalar(select(Inbox).where(Inbox.name == name))
+            for year, month in [(2020, None), (2021, None), (2019, None)] + [
+                (2020, m) for m in range(1, 13)
+            ]:
+                want = s.execute(reference(inbox, year, month)).all()
+                got = s.execute(_archive_roots_query(inbox, year, month)).all()
+                assert got == want, (name, year, month)
+                checked += 1
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        feb = [r[0] for r in s.execute(_archive_roots_query(alpha, 2020, 2))]
+    assert checked == 30
+    # Precondition: the fixture really built a tie, replies and a NULL root.
+    assert ids["a7@x"] not in feb and len(feb) == 3, feb
+    assert ids["a1@x"] not in feb and ids["a6@x"] not in feb
+
+
+def test_year_and_month_roots_search_the_inbox_not_the_date_index(client, tmp_path):
+    """#947, AGENTS.md check 6: under production statistics the roots
+    query must be driven from this inbox's `article_lists`, so its cost
+    follows the inbox and not every inbox's articles for the year."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from mimir.seo.sitemaps import archive_sitemap_xml
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    _seed_roots_fixture(tmp_path)
+    _clear_sitemap_cache()
+    plans = []
+    with planner_stats(SessionLocal, PRODUCTION_STATS), SessionLocal() as s:
+        inbox = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        for month in (None, 2):
+            plans.append(
+                plan_of(
+                    s,
+                    lambda m=month: archive_sitemap_xml(
+                        s, inbox, 2020, m, 1, "", force=True
+                    ),
+                    "articles.date >=",
+                )
+            )
+    assert len(plans) == 2
+    for plan in plans:
+        assert "ix_article_lists_thread_root (inbox_id=?" in plan, plan
+        assert "ix_articles_date" not in plan, plan
