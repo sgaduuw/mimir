@@ -129,11 +129,7 @@ _REVIEW_ROLES_PARAM = bindparam(
 #
 # `rollup` is a cover's progress (#938): its posting's slot winners
 # (#861), each probed for a Linus landing, another tree's, a review
-# trailer and a newer revision of its own. The unary plus on `tree_name`
-# keeps the probes on `ix_mainline_commits_message_id`: without
-# statistics the planner seeks the tree index and walks every Linus
-# commit per patch (measured only on the test database, where
-# `mainline_commits` has no statistics row; production's is unmeasured).
+# trailer and a newer revision of its own.
 #
 # `sup` compares revision numbers, not strings, so v10 > v9, and takes
 # the newest revision's own version and date for the SUPERSEDED
@@ -259,10 +255,10 @@ rollup AS (
         SELECT po.cover AS cover,
                EXISTS (SELECT 1 FROM mainline_commits m
                         WHERE m.message_id = p.message_id
-                          AND +m.tree_name = 'linus') AS landed,
+                          AND m.tree_name = 'linus') AS landed,
                EXISTS (SELECT 1 FROM mainline_commits m
                         WHERE m.message_id = p.message_id
-                          AND +m.tree_name != 'linus') AS other,
+                          AND m.tree_name != 'linus') AS other,
                EXISTS (SELECT t.article_id FROM article_trailers t
                         WHERE t.article_id = p.id
                           AND t.role IN :review_roles) AS reviewed,
