@@ -195,6 +195,14 @@ def _decode(obj: Any) -> Any:
     cls = _TYPES.get(tag)
     if cls is None:
         raise ValueError(f"cache: unknown tag {tag!r}")
+    if dataclasses.is_dataclass(cls):
+        # A row another version wrote can carry a field this one removed
+        # (#844 dropped `PatchState.mainline_landings`): a key without the
+        # version in it, or a rollback, reads it within its TTL. Dropped
+        # before decoding, since the value's own tag may be gone too.
+        # Pydantic models already ignore extra fields.
+        names = {f.name for f in dataclasses.fields(cls)}
+        v = {k: val for k, val in v.items() if k in names}
     return cls(**{k: _decode(val) for k, val in v.items()})
 
 

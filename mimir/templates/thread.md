@@ -18,6 +18,10 @@
 {% if patch_state and patch_state.is_patch and lifecycle_status and lifecycle_status.state.value != 'pending' %}
 - Status: {{ lifecycle_status.pill_label|md_escape }}{{ lifecycle_status.count_suffix|md_escape }}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
 {% endif %}
+{% set status_sentence = lifecycle_status|status_line if patch_state and patch_state.is_patch else "" %}
+{% if status_sentence %}
+- {{ status_sentence|md_escape }}
+{% endif %}
 {% set synthesis = patch_state|patch_synthesis %}
 {% if synthesis %}
 - {{ synthesis|md_escape }}

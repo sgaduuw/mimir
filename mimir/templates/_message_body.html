@@ -50,6 +50,7 @@
     </p>
   </header>
 
+  {% include "_status_line.html" %}
   {% set synthesis = patch_state|patch_synthesis %}
   {% if synthesis %}
   <p><small>{{ synthesis }}</small></p>
