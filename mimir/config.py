@@ -70,6 +70,16 @@ class TreeConfig(BaseModel):
         return validate_outbound_url(v)
 
 
+def _resolve_tree_label(tree_name: str) -> str:
+    """Look up `Settings.trees[tree_name].display_name`; fall back to
+    the slug itself when no display_name is set or the tree isn't in
+    config (e.g. mainline_commits row from a tree the operator removed)."""
+    cfg = settings.trees.get(tree_name)
+    if cfg is None or cfg.display_name is None:
+        return tree_name
+    return cfg.display_name
+
+
 def _curated_default_trees() -> dict[str, TreeConfig]:
     """The 7-tree default set. Function (not module-level constant)
     so each Settings() instantiation gets fresh TreeConfig objects;
