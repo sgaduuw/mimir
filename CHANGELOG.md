@@ -13,6 +13,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The sitemaps now give every URL a `<priority>`: 1.0 for `/`,
+  `/merge-window` and `/llms.txt`, 0.9 for thread pages, series diffs
+  and subsystem pages, 0.7 for inbox dashboards and maintainer pages,
+  0.3 for message pages, 0.2 for month archives and 0.1 for year
+  archives. Google ignores it; it is our own signal. `/meta-sitemap.xml`
+  also lists `/llms.txt`, without a `<lastmod>`. Month and year archive
+  pages in `/<inbox>/sitemap.xml` now carry a `<lastmod>`: the last day
+  of a closed period, and for the current one the inbox's newest message
+  date, never later than the period's last day or than today. Cached
+  sitemaps show the old form for up to an hour after the deploy (#964).
 - A cover letter's pill states what every patch of its posting reached,
   with a count when they differ: "Queued · 3 of 5 landed", or "Pending ·
   3 of 5 landed" where a cover used to show nothing. The cover's declared
