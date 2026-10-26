@@ -147,6 +147,12 @@ PRODUCTION_STATS = (
     ("articles", "ix_articles_patch_series_key", "17797373 66"),
     ("article_files", "sqlite_autoindex_article_files_1", "15194624 3 1"),
     ("article_files", "ix_article_files_path", "15194624 24"),
+    # Measured read-only on production 2026-10-26: 338,756 rows (stat1, no
+    # stat4 rows for this table). 48394 on the tree index is an average
+    # over 7 trees, while 'linus' holds about 97% of the rows.
+    ("mainline_commits", "ix_mainline_commits_message_id", "338756 1"),
+    ("mainline_commits", "ix_mainline_commits_tree_name", "338756 48394"),
+    ("mainline_commits", "sqlite_autoindex_mainline_commits_1", "338756 1 1 1"),
 )
 
 
