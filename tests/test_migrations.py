@@ -593,3 +593,43 @@ def test_list_address_index_in_the_model_matches_the_migration(tmp_path):
 
     assert _list_address_index(modelled) == (1, 1)
     assert index_sql(modelled) == index_sql(migrated)
+
+
+# Per-file line counts on article_files (#939).
+
+SERIES_HEAD_REVISION = "4c1d816a0b2e"
+
+
+def _article_files(db: Path) -> tuple[list[str], list[tuple]]:
+    """`article_files`' column names and its rows."""
+    conn = sqlite3.connect(db)
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(article_files)")]
+        return cols, conn.execute("SELECT * FROM article_files").fetchall()
+    finally:
+        conn.close()
+
+
+def test_line_count_upgrade_reads_stored_rows_as_uncounted(tmp_path):
+    """A row stored before the migration has no count, which is NULL and
+    not 0: the thread view must tell "not counted yet" from "no lines"."""
+    db = tmp_path / "lc.db"
+    assert _alembic(db, SERIES_HEAD_REVISION).returncode == 0
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute("INSERT INTO articles(id, message_id) VALUES (1, 'm@x')")
+        conn.execute("INSERT INTO article_files VALUES (1, 'fs/foo.c')")
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = _alembic(db, "head")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _article_files(db) == (
+        ["article_id", "path", "insertions", "deletions"],
+        [(1, "fs/foo.c", None, None)],
+    )
+
+    result = _alembic(db, SERIES_HEAD_REVISION, command="downgrade")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _article_files(db) == (["article_id", "path"], [(1, "fs/foo.c")])
