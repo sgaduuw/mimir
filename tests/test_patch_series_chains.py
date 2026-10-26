@@ -1,7 +1,7 @@
 """Series chains (#816): `chain_series` cuts one key's covers into the
-postings a sender made, and `backfill-series-chains` writes the heads.
+postings a sender made, and `rechain_keys` writes the heads.
 
-The pure rule is tested on `Cover` values. The backfill is tested on
+The pure rule is tested on `Cover` values. The re-chain is tested on
 real rows, keyed by `backfill_patch_series` first, the way production
 gets them."""
 
@@ -9,32 +9,16 @@ import itertools
 import random
 from datetime import UTC, datetime, timedelta
 
-import pytest
 from sqlalchemy import select, text
 
-from mimir import backfill_runs
-from mimir.cli.backfill import backfill_series_chains_command
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series, newer_revision_sql
-from mimir.patch_series_chains import Cover, backfill_series_chains, chain_series
-from tests.test_backfill_runs import (
-    _examined,
-    _fail_batch,
-    _invoke,
-    _resumed_at,
-    _runs,
-    _small_batches,
-)
+from mimir.patch_series_chains import Cover, chain_series
+from tests._helpers import rechain_all
 
 T0 = datetime(2024, 1, 1)
 A = ["net: fix the frobnicator", "net: add a knob"]
 B = ["drm: rework the scheduler", "drm: drop the lock"]
-
-
-@pytest.fixture(autouse=True)
-def _no_live_window(monkeypatch):
-    # The tests resume a run at once; the liveness window would refuse it.
-    monkeypatch.setattr(backfill_runs, "LIVE_RUN_SEC", 0)
 
 
 def _cover(i, days, version="v1", titles=(), subject=None, message_id=None):
@@ -235,7 +219,7 @@ def test_the_result_is_a_function_of_the_set_of_covers():
         assert chain_series(order) == expected
 
 
-# ----- the backfill -----------------------------------------------------
+# ----- the re-chain on real rows ----------------------------------------
 
 
 def _seed(seeded_db, mid, subject, when, parent=None, author="A <a@x>"):
@@ -319,9 +303,8 @@ def test_unrelated_same_title_postings_are_not_superseded(seeded_db, broker_acti
     # Precondition: on the bare key the 2026 v1 reads as superseded by the 2021 v2.
     assert _superseded(seeded_db) == {"new@x"}
 
-    result = backfill_series_chains()
+    rechain_all(seeded_db)
 
-    assert (result.keys_chained, result.keys_split) == (1, 1)
     assert _superseded(seeded_db) == set()
     heads = _heads(seeded_db)
     assert heads["old@x"] is None and heads["old@x-p1"] is None
@@ -342,9 +325,7 @@ def test_v1_v2_v3_unthreaded_stay_one_series_with_v1_and_v2_superseded(
         )
     backfill_patch_series()
 
-    result = backfill_series_chains()
-
-    assert (result.keys_chained, result.keys_split, result.heads_planned) == (1, 0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert _superseded(seeded_db) == {"sv1@x", "sv2@x"}
 
 
@@ -358,24 +339,22 @@ def test_a_big_single_posting_is_one_chain_and_writes_no_head(seeded_db, broker_
     )
     backfill_patch_series()
 
-    result = backfill_series_chains()
-
-    assert (result.keys_chained, result.heads_planned) == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
     assert set(_heads(seeded_db).values()) == {None}
 
 
-def test_reprocess_then_the_chain_backfill_is_idempotent(seeded_db, broker_active):
+def test_reprocess_then_a_re_chain_is_idempotent(seeded_db, broker_active):
     _two_unrelated_postings(seeded_db)
-    backfill_series_chains()
+    rechain_all(seeded_db)
     first = _heads(seeded_db)
     assert first["new@x"] is not None  # the split is what we check survives
 
     backfill_patch_series(reprocess=True)
-    second_run = backfill_series_chains()
+    second_run = rechain_all(seeded_db)
 
     assert _heads(seeded_db) == first
-    assert second_run.heads_planned == 0
-    assert backfill_series_chains().heads_planned == 0
+    assert second_run == (0, 0)
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_a_lone_cover_loses_a_stale_head_and_so_do_its_patches(
@@ -393,15 +372,13 @@ def test_a_lone_cover_loses_a_stale_head_and_so_do_its_patches(
         s.commit()
     assert set(_heads(seeded_db).values()) == {4242}
 
-    result = backfill_series_chains()
-
-    assert result.heads_planned == 3  # the cover and its two patches
+    assert rechain_all(seeded_db) == (3, 0)  # the cover and its two patches
     assert set(_heads(seeded_db).values()) == {None}
 
 
 def test_only_stale_children_are_rewritten(seeded_db, broker_active):
     _two_unrelated_postings(seeded_db)
-    backfill_series_chains()
+    rechain_all(seeded_db)
     with seeded_db() as s:
         s.execute(
             text(
@@ -410,175 +387,5 @@ def test_only_stale_children_are_rewritten(seeded_db, broker_active):
         )
         s.commit()
 
-    result = backfill_series_chains()
-
-    assert result.heads_planned == 1
+    assert rechain_all(seeded_db) == (1, 0)
     assert _heads(seeded_db)["new@x-p2"] == _heads(seeded_db)["new@x"]
-
-
-def test_a_key_is_chained_once_per_chunk_however_many_covers_it_has(
-    seeded_db, broker_active
-):
-    for n in range(5):
-        _posting(
-            seeded_db,
-            f"m{n}@x",
-            "v1",
-            datetime(2024, 1, 1) + timedelta(days=60 * n),
-            [f"t{n}: x{n} y{n}"],
-        )
-    backfill_patch_series()
-
-    result = backfill_series_chains()
-
-    assert result.keys_chained == 1  # not 5
-    assert result.skipped >= 4
-
-
-# ----- the machinery ----------------------------------------------------
-
-
-def _split_corpus(seeded_db):
-    """Three keys, each split in two; the cover ids come back newest first."""
-    ids = []
-    for k in range(3):
-        author = f"K{k} <k{k}@x>"
-        for n, (v, when) in enumerate(
-            (("v2", datetime(2021, 1, 1)), ("v1", datetime(2026, 1, 1)))
-        ):
-            mid = f"k{k}n{n}@x"
-            ids.append(
-                _seed(seeded_db, mid, f"[PATCH {v} 0/1] generic", when, author=author)
-            )
-            _seed(
-                seeded_db,
-                mid + "-p",
-                f"[PATCH {v} 1/1] w{k}{n}: x{k}{n} y{k}{n}",
-                when,
-                parent=mid,
-                author=author,
-            )
-    _key_unchained(seeded_db)
-    return ids
-
-
-def _split_count(seeded_db):
-    with seeded_db() as s:
-        return s.execute(
-            select(Article.id).where(Article.patch_series_head_id.is_not(None))
-        ).all()
-
-
-def test_cli_chains_and_finishes_its_run(seeded_db, broker_active):
-    _split_corpus(seeded_db)
-
-    result = _invoke(backfill_series_chains_command)
-
-    assert result.exit_code == 0, result.output
-    assert len(_split_count(seeded_db)) == 6  # 3 split covers + their 3 patches
-    (name, _key, _cursor, _examined_total, finished) = _runs(seeded_db)[-1]
-    assert (name, finished) == ("backfill_series_chains", True)
-
-
-def test_a_limited_run_resumes_below_its_cursor(seeded_db, broker_active, monkeypatch):
-    _split_corpus(seeded_db)
-    _small_batches(monkeypatch)
-
-    limited = _invoke(backfill_series_chains_command, "--limit", "4")
-    assert limited.exit_code == 0, limited.output
-    assert _examined(limited.output) == 4
-    assert 0 < len(_split_count(seeded_db)) < 6
-    assert _runs(seeded_db)[-1][4] is False
-
-    rest = _invoke(backfill_series_chains_command)
-    assert rest.exit_code == 0, rest.output
-    assert _resumed_at(rest.output) is not None
-    assert len(_split_count(seeded_db)) == 6
-
-
-def test_an_ingest_re_chain_between_read_and_write_is_not_overwritten(
-    seeded_db, broker_active, monkeypatch
-):
-    """The backfill reads a key, then writes in a later WriteOp. An
-    ingest batch can re-chain that key in between: here a 2024 v1 with
-    the 2026 posting's patch titles arrives, and the 2026 posting joins
-    its chain. Heads planned from the earlier read would put the 2026
-    posting back under its own head, so the write re-chains on the
-    writer instead."""
-    import mimir._pending_backfill as pending
-    from mimir.broker.writes import WriteOp
-    from mimir.patch_series_chains import rechain_keys
-
-    _two_unrelated_postings(seeded_db)
-    with seeded_db() as s:
-        key = s.execute(
-            select(Article.patch_series_key).where(Article.message_id == "new@x")
-        ).scalar()
-    real_submit = pending._submit_series_heads_batch
-    calls = {"n": 0}
-
-    def ingest_lands_first(writer, payloads, after=None):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            _posting(
-                seeded_db,
-                "x@x",
-                "v1",
-                datetime(2024, 1, 1),
-                ["drm: c unlike", "drm: d"],
-            )
-            backfill_patch_series()
-            writer.submit(
-                WriteOp(label="ingest-like", fn=lambda conn: rechain_keys(conn, {key}))
-            ).result(timeout=10)
-        return real_submit(writer, payloads, after)
-
-    monkeypatch.setattr(pending, "_submit_series_heads_batch", ingest_lands_first)
-    backfill_series_chains()
-
-    assert calls["n"] >= 1
-    with seeded_db() as s:
-        x_id = s.execute(select(Article.id).where(Article.message_id == "x@x")).scalar()
-    heads = _heads(seeded_db)
-    assert heads["x@x"] == x_id  # precondition: the 2024 posting split off
-    assert heads["new@x"] == heads["new@x-p1"] == heads["new@x-p2"] == x_id
-
-
-def test_a_failed_batch_writes_none_of_its_key_s_heads(
-    seeded_db, broker_active, monkeypatch
-):
-    _split_corpus(seeded_db)
-    _small_batches(monkeypatch)
-    # The first batch holds the newest cover, so it carries that key's
-    # writes (its split cover and the cover's patch). Poisoning it, not a
-    # later empty one, is what exercises the rollback.
-    calls = _fail_batch(monkeypatch, "_submit_series_heads_batch", on_call=1)
-
-    interrupted = _invoke(backfill_series_chains_command)
-
-    assert interrupted.exit_code != 0, interrupted.output
-    assert calls["n"] == 1
-    assert _runs(seeded_db)[-1][4] is False
-    assert _split_count(seeded_db) == []
-
-    # Only the first call was poisoned, so the rerun resumes and completes.
-    resumed = _invoke(backfill_series_chains_command)
-    assert resumed.exit_code == 0, resumed.output
-    assert len(_split_count(seeded_db)) == 6
-
-
-def test_the_command_has_no_reprocess_flag(seeded_db, broker_active):
-    """Every run chains whole keys afresh, so the flag was dropped (#889)."""
-    result = _invoke(backfill_series_chains_command, "--reprocess")
-    assert result.exit_code == 2
-    assert "No such option '--reprocess'" in result.output
-
-
-def test_the_run_key_is_the_one_runs_carried_before_the_flag_went(
-    seeded_db, broker_active
-):
-    """An unfinished run recorded by an earlier release resumes only if
-    the key still reads `reprocess: false`."""
-    _split_corpus(seeded_db)
-    assert _invoke(backfill_series_chains_command).exit_code == 0
-    assert _runs(seeded_db)[-1][1] == ('{"inbox_filter": null, "reprocess": false}')

@@ -59,6 +59,17 @@ changes, not internal refactors. Categories: **Added**,
   both columns, which rewrites the `article_files` table; its time on a
   full archive is unmeasured (#939).
 
+### Removed
+
+- `mimir backfill-series-chains` and its broker request (#927). Ingest,
+  `admin failures replay` and `backfill-patch-series` re-chain every
+  series title they touch, so the command only repaired history, which
+  the 3.27.0 upgrade steps did. An archive that skipped those steps
+  should run them with a 3.30.0 image before upgrading. A 3.30.0 CLI that
+  sends the request gets `UnknownOp` from the broker. A
+  `backfill_series_chains` row in `backfill_runs` stays, and nothing
+  reads it. Rolling back to 3.30.0 brings the command back.
+
 ### Fixed
 
 - A patch orphaned by #862 is now also linked to its own revision's cover

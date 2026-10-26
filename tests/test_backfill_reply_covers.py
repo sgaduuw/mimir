@@ -13,8 +13,7 @@ from sqlalchemy import select, text
 
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import backfill_patch_series, series_key
-from mimir.patch_series_chains import backfill_series_chains
-from tests._helpers import series_columns
+from tests._helpers import rechain_all, series_columns
 
 COVER = "[PATCH v2 0/2] improve foo\thandling"
 REPLY = "[PATCH v2 0/2] improve foo handling"
@@ -182,7 +181,7 @@ def test_chains_after_reprocess_keep_the_parent_key_s_heads(seeded_db, broker_ac
     _add(
         seeded_db, "r820@x", REPLY, REVIEWER, parent="c820@x", key=REPLY_KEY, position=0
     )
-    backfill_series_chains()
+    rechain_all(seeded_db)
     before = series_columns(seeded_db, "v1-820@x", "c820@x")
 
     backfill_patch_series(reprocess=True)
@@ -245,7 +244,7 @@ def test_reprocess_re_chains_the_key_a_cleared_reply_leaves(seeded_db, broker_ac
         position=0,
         when=datetime(2024, 3, 10, tzinfo=UTC),
     )
-    backfill_series_chains()
+    rechain_all(seeded_db)
     before = series_columns(seeded_db, "x2@x", "x3@x")
     with seeded_db() as s:
         x2_id = s.execute(
