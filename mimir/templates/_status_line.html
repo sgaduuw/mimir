@@ -1,0 +1,13 @@
+{# The lifecycle state with its evidence (#844), from the pill's own
+   row (`status_line`), so it cannot disagree with the pill. For a
+   superseded revision it links the newer one: the last entry of that
+   version in the revisions timeline, the newest copy, as the pill's
+   SQL picks it. Nothing for pending, as on the pill. #}
+{%- set _sentence = lifecycle_status|status_line if patch_state and patch_state.is_patch else "" -%}
+{%- if _sentence %}
+<p class="status-line"><small><strong>Status:</strong> {{ _sentence }}
+{%- if lifecycle_status.superseded_by_version %}
+{%- set _newer = patch_state.series|selectattr("version", "equalto", lifecycle_status.superseded_by_version)|list|last %}
+{%- if _newer and _newer.url %} <a href="{{ _newer.url }}">[go to {{ _newer.version }}]</a>{% endif %}
+{%- endif %}</small></p>
+{%- endif %}

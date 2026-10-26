@@ -1,11 +1,10 @@
 """Per-patch state aggregation for the message-page state card (#208).
 
-The card consolidates four signals readers want at a glance when
+The card consolidates three signals readers want at a glance when
 landing on a patch page:
 
 - Trailer roll-up across `article_trailers`, with a maintainer-vs-
   random-reviewer distinction sourced from `subsystem_maintainers`.
-- Mainline-landing record from `mainline_commits` reverse lookup.
 - Patch-series timeline (v1, v2, v3) with diff-against-previous links,
   carried over from #210 so the new card REPLACES the existing
   patch-series sidebar without losing the diff navigation.
@@ -18,11 +17,9 @@ isn't already available there. Resulting `PatchState` round-trips
 through `mimir.cache` so the state card can be served from cache
 within the message-page TTL.
 
-Wording note: the "Not in mainline as of <timestamp>" framing from
-the issue is deferred. `mainline_state` carries SHA cursors only;
-adding a timestamp column for that one render-side wording is out
-of scope here. We show the landing row when landed and omit when
-not, which reads as "still in flight" without explicit framing.
+The landing record is not here: the status line reads it from the
+lifecycle row (`LifecycleStatusInfo`), the same row the pill reads, so
+the two cannot name different commits (#844).
 
 Nack/NAK trailers are NOT in `trailers.INDEXED_TRAILER_ROLES` today
 and so don't surface in the roll-up. Indexing them needs a parser
@@ -42,7 +39,6 @@ from mimir.models import (
     Article,
     ArticleList,
     ArticleTrailer,
-    MainlineCommit,
     SubsystemMaintainer,
 )
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
@@ -61,18 +57,6 @@ class StateTrailerCount:
     role: str
     total: int
     maintainer_count: int
-
-
-@dataclass
-class StateMainlineLanding:
-    """One mainline-commit landing for the patch. Mirrors the
-    fields the existing `mainline_applications` aside renders so
-    we don't lose information when consolidating."""
-
-    commit_sha: str
-    tree_name: str
-    tree_label: str  # user-facing display name; falls back to tree_name slug
-    committed_at: datetime | None
 
 
 @dataclass
@@ -99,13 +83,11 @@ class PatchState:
 
     is_patch: bool
     trailers: list[StateTrailerCount]
-    mainline_landings: list[StateMainlineLanding]
     series: list[StateSeriesEntry]
     days_since_last_reply: int | None
 
 
 cache.register("StateTrailerCount", StateTrailerCount)
-cache.register("StateMainlineLanding", StateMainlineLanding)
 cache.register("StateSeriesEntry", StateSeriesEntry)
 cache.register("PatchState", PatchState)
 
@@ -208,42 +190,6 @@ def _resolve_tree_label(tree_name: str) -> str:
     if cfg is None or cfg.display_name is None:
         return tree_name
     return cfg.display_name
-
-
-def _mainline_landings(
-    session: Session,
-    article: Article,
-) -> list[StateMainlineLanding]:
-    """Mainline-tree commits referencing this article via `Link:`
-    trailer. Mirrors the existing `mainline_applications` query;
-    same ordering."""
-    rows = (
-        session.execute(
-            select(MainlineCommit)
-            .where(MainlineCommit.message_id == article.message_id)
-            .order_by(
-                MainlineCommit.committed_at.asc(),
-                # Same tiebreak as lifecycle_status's `mc` CTE, so the
-                # summary sentence names the tree the pill names.
-                MainlineCommit.tree_name == "linux-next",
-                MainlineCommit.tree_name,
-                # Two commits in one tree at one time: the pill's
-                # tooltip breaks the tie on sha too.
-                MainlineCommit.commit_sha,
-            )
-        )
-        .scalars()
-        .all()
-    )
-    return [
-        StateMainlineLanding(
-            commit_sha=c.commit_sha,
-            tree_name=c.tree_name,
-            tree_label=_resolve_tree_label(c.tree_name),
-            committed_at=c.committed_at,
-        )
-        for c in rows
-    ]
 
 
 def _series_timeline(
@@ -416,7 +362,6 @@ def patch_state_for_article(
         return PatchState(
             is_patch=False,
             trailers=[],
-            mainline_landings=[],
             series=[],
             days_since_last_reply=None,
         )
@@ -431,7 +376,6 @@ def patch_state_for_article(
         return PatchState(
             is_patch=True,
             trailers=_trailer_roll_up(session, article, subsystem_ids_list),
-            mainline_landings=_mainline_landings(session, article),
             series=_series_timeline(session, article, inbox_name),
             days_since_last_reply=_days_since_last_reply(article, thread_dates_list),
         )
@@ -454,7 +398,6 @@ def patch_state_for_article(
 __all__ = [
     "PATCH_STATE_CACHE_TTL_SEC",
     "PatchState",
-    "StateMainlineLanding",
     "StateSeriesEntry",
     "StateTrailerCount",
     "patch_state_for_article",
