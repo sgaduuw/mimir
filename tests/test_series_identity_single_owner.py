@@ -3,7 +3,7 @@
 A series is (patch_series_key, COALESCE(patch_series_head_id, 0)) since
 #816. A reader comparing the key alone treats every series under a
 reused cover title as one, which is the bug #816 fixes, and it looks
-correct until the chain backfill writes the first head. So bare key
+correct until a re-chain writes the first head. So bare key
 equality may appear only inside the helpers in `mimir/patch_series.py`
 (AGENTS.md: whoever builds an identifier and whoever accepts it share
 one predicate).

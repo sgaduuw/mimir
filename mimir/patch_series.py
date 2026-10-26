@@ -150,7 +150,7 @@ def slot_winner(slot: list[tuple[Article, bool]]) -> Article:
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's
 # first series, so a NULL head everywhere means the key alone, which is
-# how every row reads until the chain backfill runs. The helpers below
+# how every row reads until a re-chain writes a head. The helpers below
 # are the only places the pair is spelled; readers that compare the key
 # alone are caught by `tests/test_series_identity_single_owner.py`.
 
@@ -501,7 +501,7 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
     old = parse_cover_letter(unfold(old_cover.subject))
     old_key = series_key(old.title, old_cover.author)
     version = _explicit_version(subject)
-    best = best_rank = None
+    ranked = []
     for row in replies:
         cover = parse_cover_letter(unfold(row.subject))
         if (
@@ -517,9 +517,8 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
             aware_utc(row.date),
             row.message_id,
         )
-        if best_rank is None or rank < best_rank:
-            best, best_rank = row, rank
-    return best
+        ranked.append((rank, row))
+    return min(ranked, key=lambda pair: pair[0], default=(None, None))[1]
 
 
 def cover_of_patch(

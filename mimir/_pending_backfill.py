@@ -114,16 +114,6 @@ class _PatchSeriesPending:
 
 
 @dataclass
-class _SeriesKeyPending:
-    """A key `backfill_series_chains` (#816) found heads to change on.
-    The key travels, not the heads: the batch re-chains it on the
-    writer, so an ingest batch that re-chained it after the read is not
-    overwritten with heads from before."""
-
-    key: str
-
-
-@dataclass
 class _CanonicalPending:
     """Per-article pending writes for `backfill_canonicals`.
 
@@ -276,23 +266,6 @@ def _submit_patch_series_batch(
             after(conn)
 
     return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
-
-
-def _submit_series_heads_batch(
-    writer, payloads: list[_SeriesKeyPending], after: After | None = None
-) -> WriteFuture:
-    """Compose the per-batch composite WriteOp for
-    `backfill_series_chains`: re-chain the payloads' keys from the state
-    the writer holds (`rechain_keys`, as an ingest batch does), then
-    `after`."""
-    from mimir.patch_series_chains import rechain_keys
-
-    def _fn(conn):
-        rechain_keys(conn, {p.key for p in payloads})
-        if after is not None:
-            after(conn)
-
-    return writer.submit(WriteOp(label="backfill:series_chains:batch", fn=_fn))
 
 
 def _submit_canonical_batch(

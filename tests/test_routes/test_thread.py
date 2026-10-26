@@ -1068,7 +1068,7 @@ def _prepare_two_revisions(seeded):
 
 
 def _mutate_series_head(seeded):
-    """The chain backfill moves a whole series under a head id (#816):
+    """A re-chain moves a whole series under a head id (#816):
     an older unrelated posting under the same key takes the NULL head.
     Every revision moves together, so the revision rows the tag digests
     are the same rows, while the fold's diff link gains `s=`."""

@@ -212,7 +212,7 @@ def _seed_big_key(seeded_db, covers=280, patches=3, title="generic title"):
     one key held on production ("netfilter fixes for net", measured
     2026-10-21). Every fifth cover starts a posting with fresh patch
     titles, so the key splits and the rule compares titles. Heads are
-    left NULL, as before the chain backfill. Returns the key."""
+    left NULL, as history ingested before 3.25.0 held them. Returns the key."""
     author = "a@b.example"
     key = series_key(title, author)
     t0 = datetime(2012, 1, 1, tzinfo=UTC)
