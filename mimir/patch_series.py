@@ -150,7 +150,7 @@ def slot_winner(slot: list[tuple[Article, bool]]) -> Article:
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's
 # first series, so a NULL head everywhere means the key alone, which is
-# how every row reads until the chain backfill runs. The helpers below
+# how every row reads until a re-chain writes a head. The helpers below
 # are the only places the pair is spelled; readers that compare the key
 # alone are caught by `tests/test_series_identity_single_owner.py`.
 

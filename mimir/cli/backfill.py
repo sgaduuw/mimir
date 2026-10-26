@@ -171,44 +171,6 @@ def backfill_patch_series_command(
     _echo_run_summary(run)
 
 
-@click.command("backfill-series-chains")
-@backfill_options(reprocess_help=None)
-def backfill_series_chains_command(
-    limit: int | None,
-    restart: bool,
-    yes: bool,
-    verbose: int,
-) -> None:
-    """One-shot walker that splits keys holding unrelated postings under
-    one cover title, by writing `patch_series_head_id`. Needed once, for
-    history ingested before 3.25.0."""
-    _configure_logging(verbose)
-    _verbose_broker_hint(verbose)
-    from mimir.broker.client import BrokerUnavailable, get_broker_client
-    from mimir.broker.protocol import BackfillSeriesChainsRequest
-    from mimir.patch_series_chains import BackfillResult
-
-    client = get_broker_client()
-    try:
-        result, run = _broker_backfill_loop(
-            client,
-            BackfillSeriesChainsRequest,
-            BackfillResult,
-            limit=limit,
-            restart=restart,
-            yes=yes,
-        )
-    except BrokerUnavailable as exc:
-        raise click.ClickException(f"broker backfill_series_chains failed: {exc}")
-    click.echo(
-        f"this session: examined={result.examined} "
-        f"keys_chained={result.keys_chained} keys_split={result.keys_split} "
-        f"heads_planned={result.heads_planned} "
-        f"versions_planned={result.versions_planned} skipped={result.skipped}"
-    )
-    _echo_run_summary(run)
-
-
 @click.command("backfill-thread-roots")
 @click.option(
     "--inbox",

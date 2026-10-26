@@ -205,17 +205,6 @@ class BackfillPatchSeriesRequest(_BrokerRequest):
     start: Literal["resume", "restart", "force_restart"] | None = None
 
 
-class BackfillSeriesChainsRequest(_BrokerRequest):
-    """Chunked `backfill_series_chains` (#816). No `reprocess`: every
-    run recomputes whole keys. A request from a CLI that still sends it
-    parses, the unknown key dropped."""
-
-    op: Literal["backfill_series_chains"] = "backfill_series_chains"
-    timeout: ClassVar[float] = 3600.0
-    limit: int | None = Field(default=None, ge=0)
-    start: Literal["resume", "restart", "force_restart"] | None = None
-
-
 class BackfillCanonicalsRequest(_BrokerRequest):
     """Phase 2.2 long op: chunked `backfill_canonicals` over the
     broker. Same shape as the patch-metadata backfills plus
@@ -618,7 +607,6 @@ Request = (
     | BackfillArticleFilesRequest
     | BackfillArticleTrailersRequest
     | BackfillPatchSeriesRequest
-    | BackfillSeriesChainsRequest
     | BackfillCanonicalsRequest
     | UpdateMainlineRequest
     | AnalyzeRequest

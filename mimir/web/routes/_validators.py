@@ -203,7 +203,7 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
             .order_by(Article.id, ArticleList.inbox_id)
         ).all()
         # The identity leads, because the fold's diff links spell it
-        # (`s=`, #816): the chain backfill can move a whole series under
+        # (`s=`, #816): a re-chain can move a whole series under
         # a new head, which keeps the same revision rows and changes
         # every link.
         series_tag = _digest(repr(tuple(r)) for r in [series, *revisions])

@@ -891,7 +891,7 @@ The purge timer is already migrated (no longer a residual).
 
 The chunked backfills (`backfill-article-files`,
 `backfill-article-trailers`, `backfill-patch-series`,
-`backfill-series-chains`, `admin canonicals backfill`) persist their position in
+`admin canonicals backfill`) persist their position in
 `backfill_runs`, owned by `mimir/backfill_runs.py`. Before this the
 walk cursor lived only in the CLI process: each chunk returned a
 `continuation` id and the CLI sent it back. A deploy (broker restart)
@@ -1010,15 +1010,6 @@ order).
   chain whose recent postings have none, joins. A wrong split hides a
   revision from the superseded check; a wrong join only leaves today's
   behaviour in place.
-- **The backfill walks covers, not keys.** `backfill_runs.cursor` is an
-  article id, so `backfill-series-chains` walks articles newest-first
-  and chains a cover's whole key the first time it meets it, remembering
-  the key for the rest of the chunk. The read only picks the keys with
-  heads to change (and feeds the counters); the batch sends the keys and
-  re-chains them on the writer with `rechain_keys`, so an ingest batch
-  that re-chained a key after the backfill's read is not overwritten
-  with heads planned from before it. A key chained twice writes nothing
-  the second time, because only rows whose head changes are written.
 - **Ingest re-chains in the batch.** Each ingest batch WriteOp, and each
   replay, ends with `rechain_keys` over the keys its articles carry
   (a cover's patches carry its key, so they count), just before the
@@ -1027,8 +1018,8 @@ order).
   every later chain under a head, so the new rows alone are not enough.
   Inside the transaction, not after it, so there is no window in which a
   reader sees the new cover in the wrong series and no crash gap that a
-  later pass has to repair. `rechain_keys` is the one write path the
-  two backfills, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
+  later pass has to repair. `rechain_keys` is the one write path
+  `backfill-patch-series`, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
   database (laptop, warm cache, one key of 280 covers in 56 series): 4 ms
   per batch at 3 patches per cover, 12 ms at 10, 49 ms at 30, for one
   new cover on an already chained key; a key never chained writes all
@@ -1097,17 +1088,15 @@ order).
   the resolved version, which joins postings that a typo split. No
   window check: `cover_of_patch` already orphans a later patch of
   another version. `head_updates` returns the version changes as a list
-  of their own, so `heads_planned` keeps its meaning, and a key of one
-  cover is still written when only its version changes.
-- **Operator order.** `backfill-patch-series --reprocess` first (it
-  rewrites the versions the rule reads, and since #840 links chain-reply
-  patches), then `backfill-series-chains` once. Before 3.25.0 that pass
-  chained the history; after #840 it is the repair pass for chain-reply
-  patches the reprocess left untouched: their rows do not change, so only
-  a chain pass is sure to give them their cover's head. Its
-  `heads_planned` counts the heads it changes and `versions_planned` the
-  versions; on an archive with none to change it plans zero. After that,
-  ingest and `backfill-patch-series` keep the keys they touch chained.
+  of their own, so a key of one cover is still written when only its
+  version changes.
+- **No chain backfill (#927).** Ingest, replay and
+  `backfill-patch-series` keep the keys they touch chained. The
+  standalone walker, `backfill-series-chains`, chained the history
+  ingested before 3.25.0 and repaired what #840 and #870 changed (the
+  3.27.0 upgrade steps), and was removed in 3.31.0. So nothing re-chains
+  a key that no write touches: a change to the rule itself, such as
+  `SPLIT_BELOW_MATCHED_SHARE`, must ship its own pass over the archive.
 
 ### Materialised thread roots (2026-07-28)
 
