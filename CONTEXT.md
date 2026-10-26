@@ -1068,8 +1068,7 @@ order).
   with the same total, within a day of the patch, is linked to that cover
   instead (#871). Its title and sender may differ, so its key may (#941):
   a sibling under the old cover's key is preferred, then the earliest by
-  date and message id. No same-sender test, which would break links the
-  key rule already makes.
+  date and message id.
   `cover_of_patch` takes a `replies_of` lookup beside `parent_of`, and
   ingest (the batch first), `backfill-patch-series` and `_load_key` (the
   key's own covers) each pass theirs. Known gaps: a posting whose cover

@@ -20,7 +20,9 @@ from mimir.patch_series import (
     _posting,
     backfill_patch_series,
     cover_of_patch,
+    parse_cover_letter,
     series_key,
+    unfold,
 )
 from mimir.patch_series_chains import _load_key
 from tests.test_chain_reply_patches import AUTHOR, _msg, _series
@@ -101,8 +103,6 @@ def test_a_sibling_under_another_key_is_taken(sibling):
 
 
 def _title_author(row):
-    from mimir.patch_series import parse_cover_letter, unfold
-
     return parse_cover_letter(unfold(row.subject)).title, row.author
 
 
