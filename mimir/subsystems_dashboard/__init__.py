@@ -2,7 +2,7 @@
 
 Pulled out of `mimir.subsystems` to keep that module focused on
 the article-level path-matching primitives (which inbox lookups
-need: `subsystems_for_article`, `recent_patches_touching`,
+need: `subsystems_for_paths`, `recent_patches_touching`,
 `path_matches_glob`). This package owns the heavier read-side
 fan-out, split across three public submodules plus one shared
 infrastructure module:

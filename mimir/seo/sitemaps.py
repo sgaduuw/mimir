@@ -1108,24 +1108,23 @@ def series_diff_sitemap_xml(
             )
         ).all()
         series: dict[tuple[str, int], list] = {}
-        has_diff = {art_id: diff for art_id, *_, diff in rows}
-        for art_id, key, head, version, date, _diff in rows:
-            series.setdefault((key, head), []).append((date, art_id, version))
+        for art_id, key, head, version, date, diff in rows:
+            series.setdefault((key, head), []).append((date, art_id, version, diff))
 
         pairs = []
         for (key, head), covers in sorted(series.items()):
             slot_dates: dict[str, list] = {}
-            slot_ids: dict[str, list[int]] = {}
-            for date, art_id, version in covers:
+            slot_ids: dict[str, list[tuple[int, bool]]] = {}
+            for date, art_id, version, diff in covers:
                 slot_dates.setdefault(version, []).append(date)
-                slot_ids.setdefault(version, []).append(art_id)
+                slot_ids.setdefault(version, []).append((art_id, diff))
             # A version with no cover is absent here, so v1, v2 (no cover),
             # v3 pairs v1 with v3: adjacent among the revisions the route
             # can diff, and that page exists.
             for older, newer in adjacent_versions(covers):
                 dates = [d for v in (older, newer) for d in slot_dates[v] if d]
                 lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
-                to_id = min(slot_ids[newer], key=lambda i: slot_rank(i, has_diff[i]))
+                to_id = min(slot_ids[newer], key=lambda r: slot_rank(*r))[0]
                 pairs.append((key, head, older, newer, to_id, lastmod))
 
         # The page nominates the canonical inbox of the patch of its `to`

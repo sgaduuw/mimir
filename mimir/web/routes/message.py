@@ -34,7 +34,11 @@ from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import recent_patches_touching, subsystems_for_article
+from mimir.subsystems import (
+    article_paths,
+    recent_patches_touching,
+    subsystems_for_paths,
+)
 from mimir.threading import (
     ThreadNode,
     dedupe_thread,
@@ -660,7 +664,9 @@ def message(
         # Resolved before the JSON-LD build (rather than with the rest
         # of the patch-page surfaces below) because `about` / `keywords`
         # carry the subsystem names. Same query either way.
-        subsystem_hits = subsystems_for_article(session, article)
+        subsystem_hits = subsystems_for_paths(
+            session, [row[2] for row in article_paths(session, article) if row[2]]
+        )
         # Replies to THIS message, not the whole thread: the
         # DiscussionForumPosting entity is the single message, so the
         # thread total would be inaccurate on every reply page.

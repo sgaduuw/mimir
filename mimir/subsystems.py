@@ -3,10 +3,10 @@ sections that claim them.
 
 Two read-path helpers:
 
-- `subsystems_for_article(session, article)`, given an article,
-  return the deduplicated set of `Subsystem` rows that any of the
-  paths it touches land in (`article_paths`: a cover answers for its
-  patches). The header on the patch page reads this.
+- `subsystems_for_paths(session, paths)`, given the paths an article
+  touches (`article_paths`: a cover answers for its patches), return
+  the deduplicated set of `Subsystem` rows they land in. The header
+  on the patch page reads this.
 - `recent_patches_touching(session, paths, exclude_id, limit)`
   given a set of paths, return the most-recent articles (other than
   the current one) that share at least one path. The sidebar on the
@@ -358,7 +358,7 @@ def ranked_subsystems(session: Session, groups: list[list[str]]) -> list[list[st
     """For each group of paths, the names of the subsystems it matches,
     primary first, without the catch-all. The first is the group's
     primary subsystem, which `/merge-window` groups by (#703, #786).
-    Same matching as `subsystems_for_article`; batched so the index is
+    Same matching as `subsystems_for_paths`; batched so the index is
     looked up once.
 
     The primary is the most specific subsystem (longest fixed F: prefix,
@@ -465,14 +465,6 @@ def article_paths(
             .order_by(Article.id, ArticleFile.path)
         )
     ]
-
-
-def subsystems_for_article(session: Session, article: Article) -> list[SubsystemHit]:
-    """Resolve the subsystem(s) for an article via the files it touches
-    (`article_paths`, so a cover answers for its patches)."""
-    return subsystems_for_paths(
-        session, [row[2] for row in article_paths(session, article) if row[2]]
-    )
 
 
 def subsystems_for_paths(session: Session, paths: list[str]) -> list[SubsystemHit]:
@@ -638,6 +630,5 @@ __all__ = [
     "path_matches_glob",
     "ranked_subsystems",
     "recent_patches_touching",
-    "subsystems_for_article",
     "subsystems_for_paths",
 ]

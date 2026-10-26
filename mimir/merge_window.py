@@ -34,7 +34,7 @@ from sqlalchemy.orm import Session
 
 import mimir
 from mimir import cache
-from mimir.config import settings
+from mimir.config import _resolve_tree_label, settings
 from mimir.datetime_utils import coerce_dt
 from mimir.mainline import resolve_tree_path
 from mimir.models import Article, ArticleFile, MainlineCommit, MainlineState
@@ -213,9 +213,7 @@ SELECT DISTINCT o.message_id, o.tree_name
 
 
 def _compute(session: Session) -> MergeWindow:
-    # Function-local: `mimir.web` imports this module for `LINUS_TREE`, and
-    # `mimir.patch_state` imports `mimir.web.urls` at module level.
-    from mimir.patch_state import _resolve_tree_label
+    # Function-local: `mimir.web` imports this module for `LINUS_TREE`.
     from mimir.web.filters import _usable_display_name
     from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
