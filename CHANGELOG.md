@@ -73,6 +73,22 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A patch orphaned by #862 is linked to its own revision's cover when
+  that cover is among the old cover's direct replies: same key, same
+  total, within a day of the patch (the earliest wins). This is the common
+  shape of a v3 sent in reply to the v2 cover. Ingest links new ones; a
+  plain `backfill-patch-series` run (no `--reprocess`) links the stored
+  ones, and its re-chain gives them their head. A cover that arrives after
+  its patches (later in the mirror, in the same batch or a later one) heals
+  on that run too. Measured
+  read-only on production 2026-10-25: 2,984 orphans on 474 covers, of
+  which the rule re-attaches 1,761; 412 sit under a retitled cover and
+  stay orphaned (#941). 87 land on an occupied slot, all with a diff on
+  both sides, where #861's rule keeps the original; 14 attach to a cover
+  typo (#870) and flip its posting back to the version its subject names (#871).
+- When two copies of the newer version share the newest date, the pill and
+  the status line name the higher id, not whichever the scan met first
+  (#871).
 - A series slot, the rows sharing a key, series, version and position
   (a version posted again), now has one patch: its lowest-id row with a
   diff, else its lowest-id row. The series diff page, its canonical URL,

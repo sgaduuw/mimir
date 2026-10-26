@@ -294,3 +294,38 @@ def test_the_superseded_link_follows_the_id_and_falls_back_to_the_patch(
         superseded_by_id=named,
     )
     assert _status(_status_html(client.application, info, series))[1] == want
+
+
+def test_two_newest_copies_with_one_date_name_the_higher_id(client, tmp_path):
+    """The pill ranks the copies of the newer version by date. Two copies
+    sharing the newest date used to leave the pick to the scan order, so
+    the pill's id (and the status line's link) could change between runs;
+    the higher id wins."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Inbox
+
+    seeded = _seed(tmp_path, v2=True)
+    p_id = seeded["p@x"][0]
+    with SessionLocal() as s:
+        tied = [
+            Article(
+                message_id=f"v2-tie-{n}@x",
+                subject="[PATCH v2 1/1] foo: bar",
+                subject_normalized="foo: bar",
+                date=datetime(2024, 1, 9, tzinfo=UTC),
+                patch_series_key=KEY,
+                patch_series_version="v2",
+                patch_series_position=1,
+            )
+            for n in "ab"
+        ]
+        s.add_all(tied)
+        s.commit()
+        ids = sorted(a.id for a in tied)
+        inbox_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        got = _bulk_uncached(s, [p_id], inbox_id)[p_id]
+    assert ids[0] < ids[1]  # precondition: two copies, one lower id
+    assert got.superseded_by_id == ids[1]
