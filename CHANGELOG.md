@@ -22,6 +22,10 @@ changes, not internal refactors. Categories: **Added**,
 - The Markdown thread page's status line keeps the space before the middle
   dot on a cover's progress: `PENDING · 2 of 5 reviewed`, as the page's pill
   reads, not `PENDING· 2 of 5 reviewed` (#974).
+- The privacy notice lists every field the access log records: the referrer,
+  `Accept-Language`, the `Sec-Fetch-*` headers and country as well as the
+  new Client Hints, not only IP address, User-Agent, path, status and time
+  (#977).
 
 ## [3.31.0] - 2026-10-27
 
