@@ -38,7 +38,7 @@ from mimir.patch_revisions import (
     patch_bracket,
     resolve_series_patches,
 )
-from mimir.patch_series import same_series, slot_rank
+from mimir.patch_series import same_series, slot_winner
 from mimir.patches import article_has_files
 from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
@@ -104,7 +104,7 @@ def _resolve_via_index(
         slot = [
             (a, has_diff) for a, has_diff in rows if a.patch_series_version == version
         ]
-        return [min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]] if slot else []
+        return [slot_winner(slot)] if slot else []
 
     return winner(from_version), winner(to_version)
 

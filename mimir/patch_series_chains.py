@@ -12,19 +12,16 @@ the rows whose version must: the re-chain is the last writer of a
 posting's version (`posting_version`, #870). `rechain_keys` applies both
 to keys on the writer's connection, inside the transaction of whatever
 touched them: an ingest batch, a replay, or a batch of
-`backfill_series_chains`, which walks the whole archive through the
-broker as a chunked, resumable backfill.
+`backfill_patch_series`.
 """
 
 import re
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select, update
 
-from mimir._backfill import BackfillCounters, walk_articles
-from mimir.backfill_runs import Run
 from mimir.models import Article
 from mimir.patch_series import (
     _parent,
@@ -143,21 +140,6 @@ def chain_series(covers: Sequence[Cover]) -> dict[int, int | None]:
     }
 
 
-class BackfillResult(BackfillCounters):
-    """Outcome counters for `backfill_series_chains`."""
-
-    examined: int = 0
-    # keys_chained and keys_split count per chunk: a key met again by a later
-    # chunk of the run is counted again, so a session total can exceed the
-    # number of keys.
-    # keys chained afresh (more than one cover, or stale heads or versions)
-    keys_chained: int = 0
-    keys_split: int = 0  # of those, keys that came out as more than one series
-    heads_planned: int = 0  # cover and patch rows the read found to change
-    versions_planned: int = 0  # cover and patch rows whose version changes (#870)
-    skipped: int = 0  # not a cover, a key of one cover, or a key already done
-
-
 def _load_key(
     session, key: str
 ) -> tuple[list[Cover], dict[int, int | None], list[tuple], list[tuple[int, str]]]:
@@ -209,8 +191,10 @@ def _load_key(
         return rows.get(message_id) or _parent(session, message_id)
 
     def replies_of(message_id):
-        # Covers of this key only: the sibling is under the old cover's
-        # key (#871).
+        # Covers of this key only: a patch is stored under its cover's
+        # key, so the cover it was linked to is among them, whichever key
+        # the old cover had (#871, #941). A row linked under an older rule
+        # is left to a `--reprocess`: a plain run skips a keyed row.
         return [r for r in cover_rows if r.thread_parent == message_id]
 
     titles: dict[str, list[str]] = {}
@@ -275,14 +259,13 @@ def _load_key(
 
 def head_updates(
     session, key: str
-) -> tuple[list[tuple[int, int | None]], list[tuple[int, str]], bool] | None:
-    """`(updates, versions, split)` for one key, read whole from what
+) -> tuple[list[tuple[int, int | None]], list[tuple[int, str]]] | None:
+    """`(updates, versions)` for one key, read whole from what
     `session` (a Session or the writer's Connection) sees: the
     `(article id, head)` pairs of covers and in-series patches whose
-    stored head differs from `chain_series`, the `(article id, version)`
-    pairs whose stored version differs from their posting's, and whether
-    the key holds more than one series. None when there is nothing to
-    chain or write."""
+    stored head differs from `chain_series`, and the `(article id,
+    version)` pairs whose stored version differs from their posting's.
+    None when there is nothing to chain or write."""
     covers, stored, patches, versions = _load_key(session, key)
     heads = chain_series(covers)
     cover_of = {c.message_id: c.id for c in covers}
@@ -300,7 +283,7 @@ def head_updates(
     # version, since a lone posting can have a typo.
     if len(covers) < 2 and not updates and not versions:
         return None
-    return updates, versions, len(set(heads.values())) > 1
+    return updates, versions
 
 
 def rechain_keys(conn, keys) -> None:
@@ -323,7 +306,7 @@ def rechain_keys(conn, keys) -> None:
     an older posting arriving late moves every later chain of its key.
     """
     for key in sorted(keys):
-        heads, versions, _split = head_updates(conn, key) or ((), (), False)
+        heads, versions = head_updates(conn, key) or ((), ())
         for column, rows in (
             ("patch_series_head_id", heads),
             ("patch_series_version", versions),
@@ -334,57 +317,3 @@ def rechain_keys(conn, keys) -> None:
                     .where(Article.id == article_id)
                     .values({column: value})
                 )
-
-
-def backfill_series_chains(
-    limit: int | None = None,
-    progress: Callable[[BackfillResult], None] | None = None,
-    *,
-    max_seconds: float | None = None,
-    run: Run | None = None,
-) -> BackfillResult:
-    """Chain every key that has more than one cover letter, or a head to
-    clear, or a version to change, and write the heads and versions that
-    changed, on the covers and on their in-series patches.
-
-    Walks articles newest-first like the other backfills. A cover's key
-    is chained whole, from the database, the first time the walk meets
-    one of its covers in a chunk, and remembered so its other covers
-    cost nothing: `backfill_runs.cursor` is an article id, so a key
-    cannot be a unit of the cursor. A key chained again by a later chunk
-    writes nothing, since only changed heads are written. The read only
-    decides which keys to send and feeds the counters; the batch
-    re-chains each key on the writer, so its rows are written from the
-    state at write time and a failed batch leaves no half-chained key.
-    """
-    from mimir._pending_backfill import _SeriesKeyPending, _submit_series_heads_batch
-
-    result = BackfillResult()
-    done: set[str] = set()
-
-    def process_one(session, article, _reprocess):
-        key = article.patch_series_key
-        if key is None or (article.patch_series_position or 0) != 0 or key in done:
-            return "skipped", None
-        done.add(key)
-        changed = head_updates(session, key)
-        if changed is None:
-            return "skipped", None
-        updates, versions, split = changed
-        result.heads_planned += len(updates)
-        result.versions_planned += len(versions)
-        bucket = ("keys_chained", "keys_split") if split else "keys_chained"
-        return bucket, _SeriesKeyPending(key) if updates or versions else None
-
-    result.partial = walk_articles(
-        result,
-        process_one,
-        _submit_series_heads_batch,
-        limit=limit,
-        progress=progress,
-        preload_lists=False,
-        label="backfill_series_chains",
-        max_seconds=max_seconds,
-        run=run,
-    )
-    return result

@@ -17,8 +17,8 @@ from mimir.broker._context import get_active_writer
 from mimir.broker.writes import WriteOp
 from mimir.models import Article, ArticleList, Inbox
 from mimir.patch_series import _process_one, backfill_patch_series, series_key
-from mimir.patch_series_chains import backfill_series_chains, rechain_keys
-from tests._helpers import series_columns
+from mimir.patch_series_chains import rechain_keys
+from tests._helpers import rechain_all, series_columns
 
 KEY = series_key("netfilter updates", "A <a@x>")
 OLD, NEW = datetime(2024, 1, 1, tzinfo=UTC), datetime(2025, 1, 1, tzinfo=UTC)
@@ -78,7 +78,7 @@ def _heads(seeded_db):
 
 def _read(seeded_db, msgid):
     """The backfill's read of one row, planned from the state before any
-    chain pass (every head NULL)."""
+    re-chain (every head NULL)."""
     with seeded_db() as s:
         article = s.execute(
             select(Article).where(Article.message_id == msgid)
@@ -175,11 +175,11 @@ def test_the_re_chain_reaches_a_patch_that_answers_a_patch(seeded_db, broker_act
     """#840: c2p2 answers c2p1, not the cover. The re-chain finds its
     cover by the same walk that links it, so it takes c2's head."""
     _seed(seeded_db, c2p2_parent="c2p1@x")
-    backfill_series_chains()
+    rechain_all(seeded_db)
     heads = _heads(seeded_db)
     assert heads["c2@x"] == _id(seeded_db, "c2@x")  # precondition: the key split
     assert heads["c2p2@x"] == heads["c2@x"]
-    assert backfill_series_chains().heads_planned == 0
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_a_subject_rewrite_keeps_a_chain_reply_patch_s_head(seeded_db, broker_active):
@@ -191,7 +191,7 @@ def test_a_subject_rewrite_keeps_a_chain_reply_patch_s_head(seeded_db, broker_ac
         c2p2_parent="c2p1@x",
         c2p2_subject="[PATCH 2/2] conntrack:\n zone limits",
     )
-    backfill_series_chains()
+    rechain_all(seeded_db)
     c2 = _id(seeded_db, "c2@x")
     with seeded_db() as s:
         # As ingest stored it before #840: its parent's head, copied.
@@ -233,6 +233,6 @@ def test_a_patch_whose_cover_is_not_in_its_key_is_left_alone(seeded_db, broker_a
         )
         _add(s, inbox, "rcp@x", "[PATCH 1/2] ipvs: x", 1, NEW, "rc@x")
         s.commit()
-        updates, _versions, _split = head_updates(s, KEY)
+        updates, _versions = head_updates(s, KEY)
     assert _id(seeded_db, "rcp@x") not in {i for i, _ in updates}
     assert updates  # precondition: the key's own rows were chained

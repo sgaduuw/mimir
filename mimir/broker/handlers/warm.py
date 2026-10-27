@@ -347,7 +347,7 @@ def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
 
 def handle_warm_global(req: WarmGlobalRequest) -> Reply:
     """Warm the cross-inbox aggregators (`most_active_subsystems_global`
-    + sitemap index/meta when `SITE_BASE_URL` is set). Caller is
+    + both sitemap indexes and meta when `SITE_BASE_URL` is set). Caller is
     responsible for ordering: this RPC MUST follow every
     `warm_inbox` job in the same cycle, otherwise the aggregator
     can read a stale per-inbox row and produce a global result

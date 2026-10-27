@@ -237,12 +237,12 @@ def _to_article_insert(
     series_position: int | None = None
     cover = parse_cover_letter(parsed.subject)
     in_series = parse_in_series_patch_subject(parsed.subject) if cover is None else None
-    # Extract diff-touched paths and review-attestation trailers from
+    # Extract diff-touched paths (with line counts) and review trailers from
     # the body. The inserts happen later (`_submit_ingest_batch` step 1
     # for ingest, inline for replay) using the returned article id;
     # we just carry the data here. The paths also tell a patch reply
     # from a re-post (#837).
-    touched_paths = sorted(extract_touched_paths(parsed.body))
+    touched_paths = extract_touched_paths(parsed.body)
     trailer_rows = extract_trailers(parsed.body)
     # Replay has no session and a parent ingested after its child is not
     # found: either way a reply that repeats a cover's subject is stored

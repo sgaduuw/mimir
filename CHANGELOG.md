@@ -11,6 +11,162 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.31.0] - 2026-10-27
+
+### Added
+
+- `/messages-sitemap.xml`, a second sitemap index, lists message pages:
+  single-message threads, and threads still being backfilled. Each year
+  and month sitemap file now has a `messages-sitemap.xml` sibling (and
+  `messages-sitemap-2.xml` and later pages) with the same page numbers.
+  `/sitemap.xml` keeps the pages mimir adds over lore.kernel.org, and its
+  year and month files now list thread pages only. robots.txt names
+  both indexes. A year or month whose threads are all single messages
+  serves an empty thread file. Submit `/messages-sitemap.xml` in Search
+  Console after the deploy (#964).
+- robots.txt names `/llms.txt` with an `LLM-Context:` record (the field
+  proposed by draft-arsentev-llm-context-discovery); crawlers that do not
+  know it ignore it (#969).
+
+### Changed
+
+- The sitemaps now give every URL a `<priority>`: 1.0 for `/`,
+  `/merge-window` and `/llms.txt`, 0.9 for thread pages, series diffs
+  and subsystem pages, 0.7 for inbox dashboards and maintainer pages,
+  0.3 for message pages, 0.2 for month archives and 0.1 for year
+  archives. Google ignores it; it is our own signal. `/meta-sitemap.xml`
+  also lists `/llms.txt`, without a `<lastmod>`. Month and year archive
+  pages in `/<inbox>/sitemap.xml` now carry a `<lastmod>`: the last day
+  of a closed period, and for the current one the inbox's newest message
+  date, never later than the period's last day or than today. An edge
+  cache can serve the old sitemaps for up to five minutes after the
+  deploy (#964).
+- A cover letter's pill states what every patch of its posting reached,
+  with a count when they differ: "Queued · 3 of 5 landed", or "Pending ·
+  3 of 5 landed" where a cover used to show nothing. The cover's declared
+  total is the denominator, so a patch missing from the archive counts as
+  pending, and a patch posted twice counts once. A cover names no tree,
+  since its patches may sit in several, and a cover superseded by a newer
+  one stays "Superseded" and adds the landed count only when it is above
+  0. It shows on the thread view, the cover's message page, its Markdown
+  form, listings and triage, and the status line gains the same count. A
+  patch landing, or a newer revision of one patch, moves the cover's
+  ETag. The roll-up is computed on read in the listing statement, so
+  there is no backfill and no new statement (#938).
+- The lifecycle pill's "Superseded by vN" tooltip and the status line's
+  "(posted <date>)" now name the copy of vN the revisions list shows: a
+  copy with a diff first, then the lowest id (the series slot rule, #861),
+  not the newest re-post. They show when vN was first posted with a diff.
+  The status line's link goes to that revision's entry, so the pill, the
+  list and the line name one article (#949).
+- A cover letter's series totals add the lines its patches insert and
+  delete: "2 patches touching 3 files, +14/-3", on the thread view and in
+  its Markdown view. Ingest counts the lines from each patch's diff
+  hunks, so binary files, pure renames and mode changes count 0, and a
+  patch posted twice counts once (the series slot rule, #861). The
+  "+14/-3" part shows only once every file of the posting has a count,
+  so a posting stored before this release shows it after the backfill in
+  the upgrade notes reaches it. It stays hidden for a series with a file
+  whose diff mimir cannot read. The totals now count only the patches'
+  files: a cover's own diff, such as an interdiff, is left out of the
+  file count too. `article_files` gains nullable `insertions` and
+  `deletions` columns (the migration only adds them, so it is quick on a
+  full archive). Rolling back needs `alembic downgrade 4c1d816a0b2e`, run
+  from this image before the older image starts (the older broker does
+  not know the new revision and refuses to start). The downgrade drops
+  both columns, which rewrites the `article_files` table; its time on a
+  full archive is unmeasured (#939).
+
+### Removed
+
+- `/<inbox>/sitemap.xml` no longer lists the 5,000 most recent threads.
+  It keeps its hub pages: the inbox dashboard, its year and month
+  archive pages, and its subsystem pages. Every thread is in the year and
+  month sitemap files, which the slow warm-cache tier now builds for the
+  current and the previous year or month of each inbox, so the newest
+  threads carry a `<lastmod>` in both indexes. The 5,000 was a code
+  constant, not a setting, so no configuration changes (#964).
+- `mimir backfill-series-chains` and its broker request (#927). Ingest,
+  `admin failures replay` and `backfill-patch-series` re-chain every
+  series title they touch, so the command only repaired history, which
+  the 3.27.0 upgrade steps did. An archive that skipped those steps
+  should run them with a 3.30.0 image before upgrading. A 3.30.0 CLI that
+  sends the request gets `UnknownOp` from the broker. A
+  `backfill_series_chains` row in `backfill_runs` stays, and nothing
+  reads it. Rolling back to 3.30.0 brings the command back.
+
+### Fixed
+
+- A patch orphaned by #862 is now also linked to its own revision's cover
+  when that cover has another title or sender, so another series key
+  (#941). The cover must still be a direct reply of the old cover, name
+  the patch's version, have its total and sit within a day of the patch.
+  A cover under the old cover's key is still preferred, then the earliest
+  wins. A retitled cover, a changed address or both no longer leave the
+  posting's patches orphaned. Measured read-only on production
+  2026-10-26: 416 orphans on 71 postings; all 71 were judged by hand to
+  belong to the sibling's posting, and none of the 116,427 existing
+  links in that population moves.
+  5 of the 416 land in an occupied slot (#861), measured 2026-10-26: in
+  two (one posting) the pick moves to the orphan, an earlier send than
+  the resend that holds the slot; in two (one posting) a 2018 and a 2020
+  posting already collide and the pick moves to the 2018 orphan; one
+  stays as it is (the same patch sent twice, 3 minutes apart).
+
+### Upgrade notes
+
+Before upgrading: an archive that skipped the 3.27.0 upgrade steps runs
+them with a 3.30.0 image first, since this release removes
+`backfill-series-chains` (#927). There is one migration, which only adds
+two nullable columns.
+
+After deploying, in this order, one at a time, not alongside another long
+backfill:
+
+1. Run `mimir warm-cache --tier slow` once the services are up, and time
+   it. The scheduler's first slow run waits a full `WARM_CACHE_SLOW_EVERY`
+   (an hour by default) after boot. Until a warm runs, the newest threads'
+   sitemap files are built on a crawler's first request, and the index
+   lists them without `<lastmod>`. Each slow run now also reads every
+   inbox's month counts (9.7 s across 203 inboxes, measured 2026-10-07,
+   which the index already pays) and rebuilds each inbox's current and
+   previous year or month files. Compare its duration with a 3.30.0 slow
+   run (#964).
+2. Run a plain `backfill-patch-series` (no `--reprocess`) to link the
+   #862 orphans whose sibling cover has another title or sender (#941).
+   It links the stored orphans, and its re-chain gives them their head.
+   About 16 minutes on 2026-10-26 (the archive then held 416 such
+   orphans); that figure was measured once and grows with the archive.
+3. Run `backfill-article-files --patch-subjects --reprocess` to count the
+   lines of patches stored before this release. Until the run reaches a
+   posting, its cover shows its totals without "+N/-M". A run without
+   `--reprocess` skips articles that already have file rows, so it counts
+   nothing. If a `--patch-subjects --reprocess` run started before this
+   release is unfinished, add `--restart --yes`: resuming it would leave
+   the articles it already passed uncounted. The run resumes across
+   broker restarts. It reads the body of every in-series patch, rewrites
+   their file rows and pages every article by subject: several hours,
+   likely half a day (estimated from 4.5M in-series patches counted
+   2026-10-26). Cover thread pages get a new ETag as their patches are
+   rewritten; patch pages keep theirs (#939).
+4. Submit `/messages-sitemap.xml` in Search Console. robots.txt already
+   names it, so Google finds it either way; submitting adds the
+   per-sitemap coverage report the split exists for (#964).
+
+The cache version moves from 3 to 4 (the lifecycle pill gains a field), so
+the cache starts cold once on deploy: the first requests after it
+recompute pills, thread state and sitemaps. Nothing to backfill (#938).
+
+Rolling back to 3.30.0: run `alembic downgrade 4c1d816a0b2e` from the
+3.31.0 image before the 3.30.0 image starts; a 3.30.0 broker does not know
+5d7e2a1c9f40 and refuses to start. The downgrade drops the line counts and
+rewrites `article_files` (time unmeasured), so upgrading again needs step
+3 again. The older release reads no version-4 cache row: it finds its own
+version-3 rows from before this deploy, serves those still within their
+TTL (up to a day) and recomputes the rest. Invalidations made while this
+release ran (a MAINTAINERS reload, an inbox change) did not reach them.
+`backfill-series-chains` returns.
+
 ## [3.30.0] - 2026-10-26
 
 Upgrade steps, after deploying, in this order, one at a time. Do not run
@@ -96,11 +252,11 @@ within five minutes; to avoid the window, stop the broker and delete the
   files", across the posting's patches. The Markdown view carries both
   as lines (#844).
 - The revisions list links each revision to a diff against the previous
-  one, in place of a diff against the current revision. These are the
-  URLs the series diff sitemap lists, so the page and the sitemap now name
-  the same diffs. A re-post is listed under its version (#861) and has no
-  diff link of its own. On the thread view the list is
-  open by default; the message page keeps it folded (#844).
+  one, in place of a diff against the current revision. A cover's links
+  are the URLs the series diff sitemap lists; a patch's links are not in
+  it, the sitemap holds cover diffs only. A re-post is listed under its
+  version (#861) and has no diff link of its own. On the thread view the
+  list is open by default; the message page keeps it folded (#844).
 - The patch summary sentence reads "Revision v7 (5 revisions archived)"
   instead of "Revision v7 of 5 in this series". The number counts the
   versions the archive holds, a re-post once, not the length of the series

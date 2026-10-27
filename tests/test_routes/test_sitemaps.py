@@ -64,14 +64,15 @@ def test_sitemap_xml(client):
 
 def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
     """art3 is cross-posted alpha+beta. In the per-inbox sitemap world,
-    it is listed under *both* `/alpha/sitemap.xml` and
-    `/beta/sitemap.xml`, each one is a real, crawlable URL, and the
-    canonical `<link>` on the page itself tells search engines which
-    to keep. The sitemap doesn't try to enforce one-canonical-URL-per-
-    article anymore (that was the old global-sitemap design).
+    it is listed under *both* inboxes, each one is a real, crawlable
+    URL, and the canonical `<link>` on the page itself tells search
+    engines which to keep. The sitemap doesn't try to enforce
+    one-canonical-URL-per-article anymore (that was the old
+    global-sitemap design).
 
     art3 has no replies, so it is listed as a message URL rather than
-    `/t`, matching what its own canonical says."""
+    `/t`, matching what its own canonical says, and so in each inbox's
+    message tree (#964)."""
     import xml.etree.ElementTree as ET
 
     from sqlalchemy import select
@@ -89,7 +90,9 @@ def test_sitemap_cross_post_appears_in_each_linked_inbox(client):
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
 
     def article_locs(inbox: str) -> list[str]:
-        root = ET.fromstring(client.get(f"/{inbox}/sitemap.xml").get_data())
+        root = ET.fromstring(
+            client.get(f"/{inbox}/2024/messages-sitemap.xml").get_data()
+        )
         return [
             u.find("s:loc", ns).text
             for u in root.findall("s:url", ns)
@@ -148,11 +151,13 @@ def test_meta_sitemap_lastmod_is_global_max(client):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 2
+    assert len(urls) == 3
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
     assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
     assert urls[1].find("s:lastmod", ns) is None
+    assert urls[2].find("s:loc", ns).text.endswith("/llms.txt")
+    assert urls[2].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
@@ -272,7 +277,7 @@ def test_inbox_sitemap_article_lastmod_is_the_threads_latest_activity(client):
     )
 
     _clear_sitemap_cache()
-    r = client.get("/alpha/sitemap.xml")
+    r = client.get("/alpha/2024/sitemap.xml")
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     art1_lastmod = None
@@ -320,7 +325,8 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
     sitemap, and vice versa.
 
     art2 has no replies, so it is a single-message thread and the
-    sitemap lists its MESSAGE URL (which is its canonical), not `/t`."""
+    sitemap lists its MESSAGE URL (which is its canonical), not `/t`,
+    in the message tree (#964)."""
     import xml.etree.ElementTree as ET
 
     from sqlalchemy import select
@@ -336,10 +342,13 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
 
     _clear_sitemap_cache()
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    alpha_root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    alpha_root = ET.fromstring(
+        client.get("/alpha/2024/messages-sitemap.xml").get_data()
+    )
     alpha_locs = {u.find("s:loc", ns).text for u in alpha_root.findall("s:url", ns)}
+    assert alpha_locs, "precondition: alpha's message file lists something"
     assert not any(loc.endswith(f"/{art2_id}") for loc in alpha_locs)
-    beta_root = ET.fromstring(client.get("/beta/sitemap.xml").get_data())
+    beta_root = ET.fromstring(client.get("/beta/2024/messages-sitemap.xml").get_data())
     beta_locs = {u.find("s:loc", ns).text for u in beta_root.findall("s:url", ns)}
     assert any(loc.endswith(f"/{art2_id}") for loc in beta_locs)
 
@@ -435,56 +444,15 @@ def test_inbox_sitemap_lists_thread_roots_not_replies(client):
 
     _clear_sitemap_cache()
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    root = ET.fromstring(client.get("/alpha/2024/sitemap.xml").get_data())
     locs = {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
+    root = ET.fromstring(client.get("/alpha/2024/messages-sitemap.xml").get_data())
+    locs |= {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
 
     assert any(loc.endswith(f"/{art1_id}/t") for loc in locs)
     # The reply appears nowhere, neither as a thread URL nor a bare
     # message URL.
     assert not any(f"/{art4_id}" in loc for loc in locs)
-
-
-def test_inbox_sitemap_root_query_uses_the_materialised_column():
-    """The root test is a column comparison, not a subquery.
-
-    This replaces a guard on the EXISTS-versus-JOIN spelling, which was
-    load-bearing while the predicate had to derive rootness from
-    `thread_parent`: one form was ~37x slower on the ~199 small
-    inboxes, the other ~8x slower on lkml, and getting it wrong cost
-    two review rounds. Materialising the root removes the choice
-    entirely, so what needs pinning now is that the query stays on the
-    column rather than drifting back to deriving it.
-    """
-    from sqlalchemy import select
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Inbox
-    from mimir.seo.sitemaps import (
-        SITEMAP_RECENT_PER_INBOX,
-        _recent_thread_roots_query,
-    )
-
-    with SessionLocal() as s:
-        inbox = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        stmt = _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
-        sql = str(stmt.compile(compile_kwargs={"literal_binds": True}))
-
-    assert "thread_root_id = articles.id" in sql.replace("\n", " "), sql
-    assert "EXISTS" not in sql.upper(), (
-        f"the root test derived rootness again instead of reading the column: {sql}"
-    )
-
-    # Separate, coarser guard, carried over from the pre-column version
-    # of this test: whatever the spelling, the query must never
-    # degenerate into a full table scan. This catches a dropped index or
-    # a predicate rewrite that defeats one, neither of which the string
-    # assertions above can see. Both of this workstream's measured
-    # performance disasters were plan-shape regressions.
-    from sqlalchemy import text
-
-    with SessionLocal() as s:
-        plan = [row[-1] for row in s.execute(text("EXPLAIN QUERY PLAN " + sql))]
-    assert not any("SCAN articles" in step for step in plan), plan
 
 
 def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
@@ -544,15 +512,40 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
 
     _clear_sitemap_cache()
 
+    # Both trees (#964): the per-inbox file, and every alpha archive file
+    # either index lists.
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
-    locs = [u.find("s:loc", ns).text.replace("http://localhost", "") for u in root]
+    files = [
+        path
+        for index in ("/sitemap.xml", "/messages-sitemap.xml")
+        for path in _index_paths(client, index)
+        if path.startswith("/alpha/2")
+    ]
+    trees: dict[str, str] = {}
+    priorities = {}
+    for path in files:
+        root = ET.fromstring(client.get(path).get_data())
+        for u in root:
+            loc = u.find("s:loc", ns).text.replace("http://localhost", "")
+            trees[loc] = path
+            priorities[loc] = u.find("s:priority", ns).text
+    locs = list(trees)
+
+    # A root still being backfilled is listed by its message URL, so it
+    # belongs to the message tree, and its thread view is in neither.
+    root_url = seeded["mb-root@x"][1]
+    assert "/messages-" in trees[root_url], trees.get(root_url)
+    assert root_url + "/t" not in trees
 
     checked = 0
     for loc in locs:
         page = loc.removesuffix("/t")
         if page not in ours:
             continue  # conftest rows have synthetic blobs and 404
+        # The priority follows the branch taken, which is the URL listed:
+        # mid-backfill an unrankable multi-message thread is listed by
+        # its root MESSAGE url and so ranks as a message, not as `/t`.
+        assert priorities[loc] == ("0.9" if loc.endswith("/t") else "0.3"), loc
         html = client.get(page).get_data(as_text=True)
         m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
         assert m, f"{page} emitted no canonical"
@@ -848,7 +841,9 @@ def test_singleton_lastmod_survives_a_corrupt_thread_root(client, tmp_path):
         solo_date = s.get(Article, solo_id).date
 
     _clear_sitemap_cache()
-    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
+    root = ET.fromstring(
+        client.get(f"/alpha/{solo_date:%Y}/messages-sitemap.xml").get_data()
+    )
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     for u in root.findall("s:url", ns):
         loc = u.find("s:loc", ns).text
@@ -873,46 +868,12 @@ def _locs(client, url):
     return [u.find("s:loc", ns).text for u in root.findall("s:url", ns)]
 
 
-def test_month_sitemap_reaches_threads_the_flat_sitemap_caps_off(
-    client, tmp_path, monkeypatch
-):
-    """The point of the whole workstream: the deep archive.
-
-    `/<inbox>/sitemap.xml` lists only the most recent
-    `SITEMAP_RECENT_PER_INBOX` threads, so on the real corpus
-    (28.8M rows) everything older sat in NO sitemap and was
-    unreachable by sitemap-driven discovery. A thread past that cap
-    must still appear in its month.
-    """
-    from datetime import datetime
-
-    import mimir.seo.sitemaps as sm
-    from tests.test_routes._helpers import seed_thread_shape
-
-    monkeypatch.setattr(sm, "SITEMAP_RECENT_PER_INBOX", 1)
-    seeded = seed_thread_shape(tmp_path, "alpha", [("old1@x", None)])
-    old_id = seeded["old1@x"][0]
-    _set_article_date(old_id, datetime(2011, 3, 9, tzinfo=UTC))
-
-    other = tmp_path / "recent"
-    other.mkdir()
-    newer = seed_thread_shape(other, "alpha", [("new1@x", None)])
-    _set_article_date(newer["new1@x"][0], datetime(2026, 7, 1, tzinfo=UTC))
-
-    _clear_sitemap_cache()
-    flat = _locs(client, "/alpha/sitemap.xml")
-    assert not any(f"/{old_id}" in loc for loc in flat), (
-        "fixture failed to push the old thread past the recent cap"
-    )
-    month = _locs(client, "/alpha/2011/03/sitemap.xml")
-    assert any(loc.endswith(f"/{old_id}") for loc in month), month
-
-
 def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeypatch):
     """Pages are `LIMIT`/`OFFSET` slices, so an unstable or
     non-deterministic order silently drops and duplicates URLs across
     the boundary. Assert the union is exactly the whole month and the
-    intersection is empty.
+    intersection is empty, across pages AND across the `/t` and message
+    trees (#964), which share page numbers.
 
     Page size is monkeypatched rather than seeding 45,000 threads; the
     boundary behaviour is what matters and it is size-independent.
@@ -927,24 +888,35 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
     for i in range(5):
         mirror = tmp_path / f"m{i}"
         mirror.mkdir()
-        seeded = seed_thread_shape(mirror, "alpha", [(f"pg{i}@x", None)])
+        # Odd roots head a thread, even ones are singletons: both trees
+        # get URLs on more than one page.
+        edges = [(f"pg{i}@x", None)] + ([(f"pg{i}r@x", f"pg{i}@x")] if i % 2 else [])
+        seeded = seed_thread_shape(mirror, "alpha", edges)
         art_id = seeded[f"pg{i}@x"][0]
         _set_article_date(art_id, datetime(2019, 4, 1 + i, tzinfo=UTC))
         ids.append(art_id)
 
     _clear_sitemap_cache()
-    p1 = _locs(client, "/alpha/2019/04/sitemap.xml")
-    p2 = _locs(client, "/alpha/2019/04/sitemap-2.xml")
-    p3 = _locs(client, "/alpha/2019/04/sitemap-3.xml")
+    pages = []
+    for name in ("sitemap.xml", "sitemap-2.xml", "sitemap-3.xml"):
+        threads = _locs(client, f"/alpha/2019/04/{name}")
+        singles = _locs(client, f"/alpha/2019/04/messages-{name}")
+        assert all(loc.endswith("/t") for loc in threads), threads
+        assert not any(loc.endswith("/t") for loc in singles), singles
+        pages.append(threads + singles)
 
-    assert len(p1) == 2 and len(p2) == 2 and len(p3) == 1, (p1, p2, p3)
-    seen = p1 + p2 + p3
-    assert len(seen) == len(set(seen)), f"a URL appears on two pages: {seen}"
-    assert {loc.rsplit("/", 1)[-1] for loc in seen} == {str(i) for i in ids}, seen
+    assert [len(p) for p in pages] == [2, 2, 1], pages
+    seen = [loc for page in pages for loc in page]
+    assert len(seen) == len(set(seen)), f"a URL appears twice: {seen}"
+    assert {re.search(r"/(\d+)(/t)?$", loc)[1] for loc in seen} == {
+        str(i) for i in ids
+    }, seen
+    assert sum(loc.endswith("/t") for loc in seen) == 2, seen
 
     # One past the end is absent, not an empty urlset a crawler would
     # keep re-fetching.
-    assert client.get("/alpha/2019/04/sitemap-4.xml").status_code == 404
+    for name in ("sitemap-4.xml", "messages-sitemap-4.xml"):
+        assert client.get(f"/alpha/2019/04/{name}").status_code == 404, name
 
 
 def test_sitemap_index_enumerates_every_month_page(client, tmp_path, monkeypatch):
@@ -999,11 +971,12 @@ def test_month_sitemap_is_scoped_to_its_inbox(client, tmp_path):
     _clear_sitemap_cache()
     assert any(
         loc.endswith(f"/{art_id}")
-        for loc in _locs(client, "/alpha/2013/02/sitemap.xml")
+        for loc in _locs(client, "/alpha/2013/02/messages-sitemap.xml")
     )
-    assert client.get("/beta/2013/02/sitemap.xml").status_code == 404, (
-        "alpha's thread leaked into beta's month sitemap"
-    )
+    for name in ("sitemap.xml", "messages-sitemap.xml"):
+        assert client.get(f"/beta/2013/02/{name}").status_code == 404, (
+            f"alpha's thread leaked into beta's month {name}"
+        )
 
 
 def test_month_sitemap_pages_stay_disjoint_when_dates_collide(
@@ -1046,9 +1019,9 @@ def test_month_sitemap_pages_stay_disjoint_when_dates_collide(
 
     _clear_sitemap_cache()
     seen = (
-        _locs(client, "/alpha/2018/09/sitemap.xml")
-        + _locs(client, "/alpha/2018/09/sitemap-2.xml")
-        + _locs(client, "/alpha/2018/09/sitemap-3.xml")
+        _locs(client, "/alpha/2018/09/messages-sitemap.xml")
+        + _locs(client, "/alpha/2018/09/messages-sitemap-2.xml")
+        + _locs(client, "/alpha/2018/09/messages-sitemap-3.xml")
     )
     assert len(seen) == len(set(seen)), f"a URL appears on two pages: {seen}"
     assert {loc.rsplit("/", 1)[-1] for loc in seen} == {str(i) for i in ids}, seen
@@ -1063,8 +1036,8 @@ def test_month_sitemap_lists_roots_not_replies(client, tmp_path):
     made the month sitemap emit every message with `/t` glued onto
     replies, i.e. non-canonical URLs that each page disclaims.
 
-    Asserted against the flat sitemap rather than a hardcoded list, so
-    the two can never drift apart on the same thread.
+    Asserted against the year file rather than a hardcoded list, so
+    the two archive granularities can never drift apart on one thread.
     """
     from datetime import datetime
 
@@ -1083,7 +1056,7 @@ def test_month_sitemap_lists_roots_not_replies(client, tmp_path):
     _clear_sitemap_cache()
     month = _locs(client, "/alpha/2023/09/sitemap.xml")
     assert month == [
-        loc for loc in _locs(client, "/alpha/sitemap.xml") if f"/{root_id}" in loc
+        loc for loc in _locs(client, "/alpha/2023/sitemap.xml") if f"/{root_id}" in loc
     ], month
     assert len(month) == 1 and month[0].endswith(f"/{root_id}/t"), month
     for mid in ("rr2@x", "rr3@x"):
@@ -1108,12 +1081,13 @@ def test_month_sitemap_excludes_the_first_instant_of_the_next_month(client, tmp_
     _set_article_date(edge_id, datetime(2020, 7, 1, 0, 0, 0, tzinfo=UTC))
 
     _clear_sitemap_cache()
-    assert client.get("/alpha/2020/06/sitemap.xml").status_code == 404, (
-        "a root dated midnight on 1 July leaked into June"
-    )
+    for name in ("sitemap.xml", "messages-sitemap.xml"):
+        assert client.get(f"/alpha/2020/06/{name}").status_code == 404, (
+            f"a root dated midnight on 1 July leaked into June's {name}"
+        )
     assert any(
         loc.endswith(f"/{edge_id}")
-        for loc in _locs(client, "/alpha/2020/07/sitemap.xml")
+        for loc in _locs(client, "/alpha/2020/07/messages-sitemap.xml")
     )
 
 
@@ -1411,7 +1385,7 @@ def test_sitemap_subsystem_lastmod_is_that_subsystems_last_activity(client, tmp_
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     block = re.search(
         r"<url><loc>http://localhost/alpha/subsystem/bcachefs/</loc>"
-        r"<lastmod>(\d{4}-\d{2}-\d{2})</lastmod></url>",
+        r"<lastmod>(\d{4}-\d{2}-\d{2})</lastmod><priority>[^<]+</priority></url>",
         xml,
     )
     assert block, f"no dated subsystem entry in:\n{xml[:400]}"
@@ -1507,7 +1481,7 @@ def test_sitemap_page_width_stays_under_the_sqlite_bind_limit():
     """
     import sqlite3
 
-    from mimir.seo.sitemaps import SITEMAP_RECENT_PER_INBOX, SITEMAP_URLS_PER_PAGE
+    from mimir.seo.sitemaps import SITEMAP_URLS_PER_PAGE
 
     conn = sqlite3.connect(":memory:")
     try:
@@ -1518,16 +1492,13 @@ def test_sitemap_page_width_stays_under_the_sqlite_bind_limit():
     # Headroom for the handful of non-list parameters bound alongside
     # the slice (inbox id, and whatever a future predicate adds).
     headroom = 64
-    for name, width in (
-        ("SITEMAP_URLS_PER_PAGE", SITEMAP_URLS_PER_PAGE),
-        ("SITEMAP_RECENT_PER_INBOX", SITEMAP_RECENT_PER_INBOX),
-    ):
-        assert width + headroom < limit, (
-            f"{name}={width} is within {headroom} of this build's "
-            f"SQLITE_LIMIT_VARIABLE_NUMBER ({limit}); a full-width slice is "
-            "passed as an expanding IN list and would raise 'too many SQL "
-            "variables', returning 500 on a URL the sitemap index advertises"
-        )
+    width = SITEMAP_URLS_PER_PAGE
+    assert width + headroom < limit, (
+        f"SITEMAP_URLS_PER_PAGE={width} is within {headroom} of this build's "
+        f"SQLITE_LIMIT_VARIABLE_NUMBER ({limit}); a full-width slice is "
+        "passed as an expanding IN list and would raise 'too many SQL "
+        "variables', returning 500 on a URL the sitemap index advertises"
+    )
 
 
 def test_sitemap_lists_every_thread_page_and_each_one_resolves(
@@ -1570,7 +1541,8 @@ def test_sitemap_lists_every_thread_page_and_each_one_resolves(
     seeded = seed_thread_shape(tmp_path, "alpha", edges)
     root_id, root_url = seeded["p0@x"]
 
-    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    year = root_url.split("/")[2]
+    xml = client.get(f"/alpha/{year}/sitemap.xml").get_data(as_text=True)
     advertised = _re.findall(rf"<loc>[^<]*({_re.escape(root_url)}/t[^<]*)</loc>", xml)
 
     assert len(advertised) == 3, (
@@ -1621,7 +1593,9 @@ def test_single_page_threads_advertise_and_show_nothing_extra(
     assert '<link rel="prev"' not in html
     assert "page 1 of" not in html
 
-    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    xml = client.get(f"/alpha/{root_url.split('/')[2]}/sitemap.xml").get_data(
+        as_text=True
+    )
     assert f"{root_url}/t</loc>" in xml
     assert f"{root_url}/t/2" not in xml, "advertised a page that does not exist"
 
@@ -1644,7 +1618,9 @@ def test_sitemap_page_counts_are_scoped_to_one_inbox(client, tmp_path, monkeypat
     )
     _root_id, root_url = seeded["m0"]
 
-    xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    xml = client.get(f"/alpha/{root_url.split('/')[2]}/sitemap.xml").get_data(
+        as_text=True
+    )
     advertised = [
         loc for loc in re.findall(r"<loc>([^<]+)</loc>", xml) if root_url + "/t" in loc
     ]
@@ -1745,29 +1721,45 @@ def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
     of the page it points at, which is the duplicate-URL signal the
     canonical exists to suppress. Normalisation is the crawler's to do
     and it is charged as a duplicate.
+
+    Every file that lists either kind is checked (#964): each alpha
+    archive file in both indexes.
     """
     from mimir.config import settings
+    from tests.test_routes._helpers import seed_thread_shape
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
     seeded = build_thread(tmp_path, "alpha", shape="chain", size=5)
     _root_id, _root_url = seeded["m0"]
+    (tmp_path / "solo").mkdir()
+    solo_id = seed_thread_shape(tmp_path / "solo", "alpha", [("bi-solo@x", None)])[
+        "bi-solo@x"
+    ][0]
 
-    body = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    files = [
+        path
+        for index in ("/sitemap.xml", "/messages-sitemap.xml")
+        for path in _index_paths(client, index)
+        if path.startswith("/alpha/2")
+    ]
+    body = "".join(client.get(path).get_data(as_text=True) for path in files)
     # Selected by SHAPE, not by the seeded URL's spelling. Matching on
     # `root_url` would couple this to one spelling of the path, so a
     # change to the shared builder would fail it on the count rather
     # than on the property, which reads like a broken test instead of a
-    # divergence.
+    # divergence. Message URLs are this test's own: the shared fixture's
+    # rows have synthetic blobs, so their message pages 404.
     locs = [
         loc
         for loc in re.findall(r"<loc>([^<]+)</loc>", body)
-        if re.search(r"/t(/\d+)?$", loc)
+        if re.search(rf"/t(/\d+)?$|/{solo_id}$", loc)
     ]
     # The fixture's own thread must be advertised as three pages. Keyed
     # on the root's ID, which no spelling change can move, rather than
     # on its date segments, which are the thing under test.
     mine = [loc for loc in locs if re.search(rf"/{_root_id}/t(/\d+)?$", loc)]
     assert len(mine) == 3, f"expected 3 advertised pages for the root, got {mine}"
+    assert sum(loc.endswith(f"/{solo_id}") for loc in locs) == 1, locs
 
     for loc in locs:
         path = loc.replace("http://localhost", "")
@@ -1825,15 +1817,21 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
     # suffix at all.
     reply_id, _reply_url = seeded["m3"]
 
-    body = client.get("/alpha/sitemap.xml").get_data(as_text=True)
+    # The archive's `/t` tree is what publishes thread pages (#964).
+    year = root_url.split("/")[2]
     advertised = [
         loc
-        for loc in re.findall(r"<loc>([^<]+)</loc>", body)
+        for loc in _locs(client, f"/alpha/{year}/sitemap.xml")
         if re.search(rf"/{root_id}/t(/\d+)?$", loc)
     ]
     assert len(advertised) == 3, advertised
     page1, page2 = advertised[0], advertised[1]
     assert page1.endswith("/t") and page2.endswith("/t/2"), advertised
+    # 0. The message tree publishes none of them.
+    assert not any(
+        f"/{root_id}" in loc
+        for loc in _locs(client, f"/alpha/{year}/messages-sitemap.xml")
+    )
 
     # Which advertised page actually renders `m3`. Derived by fetching,
     # never by recomputing the rank: a shared miscalculation would make
@@ -1926,15 +1924,18 @@ def test_sitemap_index_coarsens_small_years_and_preserves_months(
             for entry in root.findall("s:sitemap", ns)
         }
 
+    def both(path):
+        """Both trees of one archive file (#964)."""
+        return _locs(client, path) + _locs(client, _message_sibling(path))
+
     paths = advertised()
     assert "/alpha/2012/sitemap.xml" in paths
     assert "/alpha/2012/01/sitemap.xml" not in paths
     assert "/alpha/2012/12/sitemap.xml" not in paths
-    months = _locs(client, "/alpha/2012/01/sitemap.xml") + _locs(
-        client, "/alpha/2012/12/sitemap.xml"
-    )
-    year = _locs(client, "/alpha/2012/sitemap.xml")
+    months = both("/alpha/2012/01/sitemap.xml") + both("/alpha/2012/12/sitemap.xml")
+    year = both("/alpha/2012/sitemap.xml")
     assert len(year) == len(set(year)) == 3  # Two thread pages plus singleton.
+    assert len(_locs(client, "/alpha/2012/sitemap.xml")) == 2
     assert set(year) == set(months)
     response = client.get("/alpha/2012/sitemap.xml")
     assert response.headers["Cache-Control"] == "public, max-age=300"
@@ -1954,9 +1955,9 @@ def test_sitemap_index_coarsens_small_years_and_preserves_months(
         "/alpha/2012/07/sitemap.xml",
         "/alpha/2012/12/sitemap.xml",
     } <= paths
-    pages = _locs(client, "/alpha/2012/sitemap.xml")
+    pages = both("/alpha/2012/sitemap.xml")
     assert len(pages) == len(set(pages)) == 4
-    assert set(pages) == set(months + _locs(client, "/alpha/2012/07/sitemap.xml"))
+    assert set(pages) == set(months + both("/alpha/2012/07/sitemap.xml"))
     assert client.get("/alpha/2012/sitemap-2.xml").status_code == 404
 
 
@@ -2178,8 +2179,7 @@ def test_missing_year_page_reuses_valid_year_snapshot(client, tmp_path, monkeypa
 
 
 @pytest.mark.parametrize(
-    "path",
-    ["/alpha/sitemap.xml", "/alpha/2012/01/sitemap.xml", "/alpha/2012/sitemap.xml"],
+    "path", ["/alpha/2012/01/sitemap.xml", "/alpha/2012/sitemap.xml"]
 )
 def test_sitemap_cache_tracks_thread_render_cap(client, tmp_path, monkeypatch, path):
     from datetime import datetime
@@ -2285,7 +2285,8 @@ def test_subsystem_index_entry_is_its_canonical_dated_and_linked_back(client, tm
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     entry = re.search(
-        r"<url><loc>([^<]*/alpha/subsystem/)</loc><lastmod>([^<]+)</lastmod></url>",
+        r"<url><loc>([^<]*/alpha/subsystem/)</loc><lastmod>([^<]+)</lastmod>"
+        r"<priority>[^<]+</priority></url>",
         xml,
     )
     assert entry, "the subsystem index is listed without a <lastmod>"
@@ -2299,13 +2300,13 @@ def test_subsystem_index_entry_is_its_canonical_dated_and_linked_back(client, tm
     assert 'href="/alpha/subsystem/"' in page
 
 
-def _index_lastmods(client) -> dict[str, str | None]:
+def _index_lastmods(client, index="/sitemap.xml") -> dict[str, str | None]:
     """`{path: <lastmod> or None}` for every child the index lists."""
     import xml.etree.ElementTree as ET
     from urllib.parse import urlsplit
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    root = ET.fromstring(client.get("/sitemap.xml").data)
+    root = ET.fromstring(client.get(index).data)
     return {
         urlsplit(sm.find("s:loc", ns).text).path: getattr(
             sm.find("s:lastmod", ns), "text", None
@@ -2323,11 +2324,11 @@ def _max_child_lastmod(client, path: str) -> str:
 
 
 def _drop_index_cache():
-    """Drop only the index row, so children stay cached."""
+    """Drop only the indexes' row, so children stay cached."""
     from mimir import cache
     from mimir.seo.sitemaps import settings
 
-    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
+    cache.delete(f"sitemap:indexsplit:{settings.thread_view_render_cap}")
 
 
 @pytest.mark.parametrize("granularity", ["year", "month"])
@@ -2336,7 +2337,8 @@ def test_index_lastmod_for_archive_child_is_its_cached_max(
 ):
     """A reply to an old thread moves the child's own `<lastmod>`; the
     index entry for that child carries the same date once the child is
-    cached, and carries none while it is not (#847)."""
+    cached, and carries none while it is not (#847). The message index
+    does the same for its sibling, from its own half (#964)."""
     from datetime import datetime
 
     import mimir.seo.sitemaps as sm
@@ -2353,21 +2355,26 @@ def test_index_lastmod_for_archive_child_is_its_cached_max(
     _set_article_date(seeded["old@x"][0], datetime(2012, 1, 5, tzinfo=UTC))
     _set_article_date(seeded["other@x"][0], datetime(2012, 6, 1, tzinfo=UTC))
     _set_article_date(seeded["reply@x"][0], datetime(2026, 3, 9, tzinfo=UTC))
-    child = (
-        "/alpha/2012/sitemap.xml"
+    child, singles = (
+        ("/alpha/2012/sitemap.xml", "/alpha/2012/messages-sitemap.xml")
         if granularity == "year"
-        else "/alpha/2012/01/sitemap.xml"
+        else ("/alpha/2012/01/sitemap.xml", "/alpha/2012/06/messages-sitemap.xml")
     )
     _clear_sitemap_cache()
 
     cold = _index_lastmods(client)
+    cold_singles = _index_lastmods(client, "/messages-sitemap.xml")
     assert child in cold, "the child must be listed"
     assert cold[child] is None, "precondition: child uncached, so no lastmod"
+    assert cold_singles[singles] is None, "precondition: sibling uncached"
 
     expected = _max_child_lastmod(client, child)  # also caches the child
     assert expected == "2026-03-09"
+    expected_singles = _max_child_lastmod(client, singles)
+    assert expected_singles == "2012-06-01"
     _drop_index_cache()
     assert _index_lastmods(client)[child] == expected
+    assert _index_lastmods(client, "/messages-sitemap.xml")[singles] == expected_singles
 
 
 def test_index_reads_cached_children_in_bounded_batches(client, tmp_path, monkeypatch):
@@ -2549,3 +2556,800 @@ def test_year_and_month_roots_plans_under_production_statistics(client, tmp_path
     assert "ix_article_lists_thread_root (inbox_id=?" in plans[None], plans[None]
     assert "ix_articles_date" not in plans[None], plans[None]
     assert "ix_articles_date (date>? AND date<?)" in plans[2], plans[2]
+
+
+def _urlset_priorities(client, path):
+    """`{path: priority text | None}` for one urlset."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get(path).get_data())
+    out = {}
+    for u in root.findall("s:url", ns):
+        el = u.find("s:priority", ns)
+        out[urlparse(u.find("s:loc", ns).text).path] = (
+            el.text if el is not None else None
+        )
+    return out
+
+
+def _expected_priority(path):
+    """The issue's table, keyed by URL shape. Deliberately written from
+    the paths, not from the kind tag the emitter uses, so the two cannot
+    agree by sharing a bug."""
+    if path in ("/", "/merge-window", "/llms.txt"):
+        return "1.0"
+    if path.startswith("/maintainers/"):
+        return "0.7"
+    if re.fullmatch(r"/[^/]+/subsystem/.*", path):
+        return "0.9"
+    if re.fullmatch(r"/[^/]+/", path):
+        return "0.7"
+    if re.fullmatch(r"/[^/]+/\d{4}/", path):
+        return "0.1"
+    if re.fullmatch(r"/[^/]+/\d{4}/\d{2}/", path):
+        return "0.2"
+    if re.fullmatch(r".*/t(/\d+)?", path):
+        return "0.9"
+    if re.fullmatch(r"/[^/]+/\d{4}/\d{2}/\d+", path):
+        return "0.3"
+    raise AssertionError(f"no priority rule for {path}")
+
+
+def test_every_emitted_priority_matches_the_table(client, tmp_path):
+    """Crawl both indexes and every urlset they list, and check each
+    URL's priority against the table for its kind. The index itself
+    carries none: `<priority>` is not valid in a `<sitemapindex>`."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        ["fs/bcachefs/"],
+        maintainers=[("M", "Alice Maintainer", "alice@example.com")],
+    )
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "pr@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    warm_subsystem_activity("alpha")
+    _clear_sitemap_cache()
+    warm_subsystem_activity("alpha")
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    seen = {}
+    for index_path in ("/sitemap.xml", "/messages-sitemap.xml"):
+        index = ET.fromstring(client.get(index_path).get_data())
+        assert index.findall(".//s:sitemap/s:priority", ns) == []
+        for sm in index.findall("s:sitemap", ns):
+            child = urlparse(sm.find("s:loc", ns).text).path
+            for path, priority in _urlset_priorities(client, child).items():
+                assert priority == _expected_priority(path), (child, path, priority)
+                seen[path] = priority
+
+    # Every kind in the table was actually crawled, or this proves
+    # nothing about the kinds that never showed up.
+    assert {"/", "/merge-window", "/llms.txt"} <= set(seen)
+    assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.3", "0.2", "0.1"}
+    assert any(p.endswith("/t") for p in seen), "no /t page crawled"
+    assert any(p.startswith("/maintainers/") for p in seen)
+    assert "/alpha/subsystem/bcachefs/" in seen
+    assert "/alpha/subsystem/" in seen
+
+
+def _archive_lastmods(client, inbox):
+    """`{path: lastmod}` for the year and month archive pages in one
+    inbox sitemap."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    _clear_sitemap_cache()
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    root = ET.fromstring(client.get(f"/{inbox}/sitemap.xml").get_data())
+    out = {}
+    for u in root.findall("s:url", ns):
+        path = urlparse(u.find("s:loc", ns).text).path
+        if re.fullmatch(rf"/{inbox}/\d{{4}}/(\d{{2}}/)?", path):
+            lm = u.find("s:lastmod", ns)
+            out[path] = lm.text if lm is not None else None
+    return out
+
+
+def test_a_closed_month_or_year_archive_is_dated_its_last_day(client):
+    """Closed periods never change, so they carry the period's last
+    day, not the date of any message in them. beta's 2024-02 is the
+    leap-year check: the last day is the 29th."""
+    alpha = _archive_lastmods(client, "alpha")
+    assert alpha["/alpha/2024/01/"] == "2024-01-31"
+    assert alpha["/alpha/2024/03/"] == "2024-03-31"
+    assert alpha["/alpha/2024/"] == "2024-12-31"
+    assert _archive_lastmods(client, "beta")["/beta/2024/02/"] == "2024-02-29"
+
+
+def _redate(**dates):
+    """Set `articles.date` by message id, e.g. `art3=when`, the id being
+    `<name>@example.com`. `Inbox.last_article_date` is left alone: the
+    archive dates are read from the articles."""
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        for name, when in dates.items():
+            s.execute(
+                update(Article)
+                .where(Article.message_id == f"{name}@example.com")
+                .values(date=when)
+            )
+        s.commit()
+
+
+def test_the_current_period_archive_is_dated_the_inboxs_newest_message(client):
+    """The current month and year are still changing, so they carry the
+    inbox's newest message date. The first of the month is used so that
+    it cannot be mistaken for the period's last day. (On the 1st it
+    equals today, so `test_archive_lastmod_rule` is what pins the rule.)"""
+    from datetime import datetime
+
+    now = datetime.now(UTC)
+    first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    _redate(art3=first)
+
+    lastmods = _archive_lastmods(client, "alpha")
+    stamp = first.strftime("%Y-%m-%d")
+    assert lastmods[f"/alpha/{now:%Y}/{now:%m}/"] == stamp
+    assert lastmods[f"/alpha/{now:%Y}/"] == stamp
+    # Older periods are unaffected by the newer data.
+    assert lastmods["/alpha/2024/01/"] == "2024-01-31"
+
+
+def test_the_current_period_archive_is_capped_at_today(client):
+    """A message dated after today (a mis-dated mail) must not date the
+    current month or year after today, though both end later."""
+    from datetime import datetime
+
+    now = datetime.now(UTC)
+    first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    _redate(art3=first, art1=datetime(now.year + 1, 1, 10, 12, tzinfo=UTC))
+
+    lastmods = _archive_lastmods(client, "alpha")
+    today = now.date().isoformat()
+    assert lastmods[f"/alpha/{now:%Y}/{now:%m}/"] == today
+    assert lastmods[f"/alpha/{now:%Y}/"] == today
+
+
+def test_no_archive_lastmod_is_in_the_future(client):
+    """A `<lastmod>` is when the page last changed, so it can never be
+    later than today. One mis-dated mail (lore carries 2037s and 2099s)
+    must not push the current month, the current year or the bogus
+    future year past today."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    now = datetime.now(UTC)
+    first = now.replace(day=1, hour=12, minute=0, second=0, microsecond=0)
+    bogus = datetime(now.year + 11, 1, 10, 12, tzinfo=UTC)
+    # art3: a real message this month. art1: alpha-only, mis-dated.
+    _redate(art3=first, art1=bogus)
+    # What ingest does: the column is raised to the newest date and never
+    # lowered, so a cap that only reads it would pin the dates for good.
+    with SessionLocal() as s:
+        s.execute(
+            update(Inbox).where(Inbox.name == "alpha").values(last_article_date=bogus)
+        )
+        s.commit()
+
+    today = now.date().isoformat()
+    lastmods = _archive_lastmods(client, "alpha")
+    assert f"/alpha/{bogus:%Y}/" in lastmods, lastmods
+    future = {p: lm for p, lm in lastmods.items() if lm and lm > today}
+    assert future == {}, f"archive lastmods after {today}: {future}"
+
+
+@pytest.mark.parametrize(
+    ("year", "month", "newest", "expected"),
+    [
+        # Closed periods: the last day, whatever the newest message is.
+        (2026, 9, "2026-10-12", "2026-09-30"),
+        (2024, 2, None, "2024-02-29"),
+        (2025, None, "2026-10-12", "2025-12-31"),
+        # Current period: the newest message, not the end of the period.
+        (2026, 10, "2026-10-05", "2026-10-05"),
+        (2026, None, "2026-10-05", "2026-10-05"),
+        # Newest after today: capped at today, not the period's end.
+        (2026, 10, "2026-10-20", "2026-10-12"),
+        (2026, None, "2037-03-01", "2026-10-12"),
+        # Newest after the period's end and today: still today.
+        (2026, 10, "2026-11-03", "2026-10-12"),
+        # A future period is not closed; it can never be after today.
+        (2037, 3, "2037-03-01", "2026-10-12"),
+        # No newest date: none, not a guess.
+        (2026, 10, None, None),
+    ],
+)
+def test_archive_lastmod_rule(year, month, newest, expected):
+    """The rule with a fixed `today` (2026-10-12, mid-month), because
+    the route tests run on the real clock and cannot tell `today` from
+    the first of the month on the 1st."""
+    from mimir.seo.sitemaps import _archive_lastmod
+
+    assert _archive_lastmod(year, month, "2026-10-12", newest) == expected
+
+
+# ----- #964 slice 2: the /t tree and the message tree ---------------------
+
+_NS = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+_ARCHIVE_CHILD = re.compile(r"/([^/]+)/(\d{4})/(?:(\d{2})/)?sitemap(?:-(\d+))?\.xml")
+
+
+def _index_paths(client, path):
+    """Paths of every `<sitemap>` child one index lists."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlsplit
+
+    response = client.get(path)
+    assert response.status_code == 200, f"{path} -> {response.status_code}"
+    root = ET.fromstring(response.data)
+    assert root.tag == f"{{{_NS['s']}}}sitemapindex", root.tag
+    return [
+        urlsplit(el.find("s:loc", _NS).text).path
+        for el in root.findall("s:sitemap", _NS)
+    ]
+
+
+def _message_sibling(path):
+    """`/a/2012/sitemap-2.xml` -> `/a/2012/messages-sitemap-2.xml`."""
+    head, name = path.rsplit("/", 1)
+    return f"{head}/messages-{name}"
+
+
+def _urls(client, path):
+    """`(loc, lastmod, priority)` for each `<url>` of one urlset."""
+    import xml.etree.ElementTree as ET
+
+    response = client.get(path)
+    assert response.status_code == 200, f"{path} -> {response.status_code}"
+    root = ET.fromstring(response.data)
+    assert root.tag == f"{{{_NS['s']}}}urlset", root.tag
+    return [
+        (
+            u.find("s:loc", _NS).text,
+            getattr(u.find("s:lastmod", _NS), "text", None),
+            getattr(u.find("s:priority", _NS), "text", None),
+        )
+        for u in root.findall("s:url", _NS)
+    ]
+
+
+def _single_tree_page(path):
+    """What one archive file listed before the split: every root entry of
+    that page, `/t` and message alike, read from the shared builder
+    without any kind filter."""
+    from sqlalchemy import select
+
+    import mimir.seo.sitemaps as sm
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    inbox_name, year, month, page = _ARCHIVE_CHILD.fullmatch(path).groups()
+    year, page = int(year), int(page or 1)
+    with SessionLocal() as s:
+        inbox = s.scalar(select(Inbox).where(Inbox.name == inbox_name))
+        ids = list(
+            s.scalars(
+                sm._archive_roots_query(inbox, year, int(month) if month else None)
+            )
+        )
+        roots = sm.SITEMAP_URLS_PER_PAGE
+        if month is None:
+            # A year pages by URL, after expanding every root.
+            entries = []
+            for off in range(0, len(ids), roots):
+                entries += sm._archive_entries(
+                    s, inbox, ids[off : off + roots], "http://localhost"
+                )
+            urls = sm.SITEMAP_MAX_URLS
+            entries = entries[(page - 1) * urls : page * urls]
+        else:
+            # A month pages by root.
+            entries = sm._archive_entries(
+                s, inbox, ids[(page - 1) * roots : page * roots], "http://localhost"
+            )
+    return [(e.loc, e.lastmod, f"{e.priority:.1f}") for e in entries]
+
+
+def _seed_mixed_buckets(tmp_path):
+    """A year file and a two-page month, each holding threads, singletons
+    and, in the month, a root still being backfilled. Call with
+    `SITEMAP_URLS_PER_PAGE` 2 and render cap 2. Returns article ids by
+    message id."""
+    from datetime import datetime
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+    from tests.test_routes._helpers import seed_thread_shape
+
+    def chain(prefix, n):
+        return [(f"{prefix}0@x", None)] + [
+            (f"{prefix}{i}@x", f"{prefix}{i - 1}@x") for i in range(1, n)
+        ]
+
+    shapes = {
+        # 2012: two roots, so the index lists a year file.
+        "y12t": (chain("y12t", 5), datetime(2012, 3, 4, tzinfo=UTC)),
+        "y12s": ([("y12s0@x", None)], datetime(2012, 8, 1, tzinfo=UTC)),
+        # 2013-05: four roots, so two month pages.
+        "m13t": (chain("m13t", 3), datetime(2013, 5, 2, tzinfo=UTC)),
+        "m13s": ([("m13s0@x", None)], datetime(2013, 5, 3, tzinfo=UTC)),
+        "m13u": (chain("m13u", 3), datetime(2013, 5, 4, tzinfo=UTC)),
+        "m13v": ([("m13v0@x", None)], datetime(2013, 5, 5, tzinfo=UTC)),
+    }
+    ids = {}
+    for name, (edges, when) in shapes.items():
+        (tmp_path / name).mkdir()
+        seeded = seed_thread_shape(tmp_path / name, "alpha", edges)
+        ids.update({mid: art for mid, (art, _url) in seeded.items()})
+        _set_article_date(ids[f"{name}0@x"], when)
+    # m13u's last reply is still awaiting the backfill, so its root is
+    # unrankable and listed as a message although it heads a thread.
+    with SessionLocal() as s:
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == ids["m13u2@x"])
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    return ids
+
+
+def test_the_two_trees_partition_what_the_single_tree_listed(
+    client, tmp_path, monkeypatch
+):
+    """The decisive check for #964: for every archive file, the `/t` file
+    and its message sibling are disjoint and together list exactly what
+    the one file listed before the split, `<lastmod>` and `<priority>`
+    included. Both indexes name the same files and page numbers."""
+    from collections import Counter
+
+    import mimir.seo.sitemaps as sm
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
+    ids = _seed_mixed_buckets(tmp_path)
+    _clear_sitemap_cache()
+
+    high = [
+        p for p in _index_paths(client, "/sitemap.xml") if _ARCHIVE_CHILD.fullmatch(p)
+    ]
+    messages = _index_paths(client, "/messages-sitemap.xml")
+    assert messages == [_message_sibling(p) for p in high]
+
+    checked = set()
+    both_nonempty = 0
+    for path in high:
+        threads = _urls(client, path)
+        singles = _urls(client, _message_sibling(path))
+        assert not set(threads) & set(singles), path
+        assert Counter(threads + singles) == Counter(_single_tree_page(path)), path
+        assert all(loc.endswith("/t") or "/t/" in loc for loc, _, _ in threads)
+        both_nonempty += bool(threads and singles)
+        checked.add(path)
+
+    # Preconditions: both granularities, both pages, and both trees.
+    assert {
+        "/alpha/2012/sitemap.xml",
+        "/alpha/2013/05/sitemap.xml",
+        "/alpha/2013/05/sitemap-2.xml",
+    } <= checked, checked
+    assert both_nonempty >= 2, both_nonempty
+    unrankable = f"http://localhost/alpha/2013/05/{ids['m13u0@x']}"
+    assert any(
+        unrankable in [loc for loc, _, _ in _urls(client, _message_sibling(p))]
+        for p in checked
+    ), "the root mid-backfill is not in the message tree"
+
+
+def test_the_split_reads_the_kind_tag_and_nothing_else(monkeypatch):
+    """Slice 1 tagged each root entry and left the tag untested. The tag
+    is the one predicate: `_sitemap_entries_for_roots` sets it, the split
+    reads it. A loc that looks like `/t` but is tagged a message must
+    stay a message, so a filter on the URL shape fails here."""
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
+    when = datetime(2020, 1, 2, tzinfo=UTC)
+    entries = sm._sitemap_entries_for_roots(
+        [(1, when), (2, when), (3, when)],
+        singleton_ids={1},
+        last_activity={},
+        message_counts={2: 3, 3: 3},
+        unrankable_roots={3},
+        inbox_name="alpha",
+        base="",
+    )
+    assert [(e.loc, e.kind) for e in entries] == [
+        ("/alpha/2020/01/1", sm.KIND_MESSAGE),
+        ("/alpha/2020/01/2/t", sm.KIND_THREAD),
+        ("/alpha/2020/01/2/t/2", sm.KIND_THREAD),
+        ("/alpha/2020/01/3", sm.KIND_MESSAGE),
+    ]
+
+    disguised = [
+        sm.SitemapEntry("/x/1/t", "2020-01-05", sm.PRIORITY_MESSAGE, sm.KIND_MESSAGE),
+        sm.SitemapEntry("/x/2", "2020-01-04", sm.PRIORITY_PAGE, sm.KIND_THREAD),
+    ]
+    threads, singles = sm._split_by_kind(entries + disguised)
+    assert re.findall(r"<loc>([^<]+)</loc>", threads.body) == [
+        "/alpha/2020/01/2/t",
+        "/alpha/2020/01/2/t/2",
+        "/x/2",
+    ]
+    assert re.findall(r"<loc>([^<]+)</loc>", singles.body) == [
+        "/alpha/2020/01/1",
+        "/alpha/2020/01/3",
+        "/x/1/t",
+    ]
+    assert (threads.last_modified, singles.last_modified) == (
+        "2020-01-04",
+        "2020-01-05",
+    )
+
+
+def test_an_empty_tree_file_is_an_empty_urlset_not_a_404(client, tmp_path):
+    """The index names both files for every bucket, so a bucket with only
+    singletons serves an empty `/t` urlset. A 404 there would be a broken
+    link in the index."""
+    from datetime import datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("lonely@x", None)])
+    _set_article_date(seeded["lonely@x"][0], datetime(2014, 2, 3, tzinfo=UTC))
+    _clear_sitemap_cache()
+    assert "/alpha/2014/sitemap.xml" in _index_paths(client, "/sitemap.xml")
+    assert _urls(client, "/alpha/2014/sitemap.xml") == []
+    assert [loc for loc, _, _ in _urls(client, "/alpha/2014/messages-sitemap.xml")] == [
+        f"http://localhost/alpha/2014/02/{seeded['lonely@x'][0]}"
+    ]
+    for path in ("/alpha/2014/02/sitemap.xml", "/alpha/2014/02/messages-sitemap.xml"):
+        assert client.get(path).status_code == 200, path
+    # Past the end is still absent in both trees.
+    for path in ("/alpha/2014/sitemap-2.xml", "/alpha/2014/messages-sitemap-2.xml"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_message_tree_routes_send_cache_control_and_validate_segments(client):
+    from datetime import datetime
+
+    _redate(art2=datetime(2017, 5, 3, tzinfo=UTC))
+    _clear_sitemap_cache()
+    for path in ("/messages-sitemap.xml", "/beta/2017/05/messages-sitemap.xml"):
+        response = client.get(path)
+        assert response.status_code == 200, path
+        assert response.headers.get("Cache-Control") == "public, max-age=300", path
+        assert "Last-Modified" not in response.headers
+    for bad in (
+        "/alpha/2024/13/messages-sitemap.xml",
+        "/alpha/0/messages-sitemap.xml",
+        "/alpha/2024/06/messages-sitemap-0.xml",
+        "/missing/2024/messages-sitemap.xml",
+    ):
+        assert client.get(bad).status_code == 404, bad
+
+
+def test_the_inbox_sitemap_lists_hub_pages_only(client):
+    """`/<inbox>/sitemap.xml` keeps its hubs and lists no thread or
+    message page (#964 slice 3): the archive's two trees cover every
+    root, so a recent-root window only duplicated them. art1 heads a
+    thread in alpha and art3 is a singleton there."""
+    from urllib.parse import urlparse
+
+    _clear_sitemap_cache()
+    paths = [urlparse(loc).path for loc, _, _ in _urls(client, "/alpha/sitemap.xml")]
+    assert "/alpha/" in paths  # the hub stays
+    assert "/alpha/2024/" in paths and "/alpha/2024/01/" in paths
+    hubs = re.compile(r"/alpha/((\d{4}/(\d{2}/)?)|subsystem/.*)?")
+    assert [p for p in paths if not hubs.fullmatch(p)] == [], paths
+    # Precondition: the archive does list both of them.
+    archive = [loc for loc, _, _ in _urls(client, "/alpha/2024/sitemap.xml")]
+    archive += [loc for loc, _, _ in _urls(client, "/alpha/2024/messages-sitemap.xml")]
+    assert any(loc.endswith("/t") for loc in archive), archive
+    assert any(not loc.endswith("/t") for loc in archive), archive
+
+
+def _warm_alpha(today):
+    """Run alpha's slow-tier `sitemap:inbox:alpha` target, as the broker
+    does, for a fixed `today` so the test does not depend on the clock."""
+    from sqlalchemy import select
+
+    from mimir.cli.cache import _build_slow_inbox_targets
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    with SessionLocal() as s:
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        targets = dict(
+            _build_slow_inbox_targets(alpha, today, today, "http://localhost")
+        )
+        targets["sitemap:inbox:alpha"](s)
+
+
+def _assert_warm_dates(client, files, stamp):
+    """Each file is dated `stamp` in the index of the tree its roots are
+    in, and undated in neither index before the warm reached it."""
+    threads = _index_lastmods(client)
+    singles = _index_lastmods(client, "/messages-sitemap.xml")
+    for path in files:
+        dates = {threads[path], singles[_message_sibling(path)]}
+        assert dates - {None} == {stamp}, (path, dates)
+
+
+@pytest.mark.parametrize("granularity", ["year", "month"])
+def test_the_slow_warm_dates_the_current_period_in_both_indexes(
+    client, tmp_path, monkeypatch, granularity
+):
+    """The newest threads are in the current period's archive file. The
+    slow-tier `sitemap:inbox:<name>` target warms that file, every page
+    of it, through the route's own cache keys, so both indexes date it
+    rather than leaving it undated until a crawler happens to fetch it
+    (#964 slice 3, which dropped the warmed recent-thread list)."""
+    from datetime import UTC, date, datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    if granularity == "month":
+        # Two roots this year over a one-root page: two month pages.
+        monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("now@x", None), ("now-r@x", "now@x"), ("solo@x", None)]
+    )
+    for mid in seeded:
+        _set_article_date(seeded[mid][0], datetime(2025, 3, 15, 9, tzinfo=UTC))
+    period = "/alpha/2025/" + ("" if granularity == "year" else "03/")
+    _clear_sitemap_cache()
+
+    current = [
+        p
+        for p in _index_lastmods(client)
+        if p.startswith(period) and _ARCHIVE_CHILD.fullmatch(p)
+    ]
+    expected = [f"{period}sitemap.xml"] + (
+        [f"{period}sitemap-2.xml"] if granularity == "month" else []
+    )
+    assert current == expected, current  # precondition: the layout
+
+    _warm_alpha(date(2025, 3, 15))
+    _drop_index_cache()
+    # Every page is dated in the tree its root belongs to. Without the
+    # warm, all of them are undated.
+    _assert_warm_dates(client, current, "2025-03-15")
+
+
+@pytest.mark.parametrize(
+    ("today", "files", "when"),
+    [
+        # A month layout: the previous month, both pages.
+        (
+            "2025-03-15",
+            ["/alpha/2025/02/sitemap.xml", "/alpha/2025/02/sitemap-2.xml"],
+            "2025-02-10",
+        ),
+        # January: last year's file, here a year file.
+        ("2025-01-15", ["/alpha/2024/sitemap.xml"], "2024-12-10"),
+    ],
+)
+def test_the_slow_warm_also_dates_the_previous_period(
+    client, tmp_path, monkeypatch, today, files, when
+):
+    """Replies keep arriving in last month's threads after the month
+    turns, so the warm covers the previous period too: the previous
+    month, and in January the previous year's files. Otherwise the first
+    days of every month leave the busiest threads undated."""
+    from datetime import UTC, date, datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    if len(files) == 2:
+        monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("pp@x", None), ("pp-r@x", "pp@x"), ("pp-solo@x", None)]
+    )
+    stamp = datetime.fromisoformat(when).replace(tzinfo=UTC)
+    for mid in seeded:
+        _set_article_date(seeded[mid][0], stamp)
+    _clear_sitemap_cache()
+    cold = _index_lastmods(client)
+    assert [
+        p for p in files if p in cold and cold[p] is None
+    ] == files  # listed, undated
+
+    _warm_alpha(date.fromisoformat(today))
+    _drop_index_cache()
+    _assert_warm_dates(client, files, when)
+
+
+def test_the_slow_warm_rebuilds_a_cached_current_period(client, tmp_path):
+    """A warm must replace the current year's cached row, not keep it: the
+    year file is read with a plain `cache.get`, which the warm refresh
+    window never reaches, and a warmed row outlives its TTL. Without
+    `force` a thread that arrives after the first warm stays out of the
+    sitemap until the row expires."""
+    from datetime import UTC, date, datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    now = datetime(2025, 3, 15, 9, tzinfo=UTC)
+    for name in ("first", "later"):
+        (tmp_path / name).mkdir()
+        seeded = seed_thread_shape(tmp_path / name, "alpha", [(f"cw-{name}@x", None)])
+        art_id = seeded[f"cw-{name}@x"][0]
+        _set_article_date(art_id, now)
+        if name == "first":
+            _clear_sitemap_cache()
+            _warm_alpha(now.date())
+            first = _locs(client, "/alpha/2025/messages-sitemap.xml")
+            assert first, "precondition: the first warm listed the first thread"
+    _warm_alpha(date(2025, 3, 15))
+    singles = _locs(client, "/alpha/2025/messages-sitemap.xml")
+    assert f"http://localhost/alpha/2025/03/{art_id}" in singles, singles
+
+
+def test_the_slow_warm_pages_one_snapshot_of_the_current_month(
+    client, tmp_path, monkeypatch
+):
+    """Every page the warm builds must slice ONE root snapshot. A root
+    that arrives while the warm is between pages may wait for the next
+    warm, but it must not shift the window under pages already built:
+    that re-lists one root and drops an older one from every page the
+    index names, the loss `_month_root_ids` exists to prevent. (Granny,
+    #964 slice 3 review.)"""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    import mimir.seo.sitemaps as sm
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    now = datetime(2025, 3, 15, 9, tzinfo=UTC)
+    ids = {}
+    for n, mid in enumerate(("old@x", "mid@x")):
+        (tmp_path / mid).mkdir()
+        ids[mid] = seed_thread_shape(tmp_path / mid, "alpha", [(mid, None)])[mid][0]
+        _set_article_date(ids[mid], now - timedelta(seconds=20 - 10 * n))
+
+    real = sm._archive_entries
+    arrived = []
+
+    def arrive_after_first_page(session, inbox, page_ids, base):
+        out = real(session, inbox, page_ids, base)
+        if not arrived:  # an ingest lands between page 1 and page 2
+            (tmp_path / "new").mkdir()
+            new = seed_thread_shape(tmp_path / "new", "alpha", [("new@x", None)])
+            arrived.append(new["new@x"][0])
+            _set_article_date(arrived[0], now - timedelta(seconds=1))
+        return out
+
+    monkeypatch.setattr(sm, "_archive_entries", arrive_after_first_page)
+    _clear_sitemap_cache()
+    with SessionLocal() as s:
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        sm.warm_latest_archive_sitemaps(s, alpha, "http://localhost", now.date())
+    assert arrived, "precondition: the warm built more than one page"
+
+    period = "/alpha/2025/03/"
+    listed = [
+        loc
+        for name in ("messages-sitemap.xml", "messages-sitemap-2.xml")
+        for loc in _locs(client, period + name)
+    ]
+    want = [f"http://localhost{period}{ids[m]}" for m in ("mid@x", "old@x")]
+    assert listed == want, listed
+
+
+def test_a_paged_year_keeps_both_trees_on_one_page_numbering(
+    client, tmp_path, monkeypatch
+):
+    """A year that outgrows one file pages by URL. The pages are cut from
+    both trees together and then split, so page N of each tree is one half
+    of the pre-split page N. Cutting each tree on its own would number the
+    message pages differently, which the partition test cannot see
+    because its year never pages. (Granny, #964 slice 2 review.)"""
+    from collections import Counter
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", 2)
+    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
+    # Message, thread (one /t page), message, message: 4 URLs, 2 pages.
+    shapes = [
+        ([("yp-a@x", None)], 1),
+        ([("yp-b@x", None), ("yp-b1@x", "yp-b@x")], 2),
+        ([("yp-c@x", None)], 3),
+        ([("yp-d@x", None)], 4),
+    ]
+    for edges, month in shapes:
+        root = edges[0][0]
+        (tmp_path / root).mkdir()
+        seeded = seed_thread_shape(tmp_path / root, "alpha", edges)
+        _set_article_date(seeded[root][0], datetime(2012, month, 1, tzinfo=UTC))
+    _clear_sitemap_cache()
+
+    for path in ("/alpha/2012/sitemap.xml", "/alpha/2012/sitemap-2.xml"):
+        threads = _urls(client, path)
+        singles = _urls(client, _message_sibling(path))
+        assert Counter(threads + singles) == Counter(_single_tree_page(path)), path
+    for path in ("/alpha/2012/sitemap-3.xml", "/alpha/2012/messages-sitemap-3.xml"):
+        assert client.get(path).status_code == 404, path
+
+
+def test_both_indexes_cost_one_month_counts_pass(client, monkeypatch):
+    """Both indexes come from one build and one cache row, so serving both
+    runs `_month_counts`, the slow part of the index, once per inbox. A
+    second build would double the fast-tier warm. (Granny, #964 slice 2
+    review.)"""
+    from sqlalchemy import func, select
+
+    import mimir.seo.sitemaps as sm
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    calls = []
+    real = sm._month_counts
+    monkeypatch.setattr(
+        sm, "_month_counts", lambda s, ib: calls.append(ib.name) or real(s, ib)
+    )
+    _clear_sitemap_cache()
+    for path in ("/sitemap.xml", "/messages-sitemap.xml", "/sitemap.xml"):
+        assert client.get(path).status_code == 200, path
+    with SessionLocal() as s:
+        inboxes = s.scalar(select(func.count()).select_from(Inbox))
+    assert inboxes >= 1, "precondition: an inbox to count"
+    assert len(calls) == inboxes, calls
+
+
+def test_the_slow_warm_leaves_older_periods_alone(client, tmp_path):
+    """The warm forces a rebuild, so it must stop at the latest two
+    periods: forcing every year file each hour rebuilds a small inbox's
+    whole history on every slow tick. alpha's 2024 fixture year sits
+    outside March 2025's window and must stay as cold as it was."""
+    from datetime import UTC, date, datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("in@x", None), ("re@x", "in@x")])
+    for art_id, _ in seeded.values():
+        _set_article_date(art_id, datetime(2025, 3, 10, tzinfo=UTC))
+    _clear_sitemap_cache()
+    assert _index_lastmods(client)["/alpha/2024/sitemap.xml"] is None  # precondition
+
+    _warm_alpha(date(2025, 3, 15))
+    _drop_index_cache()
+    lastmods = _index_lastmods(client)
+    assert lastmods["/alpha/2025/sitemap.xml"] is not None  # the warm ran
+    assert lastmods["/alpha/2024/sitemap.xml"] is None

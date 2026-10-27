@@ -1,11 +1,11 @@
-"""Patch-body inspection: extract the set of file paths a message's
-diff content touches, and a backfill walker for the
-`article_files` join table.
+"""Patch-body inspection: extract the file paths a message's diff
+content touches, with the lines it adds and removes in each, and a
+backfill walker for the `article_files` join table.
 
 Operates on `parsed.body` (the decoded plain-text body, already
 surrogate-scrubbed). Pure function; no DB or git dependencies. The
 caller (`mimir.ingest` and the backfill CLI) is responsible for
-turning the returned set into `ArticleFile` rows.
+turning the returned paths and counts into `ArticleFile` rows.
 
 Strong signal only: we match `diff --git a/<old> b/<new>` headers,
 which are machine-generated and unambiguous, and unified diffs without
@@ -16,7 +16,7 @@ and lousy precision. The cost is missing discussion-only threads in
 the per-path reverse lookup; the win is that every match is a real
 patch hunk.
 
-The returned set carries the **`b/` path**, the post-rename
+Each returned path is the **`b/` path**, the post-rename
 destination when the patch renames a file, the only path when it
 doesn't. This matches what reviewers and `MAINTAINERS` globs expect:
 the new location of the code. The `a/` path is recoverable from the
@@ -29,7 +29,7 @@ import re
 from collections.abc import Callable
 from functools import partial
 
-from sqlalchemy import exists, select
+from sqlalchemy import select
 
 from mimir._backfill import BackfillCounters, walk_articles
 from mimir.backfill_runs import Run
@@ -99,10 +99,19 @@ def _unified_path(old: str, new: str) -> str | None:
 MAX_TOUCHED_PATHS = 1000
 
 
-def extract_touched_paths(body: str | None) -> set[str]:
-    """Return the set of post-rename paths the patch body touches.
+# A hunk header, `@@ -a[,b] +c[,d] @@`, capturing the two line counts.
+# Nine digits at most: `int()` refuses a string over 4300 digits, and a
+# longer count is not a real hunk anyway, so the line reads as malformed.
+_HUNK_RE = re.compile(r"@@ -\d{1,9}(?:,(\d{1,9}))? \+\d{1,9}(?:,(\d{1,9}))? @@")
 
-    Returns an empty set on:
+
+def extract_touched_paths(
+    body: str | None,
+) -> dict[str, tuple[int | None, int | None]]:
+    """Map each post-rename path the patch body touches to the
+    `(insertions, deletions)` its hunks make there (#939).
+
+    The paths are the keys. Returns an empty dict on:
     - non-patch bodies (no `diff --git` header, no unified diff)
     - None / empty input
     - bodies where every `diff --git` line is inside a quoted block
@@ -116,23 +125,102 @@ def extract_touched_paths(body: str | None) -> set[str]:
     diffs. Acceptable: that's effectively a reply containing a
     patch hunk, which IS a fresh diff for index purposes.
 
-    Caps the returned set at `MAX_TOUCHED_PATHS` entries. Real-world
-    series stay well under that ceiling; the cap exists to bound
-    work from a hostile or malformed message."""
+    Caps the paths at `MAX_TOUCHED_PATHS`, the first ones in the order
+    below. Real-world series stay well under that ceiling; the cap
+    exists to bound work from a hostile or malformed message.
+
+    The counts are `_count_lines`'s; a file whose hunks are malformed
+    maps to `(None, None)`."""
     if not body:
-        return set()
-    out: set[str] = set()
-    for m in _DIFF_GIT_RE.finditer(body):
-        out.add(m.group("new"))
-        if len(out) >= MAX_TOUCHED_PATHS:
-            return out
-    for m in _UNIFIED_RE.finditer(body):
-        path = _unified_path(m.group("old"), m.group("new"))
+        return {}
+    headers = [(m.start(), m.group("new")) for m in _DIFF_GIT_RE.finditer(body)]
+    headers += [
+        (m.start(), _unified_path(m.group("old"), m.group("new")))
+        for m in _UNIFIED_RE.finditer(body)
+    ]
+    paths: set[str] = set()
+    for _, path in headers:
+        if len(paths) >= MAX_TOUCHED_PATHS:
+            break
         if path is not None:
-            out.add(path)
-            if len(out) >= MAX_TOUCHED_PATHS:
-                break
-    return out
+            paths.add(path)
+    headers.sort()
+    return _count_lines(body, paths, headers)
+
+
+def _count_lines(
+    body: str, paths: set[str], headers: list[tuple[int, str | None]]
+) -> dict[str, tuple[int | None, int | None]]:
+    """`(insertions, deletions)` per path, from the hunks after each of
+    its file headers (`headers`: `(offset, path)`, sorted).
+
+    Hunks and not the diffstat: the diffstat's per-file bar is scaled
+    and its paths truncated, and quilt and `diff -u` bodies have none.
+    Each hunk is read by its header's line counts, which is what keeps
+    the `-- ` signature after the last hunk from counting as a deleted
+    line. A hunk belongs to the nearest header before it; one under a
+    path past the cap, or under no header, is read and not counted.
+
+    A file with a header and no hunk (binary, pure rename, mode change)
+    counts 0/0, as `git diff --shortstat` does. A hunk that ends early,
+    holds a line that is no hunk line, or whose header does not parse,
+    makes its file `(None, None)`: a partial count would be shown as
+    the total.
+    An empty line is a context line whose space a mailer stripped, which
+    `git apply` accepts too.
+
+    One pass over the lines. Split on `\n` only, as the header regexes
+    are: a form feed inside a source line must not end it."""
+    counts: dict[str, list[int] | None] = {p: [0, 0] for p in paths}
+    tally: list[int] | None = None  # the current file's [insertions, deletions]
+    path: str | None = None
+    nxt = 0
+    old = new = 0  # lines the open hunk still owes, on each side
+    offset = 0
+    for line in body.split("\n"):
+        start = offset
+        offset += len(line) + 1
+        line = line.removesuffix("\r")
+        if old or new:
+            tag = line[:1]
+            if tag in (" ", ""):
+                old, new = old - 1, new - 1
+            elif tag == "-":
+                old -= 1
+                if tally is not None:
+                    tally[1] += 1
+            elif tag == "+":
+                new -= 1
+                if tally is not None:
+                    tally[0] += 1
+            elif tag == "\\":
+                continue
+            else:
+                old = -1
+            if old >= 0 and new >= 0:
+                continue
+            # Malformed: the file loses its count, and the line is read
+            # again as a line outside any hunk (it may be the next header).
+            old = new = 0
+            if path is not None:
+                counts[path] = tally = None
+        while nxt < len(headers) and headers[nxt][0] <= start:
+            path = headers[nxt][1]
+            path = path if path in paths else None
+            tally = counts[path] if path is not None else None
+            nxt += 1
+        if not line.startswith("@@"):
+            continue
+        m = _HUNK_RE.match(line)
+        if m is None:
+            if path is not None:
+                counts[path] = tally = None
+            continue
+        old = int(m[1]) if m[1] is not None else 1
+        new = int(m[2]) if m[2] is not None else 1
+    if (old or new) and path is not None:
+        counts[path] = None  # the body ended inside a hunk
+    return {p: (c[0], c[1]) if c else (None, None) for p, c in counts.items()}
 
 
 def has_article_files(session, article_id: int) -> bool:
@@ -152,8 +240,16 @@ def article_has_files():
     """`has_article_files` as an ORM column expression over `Article`,
     for readers that decide per row in one statement (the slot rule,
     `patch_series.slot_rank`). One predicate, two spellings: an
-    `article_files` row exists."""
-    return exists().where(ArticleFile.article_id == Article.id)
+    `article_files` row exists.
+
+    It selects `article_id` rather than `*`: since the line counts
+    (#939) a `*` names columns the primary key index lacks, and the
+    probe would read the table instead of the index alone."""
+    return (
+        select(ArticleFile.article_id)
+        .where(ArticleFile.article_id == Article.id)
+        .exists()
+    )
 
 
 class BackfillResult(BackfillCounters):
@@ -264,8 +360,8 @@ def _process_one(
         return "skipped", None
     parsed = read[1]
 
-    paths = extract_touched_paths(parsed.body)
-    if not paths:
+    files = extract_touched_paths(parsed.body)
+    if not files:
         # An older extractor may have stored rows for this body; with no
         # diff to replace them, reprocess must still drop them (#923).
         if has_rows:
@@ -277,7 +373,7 @@ def _process_one(
     return "indexed", _ArticleFilesPending(
         article_id=article.id,
         delete_first=(has_rows and reprocess),
-        paths=sorted(paths),
+        files=files,
     )
 
 

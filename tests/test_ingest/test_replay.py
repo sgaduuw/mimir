@@ -436,10 +436,13 @@ def _derived_state(seeded_db, msgid: str) -> dict:
             "patch_series_key": art.patch_series_key,
             "patch_series_version": art.patch_series_version,
             "patch_series_position": art.patch_series_position,
+            # With their line counts (#939), which replay writes too.
             "paths": sorted(
                 s.execute(
-                    select(ArticleFile.path).where(ArticleFile.article_id == art.id)
-                ).scalars()
+                    select(
+                        ArticleFile.path, ArticleFile.insertions, ArticleFile.deletions
+                    ).where(ArticleFile.article_id == art.id)
+                ).all()
             ),
             "trailers": sorted(
                 s.execute(
@@ -514,7 +517,7 @@ _PATCH_BODY = (
             None,
             _PATCH_BODY,
             lambda st: (
-                st["paths"] == ["fs/foo/a.c"]
+                st["paths"] == [("fs/foo/a.c", 1, 1)]
                 and [t[0] for t in st["trailers"]] == ["Reviewed-by"]
             ),
             id="patch-with-diff-and-review-trailers",

@@ -197,56 +197,108 @@ def test_a_status_change_moves_the_etag_and_the_line(client, tmp_path, change):
     assert _status(after.get_data(as_text=True))[0] == want
 
 
-def _add_v2_repost(seeded):
-    """A second v2 of the same patch, newer than `v2@x` and filed in
-    alpha, so it is a re-post: the slot's patch stays `v2@x` (lowest id,
-    no diff in either), while the pill, which ranks by date, names this
-    one. Returns its id."""
+def _add_v2_copy(message_id, day, *, diff=False):
+    """Another v2 of the same patch, filed in alpha so it is a re-post of
+    the slot (or its patch, when it wins). `diff` gives it an
+    `article_files` row. Returns its id."""
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
-    from mimir.models import ArticleList, Inbox
+    from mimir.models import ArticleFile, ArticleList, Inbox
 
     with SessionLocal() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        late = Article(
-            message_id="v2-late@x",
+        copy = Article(
+            message_id=message_id,
             subject="[PATCH v2 1/1] foo: bar",
             subject_normalized="foo: bar",
-            date=datetime(2024, 1, 9, tzinfo=UTC),
+            date=datetime(2024, 1, day, tzinfo=UTC),
             patch_series_key=KEY,
             patch_series_version="v2",
             patch_series_position=1,
             lists=[ArticleList(inbox_id=alpha.id, epoch="0.git", commit_sha="aa" * 20)],
+            files=[ArticleFile(path="fs/foo.c")] if diff else [],
         )
-        s.add(late)
+        s.add(copy)
         s.commit()
-        return late.id
+        return copy.id
 
 
-def test_superseded_link_names_the_copy_the_pill_dated(client, tmp_path):
-    """#861: a v2 posted again gives the revisions timeline one entry,
-    the slot's patch (`v2@x`, lowest id). The pill and its "(posted ...)"
-    date name the newest copy, so the link must go there too, and a new
-    re-post moves the ETag."""
+def _timeline_v2(article_id):
+    """The revisions timeline's v2 entry for the article's slot, as the
+    thread page builds it."""
+    from mimir.extensions import SessionLocal
+    from mimir.patch_state import _series_rows, _series_timeline
+
+    with SessionLocal() as s:
+        article = s.get(Article, article_id)
+        rows = _series_rows(s, article)
+        (entry,) = [
+            e for e in _series_timeline(article, "alpha", rows) if e.version == "v2"
+        ]
+    return entry
+
+
+@pytest.mark.parametrize(
+    ("copies", "winner"),
+    [
+        # No copy has a diff: the lowest id, which is the oldest posting.
+        ([("late@x", 9, False)], "v2@x"),
+        # The lowest id has no diff and a later copy has: that one.
+        ([("mid@x", 9, True), ("late@x", 10, False)], "mid@x"),
+        # A later id dated before the lowest: the id decides, not the date.
+        ([("early@x", 7, False)], "v2@x"),
+    ],
+    ids=["lowest-id", "the-copy-with-a-diff", "id-not-date"],
+)
+def test_pill_timeline_and_link_name_the_slot_winner(client, tmp_path, copies, winner):
+    """#949: a v2 posted again is one slot, and the slot rule (#861) picks
+    its patch. The pill's superseding copy, the timeline's v2 entry and
+    the status line's link name that one article, and "posted" is its
+    date, not the newest re-post's."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Inbox
+
+    seeded = _seed(tmp_path, v2=True)
+    p_id = seeded["p@x"][0]
+    ids = {"v2@x": seeded["v2@x"][0]}
+    for message_id, day, diff in copies:
+        ids[message_id] = _add_v2_copy(message_id, day, diff=diff)
+    assert winner != copies[-1][0]  # precondition: the newest copy is not the winner
+
+    with SessionLocal() as s:
+        inbox_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        info = _bulk_uncached(s, [p_id], inbox_id)[p_id]
+        won = s.get(Article, ids[winner])
+    assert info.superseded_by_id == ids[winner]
+    v2 = _timeline_v2(p_id)
+    assert v2.article_id == ids[winner]
+    assert info.superseded_at.date() == won.date.date()
+
+    html = client.get(seeded["p@x"][1] + "/t").get_data(as_text=True)
+    sentence, link = _status(html)
+    assert sentence == f"Superseded by v2 (posted 2024-01-{won.date.day:02d})."
+    assert link == v2.url
+    assert link.endswith(f"/{ids[winner]}"), link
+
+
+def test_a_new_repost_of_the_slot_moves_the_etag_not_the_pick(client, tmp_path):
+    """The validator still carries every copy of the slot: a re-post
+    moves the ETag, and the line keeps naming the slot's patch."""
     seeded = _seed(tmp_path, v2=True)
     url = seeded["p@x"][1] + "/t"
     before = client.get(url)
-    patch_id, patch_url = seeded["v2@x"]
-    assert _status(before.get_data(as_text=True)) == (
-        "Superseded by v2 (posted 2024-01-08).",
-        patch_url,
-    )  # precondition: one v2, the link names it
-    late_id = _add_v2_repost(seeded)
-    assert late_id > patch_id  # precondition: the winner is the lower id
-
+    _add_v2_copy("late@x", 9)
     after = client.get(url, headers={"If-None-Match": before.headers["ETag"]})
     assert after.status_code == 200
     assert after.headers["ETag"] != before.headers["ETag"]
-    sentence, link = _status(after.get_data(as_text=True))
-    assert sentence == "Superseded by v2 (posted 2024-01-09)."
-    assert link.endswith(f"/{late_id}"), link
-    assert link != patch_url
+    assert _status(after.get_data(as_text=True)) == (
+        "Superseded by v2 (posted 2024-01-08).",
+        seeded["v2@x"][1],
+    )
 
 
 def _status_html(app, info, series):
@@ -294,38 +346,3 @@ def test_the_superseded_link_follows_the_id_and_falls_back_to_the_patch(
         superseded_by_id=named,
     )
     assert _status(_status_html(client.application, info, series))[1] == want
-
-
-def test_two_newest_copies_with_one_date_name_the_higher_id(client, tmp_path):
-    """The pill ranks the copies of the newer version by date. Two copies
-    sharing the newest date used to leave the pick to the scan order, so
-    the pill's id (and the status line's link) could change between runs;
-    the higher id wins."""
-    from sqlalchemy import select
-
-    from mimir.extensions import SessionLocal
-    from mimir.lifecycle_status import _bulk_uncached
-    from mimir.models import Inbox
-
-    seeded = _seed(tmp_path, v2=True)
-    p_id = seeded["p@x"][0]
-    with SessionLocal() as s:
-        tied = [
-            Article(
-                message_id=f"v2-tie-{n}@x",
-                subject="[PATCH v2 1/1] foo: bar",
-                subject_normalized="foo: bar",
-                date=datetime(2024, 1, 9, tzinfo=UTC),
-                patch_series_key=KEY,
-                patch_series_version="v2",
-                patch_series_position=1,
-            )
-            for n in "ab"
-        ]
-        s.add_all(tied)
-        s.commit()
-        ids = sorted(a.id for a in tied)
-        inbox_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
-        got = _bulk_uncached(s, [p_id], inbox_id)[p_id]
-    assert ids[0] < ids[1]  # precondition: two copies, one lower id
-    assert got.superseded_by_id == ids[1]

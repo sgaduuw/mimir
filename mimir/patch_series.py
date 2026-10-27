@@ -141,11 +141,16 @@ def slot_rank(article_id: int, has_diff: bool) -> tuple[bool, int]:
     return (not has_diff, article_id)
 
 
+def slot_winner(slot: list[tuple[Article, bool]]) -> Article:
+    """The patch `slot_rank` picks from a slot's `(row, has_diff)` pairs."""
+    return min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]
+
+
 # A series is (patch_series_key, COALESCE(patch_series_head_id, 0))
 # (#816): one key can hold several series a sender posted under one
 # cover title, and the head id tells them apart. NULL is the key's
 # first series, so a NULL head everywhere means the key alone, which is
-# how every row reads until the chain backfill runs. The helpers below
+# how every row reads until a re-chain writes a head. The helpers below
 # are the only places the pair is spelled; readers that compare the key
 # alone are caught by `tests/test_series_identity_single_owner.py`.
 
@@ -485,14 +490,18 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
     posting under it, and #862 orphans the patches of that posting.
 
     The sibling is a cover naming the patch's explicit version (never the
-    bare bracket's v1) and its total, under the old cover's own key
-    (another title or sender is another series, which is not re-keyed
-    here), dated within `SIBLING_COVER_WINDOW` of the patch on either side.
-    The earliest by `(date, message_id)` wins, whatever order `replies`
-    comes in. Reads subjects, never stored series columns, like the walk."""
+    bare bracket's v1) and its total, dated within `SIBLING_COVER_WINDOW`
+    of the patch on either side. Its title and sender may differ from the
+    old cover's, so its key may (#941): a retitled cover or a changed
+    address is still the same posting, and no same-sender test is made
+    because it would break links the key rule already makes. A sibling
+    under the old cover's key is preferred, then the earliest by
+    `(date, message_id)` wins, whatever order `replies` comes in. Reads
+    subjects, never stored series columns, like the walk."""
     old = parse_cover_letter(unfold(old_cover.subject))
+    old_key = series_key(old.title, old_cover.author)
     version = _explicit_version(subject)
-    best = None
+    ranked = []
     for row in replies:
         cover = parse_cover_letter(unfold(row.subject))
         if (
@@ -500,17 +509,16 @@ def _sibling_cover(old_cover, replies, posting, subject, date):
             or row.date is None
             or _explicit_version(row.subject) != version
             or cover.total != posting[1]
-            or series_key(cover.title, row.author)
-            != series_key(old.title, old_cover.author)
             or abs(aware_utc(date) - aware_utc(row.date)) > SIBLING_COVER_WINDOW
         ):
             continue
-        if best is None or (aware_utc(row.date), row.message_id) < (
-            aware_utc(best.date),
-            best.message_id,
-        ):
-            best = row
-    return best
+        rank = (
+            series_key(cover.title, row.author) != old_key,
+            aware_utc(row.date),
+            row.message_id,
+        )
+        ranked.append((rank, row))
+    return min(ranked, key=lambda pair: pair[0], default=(None, None))[1]
 
 
 def cover_of_patch(

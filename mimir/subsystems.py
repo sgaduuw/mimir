@@ -423,11 +423,18 @@ def is_cover(article: Article) -> bool:
 
 def article_paths(
     session: Session, article: Article
-) -> list[tuple[int, int | None, str | None]]:
-    """`(article_id, position, path)` for every file `article` touches:
-    its own rows, or for a cover those of every article in its posting
-    (`patch_series.same_posting`), with a NULL path for a patch that
-    has none so the patch still counts. One statement either way.
+) -> list[tuple[int, int | None, str | None, int | None, int | None]]:
+    """`(article_id, position, path, insertions, deletions)` for every
+    file `article` touches: its own rows, or for a cover those of every
+    article in its posting (`patch_series.same_posting`), with a NULL
+    path for a patch that has none so the patch still counts. One
+    statement either way.
+
+    The line counts are read for a cover only, the one page that shows
+    them (the series totals, #939), and are None for any other article.
+    A patch's own body carries git's diffstat, and leaving the counts
+    out keeps a patch page's validator still while the backfill writes
+    them.
 
     The single answer to "which files does this article touch": the
     subsystem line, the maintainer line, the series totals and the page
@@ -436,7 +443,7 @@ def article_paths(
     """
     if not is_cover(article):
         return [
-            (article.id, article.patch_series_position, path)
+            (article.id, article.patch_series_position, path, None, None)
             for path in session.scalars(
                 select(ArticleFile.path)
                 .where(ArticleFile.article_id == article.id)
@@ -446,7 +453,13 @@ def article_paths(
     return [
         tuple(row)
         for row in session.execute(
-            select(Article.id, Article.patch_series_position, ArticleFile.path)
+            select(
+                Article.id,
+                Article.patch_series_position,
+                ArticleFile.path,
+                ArticleFile.insertions,
+                ArticleFile.deletions,
+            )
             .outerjoin(ArticleFile, ArticleFile.article_id == Article.id)
             .where(same_posting(article))
             .order_by(Article.id, ArticleFile.path)
@@ -458,7 +471,7 @@ def subsystems_for_article(session: Session, article: Article) -> list[Subsystem
     """Resolve the subsystem(s) for an article via the files it touches
     (`article_paths`, so a cover answers for its patches)."""
     return subsystems_for_paths(
-        session, [path for _, _, path in article_paths(session, article) if path]
+        session, [row[2] for row in article_paths(session, article) if row[2]]
     )
 
 

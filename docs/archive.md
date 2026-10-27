@@ -181,7 +181,6 @@ extractor or correcting old data, use the corresponding backfill:
 uv run mimir backfill-article-files --limit 1000
 uv run mimir backfill-article-trailers --limit 1000
 uv run mimir backfill-patch-series --limit 1000
-uv run mimir backfill-series-chains --limit 1000
 uv run mimir backfill-thread-roots --verify
 ```
 
@@ -198,19 +197,21 @@ reads `article_files`, so `backfill-article-files` must be complete first.
 To fill it for in-series patches only, run `backfill-article-files
 --patch-subjects` instead: it skips every other article without reading its
 body, and leaves solo `[PATCH]` mails and non-series quilt patches without
-file rows. Use `--help` for per-command options.
+file rows. File rows carry the lines each patch inserts and deletes in the
+file, which a cover's series totals add up (#939). Rows stored before the
+counts existed have none until `backfill-article-files --patch-subjects
+--reprocess` rewrites them. Use `--help` for per-command options.
 
-`backfill-series-chains` splits a cover title that one sender reused for
-unrelated postings into separate series. It also gives a posting whose cover
-version is a typo its patches' version, on the cover and its patches (#870),
-reported as `versions_planned`. Ingest and `backfill-patch-series` chain the
-titles they touch, so it is needed once, for history ingested before 3.25.0.
+Ingest and `backfill-patch-series` chain the cover titles they touch into
+series, so there is no separate chain backfill: `backfill-series-chains`,
+which chained the history ingested before 3.25.0, was removed in 3.31.0.
 
-These four, and `admin canonicals backfill`, resume an interrupted run. The
-broker stores each run's position, so after a deploy, a dropped session or a
-killed command, run the same command again and it continues from the last
-committed batch (if it says the run is in progress instead, see below). It
-prints `resuming run started <time> UTC at id N` when it does.
+The first three backfills above, and `admin canonicals backfill`, resume an
+interrupted run. The broker stores each run's position, so after a deploy, a
+dropped session or a killed command, run the same command again and it
+continues from the last committed batch (if it says the run is in progress
+instead, see below). It prints `resuming run started <time> UTC at id N` when
+it does.
 A run belongs to one command with one set of `--reprocess` and `--inbox`
 values; a different `--inbox` starts its own run. `--limit` caps one session
 only: the run stays open, and the next invocation continues it. A run that

@@ -167,8 +167,13 @@ def _replay_loop(
                 conn.execute(
                     insert(ArticleFile).values(
                         [
-                            {"article_id": new_article_id, "path": p}
-                            for p in rec.touched_paths
+                            {
+                                "article_id": new_article_id,
+                                "path": p,
+                                "insertions": ins,
+                                "deletions": dels,
+                            }
+                            for p, (ins, dels) in rec.touched_paths.items()
                         ]
                     )
                 )

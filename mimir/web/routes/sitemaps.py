@@ -1,11 +1,15 @@
-"""`/sitemap.xml`, `/meta-sitemap.xml`, `/sitemap-maintainers.xml`,
-`/sitemap-series-diffs-<h>.xml`, and `/<inbox>/sitemap.xml`.
+"""`/sitemap.xml`, `/messages-sitemap.xml`, `/meta-sitemap.xml`,
+`/sitemap-maintainers.xml`, `/sitemap-series-diffs-<h>.xml`,
+`/<inbox>/sitemap.xml` and the archive files.
 
 `/sitemap.xml` is a `<sitemapindex>` pointing at `/meta-sitemap.xml`
 (a urlset for `/` and `/merge-window`), one `/<inbox>/sitemap.xml` per configured
 inbox, `/sitemap-maintainers.xml` (a urlset of every maintainer
 profile page), and sixteen `/sitemap-series-diffs-<h>.xml` (the series
-cover diffs, one page per first hex character of the key). Crawlers fetch the sub-sitemaps independently and
+cover diffs, one page per first hex character of the key), plus the
+per-inbox year and month files of thread URLs. `/messages-sitemap.xml`
+is a second, independent index of the same archive files' message
+halves (#964). Crawlers fetch the sub-sitemaps independently and
 skip unchanged inboxes via each entry's `<lastmod>`. The index/meta
 split (issue #10) replaced the earlier single monolithic urlset;
 cross-posted articles now appear in each linked inbox's sitemap
@@ -37,7 +41,7 @@ from mimir.seo import (
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     series_diff_sitemap_xml,
-    sitemap_index_xml,
+    sitemap_indexes_xml,
 )
 from mimir.seo.sitemaps import SERIES_DIFF_BUCKETS, SitemapPayload
 from mimir.web._blueprint import bp_web
@@ -65,7 +69,19 @@ def sitemap() -> Response:
     independently and can skip unchanged inboxes between visits via
     the per-entry `<lastmod>`. Cached for SITEMAP_TTL_SEC."""
     with SessionLocal() as session:
-        payload = sitemap_index_xml(session, _site_base())
+        payload = sitemap_indexes_xml(session, _site_base())[0]
+    return _sitemap_response(payload)
+
+
+@bp_web.route("/messages-sitemap.xml")
+def messages_sitemap() -> Response:
+    """Sitemap index of message pages: the `messages-` sibling of every
+    archive file `/sitemap.xml` lists (#964). Message pages mostly
+    duplicate lore.kernel.org, so they are kept apart from the pages
+    mimir adds, and dropping them later is one index and one robots.txt
+    line. Built and cached together with `/sitemap.xml`."""
+    with SessionLocal() as session:
+        payload = sitemap_indexes_xml(session, _site_base())[1]
     return _sitemap_response(payload)
 
 
@@ -106,10 +122,10 @@ def series_diff_sitemap(bucket: str) -> Response:
 
 @bp_web.route("/<inbox_name>/sitemap.xml")
 def inbox_sitemap(inbox_name: str) -> Response:
-    """Per-inbox sitemap: dashboard, year + month archives that have
-    messages, plus the `SITEMAP_RECENT_PER_INBOX` most-recent article
-    URLs. Cached per inbox, so an ingest into one inbox doesn't
-    invalidate the others' cached responses."""
+    """Per-inbox sitemap of hub pages: dashboard, year + month archives
+    that have messages, and the active subsystems. Thread and message
+    pages are in the archive files. Cached per inbox, so an ingest into
+    one inbox doesn't invalidate the others' cached responses."""
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         payload = inbox_sitemap_xml(session, inbox, _site_base())
@@ -121,13 +137,18 @@ def inbox_sitemap(inbox_name: str) -> Response:
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/sitemap.xml")
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/sitemap-<int:page>.xml")
 def archive_sitemap(
-    inbox_name: str, year: int, month: int | None = None, page: int = 1
+    inbox_name: str,
+    year: int,
+    month: int | None = None,
+    page: int = 1,
+    *,
+    messages: bool = False,
 ) -> Response:
-    """One month or year's thread URLs for one inbox, paged.
+    """One month or year's thread URLs for one inbox, paged, or with
+    `messages` its message URLs.
 
-    This is what reaches the deep archive: the flat per-inbox sitemap
-    caps at `SITEMAP_RECENT_PER_INBOX`, so everything older than the
-    most recent few thousand threads was in no sitemap at all.
+    These files are the only sitemap surface listing thread and message
+    pages, every root included (#964).
 
     Validated before it reaches SQL, because both segments arrive from
     the URL. An out-of-range month would otherwise build a nonsense
@@ -147,7 +168,20 @@ def archive_sitemap(
         abort(404)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        payload = archive_sitemap_xml(session, inbox, year, month, page, _site_base())
+        payload = archive_sitemap_xml(
+            session, inbox, year, month, page, _site_base(), messages=messages
+        )
     if payload is None:
         abort(404)
     return _sitemap_response(payload)
+
+
+@bp_web.route("/<inbox_name>/<int:year>/messages-sitemap.xml")
+@bp_web.route("/<inbox_name>/<int:year>/messages-sitemap-<int:page>.xml")
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/messages-sitemap.xml")
+@bp_web.route("/<inbox_name>/<int:year>/<int:month>/messages-sitemap-<int:page>.xml")
+def archive_messages_sitemap(
+    inbox_name: str, year: int, month: int | None = None, page: int = 1
+) -> Response:
+    """The message half of the matching `archive_sitemap` file (#964)."""
+    return archive_sitemap(inbox_name, year, month, page, messages=True)

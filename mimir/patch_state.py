@@ -46,7 +46,7 @@ from mimir.patch_series import (
     adjacent_versions,
     parse_cover_letter,
     same_series,
-    slot_rank,
+    slot_winner,
 )
 from mimir.patches import article_has_files
 from mimir.trailers import INDEXED_TRAILER_ROLES
@@ -211,18 +211,6 @@ def _trailer_roll_up(
     ]
 
 
-def _resolve_tree_label(tree_name: str) -> str:
-    """Look up `Settings.trees[tree_name].display_name`; fall back to
-    the slug itself when no display_name is set or the tree isn't in
-    config (e.g. mainline_commits row from a tree the operator removed)."""
-    from mimir.config import settings
-
-    cfg = settings.trees.get(tree_name)
-    if cfg is None or cfg.display_name is None:
-        return tree_name
-    return cfg.display_name
-
-
 def _series_rows(session: Session, article: Article) -> list[tuple[Article, bool]]:
     """`(row, has_diff)` for every row of the article's series at its
     position, oldest first, the id breaking ties as `adjacent_versions`
@@ -298,7 +286,7 @@ def _series_timeline(
 
     out: list[StateSeriesEntry] = []
     for version, slot in slots.items():
-        winner = min(slot, key=lambda r: slot_rank(r[0].id, r[1]))[0]
+        winner = slot_winner(slot)
         older = previous.get(version)
         diff_url: str | None = None
         if older is not None:

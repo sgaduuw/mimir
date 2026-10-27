@@ -733,7 +733,7 @@ def test_resolve_tree_label_uses_the_display_name_or_the_slug():
     """The status line's "Queued in <label>" (#844): Linus's TreeConfig
     sets display_name='mainline (Linus)'; subsystem trees default to
     display_name=None and fall back to the slug."""
-    from mimir.patch_state import _resolve_tree_label
+    from mimir.config import _resolve_tree_label
 
     assert _resolve_tree_label("linus") == "mainline (Linus)"
     assert _resolve_tree_label("net-next") == "net-next"

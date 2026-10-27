@@ -4,8 +4,8 @@ A new cover can change which chain every other cover of its key is in:
 an older posting arriving late takes the key's first series and pushes
 the rest under a head. So each ingest batch, and each replay, recomputes
 the whole of every key it touched, from the database, inside the same
-transaction as its inserts, and must end where `backfill-series-chains`
-would.
+transaction as its inserts, and must end where a fresh re-chain of every
+key would.
 """
 
 import html as html_lib
@@ -17,7 +17,7 @@ from sqlalchemy import select
 
 from mimir.ingest import ingest_epoch, replay_failures
 from mimir.models import Article, Inbox, IngestState
-from mimir.patch_series_chains import backfill_series_chains
+from tests._helpers import rechain_all
 from tests.test_ingest._helpers import _build_pubinbox_repo, _rfc5322, _subject
 
 A = ["net: fix the frobnicator", "net: add a knob"]
@@ -110,8 +110,8 @@ def test_arrival_order_does_not_change_the_heads(
     for i, name in enumerate([first, "new" if first == "old" else "old"]):
         _arrive(seeded_db, tmp_path, f"{i}.git", *arrivals[name])
     assert _heads(seeded_db) == SPLIT
-    # Ingest leaves the state the backfill would write: nothing to change.
-    assert backfill_series_chains().heads_planned == 0
+    # Ingest leaves the state a fresh re-chain would write: nothing to change.
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_the_oldest_series_keeps_its_diff_url_and_a_split_off_gets_s(
@@ -201,7 +201,7 @@ def test_replay_re_chains_the_keys_it_recovers(
     monkeypatch.setattr(mimir.parser, "MAX_RAW_MESSAGE_BYTES", 50_000_000)
     assert replay_failures(alpha).recovered == 1
     assert _heads(seeded_db)["new2@x"] == "new1@x"
-    assert backfill_series_chains().heads_planned == 0
+    assert rechain_all(seeded_db) == (0, 0)
 
 
 def test_a_patch_only_batch_re_chains_its_cover_s_key(
