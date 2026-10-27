@@ -5,6 +5,7 @@ cache invalidation after canonical-inbox flips."""
 import logging
 import re
 from datetime import UTC
+from types import SimpleNamespace
 
 import pytest
 
@@ -2968,7 +2969,7 @@ def test_the_two_trees_partition_what_the_single_tree_listed(
 
 def test_the_split_reads_the_kind_tag_and_nothing_else(monkeypatch):
     """Slice 1 tagged each root entry and left the tag untested. The tag
-    is the one predicate: `_sitemap_entries_for_roots` sets it, the split
+    is the one predicate: `_archive_entries` sets it, the split
     reads it. A loc that looks like `/t` but is tagged a message must
     stay a message, so a filter on the URL shape fails here."""
     from datetime import datetime
@@ -2977,14 +2978,23 @@ def test_the_split_reads_the_kind_tag_and_nothing_else(monkeypatch):
 
     monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
     when = datetime(2020, 1, 2, tzinfo=UTC)
-    entries = sm._sitemap_entries_for_roots(
-        [(1, when), (2, when), (3, when)],
-        singleton_ids={1},
-        last_activity={},
-        message_counts={2: 3, 3: 3},
-        unrankable_roots={3},
-        inbox_name="alpha",
-        base="",
+    # The four lookups are stubbed so the roots' classes are the input;
+    # the session only has to answer the one `(id, date)` query.
+    monkeypatch.setattr(sm, "_singleton_root_ids", lambda *a: {1})
+    monkeypatch.setattr(sm, "_thread_last_activity", lambda *a: {})
+    monkeypatch.setattr(sm, "_thread_message_counts", lambda *a: {2: 3, 3: 3})
+    monkeypatch.setattr(sm, "unmaterialised_roots", lambda *a: {3})
+
+    class _Rows:
+        def all(self):
+            return [(1, when), (2, when), (3, when)]
+
+    class _Session:
+        def execute(self, _stmt):
+            return _Rows()
+
+    entries = sm._archive_entries(
+        _Session(), SimpleNamespace(id=1, name="alpha"), [1, 2, 3], ""
     )
     assert [(e.loc, e.kind) for e in entries] == [
         ("/alpha/2020/01/1", sm.KIND_MESSAGE),

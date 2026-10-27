@@ -27,7 +27,7 @@ from mimir.models import (
 )
 from mimir.patch_series import same_posting, same_series
 from mimir.patches import article_has_files
-from mimir.subsystems import article_paths
+from mimir.subsystems import article_paths, is_cover
 
 
 def _digest(values) -> str:
@@ -88,10 +88,7 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         select(Article.id, Article.message_id)
         .where(same_posting(article), Article.patch_series_position > 0)
         .subquery()
-        if article is not None
-        and article.patch_series_key
-        and article.patch_series_version
-        and not article.patch_series_position
+        if article is not None and is_cover(article)
         else None
     )
     landed = MainlineCommit.message_id == message_id
