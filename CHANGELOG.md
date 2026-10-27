@@ -22,6 +22,9 @@ changes, not internal refactors. Categories: **Added**,
   both indexes. A year or month whose threads are all single messages
   serves an empty thread file. Submit `/messages-sitemap.xml` in Search
   Console after the deploy (#964).
+- robots.txt names `/llms.txt` with an `LLM-Context:` record (the field
+  proposed by draft-arsentev-llm-context-discovery); crawlers that do not
+  know it ignore it (#969).
 
 ### Changed
 
