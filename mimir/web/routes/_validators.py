@@ -14,10 +14,10 @@ the two surfaces cannot drift apart again.
 
 import hashlib
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from mimir.config import settings
+from mimir.config import _resolve_tree_label, settings
 from mimir.models import (
     Article,
     ArticleList,
@@ -25,8 +25,7 @@ from mimir.models import (
     MainlineCommit,
     MainlineState,
 )
-from mimir.patch_series import same_series
-from mimir.patch_state import _resolve_tree_label
+from mimir.patch_series import same_posting, same_series
 from mimir.patches import article_has_files
 from mimir.subsystems import article_paths
 
@@ -79,12 +78,35 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # values. A handful of rows per article. The label is the one the
     # page prints ("Queued in <label>"): `TREES__<name>__DISPLAY_NAME`
     # changes on a restart that keeps the version.
+    #
+    # A cover's pill rolls up every patch of its posting (#938), so for a
+    # cover the landings and the trailers are the posting's, in the same
+    # two statements. A re-post's rows come along, which only over-
+    # invalidates: the pill counts the slot's patch.
+    article = session.get(Article, article_id)
+    posting = (
+        select(Article.id, Article.message_id)
+        .where(same_posting(article), Article.patch_series_position > 0)
+        .subquery()
+        if article is not None
+        and article.patch_series_key
+        and article.patch_series_version
+        and not article.patch_series_position
+        else None
+    )
+    landed = MainlineCommit.message_id == message_id
+    reviewed = ArticleTrailer.article_id == article_id
+    if posting is not None:
+        landed = or_(
+            landed, MainlineCommit.message_id.in_(select(posting.c.message_id))
+        )
+        reviewed = or_(reviewed, ArticleTrailer.article_id.in_(select(posting.c.id)))
     landing_rows = session.execute(
         select(
             MainlineCommit.tree_name,
             MainlineCommit.commit_sha,
             MainlineCommit.committed_at,
-        ).where(MainlineCommit.message_id == message_id)
+        ).where(landed)
     ).all()
     landings_tag = ";".join(
         sorted(
@@ -103,7 +125,7 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
             ArticleTrailer.name,
             ArticleTrailer.address_normalized,
         )
-        .where(ArticleTrailer.article_id == article_id)
+        .where(reviewed)
         .order_by(ArticleTrailer.id)
     ).all()
     trailers_tag = _digest(repr(tuple(r)) for r in trailer_rows)
@@ -126,11 +148,10 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     # themselves are the truthful input, read through the same
     # `article_paths` the page renders from: for a cover that is every
     # patch of its posting, with the position, since the series totals
-    # count patches as well as files (#844). `get` is the route's own
-    # loaded row, so it costs no statement.
-    files_tag = _digest(
-        repr(row) for row in article_paths(session, session.get(Article, article_id))
-    )
+    # count patches as well as files (#844), and the line counts they
+    # add (#939). `get` is the route's own loaded row, so it costs no
+    # statement.
+    files_tag = _digest(repr(row) for row in article_paths(session, article))
     # Supersedance and the revision count come from SIBLING articles
     # in this patch's series (key and head), so they live in none of the reads
     # above. Posting a v2 flips this article's badge to SUPERSEDED and
@@ -161,6 +182,14 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
         # each has a diff: a slot's patch is its lowest-id row with one
         # (`patch_series.slot_rank`, #861), so a backfill that gives a
         # row its diff moves the fold, the diff link and the state card.
+        revision_filter = [same_series(series[0], series[2])]
+        if posting is None:
+            revision_filter.append(
+                func.coalesce(Article.patch_series_position, 0) == (series[1] or 0)
+            )
+        # else: a cover's pill rolls up its posting (#938) and reads each
+        # patch's own newer revision, so a cover takes every position of
+        # the series, not only its own.
         revisions = session.execute(
             select(
                 Article.id,
@@ -170,14 +199,11 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
                 article_has_files(),
             )
             .outerjoin(ArticleList, ArticleList.article_id == Article.id)
-            .where(
-                same_series(series[0], series[2]),
-                func.coalesce(Article.patch_series_position, 0) == (series[1] or 0),
-            )
+            .where(*revision_filter)
             .order_by(Article.id, ArticleList.inbox_id)
         ).all()
         # The identity leads, because the fold's diff links spell it
-        # (`s=`, #816): the chain backfill can move a whole series under
+        # (`s=`, #816): a re-chain can move a whole series under
         # a new head, which keeps the same revision rows and changes
         # every link.
         series_tag = _digest(repr(tuple(r)) for r in [series, *revisions])

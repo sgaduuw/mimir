@@ -34,6 +34,7 @@ def test_llms_txt_is_served_as_plain_text(client):
     assert body.startswith("# ")
     assert body.endswith("\n")  # like robots.txt; Jinja drops the last one
     assert "http://localhost/sitemap.xml" in body
+    assert "http://localhost/messages-sitemap.xml" in body
     # In code spans, or a Markdown renderer drops `<inbox>` as an HTML tag.
     assert len(re.findall(r"`http://localhost/<inbox>/[^`\s]+`", body)) == 6
 
@@ -94,7 +95,7 @@ def test_llms_txt_urls_use_the_configured_site_base_verbatim(client, monkeypatch
     body = client.get("/llms.txt").get_data(as_text=True)
     assert body.startswith("# Lists & <Co>\n"), body[:40]
     urls = re.findall(r"https?://[^\s)`]+", body)
-    assert len(urls) == 8, urls  # three shapes in two forms, sitemap, privacy
+    assert len(urls) == 9, urls  # three shapes in two forms, 2 sitemaps, privacy
     assert all(u.startswith("https://lists.example.org/a&b/") for u in urls), urls
     assert "localhost" not in body and "&amp;" not in body
 

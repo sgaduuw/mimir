@@ -374,9 +374,10 @@ def test_warm_cache_skips_sitemap_when_site_base_url_unset(
 def test_warm_cache_includes_sitemap_when_site_base_url_set(
     seeded_db, monkeypatch, _active_broker_context
 ):
-    """With SITE_BASE_URL set, warm-cache pre-renders the three
-    sitemap surfaces, index, meta, and per-inbox, so the first
-    crawler hit per hour gets a cache-hit."""
+    """With SITE_BASE_URL set, warm-cache pre-renders the sitemap
+    surfaces, both indexes, meta, and per-inbox, so the first crawler
+    hit per hour gets a cache-hit. The `sitemap:index` target fills one
+    row holding both indexes (#964)."""
     from sqlalchemy import delete
 
     from mimir import cache
@@ -404,14 +405,21 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     import xml.etree.ElementTree as ET
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
+    cap = settings.thread_view_render_cap
+    indexes = cache.get(f"sitemap:indexsplit:{cap}")
+    assert indexes is not None, "missing cache row for both indexes"
+    high, messages = indexes
     expected_root = {
-        f"sitemap:index:{settings.thread_view_render_cap}": f"{{{ns}}}sitemapindex",
-        "sitemap:meta": f"{{{ns}}}urlset",
-        f"sitemap:inbox:alpha:{settings.thread_view_render_cap}": f"{{{ns}}}urlset",
-        f"sitemap:inbox:beta:{settings.thread_view_render_cap}": f"{{{ns}}}urlset",
+        "sitemap index": (high, f"{{{ns}}}sitemapindex"),
+        "messages sitemap index": (messages, f"{{{ns}}}sitemapindex"),
+        "sitemap:meta": (cache.get("sitemap:meta"), f"{{{ns}}}urlset"),
+        **{
+            key: (cache.get(key), f"{{{ns}}}urlset")
+            for key in ("sitemap:inboxhubs:alpha", "sitemap:inboxhubs:beta")
+        },
     }
-    for key, expected_tag in expected_root.items():
-        payload = cache.get(key)
+    assert "messages-sitemap.xml" in messages.body
+    for key, (payload, expected_tag) in expected_root.items():
         assert payload is not None, f"missing cache row for {key}"
         # The cache now stores SitemapPayload (body + last_modified);
         # the body field carries the XML the route serves.
@@ -434,11 +442,10 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from sqlalchemy import select
 
     from mimir import cache
-    from mimir.config import settings
     from mimir.extensions import SessionLocal
     from mimir.seo import inbox_sitemap_xml
 
-    key = f"sitemap:inbox:alpha:{settings.thread_view_render_cap}"
+    key = "sitemap:inboxhubs:alpha"
     cache.set(key, "STALE", ttl=3600)
     assert cache.get(key) == "STALE"
     with SessionLocal() as s:

@@ -11,7 +11,6 @@ from pydantic import ValidationError
 
 from mimir.broker.protocol import (
     BackfillCanonicalsRequest,
-    BackfillSeriesChainsRequest,
     BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
     CacheDeleteForInboxRequest,
@@ -45,18 +44,6 @@ def test_cache_set_rejects_empty_value_json():
     rejection keeps useless rows out of the cache."""
     with pytest.raises(ValidationError):
         CacheSetRequest(rpc_id=1, key="x", value_json="", ttl=60)
-
-
-def test_series_chains_request_ignores_the_reprocess_an_older_cli_sends():
-    """Releases up to 3.29.0 send `reprocess`; pydantic drops unknown
-    keys, and the handler always ran with it false anyway."""
-    raw = (
-        '{"rpc_id": 1, "op": "backfill_series_chains", "limit": null, '
-        '"reprocess": true, "start": "resume"}'
-    )
-    parsed = BackfillSeriesChainsRequest.model_validate_json(raw)
-    assert parsed.start == "resume"
-    assert not hasattr(parsed, "reprocess")
 
 
 def test_cache_set_rejects_negative_ttl():

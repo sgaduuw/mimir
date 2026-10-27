@@ -120,8 +120,8 @@ def read_messages(
     the small-inbox case. (Re-measure rather than trusting these; they
     are a floor with a date on them, and the archive only grows.)
 
-    Worth the change on this page specifically: the per-inbox sitemap
-    points crawlers straight at it, `public, no-cache` means a fresh
+    Worth the change on this page specifically: the archive sitemap
+    files point crawlers straight at it, `public, no-cache` means a fresh
     crawler always pays full price, and the web tier is two sync
     gunicorn workers, so a handful of concurrent worst-case renders
     occupies the whole tier.

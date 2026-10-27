@@ -210,3 +210,46 @@ def test_a_request_without_the_field_is_a_plain_run():
     """An older CLI sends no `patch_subjects`; it parses as plain."""
     req = BackfillArticleFilesRequest.model_validate({"limit": 3, "rpc_id": 1})
     assert req.patch_subjects is False
+
+
+def _counts(seeded_db) -> dict[str, tuple[int | None, int | None]]:
+    with seeded_db() as s:
+        return {
+            mid: (ins, dels)
+            for mid, ins, dels in s.execute(
+                select(
+                    Article.message_id, ArticleFile.insertions, ArticleFile.deletions
+                ).join(ArticleFile, ArticleFile.article_id == Article.id)
+            )
+        }
+
+
+def test_reprocess_fills_line_counts_on_rows_stored_without_them(
+    seeded_db, tmp_path, broker_active
+):
+    """#939: ingest writes each file's line counts, and rows stored before
+    the counts existed read NULL. A run without `--reprocess` skips an
+    article that has rows, so only `--patch-subjects --reprocess` fills
+    them, and only for the in-series patches."""
+    _clear_seed_articles(seeded_db)
+    epoch_path = tmp_path / "0.git"
+    _build_pubinbox_repo(epoch_path, [_rfc5322(*m) for m in _MAILS])
+    with seeded_db() as s:
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        alpha.mirror_path = str(tmp_path)
+        s.commit()
+        ingest_epoch(s, alpha, "0.git", epoch_path, workers=1)
+    with_diff = {m[0] for m in _MAILS if m[0] != "prose@x"}
+    assert _counts(seeded_db) == dict.fromkeys(with_diff, (1, 1))
+
+    with seeded_db() as s:
+        s.execute(text("UPDATE article_files SET insertions = NULL, deletions = NULL"))
+        s.commit()
+    backfill_article_files(patch_subjects=True)
+    assert _counts(seeded_db) == dict.fromkeys(with_diff, (None, None))
+
+    backfill_article_files(patch_subjects=True, reprocess=True)
+    assert _counts(seeded_db) == {
+        **dict.fromkeys(with_diff, (None, None)),
+        **dict.fromkeys(_IN_SERIES, (1, 1)),
+    }

@@ -50,12 +50,13 @@ class _ArticleFilesPending:
 
     `delete_first=True` instructs the WriteOp closure to DELETE existing
     `ArticleFile` rows for this article_id before INSERTing the new
-    `paths`. Used by `--reprocess`.
+    `files`, a map of path to line counts as `extract_touched_paths`
+    returns it. Used by `--reprocess`.
     """
 
     article_id: int
     delete_first: bool = False
-    paths: list[str] = field(default_factory=list)
+    files: dict[str, tuple[int | None, int | None]] = field(default_factory=dict)
 
 
 @dataclass
@@ -113,16 +114,6 @@ class _PatchSeriesPending:
 
 
 @dataclass
-class _SeriesKeyPending:
-    """A key `backfill_series_chains` (#816) found heads to change on.
-    The key travels, not the heads: the batch re-chains it on the
-    writer, so an ingest batch that re-chained it after the read is not
-    overwritten with heads from before."""
-
-    key: str
-
-
-@dataclass
 class _CanonicalPending:
     """Per-article pending writes for `backfill_canonicals`.
 
@@ -155,8 +146,9 @@ def _submit_article_files_batch(
 
     The closure iterates `payloads` in order. For each:
     - if `delete_first`, issue `DELETE FROM article_files WHERE article_id = ?`.
-    - then issue `INSERT INTO article_files (article_id, path) VALUES (?, ?)
-      ON CONFLICT (article_id, path) DO NOTHING` for each path.
+    - then issue `INSERT INTO article_files (article_id, path, insertions,
+      deletions) VALUES (?, ?, ?, ?) ON CONFLICT (article_id, path) DO
+      NOTHING` for each file.
     """
 
     def _fn(conn):
@@ -165,10 +157,15 @@ def _submit_article_files_batch(
                 conn.execute(
                     delete(ArticleFile).where(ArticleFile.article_id == p.article_id)
                 )
-            for path in p.paths:
+            for path, (ins, dels) in p.files.items():
                 conn.execute(
                     sqlite_insert(ArticleFile)
-                    .values(article_id=p.article_id, path=path)
+                    .values(
+                        article_id=p.article_id,
+                        path=path,
+                        insertions=ins,
+                        deletions=dels,
+                    )
                     .on_conflict_do_nothing(index_elements=["article_id", "path"])
                 )
 
@@ -269,23 +266,6 @@ def _submit_patch_series_batch(
             after(conn)
 
     return writer.submit(WriteOp(label="backfill:patch_series:batch", fn=_fn))
-
-
-def _submit_series_heads_batch(
-    writer, payloads: list[_SeriesKeyPending], after: After | None = None
-) -> WriteFuture:
-    """Compose the per-batch composite WriteOp for
-    `backfill_series_chains`: re-chain the payloads' keys from the state
-    the writer holds (`rechain_keys`, as an ingest batch does), then
-    `after`."""
-    from mimir.patch_series_chains import rechain_keys
-
-    def _fn(conn):
-        rechain_keys(conn, {p.key for p in payloads})
-        if after is not None:
-            after(conn)
-
-    return writer.submit(WriteOp(label="backfill:series_chains:batch", fn=_fn))
 
 
 def _submit_canonical_batch(

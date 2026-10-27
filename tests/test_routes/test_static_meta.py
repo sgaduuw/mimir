@@ -3,6 +3,8 @@ security.txt, favicon.svg, og-image.png, theme-color,
 generator meta, and the OG / Twitter Card / canonical /
 alternate-feed `<link>` tags wired into base.html."""
 
+import re
+
 from tests.test_routes._helpers import _ingest_one_article, _meta_value
 
 
@@ -12,8 +14,44 @@ def test_robots_txt(client):
     assert r.mimetype == "text/plain"
     body = r.get_data(as_text=True)
     assert "User-agent: *" in body
-    assert "Sitemap:" in body
-    assert "/sitemap.xml" in body
+    # Both indexes (#964), in this order, each exactly once.
+    assert re.findall(r"^Sitemap: (.*)$", body, re.MULTILINE) == [
+        "http://localhost/sitemap.xml",
+        "http://localhost/messages-sitemap.xml",
+    ]
+
+
+def test_robots_txt_llm_context_matches_meta_sitemap_entry(client):
+    """One `LLM-Context:` record (#969), after the last group, naming the
+    same absolute `/llms.txt` URL the meta sitemap lists. Both are built
+    from `LLMS_TXT_PATH`, so they cannot drift."""
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlparse
+
+    from mimir import robots
+
+    # A second group, so "after the last group" is not just "after `*`".
+    robots.add_rule("GPTBot", disallow=["/"])
+    lines = client.get("/robots.txt").get_data(as_text=True).splitlines()
+
+    records = [
+        (i, m.group(1))
+        for i, line in enumerate(lines)
+        if (m := re.fullmatch(r"LLM-Context: (\S+)", line))
+    ]
+    assert len(records) == 1
+    index, url = records[0]
+
+    group_fields = ("User-agent:", "Content-Signal:", "Crawl-delay:", "Disallow:")
+    last_group_line = max(
+        i for i, line in enumerate(lines) if line.startswith(group_fields)
+    )
+    assert index > last_group_line
+
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    meta = ET.fromstring(client.get("/meta-sitemap.xml").get_data())
+    locs = [e.text for e in meta.findall("s:url/s:loc", ns)]
+    assert [loc for loc in locs if urlparse(loc).path == "/llms.txt"] == [url]
 
 
 def test_robots_txt_reflects_admin_added_rule(client):

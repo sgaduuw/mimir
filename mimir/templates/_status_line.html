@@ -1,8 +1,8 @@
 {# The lifecycle state with its evidence (#844), from the pill's own
    row (`status_line`), so it cannot disagree with the pill. For a
    superseded revision it links the newer one: the very copy the
-   pill's SQL named (`superseded_by_id`), the newest copy of the highest
-   version, whether the timeline lists it as a version's patch or a re-post. Nothing for pending, as on the pill. #}
+   pill's SQL named (`superseded_by_id`), the slot's patch of the highest
+   version (#949), which the timeline lists as that version's entry. Nothing for pending, as on the pill. #}
 {%- set _sentence = lifecycle_status|status_line if patch_state and patch_state.is_patch else "" -%}
 {%- if _sentence %}
 <p class="status-line"><small><strong>Status:</strong> {{ _sentence }}

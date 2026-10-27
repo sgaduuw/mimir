@@ -98,11 +98,13 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.favicon_ico": "public, max-age=604800",
     "web.og_image_png": "public, max-age=604800",
     "web.sitemap": "public, max-age=300",
+    "web.messages_sitemap": "public, max-age=300",
     "web.meta_sitemap": "public, max-age=300",
     "web.inbox_sitemap": "public, max-age=300",
     # Archive month/year pages are computed on demand, so shield them
     # at the edge just like the warmed sitemap surfaces.
     "web.archive_sitemap": "public, max-age=300",
+    "web.archive_messages_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
     "web.series_diff_sitemap": "public, max-age=300",
     # Maintainer profiles change only when MAINTAINERS is reparsed or

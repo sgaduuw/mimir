@@ -328,8 +328,10 @@ per-subsystem dashboards:
 
 - **`article_files`**, `(article_id, path)`, the post-rename
   paths a patch body touches (extracted from `diff --git a/x b/y`
-  headers in `mimir/patches.py`). Powers the subsystem-header
-  per-path reverse lookup.
+  headers in `mimir/patches.py`), with the lines the patch inserts
+  and deletes there (nullable: NULL is "not counted", #939). Powers
+  the subsystem-header per-path reverse lookup and a cover's series
+  totals.
 - **`article_trailers`**, DCO / review trailers
   (`Signed-off-by:`, `Reviewed-by:`, `Acked-by:`, `Tested-by:`,
   `Reported-by:`) parsed out by `mimir/trailers.py`. Stores
@@ -889,7 +891,7 @@ The purge timer is already migrated (no longer a residual).
 
 The chunked backfills (`backfill-article-files`,
 `backfill-article-trailers`, `backfill-patch-series`,
-`backfill-series-chains`, `admin canonicals backfill`) persist their position in
+`admin canonicals backfill`) persist their position in
 `backfill_runs`, owned by `mimir/backfill_runs.py`. Before this the
 walk cursor lived only in the CLI process: each chunk returned a
 `continuation` id and the CLI sent it back. A deploy (broker restart)
@@ -1008,15 +1010,6 @@ order).
   chain whose recent postings have none, joins. A wrong split hides a
   revision from the superseded check; a wrong join only leaves today's
   behaviour in place.
-- **The backfill walks covers, not keys.** `backfill_runs.cursor` is an
-  article id, so `backfill-series-chains` walks articles newest-first
-  and chains a cover's whole key the first time it meets it, remembering
-  the key for the rest of the chunk. The read only picks the keys with
-  heads to change (and feeds the counters); the batch sends the keys and
-  re-chains them on the writer with `rechain_keys`, so an ingest batch
-  that re-chained a key after the backfill's read is not overwritten
-  with heads planned from before it. A key chained twice writes nothing
-  the second time, because only rows whose head changes are written.
 - **Ingest re-chains in the batch.** Each ingest batch WriteOp, and each
   replay, ends with `rechain_keys` over the keys its articles carry
   (a cover's patches carry its key, so they count), just before the
@@ -1025,8 +1018,8 @@ order).
   every later chain under a head, so the new rows alone are not enough.
   Inside the transaction, not after it, so there is no window in which a
   reader sees the new cover in the wrong series and no crash gap that a
-  later pass has to repair. `rechain_keys` is the one write path the
-  two backfills, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
+  later pass has to repair. `rechain_keys` is the one write path
+  `backfill-patch-series`, ingest and replay share. Cost, measured 2026-10-22 on a test-sized
   database (laptop, warm cache, one key of 280 covers in 56 series): 4 ms
   per batch at 3 patches per cover, 12 ms at 10, 49 ms at 30, for one
   new cover on an already chained key; a key never chained writes all
@@ -1072,15 +1065,16 @@ order).
   over an hour after its cover is orphaned (#862); closer pairs stay
   linked, a cover typo takes its patches' version (#870), and a patch
   whose own revision has a cover among the old cover's direct replies,
-  under the same key, with the same total, within a day of the patch, is
-  linked to that cover instead (#871; the earliest by date and message id).
+  with the same total, within a day of the patch, is linked to that cover
+  instead (#871). Its title and sender may differ, so its key may (#941):
+  a sibling under the old cover's key is preferred, then the earliest by
+  date and message id.
   `cover_of_patch` takes a `replies_of` lookup beside `parent_of`, and
   ingest (the batch first), `backfill-patch-series` and `_load_key` (the
   key's own covers) each pass theirs. Known gaps: a posting whose cover
   comes after its patches in the mirror (in the same batch or a later
   one) stays orphaned until the next `backfill-patch-series` run (plain,
-  no `--reprocess`); a sibling under another key (a retitled cover) is
-  not re-keyed (#941); and a sibling that is a #870 cover typo flips its
+  no `--reprocess`); and a sibling that is a #870 cover typo flips its
   posting back to the version its subject names.
 - **The re-chain is the last writer of a posting's version (#870).**
   Ingest, replay and `backfill-patch-series` write the subject's own
@@ -1094,17 +1088,15 @@ order).
   the resolved version, which joins postings that a typo split. No
   window check: `cover_of_patch` already orphans a later patch of
   another version. `head_updates` returns the version changes as a list
-  of their own, so `heads_planned` keeps its meaning, and a key of one
-  cover is still written when only its version changes.
-- **Operator order.** `backfill-patch-series --reprocess` first (it
-  rewrites the versions the rule reads, and since #840 links chain-reply
-  patches), then `backfill-series-chains` once. Before 3.25.0 that pass
-  chained the history; after #840 it is the repair pass for chain-reply
-  patches the reprocess left untouched: their rows do not change, so only
-  a chain pass is sure to give them their cover's head. Its
-  `heads_planned` counts the heads it changes and `versions_planned` the
-  versions; on an archive with none to change it plans zero. After that,
-  ingest and `backfill-patch-series` keep the keys they touch chained.
+  of their own, so a key of one cover is still written when only its
+  version changes.
+- **No chain backfill (#927).** Ingest, replay and
+  `backfill-patch-series` keep the keys they touch chained. The
+  standalone walker, `backfill-series-chains`, chained the history
+  ingested before 3.25.0 and repaired what #840 and #870 changed (the
+  3.27.0 upgrade steps), and was removed in 3.31.0. So nothing re-chains
+  a key that no write touches: a change to the rule itself, such as
+  `SPLIT_BELOW_MATCHED_SHARE`, must ship its own pass over the archive.
 
 ### Materialised thread roots (2026-07-28)
 
@@ -1200,7 +1192,15 @@ its callers).
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
-match and age out via `purge_expired`.
+match and age out via `purge_expired`. Most keys name no release:
+`patch_state`, the page-level `lifecycle_status:...:{state_key}`,
+`merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
+pills, sitemaps and dashboards do not. So an older release reads a
+newer one's rows on rollback or while both run during a deploy, and can
+fail on a changed field (#957).
+`test_a_cached_field_change_bumps_the_namespace` pins a digest of every
+registered type's fields beside `NAMESPACE_VERSION` and fails until a
+field change bumps it. A bump cold-starts the whole cache once.
 
 `cache.get_or_compute(session, key, ttl, fn)` is the high-level API;
 `force=True` on dashboard helpers bypasses the cache and recomputes
@@ -1676,6 +1676,46 @@ afterthought:
   render cap, because the cap changes how many thread-page URLs a
   root expands to; see the ETag section for the surface that was
   missed the first time.
+
+  **Two indexes, split by page value (#964).** `/sitemap.xml` lists
+  the pages mimir adds over lore.kernel.org: meta, inbox files,
+  maintainers, series diffs, and the archive files, which hold `/t`
+  URLs only. `/messages-sitemap.xml` is a second, independent index
+  (neither references the other, so it is not nesting) of each archive
+  file's `messages-` sibling, with the same names and page numbers.
+  Those hold message URLs: single-message threads, and threads listed
+  by their root while the backfill has not reached them. Replies are
+  in neither, because they canonicalise to `/t`. The split costs
+  nothing to build: `_sitemap_entries_for_roots` tags each entry with
+  its kind, which is the one `/t`-versus-message decision, and
+  `_split_by_kind` cuts one build into both files. So there is one
+  `_month_counts` pass, one build and one cache row per bucket, and one
+  cache row for both indexes; the layout is decided on all roots, which
+  is why the trees share page numbers. Do not filter on anything but
+  the tag: any second test, such as "the thread has more than one
+  member", disagrees with the pages' canonicals mid-backfill. A bucket
+  whose roots are all one kind serves an empty urlset for the other
+  kind rather than a 404, because the index names both files. No count
+  column skips those files, since it would be that second test. The
+  point of the split is per-set coverage in Search Console, and the
+  option to drop message pages later by removing one index and one
+  robots.txt line.
+
+  The per-inbox `/<inbox>/sitemap.xml` holds hub pages only. It used to
+  list the 5,000 most recent thread roots too, which after the split
+  duplicated the archive's `/t` files, so slice 3 dropped it. That
+  list was the one warmed, always-dated place a new thread appeared,
+  and the index dates an archive child only from its cache row. So the
+  slow tier's `sitemap:inbox:<name>` target also rebuilds the current
+  and the previous period's archive files (`warm_latest_archive_sitemaps`;
+  the previous one because replies keep landing in last month's threads),
+  through the route's keys and the index's own layout (`_archive_files`),
+  with `force` because the year file is read with a plain `cache.get`
+  that the warm refresh window never reaches. A forced month re-reads
+  its root list on page 1 only, so every page of one warm slices one
+  snapshot. The label is reused rather
+  than a new one added: the scheduler only names targets and the
+  broker builds them, so a mid-deploy version mix still runs the work.
 
   Note the flat-index constraint is Google's, not the protocol's:
   sitemaps.org explicitly permits more than one index file. Every
@@ -2666,6 +2706,20 @@ glanceable badge for listings. The patch-state card on message
 pages stays the snapshot ("where is this now"); the lifecycle
 timeline below the card renders the chronological journey
 ("how did it get here").
+
+**A cover's pill rolls up its posting (#938).** A cover is never
+committed itself, so its pill states what every patch of its posting
+(`same_posting`, patches only) reached: the lowest rung (landed, queued,
+reviewed, pending) all of them reached, over the cover's declared total,
+so a patch missing from the archive counts as pending. A re-post counts
+once, by the slot rule (#861), computed in the listing statement as the
+`rollup` CTE, so a listing pays no extra statement. `rollup` names the
+highest rung above that state some patches reached ("Queued · 3 of 5
+landed"); a pending cover with progress shows "Pending · 3 of 5 landed";
+a cover superseded by a newer cover stays superseded and adds the landed
+count only. A cover never names a tree, because its patches may sit in
+several. The validator carries it: for a cover `render_state_tag` reads
+the landings and trailers of the whole posting in the same statements.
 
 Three design decisions worth their own paragraphs:
 

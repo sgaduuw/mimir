@@ -9,14 +9,12 @@ from mimir.cli.backfill import (
     backfill_article_files_command,
     backfill_article_trailers_command,
     backfill_patch_series_command,
-    backfill_series_chains_command,
 )
 
 _COMMANDS = {
     "backfill-article-files": backfill_article_files_command,
     "backfill-article-trailers": backfill_article_trailers_command,
     "backfill-patch-series": backfill_patch_series_command,
-    "backfill-series-chains": backfill_series_chains_command,
     "admin-canonicals-backfill": admin_canonicals_backfill_command,
 }
 
@@ -38,19 +36,8 @@ def _option(command: click.Command, name: str) -> dict:
 
 @pytest.mark.parametrize("name", _SHARED + ("reprocess",))
 def test_the_commands_share_each_option(name):
-    # backfill-series-chains recomputes whole keys, so it has no
-    # `--reprocess` (#889).
-    commands = [
-        c
-        for c in _COMMANDS.values()
-        if name != "reprocess" or c is not backfill_series_chains_command
-    ]
-    seen = [_option(c, name) for c in commands]
+    seen = [_option(c, name) for c in _COMMANDS.values()]
     if name == "reprocess":
         for option in seen:
             option.pop("help")
     assert all(option == seen[0] for option in seen), seen
-
-
-def test_series_chains_leaves_reprocess_out():
-    assert "reprocess" not in {p.name for p in backfill_series_chains_command.params}

@@ -19,7 +19,10 @@ from tests.test_routes.test_series_diff import (
     _put_series_under_head,
 )
 
-_URL_RE = re.compile(r"<url><loc>([^<]+)</loc>(?:<lastmod>([^<]+)</lastmod>)?</url>")
+_URL_RE = re.compile(
+    r"<url><loc>([^<]+)</loc>(?:<lastmod>([^<]+)</lastmod>)?"
+    r"(?:<priority>[^<]+</priority>)?</url>"
+)
 
 
 def _seed_covers(key, covers):
@@ -66,6 +69,17 @@ def _entries(client, bucket):
         key = urlparse(html_lib.unescape(loc)).path.split("/")[3]
         out[(key, q["from"][0], q["to"][0])] = lastmod or None
     return out
+
+
+def test_every_series_diff_entry_has_priority_0_9(client):
+    """A series diff is a page mimir adds over lore, so it ranks with
+    `/t` pages. Read from the raw body, because `_entries` drops it."""
+    key = "b" + "3" * 39
+    _seed_covers(key, [("v1", _d(1)), ("v2", _d(2)), ("v3", _d(3))])
+    _clear_sitemap_cache()
+    xml = client.get("/sitemap-series-diffs-b.xml").get_data(as_text=True)
+    assert xml.count("<url>") == 2
+    assert re.findall(r"<priority>([^<]+)</priority>", xml) == ["0.9", "0.9"]
 
 
 def _d(month, day=1):

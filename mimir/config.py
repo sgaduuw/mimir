@@ -70,6 +70,16 @@ class TreeConfig(BaseModel):
         return validate_outbound_url(v)
 
 
+def _resolve_tree_label(tree_name: str) -> str:
+    """Look up `Settings.trees[tree_name].display_name`; fall back to
+    the slug itself when no display_name is set or the tree isn't in
+    config (e.g. mainline_commits row from a tree the operator removed)."""
+    cfg = settings.trees.get(tree_name)
+    if cfg is None or cfg.display_name is None:
+        return tree_name
+    return cfg.display_name
+
+
 def _curated_default_trees() -> dict[str, TreeConfig]:
     """The 7-tree default set. Function (not module-level constant)
     so each Settings() instantiation gets fresh TreeConfig objects;
@@ -647,7 +657,7 @@ class Settings(BaseSettings):
     #
     # Override via THREAD_VIEW_RENDER_CAP. Must be at least 1; startup
     # fails otherwise, so callers can use the value unclamped. The sitemap
-    # index and per-inbox sitemap keys include it, so a change misses them all:
+    # index and year and month file keys include it, so a change misses them all:
     # set it on all three services together and run
     # `mimir warm-cache --tier slow` (docs/operations.md).
     thread_view_render_cap: int = Field(default=75, ge=1)
