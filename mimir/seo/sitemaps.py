@@ -186,7 +186,7 @@ class SitemapPayload:
 cache.register("SitemapPayload", SitemapPayload)
 
 
-# What `_sitemap_entries_for_roots` took for a root: the thread view, or
+# What `_archive_entries` took for a root: the thread view, or
 # the root's own message page. It is the ONLY place that decides, and it
 # says so here so a caller filters on the tag instead of re-deriving it.
 KIND_THREAD = "t"
@@ -280,7 +280,7 @@ def _split_by_kind(
     entries: list[SitemapEntry],
 ) -> tuple[SitemapPayload, SitemapPayload]:
     """`(thread, message)` payloads of one archive file, partitioned on
-    the kind tag alone (#964). The tag is `_sitemap_entries_for_roots`'
+    the kind tag alone (#964). The tag is `_archive_entries`'
     decision; reading anything else here, such as the URL's shape, would
     be a second predicate free to disagree with the pages' canonicals.
     Either half may be empty: the index names both files of a bucket, so
@@ -313,14 +313,8 @@ def _per_inbox_latest_date(session) -> dict[str, str | None]:
     return {name: (dt.strftime("%Y-%m-%d") if dt else None) for name, dt in rows}
 
 
-def _sitemap_entries_for_roots(
-    roots: list[tuple[int, datetime]],
-    singleton_ids: set[int],
-    last_activity: dict[int, datetime],
-    message_counts: dict[int, int],
-    unrankable_roots: set[int],
-    inbox_name: str,
-    base: str,
+def _archive_entries(
+    session: Session, inbox: Inbox, page_ids: list[int], base: str
 ) -> list[SitemapEntry]:
     """Tagged entries for thread roots.
 
@@ -341,6 +335,18 @@ def _sitemap_entries_for_roots(
     single-message page, which can never change, advertise another
     thread's date. For correct data the branch is a no-op.
     """
+    rows = {
+        art_id: date
+        for art_id, date in session.execute(
+            select(Article.id, Article.date).where(Article.id.in_(page_ids))
+        ).all()
+    }
+    # Snapshot order, not query order: the slice is the contract.
+    roots = [(i, rows[i]) for i in page_ids if rows.get(i) is not None]
+    singleton_ids = _singleton_root_ids(session, inbox, page_ids)
+    last_activity = _thread_last_activity(session, inbox, page_ids)
+    message_counts = _thread_message_counts(session, inbox, page_ids)
+    unrankable_roots = unmaterialised_roots(session, inbox.id, page_ids)
     # Function-local, NOT module-level: `mimir.web` imports this package
     # at module load, so a top-level import here closes the cycle and
     # any entry point that reaches `mimir.seo` before `mimir.web` dies
@@ -353,7 +359,7 @@ def _sitemap_entries_for_roots(
     cap = settings.thread_view_render_cap
     entries: list[SitemapEntry] = []
     for art_id, date in roots:
-        loc = base + _msg_path(art_id, date, inbox_name)
+        loc = base + _msg_path(art_id, date, inbox.name)
         activity = last_activity.get(art_id)
         count = message_counts.get(art_id, 1)
         # A thread the column cannot fully rank is advertised as its
@@ -407,7 +413,7 @@ def _sitemap_entries_for_roots(
             for pg in range(1, pages + 1):
                 entries.append(
                     SitemapEntry(
-                        base + thread_page_url(art_id, date, inbox_name, pg),
+                        base + thread_page_url(art_id, date, inbox.name, pg),
                         stamp,
                         PRIORITY_PAGE,
                         KIND_THREAD,
@@ -769,28 +775,6 @@ def _month_root_ids(
     if ids:
         cache.set(key, ids, SITEMAP_TTL_SEC)
     return ids
-
-
-def _archive_entries(
-    session: Session, inbox: Inbox, page_ids: list[int], base: str
-) -> list[SitemapEntry]:
-    rows = {
-        art_id: date
-        for art_id, date in session.execute(
-            select(Article.id, Article.date).where(Article.id.in_(page_ids))
-        ).all()
-    }
-    # Snapshot order, not query order: the slice is the contract.
-    roots = [(i, rows[i]) for i in page_ids if rows.get(i) is not None]
-    return _sitemap_entries_for_roots(
-        roots,
-        _singleton_root_ids(session, inbox, page_ids),
-        _thread_last_activity(session, inbox, page_ids),
-        _thread_message_counts(session, inbox, page_ids),
-        unmaterialised_roots(session, inbox.id, page_ids),
-        inbox.name,
-        base,
-    )
 
 
 # The `split` keys hold both trees of a file, `(thread, message)`.

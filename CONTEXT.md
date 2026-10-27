@@ -1686,7 +1686,7 @@ afterthought:
   Those hold message URLs: single-message threads, and threads listed
   by their root while the backfill has not reached them. Replies are
   in neither, because they canonicalise to `/t`. The split costs
-  nothing to build: `_sitemap_entries_for_roots` tags each entry with
+  nothing to build: `_archive_entries` tags each entry with
   its kind, which is the one `/t`-versus-message decision, and
   `_split_by_kind` cuts one build into both files. So there is one
   `_month_counts` pass, one build and one cache row per bucket, and one

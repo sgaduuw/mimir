@@ -5,7 +5,7 @@
 <section class="privacy">
   <hgroup>
     <h1>Privacy</h1>
-    <p><small><em>Last updated: 24 May 2026.</em></small></p>
+    <p><small><em>Last updated: 27 October 2026.</em></small></p>
   </hgroup>
 
   <h2>Controller</h2>
@@ -54,10 +54,27 @@
 
   <h2>What gets processed server-side</h2>
   <p>
-    Standard HTTP request metadata: IP address, User-Agent,
-    request path, response status, timestamp. Retained in
-    operator-side logs for two days, then deleted. Used for abuse
-    triage and debugging.
+    Standard HTTP request metadata, one log record per request:
+  </p>
+  <ul>
+    <li>the time, a request ID, and how long the response took;</li>
+    <li>your IP address;</li>
+    <li>the request method and path, the response status, and the
+      response size;</li>
+    <li>your browser&rsquo;s User-Agent, and the browser hints that
+      Chromium-based browsers send with it (browser brand and
+      version, mobile or not, operating system);</li>
+    <li>the page you came from (Referer);</li>
+    <li>the request-context headers browsers add
+      (<code>Sec-Fetch-*</code>, <code>Purpose</code>,
+      <code>Sec-Purpose</code>, <code>HX-Request</code>) and the
+      content types and languages your browser accepts
+      (<code>Accept</code>, <code>Accept-Language</code>);</li>
+    <li>your country, when Cloudflare supplies it.</li>
+  </ul>
+  <p>
+    Retained in operator-side logs for two days, then deleted. Used
+    for abuse triage and debugging.
   </p>
   <p>
     Legal basis: legitimate interest (GDPR Art. 6(1)(f)) in
