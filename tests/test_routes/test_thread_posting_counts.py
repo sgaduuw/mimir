@@ -5,7 +5,7 @@ import re
 
 from sqlalchemy import update
 
-from mimir.models import ArticleFile
+from mimir.models import Article, ArticleFile
 from tests.test_routes.test_thread_posting import _seed, _visible
 
 # (message id, path): (insertions, deletions). a.c is in both patches,
@@ -120,3 +120,49 @@ def test_a_count_change_leaves_the_patch_s_own_etag(client, tmp_path):
 
     for u in urls:
         assert client.get(u, headers={"If-None-Match": before[u]}).status_code == 304
+
+
+def test_a_resent_patch_counts_once_in_the_line_totals(client, tmp_path):
+    from mimir.extensions import SessionLocal
+
+    seeded = _seed_counted(tmp_path)
+    p1_id = seeded["p1@x"][0]
+    with SessionLocal() as s:
+        p1 = s.get(Article, p1_id)
+        # The same patch sent again later: same series, version and
+        # position, same files and counts, a higher id.
+        resend = Article(
+            message_id="p1-resend@x",
+            subject=p1.subject,
+            author=p1.author,
+            date=p1.date,
+            patch_series_key=p1.patch_series_key,
+            patch_series_head_id=p1.patch_series_head_id,
+            patch_series_version=p1.patch_series_version,
+            patch_series_position=p1.patch_series_position,
+        )
+        s.add(resend)
+        s.flush()
+        s.add_all(
+            [
+                ArticleFile(
+                    article_id=resend.id,
+                    path="drivers/foo/a.c",
+                    insertions=10,
+                    deletions=2,
+                ),
+                ArticleFile(
+                    article_id=resend.id,
+                    path="drivers/foo/b.c",
+                    insertions=3,
+                    deletions=0,
+                ),
+            ]
+        )
+        s.commit()
+
+    html = client.get(seeded["cover@x"][1] + "/t").get_data(as_text=True)
+    # Two patches, three files, and p1's lines once: +14/-3, as before the resend.
+    assert _TOTALS.findall(_visible(html)) == [("2", "3", "14", "3")], re.findall(
+        r"Series:.*", _visible(html)
+    )
