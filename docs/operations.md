@@ -63,10 +63,10 @@ than running a second scheduler alongside the container service.
 
 `THREAD_VIEW_RENDER_CAP` sets messages per thread page, so it is part of the
 cache keys for the sitemap indexes and every year and month sitemap file. A new
-value makes all of those miss at once. Until they are warmed, the first request for each
-sitemap pays its compute cost, which is about ten seconds for `sitemap:index` on
-a large archive. It is also the size above which a message page shows part of
-its thread rather than all of it.
+value makes all of those miss at once. Until they are warmed, the first request
+for each sitemap pays its compute cost, which is about ten seconds for
+`sitemap:index` on a large archive. It is also the size above which a message
+page shows part of its thread rather than all of it.
 
 1. Set the same value on the web, broker, and task services, and restart them
    together. Services with different values compute two sets of sitemap rows.
