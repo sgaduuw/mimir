@@ -159,6 +159,12 @@ _POSTING = (
     + " AND p.patch_series_position > 0"
 )
 _NEWER_PATCH = newer_revision_sql("p", "a2")
+# Has-diff probe: sorts a diff-carrying row ahead of a bare one (#949, #938).
+_NO_DIFF = (
+    "NOT EXISTS (SELECT f.article_id FROM article_files f WHERE f.article_id = {}.id)"
+)
+_NO_DIFF_A2 = _NO_DIFF.format("a2")
+_NO_DIFF_P = _NO_DIFF.format("p")
 
 _BULK_SQL = text(f"""
 WITH
@@ -219,8 +225,7 @@ newer AS (
            ROW_NUMBER() OVER (
                PARTITION BY a1.id
                ORDER BY {_V2} DESC,
-                        NOT EXISTS (SELECT f.article_id FROM article_files f
-                                     WHERE f.article_id = a2.id),
+                        {_NO_DIFF_A2},
                         a2.id
            ) AS rn
       FROM articles a1
@@ -235,8 +240,7 @@ posting AS (
            p.id AS patch,
            ROW_NUMBER() OVER (
                PARTITION BY c.id, p.patch_series_position
-               ORDER BY NOT EXISTS (SELECT f.article_id FROM article_files f
-                                     WHERE f.article_id = p.id),
+               ORDER BY {_NO_DIFF_P},
                         p.id
            ) AS rn
       FROM articles c
