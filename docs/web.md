@@ -108,7 +108,7 @@ the root message URL until their membership can be determined.
 | `/sitemap.xml` | Index of the following sitemap surfaces, except the message files |
 | `/messages-sitemap.xml` | Index of the `messages-sitemap.xml` files |
 | `/meta-sitemap.xml` | Site root, `/merge-window` and `/llms.txt` |
-| `/<inbox>/sitemap.xml` | Inbox, archive pages, active subsystems, and recent thread pages |
+| `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
 | `/<inbox>/<YYYY>/messages-sitemap.xml` | A year's message pages: single-message threads, and threads still being backfilled |

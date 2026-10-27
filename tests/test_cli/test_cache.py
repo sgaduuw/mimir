@@ -415,10 +415,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
         "sitemap:meta": (cache.get("sitemap:meta"), f"{{{ns}}}urlset"),
         **{
             key: (cache.get(key), f"{{{ns}}}urlset")
-            for key in (
-                f"sitemap:inboxthreads:alpha:{cap}",
-                f"sitemap:inboxthreads:beta:{cap}",
-            )
+            for key in ("sitemap:inboxhubs:alpha", "sitemap:inboxhubs:beta")
         },
     }
     assert "messages-sitemap.xml" in messages.body
@@ -445,11 +442,10 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from sqlalchemy import select
 
     from mimir import cache
-    from mimir.config import settings
     from mimir.extensions import SessionLocal
     from mimir.seo import inbox_sitemap_xml
 
-    key = f"sitemap:inboxthreads:alpha:{settings.thread_view_render_cap}"
+    key = "sitemap:inboxhubs:alpha"
     cache.set(key, "STALE", ttl=3600)
     assert cache.get(key) == "STALE"
     with SessionLocal() as s:
