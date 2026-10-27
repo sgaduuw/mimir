@@ -793,8 +793,7 @@ def _archive_entries(
     )
 
 
-# The `split` keys hold both trees of a file, `(thread, message)`. New
-# names rather than a `NAMESPACE_VERSION` bump: only these rows changed.
+# The `split` keys hold both trees of a file, `(thread, message)`.
 def _year_pages_key(inbox_name: str, year: int) -> str:
     return (
         f"sitemap:yearsplit:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
