@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- The access log records the default User-Agent Client Hints, `Sec-CH-UA`,
+  `Sec-CH-UA-Mobile` and `Sec-CH-UA-Platform`, as `sec_ch_ua`,
+  `sec_ch_ua_mobile` and `sec_ch_ua_platform`. Logging only (#977).
+
 ### Fixed
 
 - The Markdown thread page's status line keeps the space before the middle
