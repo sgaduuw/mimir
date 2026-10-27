@@ -128,6 +128,9 @@ user agent and referrer, it records:
 | `sec_fetch_site` | `Sec-Fetch-Site` |
 | `sec_fetch_dest` | `Sec-Fetch-Dest` |
 | `sec_fetch_user` | `Sec-Fetch-User` |
+| `sec_ch_ua` | `Sec-CH-UA` |
+| `sec_ch_ua_mobile` | `Sec-CH-UA-Mobile` |
+| `sec_ch_ua_platform` | `Sec-CH-UA-Platform` |
 | `accept` | `Accept` |
 | `accept_language` | `Accept-Language` |
 | `hx_request` | `HX-Request` |
@@ -138,6 +141,9 @@ user agent and referrer, it records:
 
 Header values are raw strings, with JSON escaping; absent headers are `null`.
 They are observations, not verified identities or automatic bot classifications.
+Chromium browsers send the three `sec_ch_ua*` Client Hints by default over HTTPS.
+Together they add about 150 bytes to a Chromium request's record and about 70
+bytes of `null`s to every other record.
 Country requires upstream enrichment; mimir performs no IP lookup.
 Only treat them as IP metadata when a trusted proxy overwrites incoming values
 and direct access to the origin is restricted. `TRUSTED_PROXY_HOPS` configures
