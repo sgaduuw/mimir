@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The Markdown thread page's status line keeps the space before the middle
+  dot on a cover's progress: `PENDING · 2 of 5 reviewed`, as the page's pill
+  reads, not `PENDING· 2 of 5 reviewed` (#974).
+
 ## [3.31.0] - 2026-10-27
 
 ### Added
