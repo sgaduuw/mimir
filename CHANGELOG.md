@@ -18,11 +18,20 @@ changes, not internal refactors. Categories: **Added**,
   and month sitemap file now has a `messages-sitemap.xml` sibling (and
   `messages-sitemap-2.xml` and later pages) with the same page numbers.
   `/sitemap.xml` keeps the pages mimir adds over lore.kernel.org, and its
-  year and month files now list thread pages only. The recent-thread list
-  in `/<inbox>/sitemap.xml` lists thread pages only. robots.txt names
+  year and month files now list thread pages only. robots.txt names
   both indexes. A year or month whose threads are all single messages
   serves an empty thread file. Submit `/messages-sitemap.xml` in Search
   Console after the deploy (#964).
+
+### Removed
+
+- `/<inbox>/sitemap.xml` no longer lists the 5,000 most recent threads.
+  It keeps its hub pages: the inbox dashboard, its year and month
+  archive pages, and its subsystem pages. Every thread is in the year and
+  month sitemap files, which the slow warm-cache tier now builds for the
+  current year or month of each inbox, so the newest threads carry a
+  `<lastmod>` in both indexes. The 5,000 was a code constant, not a
+  setting, so no configuration changes (#964).
 
 ### Changed
 

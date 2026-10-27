@@ -60,8 +60,6 @@ from mimir.subsystems_dashboard import (
 )
 from mimir.threading import unmaterialised_roots
 
-SITEMAP_RECENT_PER_INBOX = 5000
-
 logger = logging.getLogger(__name__)
 
 # URLs per month sitemap page.
@@ -325,11 +323,10 @@ def _sitemap_entries_for_roots(
     `KIND_MESSAGE`, and the priority that kind ranks at. Callers read
     the tag; none may re-ask which branch a root takes.
 
-    Shared by the flat per-inbox sitemap and the per-month ones, which
-    differ only in how the root list was selected. Two copies of the
-    `/t`-versus-message decision and the lastmod pick would be two
-    places to drift, on a surface where drift is silent: the sitemap
-    would list a URL whose own page names a different canonical.
+    The one place the `/t`-versus-message decision and the lastmod pick
+    are made. A second copy would be a place to drift, on a surface where
+    drift is silent: the sitemap would list a URL whose own page names a
+    different canonical.
 
     A singleton's lastmod is its own date by definition, said
     explicitly rather than left to the aggregate, which keeps this
@@ -589,45 +586,6 @@ def _month_counts(session, inbox: Inbox) -> list[tuple[int, int, int, int]]:
     return [(int(yy), int(mm), n, urls) for yy, mm, n, urls in rows]
 
 
-def _recent_thread_roots_query(inbox: Inbox):
-    """`(article_id, date)` for this inbox's thread roots, newest first.
-
-    A root is `thread_root_id = article_id`: a plain per-row comparison
-    between two columns of the same already-fetched row. Note what the
-    planner actually does, because the obvious reading is wrong: the
-    index seek is on `inbox_id` alone (EXPLAIN picks
-    `ix_article_lists_inbox_id`), and the root test is then a filter
-    over that narrowed set, NOT a seek against
-    `ix_article_lists_thread_root`. A two-column equality between
-    columns of the same row is not sargable.
-
-    The win is therefore about what the predicate no longer does, not
-    about a new index: it replaces a correlated EXISTS over
-    `thread_parent` evaluated per candidate row, and with it the whole
-    EXISTS-versus-JOIN tradeoff that cost two review rounds (the JOIN
-    form was ~37x slower on the ~199 small inboxes, the EXISTS form
-    ~8x slower on lkml). Measured on a 559k-row skewed corpus, new
-    versus old: lkml-shaped inbox 87 ms versus 181 ms, small inbox
-    0.154 ms versus 0.329 ms. Faster on both shapes, including the
-    199-of-200 case that the earlier attempt regressed.
-
-    Rows still awaiting the backfill carry NULL, which fails the
-    comparison, so they are simply absent from the sitemap until the
-    backfill reaches them rather than being listed wrongly. Freshness,
-    not correctness.
-    """
-    return (
-        select(Article.id, Article.date)
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            Article.date.is_not(None),
-            ArticleList.thread_root_id == Article.id,
-        )
-        .order_by(Article.date.desc())
-    )
-
-
 def _thread_last_activity(
     session, inbox: Inbox, root_ids: list[int]
 ) -> dict[int, datetime]:
@@ -654,10 +612,10 @@ def _thread_last_activity(
     dates, in each inbox it is cross-posted to.
 
     Measured on a 998k-row / 200-inbox corpus with realistic thread
-    sizes: 9.4 ms for an lkml-shaped inbox at the 5000-root sitemap
-    cap, 0.47 ms for a small inbox (553 roots). EXPLAIN uses
-    `ix_article_lists_thread_root` on BOTH columns, unlike
-    `_recent_thread_roots_query` which only seeks on `inbox_id`. The
+    sizes: 9.4 ms for an lkml-shaped inbox at 5000 roots (the size of
+    the recent-thread list it was measured for, removed in #964), 0.47 ms
+    for a small inbox (553 roots). EXPLAIN uses
+    `ix_article_lists_thread_root` on BOTH columns. The
     199 small inboxes are FASTER here rather than slower, because the
     cost is bounded by root count and not by inbox size, so the shape
     that dominates production (199-of-200 are small) is the cheap one.
@@ -723,8 +681,8 @@ def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
     inbox (no reply hangs off them here).
 
     Deliberately still derived from `thread_parent` rather than from
-    `article_lists.thread_root_id`, unlike its sibling
-    `_recent_thread_roots_query`. A `GROUP BY thread_root_id HAVING
+    `article_lists.thread_root_id`, unlike the own-root test in
+    `_archive_roots_query`. A `GROUP BY thread_root_id HAVING
     count = 1` counts only POPULATED members, so mid-backfill (root
     seeded, replies still NULL) a five-message thread counts as one and
     gets published as a message URL while its own page canonicalises to
@@ -914,11 +872,11 @@ def archive_sitemap_xml(
     when `messages`, or None when there is no such page. Both trees come
     from one build and one cache row, so they always agree on the pages.
 
-    This is W2: the flat per-inbox sitemap caps at
-    `SITEMAP_RECENT_PER_INBOX`, so on a corpus this size the entire
-    historical tail sat in NO sitemap and was unreachable by
-    sitemap-driven discovery. Segmenting by month removes the cap
-    without breaching the 50k-per-urlset protocol limit.
+    This is W2, and since #964 the only sitemap surface that lists thread
+    and message pages. The per-inbox file once listed the most recent
+    5,000 roots, which left the historical tail in no sitemap at all.
+    Segmenting by month covers every root without breaching the
+    50k-per-urlset protocol limit.
 
     None becomes a 404 at the route. A page beyond the end is honestly
     absent rather than a valid-looking empty document a crawler would
@@ -948,6 +906,51 @@ def archive_sitemap_xml(
             force=force,
         )
     return None if pair is None else pair[1 if messages else 0]
+
+
+def _archive_files(session: Session, inbox: Inbox) -> list[tuple[int, int | None, int]]:
+    """`(year, month or None, page)` of every archive file the index
+    names for this inbox, oldest first. A year fitting one root page and
+    the URL cap is one year file (only its page 1 is named); any other
+    year is named month by month, every page. One `_month_counts` pass.
+
+    Shared by the index and the slow-tier warm of the current period, so
+    the warm fills exactly the files, and cache keys, the index reads.
+    """
+    files: list[tuple[int, int | None, int]] = []
+    # One grouped aggregate per inbox, not two queries per year.
+    # ponytail: this buys headroom, not an absolute index-size bound;
+    # use multiple top-level indexes if the 50k alarm is approached.
+    for year, months in groupby(_month_counts(session, inbox), key=lambda r: r[0]):
+        buckets = list(months)
+        if (
+            1 <= year <= 9998
+            and sum(count for _, _, count, _ in buckets) <= SITEMAP_URLS_PER_PAGE
+            and sum(urls for _, _, _, urls in buckets) <= SITEMAP_MAX_URLS
+        ):
+            files.append((year, None, 1))
+            continue
+        for _, month, count, _ in buckets:
+            pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
+            files.extend((year, month, page) for page in range(1, pages + 1))
+    return files
+
+
+def warm_current_archive_sitemaps(session: Session, inbox: Inbox, base: str) -> None:
+    """Rebuild this inbox's current-period archive files, every page and
+    both trees, under the keys the index reads.
+
+    The newest threads are listed only there, and the index dates a
+    child from its cache row alone, so an unwarmed current file goes
+    undated until a crawler happens to fetch it (#964 slice 3, which
+    dropped the warmed recent-thread list this replaces). `force`,
+    because the year file is read with a plain `cache.get` that the warm
+    refresh window does not reach, and a warmed row lives past its TTL.
+    """
+    today = datetime.now(UTC)
+    for year, month, page in _archive_files(session, inbox):
+        if year == today.year and month in (None, today.month):
+            archive_sitemap_xml(session, inbox, year, month, page, base, force=True)
 
 
 _INDEX_READ_BATCH = 16
@@ -983,55 +986,35 @@ def sitemap_indexes_xml(
         message_entries: list[tuple[str, str | None]] = []
         inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
         for inbox in inboxes:
-            # The flat per-inbox sitemap stays, as the recent-activity
-            # view. It is capped, so it is no longer the whole picture,
-            # but crawlers already hold this URL and retiring it would
-            # 404 something already indexed for no gain.
+            # The per-inbox file of hub pages.
             entries.append(
                 (
                     f"{base}/{inbox.name}/sitemap.xml",
                     per_inbox_latest.get(inbox.name),
                 )
             )
-            # One grouped aggregate per inbox, not two queries per year.
-            # ponytail: this buys headroom, not an absolute index-size bound;
-            # use multiple top-level indexes if the 50k alarm is approached.
-            years = {
-                year: list(months)
-                for year, months in groupby(
-                    _month_counts(session, inbox), key=lambda row: row[0]
-                )
-            }
             # (directory, file name, key, is_year)
             children: list[tuple[str, str, str, bool]] = []
-            for year, buckets in years.items():
-                if (
-                    1 <= year <= 9998
-                    and sum(count for _, _, count, _ in buckets)
-                    <= SITEMAP_URLS_PER_PAGE
-                    and sum(urls for _, _, _, urls in buckets) <= SITEMAP_MAX_URLS
-                ):
+            for year, month, page in _archive_files(session, inbox):
+                name = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
+                if month is None:
                     children.append(
                         (
                             f"{base}/{inbox.name}/{year:04d}/",
-                            "sitemap.xml",
+                            name,
                             _year_pages_key(inbox.name, year),
                             True,
                         )
                     )
-                    continue
-                for _, month, count, _ in buckets:
-                    pages = max(1, -(-count // SITEMAP_URLS_PER_PAGE))
-                    for page in range(1, pages + 1):
-                        suffix = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
-                        children.append(
-                            (
-                                f"{base}/{inbox.name}/{year:04d}/{month:02d}/",
-                                suffix,
-                                _month_page_key(inbox.name, year, month, page),
-                                False,
-                            )
+                else:
+                    children.append(
+                        (
+                            f"{base}/{inbox.name}/{year:04d}/{month:02d}/",
+                            name,
+                            _month_page_key(inbox.name, year, month, page),
+                            False,
                         )
+                    )
             # lastmod = the child's cached last_modified; an uncached child
             # gets none (building it here would be a full scan). Same row, so
             # they agree while it lives, then can differ for one more TTL.
@@ -1282,10 +1265,11 @@ def series_diff_sitemap_xml(
 def inbox_sitemap_xml(
     session: Session, inbox: Inbox, base: str, *, force: bool = False
 ) -> SitemapPayload:
-    """Cached body of `/<inbox>/sitemap.xml`. Dashboard + year/month
-    archives that actually have data + the `/t` URLs among the
-    SITEMAP_RECENT_PER_INBOX most recent thread roots in this inbox
-    (message URLs are in the message tree, #964). The `last_modified` field
+    """Cached body of `/<inbox>/sitemap.xml`: hub pages only. Dashboard +
+    year/month archives that actually have data + the active subsystems
+    and their index. Thread and message pages are in the archive files,
+    which cover every root; a list of the most recent ones here only
+    duplicated them and was dropped in #964. The `last_modified` field
     of the returned `SitemapPayload` is this inbox's most-recent
     article date, scoped so updates to other inboxes don't trigger
     Google to re-fetch this one."""
@@ -1430,58 +1414,6 @@ def inbox_sitemap_xml(
                 )
             )
 
-        # Recent THREADS in the inbox, one URL per thread, pointing at
-        # the whole-thread view. Individual message pages canonicalise
-        # there (see `mimir.web.routes.message`), and a sitemap should
-        # list canonical URLs, so listing per-message URLs here would
-        # hand crawlers ~10x the URLs only to redirect their attention
-        # elsewhere. One fat thread document per entry is also the
-        # whole point of the consolidation.
-        #
-        # Roots come from the materialised column; see
-        # `_recent_thread_roots_query` for the plan shape, the
-        # measurements, and why NULL rows are absent rather than listed
-        # wrongly. Kept as a pointer rather than a second copy of the
-        # numbers, because a duplicated measurement is one that goes
-        # stale. Rows still awaiting the backfill
-        # carry NULL, fail the comparison, and are simply absent until
-        # it reaches them: freshness, not correctness.
-        #
-        # `_singleton_root_ids` deliberately does NOT use the column;
-        # see its docstring for why counting populated members
-        # misclassifies mid-backfill.
-        #
-        # Cross-posted articles still appear in each linked inbox's
-        # sitemap; the page's own canonical resolves which to keep.
-        recent_roots = session.execute(
-            _recent_thread_roots_query(inbox).limit(SITEMAP_RECENT_PER_INBOX)
-        ).all()
-        # Which URL to list has to match what that page's own canonical
-        # says, or the sitemap publishes a page that disclaims itself.
-        # A single-message thread's canonical is the MESSAGE page (it is
-        # already the whole conversation, and carries the patch surfaces
-        # `/t` omits), so listing `/t` there would publish the thinner
-        # of two self-canonical near-duplicates and drop the canonical
-        # one entirely. Mirrors the `len(thread) > 1` rule in
-        # `mimir.web.routes.message`.
-        singleton_ids = _singleton_root_ids(
-            session, inbox, [art_id for art_id, _ in recent_roots]
-        )
-        last_activity = _thread_last_activity(
-            session, inbox, [art_id for art_id, _ in recent_roots]
-        )
-        recent_root_ids = [art_id for art_id, _ in recent_roots]
-        root_entries = _sitemap_entries_for_roots(
-            recent_roots,
-            singleton_ids,
-            last_activity,
-            _thread_message_counts(session, inbox, recent_root_ids),
-            unmaterialised_roots(session, inbox.id, recent_root_ids),
-            inbox.name,
-            base,
-        )
-        # `/t` only: message pages are in `/messages-sitemap.xml` (#964).
-        entries.extend(e for e in root_entries if e.kind == KIND_THREAD)
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,
@@ -1489,7 +1421,8 @@ def inbox_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        f"sitemap:inboxthreads:{inbox.name}:{settings.thread_view_render_cap}",
+        # Hub pages only, so the render cap is not in the key (#964).
+        f"sitemap:inboxhubs:{inbox.name}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
