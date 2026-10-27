@@ -31,6 +31,7 @@ import zlib
 from base64 import b64decode, b64encode
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from datetime import date as date_cls
 from functools import partial
 from itertools import groupby
 from typing import NamedTuple
@@ -893,7 +894,11 @@ def archive_sitemap_xml(
     if month is None:
         pair = _year_sitemap_xml(session, inbox, year, page, base, force=force)
     else:
-        ids = _month_root_ids(session, inbox, year, month, force=force)
+        # A forced build re-reads the root list on page 1 only. The warm
+        # walks pages in order, so later pages slice page 1's snapshot: a
+        # fresh read per page would let a root arriving mid-warm shift the
+        # window, listing one root twice and dropping another.
+        ids = _month_root_ids(session, inbox, year, month, force=force and page == 1)
         offset = (page - 1) * SITEMAP_URLS_PER_PAGE
         if offset >= len(ids):
             return None
@@ -914,7 +919,7 @@ def _archive_files(session: Session, inbox: Inbox) -> list[tuple[int, int | None
     the URL cap is one year file (only its page 1 is named); any other
     year is named month by month, every page. One `_month_counts` pass.
 
-    Shared by the index and the slow-tier warm of the current period, so
+    Shared by the index and the slow-tier warm of the latest periods, so
     the warm fills exactly the files, and cache keys, the index reads.
     """
     files: list[tuple[int, int | None, int]] = []
@@ -936,20 +941,27 @@ def _archive_files(session: Session, inbox: Inbox) -> list[tuple[int, int | None
     return files
 
 
-def warm_current_archive_sitemaps(session: Session, inbox: Inbox, base: str) -> None:
-    """Rebuild this inbox's current-period archive files, every page and
-    both trees, under the keys the index reads.
+def warm_latest_archive_sitemaps(
+    session: Session, inbox: Inbox, base: str, today: date_cls
+) -> None:
+    """Rebuild this inbox's archive files for the current and the previous
+    period, every page and both trees, under the keys the index reads.
 
     The newest threads are listed only there, and the index dates a
-    child from its cache row alone, so an unwarmed current file goes
-    undated until a crawler happens to fetch it (#964 slice 3, which
-    dropped the warmed recent-thread list this replaces). `force`,
-    because the year file is read with a plain `cache.get` that the warm
-    refresh window does not reach, and a warmed row lives past its TTL.
+    child from its cache row alone, so an unwarmed file goes undated
+    until a crawler happens to fetch it (#964 slice 3, which dropped the
+    warmed recent-thread list this replaces). The previous period too,
+    because replies keep arriving in last month's threads after the month
+    turns; in January that is last year's files. `today` comes from the
+    caller, so a whole warm agrees on one date. `force`, because the year
+    file is read with a plain `cache.get` that the warm refresh window
+    does not reach, and a warmed row lives past its TTL.
     """
-    today = datetime.now(UTC)
+    last = today.replace(day=1) - timedelta(days=1)
+    periods = {(today.year, today.month), (last.year, last.month)}
+    years = {year for year, _ in periods}
     for year, month, page in _archive_files(session, inbox):
-        if year == today.year and month in (None, today.month):
+        if (year, month) in periods or (month is None and year in years):
             archive_sitemap_xml(session, inbox, year, month, page, base, force=True)
 
 
@@ -996,25 +1008,17 @@ def sitemap_indexes_xml(
             # (directory, file name, key, is_year)
             children: list[tuple[str, str, str, bool]] = []
             for year, month, page in _archive_files(session, inbox):
-                name = "sitemap.xml" if page == 1 else f"sitemap-{page}.xml"
-                if month is None:
-                    children.append(
-                        (
-                            f"{base}/{inbox.name}/{year:04d}/",
-                            name,
-                            _year_pages_key(inbox.name, year),
-                            True,
-                        )
+                children.append(
+                    (
+                        f"{base}/{inbox.name}/{year:04d}/"
+                        + ("" if month is None else f"{month:02d}/"),
+                        "sitemap.xml" if page == 1 else f"sitemap-{page}.xml",
+                        _year_pages_key(inbox.name, year)
+                        if month is None
+                        else _month_page_key(inbox.name, year, month, page),
+                        month is None,
                     )
-                else:
-                    children.append(
-                        (
-                            f"{base}/{inbox.name}/{year:04d}/{month:02d}/",
-                            name,
-                            _month_page_key(inbox.name, year, month, page),
-                            False,
-                        )
-                    )
+                )
             # lastmod = the child's cached last_modified; an uncached child
             # gets none (building it here would be a full scan). Same row, so
             # they agree while it lives, then can differ for one more TTL.

@@ -657,7 +657,7 @@ class Settings(BaseSettings):
     #
     # Override via THREAD_VIEW_RENDER_CAP. Must be at least 1; startup
     # fails otherwise, so callers can use the value unclamped. The sitemap
-    # index and per-inbox sitemap keys include it, so a change misses them all:
+    # index and year and month file keys include it, so a change misses them all:
     # set it on all three services together and run
     # `mimir warm-cache --tier slow` (docs/operations.md).
     thread_view_render_cap: int = Field(default=75, ge=1)

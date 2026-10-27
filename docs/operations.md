@@ -63,8 +63,7 @@ than running a second scheduler alongside the container service.
 
 `THREAD_VIEW_RENDER_CAP` sets messages per thread page, so it is part of the
 cache keys for the sitemap indexes and every year and month sitemap file. A new
-value makes
-all of those miss at once. Until they are warmed, the first request for each
+value makes all of those miss at once. Until they are warmed, the first request for each
 sitemap pays its compute cost, which is about ten seconds for `sitemap:index` on
 a large archive. It is also the size above which a message page shows part of
 its thread rather than all of it.
@@ -73,7 +72,7 @@ its thread rather than all of it.
    together. Services with different values compute two sets of sitemap rows.
 2. The scheduler warms the sitemap indexes within a minute. Run
    `uv run mimir warm-cache --tier slow` straight away to warm each inbox's
-   current year or month sitemap file too.
+   current and previous year or month sitemap files too.
 
 ## Database maintenance
 

@@ -3076,6 +3076,33 @@ def test_the_inbox_sitemap_lists_hub_pages_only(client):
     assert any(not loc.endswith("/t") for loc in archive), archive
 
 
+def _warm_alpha(today):
+    """Run alpha's slow-tier `sitemap:inbox:alpha` target, as the broker
+    does, for a fixed `today` so the test does not depend on the clock."""
+    from sqlalchemy import select
+
+    from mimir.cli.cache import _build_slow_inbox_targets
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    with SessionLocal() as s:
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        targets = dict(
+            _build_slow_inbox_targets(alpha, today, today, "http://localhost")
+        )
+        targets["sitemap:inbox:alpha"](s)
+
+
+def _assert_warm_dates(client, files, stamp):
+    """Each file is dated `stamp` in the index of the tree its roots are
+    in, and undated in neither index before the warm reached it."""
+    threads = _index_lastmods(client)
+    singles = _index_lastmods(client, "/messages-sitemap.xml")
+    for path in files:
+        dates = {threads[path], singles[_message_sibling(path)]}
+        assert dates - {None} == {stamp}, (path, dates)
+
+
 @pytest.mark.parametrize("granularity", ["year", "month"])
 def test_the_slow_warm_dates_the_current_period_in_both_indexes(
     client, tmp_path, monkeypatch, granularity
@@ -3085,14 +3112,9 @@ def test_the_slow_warm_dates_the_current_period_in_both_indexes(
     of it, through the route's own cache keys, so both indexes date it
     rather than leaving it undated until a crawler happens to fetch it
     (#964 slice 3, which dropped the warmed recent-thread list)."""
-    from datetime import UTC, datetime, timedelta
-
-    from sqlalchemy import select
+    from datetime import UTC, date, datetime
 
     import mimir.seo.sitemaps as sm
-    from mimir.cli.cache import _build_slow_inbox_targets
-    from mimir.extensions import SessionLocal
-    from mimir.models import Inbox
     from tests.test_routes._helpers import seed_thread_shape
 
     if granularity == "month":
@@ -3101,12 +3123,9 @@ def test_the_slow_warm_dates_the_current_period_in_both_indexes(
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("now@x", None), ("now-r@x", "now@x"), ("solo@x", None)]
     )
-    now = datetime.now(UTC)
     for mid in seeded:
-        _set_article_date(seeded[mid][0], now - timedelta(seconds=5))
-    today = now.date()
-    stamp = today.isoformat()
-    period = f"/alpha/{now:%Y}/" + ("" if granularity == "year" else f"{now:%m}/")
+        _set_article_date(seeded[mid][0], datetime(2025, 3, 15, 9, tzinfo=UTC))
+    period = "/alpha/2025/" + ("" if granularity == "year" else "03/")
     _clear_sitemap_cache()
 
     current = [
@@ -3114,28 +3133,60 @@ def test_the_slow_warm_dates_the_current_period_in_both_indexes(
         for p in _index_lastmods(client)
         if p.startswith(period) and _ARCHIVE_CHILD.fullmatch(p)
     ]
-    expected = (
-        [f"{period}sitemap.xml"]
-        if granularity == "year"
-        else [f"{period}sitemap.xml", f"{period}sitemap-2.xml"]
+    expected = [f"{period}sitemap.xml"] + (
+        [f"{period}sitemap-2.xml"] if granularity == "month" else []
     )
     assert current == expected, current  # precondition: the layout
 
-    with SessionLocal() as s:
-        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
-        targets = dict(
-            _build_slow_inbox_targets(alpha, today, today, "http://localhost")
-        )
-        targets["sitemap:inbox:alpha"](s)
+    _warm_alpha(date(2025, 3, 15))
     _drop_index_cache()
+    # Every page is dated in the tree its root belongs to. Without the
+    # warm, all of them are undated.
+    _assert_warm_dates(client, current, "2025-03-15")
 
-    threads = _index_lastmods(client)
-    singles = _index_lastmods(client, "/messages-sitemap.xml")
-    # Every page of the current period is dated today in the tree its
-    # root belongs to. Without the warm, all of them are undated.
-    for path in current:
-        dates = {threads[path], singles[_message_sibling(path)]}
-        assert dates - {None} == {stamp}, (path, dates)
+
+@pytest.mark.parametrize(
+    ("today", "files", "when"),
+    [
+        # A month layout: the previous month, both pages.
+        (
+            "2025-03-15",
+            ["/alpha/2025/02/sitemap.xml", "/alpha/2025/02/sitemap-2.xml"],
+            "2025-02-10",
+        ),
+        # January: last year's file, here a year file.
+        ("2025-01-15", ["/alpha/2024/sitemap.xml"], "2024-12-10"),
+    ],
+)
+def test_the_slow_warm_also_dates_the_previous_period(
+    client, tmp_path, monkeypatch, today, files, when
+):
+    """Replies keep arriving in last month's threads after the month
+    turns, so the warm covers the previous period too: the previous
+    month, and in January the previous year's files. Otherwise the first
+    days of every month leave the busiest threads undated."""
+    from datetime import UTC, date, datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    if len(files) == 2:
+        monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("pp@x", None), ("pp-r@x", "pp@x"), ("pp-solo@x", None)]
+    )
+    stamp = datetime.fromisoformat(when).replace(tzinfo=UTC)
+    for mid in seeded:
+        _set_article_date(seeded[mid][0], stamp)
+    _clear_sitemap_cache()
+    cold = _index_lastmods(client)
+    assert [
+        p for p in files if p in cold and cold[p] is None
+    ] == files  # listed, undated
+
+    _warm_alpha(date.fromisoformat(today))
+    _drop_index_cache()
+    _assert_warm_dates(client, files, when)
 
 
 def test_the_slow_warm_rebuilds_a_cached_current_period(client, tmp_path):
@@ -3144,21 +3195,11 @@ def test_the_slow_warm_rebuilds_a_cached_current_period(client, tmp_path):
     window never reaches, and a warmed row outlives its TTL. Without
     `force` a thread that arrives after the first warm stays out of the
     sitemap until the row expires."""
-    from datetime import UTC, datetime
+    from datetime import UTC, date, datetime
 
-    from sqlalchemy import select
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Inbox
-    from mimir.seo.sitemaps import warm_current_archive_sitemaps
     from tests.test_routes._helpers import seed_thread_shape
 
-    def warm():
-        with SessionLocal() as s:
-            alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
-            warm_current_archive_sitemaps(s, alpha, "http://localhost")
-
-    now = datetime.now(UTC)
+    now = datetime(2025, 3, 15, 9, tzinfo=UTC)
     for name in ("first", "later"):
         (tmp_path / name).mkdir()
         seeded = seed_thread_shape(tmp_path / name, "alpha", [(f"cw-{name}@x", None)])
@@ -3166,12 +3207,67 @@ def test_the_slow_warm_rebuilds_a_cached_current_period(client, tmp_path):
         _set_article_date(art_id, now)
         if name == "first":
             _clear_sitemap_cache()
-            warm()
-            first = _locs(client, f"/alpha/{now:%Y}/messages-sitemap.xml")
+            _warm_alpha(now.date())
+            first = _locs(client, "/alpha/2025/messages-sitemap.xml")
             assert first, "precondition: the first warm listed the first thread"
-    warm()
-    singles = _locs(client, f"/alpha/{now:%Y}/messages-sitemap.xml")
-    assert f"http://localhost/alpha/{now:%Y}/{now:%m}/{art_id}" in singles, singles
+    _warm_alpha(date(2025, 3, 15))
+    singles = _locs(client, "/alpha/2025/messages-sitemap.xml")
+    assert f"http://localhost/alpha/2025/03/{art_id}" in singles, singles
+
+
+def test_the_slow_warm_pages_one_snapshot_of_the_current_month(
+    client, tmp_path, monkeypatch
+):
+    """Every page the warm builds must slice ONE root snapshot. A root
+    that arrives while the warm is between pages may wait for the next
+    warm, but it must not shift the window under pages already built:
+    that re-lists one root and drops an older one from every page the
+    index names, the loss `_month_root_ids` exists to prevent. (Granny,
+    #964 slice 3 review.)"""
+    from datetime import UTC, datetime, timedelta
+
+    from sqlalchemy import select
+
+    import mimir.seo.sitemaps as sm
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    now = datetime(2025, 3, 15, 9, tzinfo=UTC)
+    ids = {}
+    for n, mid in enumerate(("old@x", "mid@x")):
+        (tmp_path / mid).mkdir()
+        ids[mid] = seed_thread_shape(tmp_path / mid, "alpha", [(mid, None)])[mid][0]
+        _set_article_date(ids[mid], now - timedelta(seconds=20 - 10 * n))
+
+    real = sm._archive_entries
+    arrived = []
+
+    def arrive_after_first_page(session, inbox, page_ids, base):
+        out = real(session, inbox, page_ids, base)
+        if not arrived:  # an ingest lands between page 1 and page 2
+            (tmp_path / "new").mkdir()
+            new = seed_thread_shape(tmp_path / "new", "alpha", [("new@x", None)])
+            arrived.append(new["new@x"][0])
+            _set_article_date(arrived[0], now - timedelta(seconds=1))
+        return out
+
+    monkeypatch.setattr(sm, "_archive_entries", arrive_after_first_page)
+    _clear_sitemap_cache()
+    with SessionLocal() as s:
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        sm.warm_latest_archive_sitemaps(s, alpha, "http://localhost", now.date())
+    assert arrived, "precondition: the warm built more than one page"
+
+    period = "/alpha/2025/03/"
+    listed = [
+        loc
+        for name in ("messages-sitemap.xml", "messages-sitemap-2.xml")
+        for loc in _locs(client, period + name)
+    ]
+    want = [f"http://localhost{period}{ids[m]}" for m in ("mid@x", "old@x")]
+    assert listed == want, listed
 
 
 def test_a_paged_year_keeps_both_trees_on_one_page_numbering(
