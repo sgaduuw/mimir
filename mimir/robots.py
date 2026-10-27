@@ -419,9 +419,7 @@ _ROBOTS_PREAMBLE = """\
 """
 
 
-def render_robots_txt(
-    session: Session, sitemap_urls: list[str], llms_url: str | None = None
-) -> str:
+def render_robots_txt(session: Session, sitemap_urls: list[str], llms_url: str) -> str:
     """Produce the rendered robots.txt body.
 
     File shape, top to bottom:
@@ -435,7 +433,7 @@ def render_robots_txt(
        `User-agent:`, `Content-Signal:` (when set), `Crawl-delay:`
        (when set), then any `Disallow:` lines.
     3. One trailing `Sitemap:` line per URL, in order.
-    4. When `llms_url` is given, one `LLM-Context:` line after them, the
+    4. One `LLM-Context:` line after them, the
        field proposed by draft-arsentev-llm-context-discovery. Like
        `Sitemap:` it sits outside every group, and crawlers that do not
        know it ignore it (#969)."""
@@ -468,6 +466,5 @@ def render_robots_txt(
         out.write("\n")
     for url in sitemap_urls:
         out.write(f"Sitemap: {url}\n")
-    if llms_url is not None:
-        out.write(f"LLM-Context: {llms_url}\n")
+    out.write(f"LLM-Context: {llms_url}\n")
     return out.getvalue()

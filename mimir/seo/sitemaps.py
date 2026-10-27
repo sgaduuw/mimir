@@ -192,11 +192,13 @@ cache.register("SitemapPayload", SitemapPayload)
 KIND_THREAD = "t"
 KIND_MESSAGE = "message"
 
+# The meta sitemap lists `/llms.txt` and robots.txt's `LLM-Context:` names
+# it (#969).
+LLMS_TXT_PATH = "/llms.txt"
+
 # `<priority>` is our own signal: Google ignores it. Values are the
 # table in #964, ordered by how much a page adds over lore.kernel.org.
 PRIORITY_SITE = 1.0  # `/`, `/merge-window`, `/llms.txt`
-# The meta sitemap lists it and robots.txt's `LLM-Context:` names it (#969).
-LLMS_TXT_PATH = "/llms.txt"
 PRIORITY_PAGE = 0.9  # `/t` pages, series diffs, subsystem dashboards
 PRIORITY_HUB = 0.7  # inbox dashboards, maintainer pages
 PRIORITY_MESSAGE = 0.3
