@@ -3331,3 +3331,25 @@ def test_both_indexes_cost_one_month_counts_pass(client, monkeypatch):
         inboxes = s.scalar(select(func.count()).select_from(Inbox))
     assert inboxes >= 1, "precondition: an inbox to count"
     assert len(calls) == inboxes, calls
+
+
+def test_the_slow_warm_leaves_older_periods_alone(client, tmp_path):
+    """The warm forces a rebuild, so it must stop at the latest two
+    periods: forcing every year file each hour rebuilds a small inbox's
+    whole history on every slow tick. alpha's 2024 fixture year sits
+    outside March 2025's window and must stay as cold as it was."""
+    from datetime import UTC, date, datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(tmp_path, "alpha", [("in@x", None), ("re@x", "in@x")])
+    for art_id, _ in seeded.values():
+        _set_article_date(art_id, datetime(2025, 3, 10, tzinfo=UTC))
+    _clear_sitemap_cache()
+    assert _index_lastmods(client)["/alpha/2024/sitemap.xml"] is None  # precondition
+
+    _warm_alpha(date(2025, 3, 15))
+    _drop_index_cache()
+    lastmods = _index_lastmods(client)
+    assert lastmods["/alpha/2025/sitemap.xml"] is not None  # the warm ran
+    assert lastmods["/alpha/2024/sitemap.xml"] is None
