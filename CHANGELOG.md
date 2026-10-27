@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.31.0] - 2026-10-27
+
 ### Added
 
 - `/messages-sitemap.xml`, a second sitemap index, lists message pages:
@@ -36,8 +38,9 @@ changes, not internal refactors. Categories: **Added**,
   also lists `/llms.txt`, without a `<lastmod>`. Month and year archive
   pages in `/<inbox>/sitemap.xml` now carry a `<lastmod>`: the last day
   of a closed period, and for the current one the inbox's newest message
-  date, never later than the period's last day or than today. Cached
-  sitemaps show the old form for up to an hour after the deploy (#964).
+  date, never later than the period's last day or than today. An edge
+  cache can serve the old sitemaps for up to five minutes after the
+  deploy (#964).
 - A cover letter's pill states what every patch of its posting reached,
   with a count when they differ: "Queued · 3 of 5 landed", or "Pending ·
   3 of 5 landed" where a cover used to show nothing. The cover's declared
@@ -55,12 +58,12 @@ changes, not internal refactors. Categories: **Added**,
   copy with a diff first, then the lowest id (the series slot rule, #861),
   not the newest re-post. They show when vN was first posted with a diff.
   The status line's link goes to that revision's entry, so the pill, the
-  list and the line name one article (#949). Cached pills keep their old
-  copy for up to 5 minutes after the deploy.
+  list and the line name one article (#949).
 - A cover letter's series totals add the lines its patches insert and
   delete: "2 patches touching 3 files, +14/-3", on the thread view and in
   its Markdown view. Ingest counts the lines from each patch's diff
-  hunks, so binary files, pure renames and mode changes count 0. The
+  hunks, so binary files, pure renames and mode changes count 0, and a
+  patch posted twice counts once (the series slot rule, #861). The
   "+14/-3" part shows only once every file of the posting has a count,
   so a posting stored before this release shows it after the backfill in
   the upgrade notes reaches it. It stays hidden for a series with a file
@@ -105,38 +108,64 @@ changes, not internal refactors. Categories: **Added**,
   belong to the sibling's posting, and none of the 116,427 existing
   links in that population moves.
   5 of the 416 land in an occupied slot (#861), measured 2026-10-26: in
-  one the pick moves to the orphan, an earlier send than the resend that
-  holds the slot; in one a 2018 and a 2020 posting already collide and
-  the pick moves to the 2018 orphan; one stays as it is (the same patch
-  sent twice, 3 minutes apart).
+  two (one posting) the pick moves to the orphan, an earlier send than
+  the resend that holds the slot; in two (one posting) a 2018 and a 2020
+  posting already collide and the pick moves to the 2018 orphan; one
+  stays as it is (the same patch sent twice, 3 minutes apart).
 
 ### Upgrade notes
 
-- The cache version moves from 3 to 4 (the lifecycle pill gains a field),
-  so the cache starts cold once on deploy: the first requests after it
-  recompute pills, thread state and sitemaps. Rolling back reads no v4
-  row: the older release finds its own version-3 rows from before this
-  deploy, serves those still within their TTL (up to a day) and
-  recomputes the rest. Invalidations made while this release ran (a
-  MAINTAINERS reload, an inbox change) did not reach them. Nothing to
-  backfill (#938).
-- Run `backfill-article-files --patch-subjects --reprocess` after the
-  deploy to count the lines of patches stored before it. Until the run
-  reaches a posting, its cover shows its totals without "+N/-M". A run
-  without `--reprocess` skips articles that already have file rows, so it
-  counts nothing. If a `--patch-subjects --reprocess` run started before
-  this release is unfinished, add `--restart --yes`: resuming it would
-  leave the articles it already passed uncounted. The run resumes across
-  broker restarts. It reads the body of every in-series patch, rewrites
-  their file rows and pages every article by subject: several hours,
-  likely half a day (estimated from 4.5M in-series patches counted
-  2026-10-26). Cover thread pages get a new ETag as their patches are
-  rewritten; patch pages keep theirs (#939).
-- Then run a plain `backfill-patch-series` (no `--reprocess`) to link the
-  patches the fix above reaches. It links the stored orphans, and its
-  re-chain gives them their head. About 16 minutes on 2026-10-26 (the
-  archive then held the 416 orphans); that figure was measured once and
-  grows with the archive.
+Before upgrading: an archive that skipped the 3.27.0 upgrade steps runs
+them with a 3.30.0 image first, since this release removes
+`backfill-series-chains` (#927). There is one migration, which only adds
+two nullable columns.
+
+After deploying, in this order, one at a time, not alongside another long
+backfill:
+
+1. Run `mimir warm-cache --tier slow` once the services are up, and time
+   it. The scheduler's first slow run waits a full `WARM_CACHE_SLOW_EVERY`
+   (an hour by default) after boot. Until a warm runs, the newest threads'
+   sitemap files are built on a crawler's first request, and the index
+   lists them without `<lastmod>`. Each slow run now also reads every
+   inbox's month counts (9.7 s across 203 inboxes, measured 2026-10-07,
+   which the index already pays) and rebuilds each inbox's current and
+   previous year or month files. Compare its duration with a 3.30.0 slow
+   run (#964).
+2. Run a plain `backfill-patch-series` (no `--reprocess`) to link the
+   #862 orphans whose sibling cover has another title or sender (#941).
+   It links the stored orphans, and its re-chain gives them their head.
+   About 16 minutes on 2026-10-26 (the archive then held 416 such
+   orphans); that figure was measured once and grows with the archive.
+3. Run `backfill-article-files --patch-subjects --reprocess` to count the
+   lines of patches stored before this release. Until the run reaches a
+   posting, its cover shows its totals without "+N/-M". A run without
+   `--reprocess` skips articles that already have file rows, so it counts
+   nothing. If a `--patch-subjects --reprocess` run started before this
+   release is unfinished, add `--restart --yes`: resuming it would leave
+   the articles it already passed uncounted. The run resumes across
+   broker restarts. It reads the body of every in-series patch, rewrites
+   their file rows and pages every article by subject: several hours,
+   likely half a day (estimated from 4.5M in-series patches counted
+   2026-10-26). Cover thread pages get a new ETag as their patches are
+   rewritten; patch pages keep theirs (#939).
+4. Submit `/messages-sitemap.xml` in Search Console. robots.txt already
+   names it, so Google finds it either way; submitting adds the
+   per-sitemap coverage report the split exists for (#964).
+
+The cache version moves from 3 to 4 (the lifecycle pill gains a field), so
+the cache starts cold once on deploy: the first requests after it
+recompute pills, thread state and sitemaps. Nothing to backfill (#938).
+
+Rolling back to 3.30.0: run `alembic downgrade 4c1d816a0b2e` from the
+3.31.0 image before the 3.30.0 image starts; a 3.30.0 broker does not know
+5d7e2a1c9f40 and refuses to start. The downgrade drops the line counts and
+rewrites `article_files` (time unmeasured), so upgrading again needs step
+3 again. The older release reads no version-4 cache row: it finds its own
+version-3 rows from before this deploy, serves those still within their
+TTL (up to a day) and recomputes the rest. Invalidations made while this
+release ran (a MAINTAINERS reload, an inbox change) did not reach them.
+`backfill-series-chains` returns.
 
 ## [3.30.0] - 2026-10-26
 

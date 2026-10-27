@@ -43,6 +43,7 @@ from mimir.models import (
     Article,
     ArticleList,
 )
+from mimir.patch_series import slot_rank
 from mimir.patch_state import patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
@@ -405,17 +406,25 @@ def thread_view(
         # twice (#939).
         series_totals = None
         if is_cover(root_node):
+            # One copy per position, the slot's patch (#861): a resend is
+            # the same posting, and its lines would count twice.
+            ranks: dict[int, tuple[bool, int]] = {}
+            for aid, pos, path, _, _ in root_paths:
+                if pos:
+                    rank = slot_rank(aid, path is not None)
+                    ranks[pos] = min(ranks.get(pos, rank), rank)
+            slots = {aid for _, aid in ranks.values()}
             files = [
                 (path, ins, dels)
-                for _, pos, path, ins, dels in root_paths
-                if pos and path
+                for aid, _, path, ins, dels in root_paths
+                if aid in slots and path
             ]
             # Line counts only once every file has one: a posting the
             # backfill has not reached in full would show a part as the
             # total.
             counted = bool(files) and all(ins is not None for _, ins, _ in files)
             series_totals = (
-                len({row[1] for row in root_paths if row[1]}),
+                len(ranks),
                 len({path for path, _, _ in files}),
                 sum(ins for _, ins, _ in files) if counted else None,
                 sum(dels for _, _, dels in files) if counted else None,
