@@ -1701,6 +1701,19 @@ afterthought:
   option to drop message pages later by removing one index and one
   robots.txt line.
 
+  The per-inbox `/<inbox>/sitemap.xml` holds hub pages only. It used to
+  list the 5,000 most recent thread roots too, which after the split
+  duplicated the archive's `/t` files, so slice 3 dropped it. That
+  list was the one warmed, always-dated place a new thread appeared,
+  and the index dates an archive child only from its cache row. So the
+  slow tier's `sitemap:inbox:<name>` target also rebuilds the current
+  period's archive files (`warm_current_archive_sitemaps`), through
+  the route's keys and the index's own layout (`_archive_files`), with
+  `force` because the year file is read with a plain `cache.get` that
+  the warm refresh window never reaches. The label is reused rather
+  than a new one added: the scheduler only names targets and the
+  broker builds them, so a mid-deploy version mix still runs the work.
+
   Note the flat-index constraint is Google's, not the protocol's:
   sitemaps.org explicitly permits more than one index file. Every
   copy of this claim in the tree credited sitemaps.org until

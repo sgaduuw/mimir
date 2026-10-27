@@ -30,7 +30,6 @@ from mimir.seo.json_ld import (
     _json_ld_thread,
 )
 from mimir.seo.sitemaps import (
-    SITEMAP_RECENT_PER_INBOX,
     SITEMAP_TTL_SEC,
     archive_sitemap_xml,
     inbox_sitemap_xml,
@@ -38,12 +37,12 @@ from mimir.seo.sitemaps import (
     meta_sitemap_xml,
     series_diff_sitemap_xml,
     sitemap_indexes_xml,
+    warm_current_archive_sitemaps,
 )
 
 __all__ = [
     "DEFAULT_SITE_DESCRIPTION",
     "JSON_LD_TEXT_MAX",
-    "SITEMAP_RECENT_PER_INBOX",
     "SITEMAP_TTL_SEC",
     "_json_ld_author",
     "_json_ld_inbox",
@@ -58,4 +57,5 @@ __all__ = [
     "meta_sitemap_xml",
     "series_diff_sitemap_xml",
     "sitemap_indexes_xml",
+    "warm_current_archive_sitemaps",
 ]
