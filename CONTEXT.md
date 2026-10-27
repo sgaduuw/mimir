@@ -1707,10 +1707,13 @@ afterthought:
   list was the one warmed, always-dated place a new thread appeared,
   and the index dates an archive child only from its cache row. So the
   slow tier's `sitemap:inbox:<name>` target also rebuilds the current
-  period's archive files (`warm_current_archive_sitemaps`), through
-  the route's keys and the index's own layout (`_archive_files`), with
-  `force` because the year file is read with a plain `cache.get` that
-  the warm refresh window never reaches. The label is reused rather
+  and the previous period's archive files (`warm_latest_archive_sitemaps`;
+  the previous one because replies keep landing in last month's threads),
+  through the route's keys and the index's own layout (`_archive_files`),
+  with `force` because the year file is read with a plain `cache.get`
+  that the warm refresh window never reaches. A forced month re-reads
+  its root list on page 1 only, so every page of one warm slices one
+  snapshot. The label is reused rather
   than a new one added: the scheduler only names targets and the
   broker builds them, so a mid-deploy version mix still runs the work.
 

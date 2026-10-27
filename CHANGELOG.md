@@ -23,16 +23,6 @@ changes, not internal refactors. Categories: **Added**,
   serves an empty thread file. Submit `/messages-sitemap.xml` in Search
   Console after the deploy (#964).
 
-### Removed
-
-- `/<inbox>/sitemap.xml` no longer lists the 5,000 most recent threads.
-  It keeps its hub pages: the inbox dashboard, its year and month
-  archive pages, and its subsystem pages. Every thread is in the year and
-  month sitemap files, which the slow warm-cache tier now builds for the
-  current year or month of each inbox, so the newest threads carry a
-  `<lastmod>` in both indexes. The 5,000 was a code constant, not a
-  setting, so no configuration changes (#964).
-
 ### Changed
 
 - The sitemaps now give every URL a `<priority>`: 1.0 for `/`,
@@ -83,6 +73,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Removed
 
+- `/<inbox>/sitemap.xml` no longer lists the 5,000 most recent threads.
+  It keeps its hub pages: the inbox dashboard, its year and month
+  archive pages, and its subsystem pages. Every thread is in the year and
+  month sitemap files, which the slow warm-cache tier now builds for the
+  current and the previous year or month of each inbox, so the newest
+  threads carry a `<lastmod>` in both indexes. The 5,000 was a code
+  constant, not a setting, so no configuration changes (#964).
 - `mimir backfill-series-chains` and its broker request (#927). Ingest,
   `admin failures replay` and `backfill-patch-series` re-chain every
   series title they touch, so the command only repaired history, which

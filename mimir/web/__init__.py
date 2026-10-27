@@ -41,7 +41,7 @@ from mimir.seo import (
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_indexes_xml,
-    warm_current_archive_sitemaps,
+    warm_latest_archive_sitemaps,
 )
 
 # isort: on
@@ -52,5 +52,5 @@ __all__ = [
     "maintainers_sitemap_xml",
     "meta_sitemap_xml",
     "sitemap_indexes_xml",
-    "warm_current_archive_sitemaps",
+    "warm_latest_archive_sitemaps",
 ]

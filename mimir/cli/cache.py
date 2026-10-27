@@ -46,7 +46,7 @@ from mimir.web import (
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     sitemap_indexes_xml,
-    warm_current_archive_sitemaps,
+    warm_latest_archive_sitemaps,
 )
 from mimir.web.routes.dashboards import SUBSYSTEM_RECENT_PATCHES_LIMIT
 from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
@@ -198,16 +198,17 @@ def _build_slow_inbox_targets(
         # the base URL, so warming with an empty base would poison the
         # cache against what the live route emits, hence the guard.
         #
-        # The same label also warms the current period's archive files,
-        # where the newest threads are listed (#964). Reusing the label
-        # rather than adding one keeps a mid-deploy scheduler and broker
-        # in step: the broker builds the work, the scheduler only names it.
+        # The same label also warms the archive files of the current and
+        # the previous period, where the newest threads are listed (#964).
+        # Reusing the label rather than adding one keeps a mid-deploy
+        # scheduler and broker in step: the broker builds the work, the
+        # scheduler only names it.
         targets.append(
             (
                 f"sitemap:inbox:{inbox.name}",
-                lambda s, ib=inbox, base=sitemap_base: (
+                lambda s, ib=inbox, base=sitemap_base, day=today: (
                     inbox_sitemap_xml(s, ib, base),
-                    warm_current_archive_sitemaps(s, ib, base),
+                    warm_latest_archive_sitemaps(s, ib, base, day),
                 ),
             )
         )
