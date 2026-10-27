@@ -346,3 +346,64 @@ def test_the_superseded_link_follows_the_id_and_falls_back_to_the_patch(
         superseded_by_id=named,
     )
     assert _status(_status_html(client.application, info, series))[1] == want
+
+
+def _pill_text(html):
+    """The pill's visible text as a reader sees it, and its tooltip."""
+    m = re.search(
+        r'<span class="badge badge-lifecycle-\w+"([^>]*)>(.*?</span>)</span>',
+        html,
+        re.DOTALL,
+    )
+    assert m, html
+    tip = re.search(r'data-tooltip="([^"]*)"', m.group(1))
+    text = htmllib.unescape(re.sub(r"<[^>]+>", "", m.group(2)))
+    return " ".join(text.split()), htmllib.unescape(tip.group(1)) if tip else None
+
+
+def _md_status(md):
+    lines = re.findall(r"^- Status: (.*)$", md, re.MULTILINE)
+    assert len(lines) == 1, md
+    return re.sub(r"\\(.)", r"\1", lines[0])
+
+
+def _seed_cover(tmp_path):
+    """A v2 cover with two patches, one landed: the cover's pill reads
+    `PENDING · 1 of 2 landed` (#938)."""
+    from mimir.extensions import SessionLocal
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("c@x", None), ("p1@x", "c@x"), ("p2@x", "c@x")]
+    )
+    with SessionLocal() as s:
+        for mid, pos in (("c@x", 0), ("p1@x", 1), ("p2@x", 2)):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = f"[PATCH v2 {pos}/2] foo"
+            a.patch_series_key = KEY
+            a.patch_series_version = "v2"
+            a.patch_series_position = pos
+        s.commit()
+    _seed_mainline_commit("p1@x", LINUS_SHA, "linus", datetime(2024, 6, 20, tzinfo=UTC))
+    return seeded
+
+
+@pytest.mark.parametrize("shape", ["cover-rollup", "patch-review-count"])
+def test_the_markdown_status_line_is_the_html_pill_text(client, tmp_path, shape):
+    """The `.md` status line and the pill read the same text, separator
+    spaces included (#974). Both shapes carry text after the label."""
+    seeded = (
+        _seed_cover(tmp_path)
+        if shape == "cover-rollup"
+        else _make(tmp_path, "reviewed")
+    )
+    url = seeded["c@x" if shape == "cover-rollup" else "p@x"][1] + "/t"
+    pill, tip = _pill_text(client.get(url).get_data(as_text=True))
+    # Precondition: the seed built the text that has a separator in it.
+    assert re.fullmatch(
+        r"PENDING · 1 of 2 landed"
+        if shape == "cover-rollup"
+        else r"REVIEWED: 1 \(0M\)",
+        pill,
+    )
+    want = pill + (f" ({tip})" if tip else "")
+    assert _md_status(client.get(url + ".md").get_data(as_text=True)) == want
