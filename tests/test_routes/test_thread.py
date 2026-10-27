@@ -643,10 +643,15 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     )
     _clear_sitemap_cache()
 
+    # The year's archive files, both trees: they list every root (#964).
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    root = ET.fromstring(client.get("/alpha/sitemap.xml").get_data())
-    locs = {u.find("s:loc", ns).text.replace("http://localhost", "") for u in root}
+    year = seeded["solo-sm@x"][1].split("/")[2]
+    locs = set()
+    for name in ("sitemap.xml", "messages-sitemap.xml"):
+        root = ET.fromstring(client.get(f"/alpha/{year}/{name}").get_data())
+        locs |= {u.find("s:loc", ns).text.replace("http://localhost", "") for u in root}
 
+    checked = 0
     for mid, (_aid, url) in seeded.items():
         listed = {loc for loc in locs if loc in (url, url + "/t")}
         if not listed:
@@ -657,6 +662,9 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
         assert listed == {canonical}, (
             f"{mid}: sitemap lists {listed} but the canonical is {canonical}"
         )
+        checked += 1
+    # The two roots, solo and m1; the reply m2 is listed nowhere.
+    assert checked == 2, f"only {checked} of the seeded roots were listed"
 
 
 def test_thread_view_never_renders_the_same_message_twice(client, tmp_path):

@@ -122,10 +122,10 @@ def series_diff_sitemap(bucket: str) -> Response:
 
 @bp_web.route("/<inbox_name>/sitemap.xml")
 def inbox_sitemap(inbox_name: str) -> Response:
-    """Per-inbox sitemap: dashboard, year + month archives that have
-    messages, plus the `SITEMAP_RECENT_PER_INBOX` most-recent article
-    URLs. Cached per inbox, so an ingest into one inbox doesn't
-    invalidate the others' cached responses."""
+    """Per-inbox sitemap of hub pages: dashboard, year + month archives
+    that have messages, and the active subsystems. Thread and message
+    pages are in the archive files. Cached per inbox, so an ingest into
+    one inbox doesn't invalidate the others' cached responses."""
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         payload = inbox_sitemap_xml(session, inbox, _site_base())
@@ -147,9 +147,8 @@ def archive_sitemap(
     """One month or year's thread URLs for one inbox, paged, or with
     `messages` its message URLs.
 
-    This is what reaches the deep archive: the flat per-inbox sitemap
-    caps at `SITEMAP_RECENT_PER_INBOX`, so everything older than the
-    most recent few thousand threads was in no sitemap at all.
+    These files are the only sitemap surface listing thread and message
+    pages, every root included (#964).
 
     Validated before it reaches SQL, because both segments arrive from
     the URL. An out-of-range month would otherwise build a nonsense
