@@ -14,7 +14,22 @@ Every message and thread page has a Markdown version at the same URL plus `.md`,
 - {{ label }}: `{{ site_base }}{{ path }}` (Markdown: `{{ site_base }}{{ md_path }}`)
 {% endfor %}
 
-## Discovery
+{% if lists %}
+## Lists
+
+{% for name, path, description in lists %}
+- [{{ name }}]({{ site_base }}{{ path }}): {{ description }}
+{% endfor %}
+
+{% endif %}
+## Pages mimir adds over lore
+
+- [Home]({{ site_base }}/): every list, with its recent activity.
+- [Merge window]({{ site_base }}{{ merge_window_path }}): patches in linux-next that Linus's tree does not have yet, grouped by subsystem.
+- `{{ site_base }}{{ subsystem_index_shape }}`: the subsystems active in one list, each with its own dashboard of recent patches, threads and reviewers.
+- `{{ site_base }}/maintainers/<address>`: a maintainer's profile, with what they maintain and the lists where they review.
+
+## Optional
 
 - [Sitemap]({{ site_base }}/sitemap.xml): the HTML pages, except single messages. The Markdown pages are not listed; add `.md` to a message or thread page URL.
 - [Message sitemap]({{ site_base }}/messages-sitemap.xml): single-message threads, and threads still being backfilled. A message in a thread is listed through its thread page.
