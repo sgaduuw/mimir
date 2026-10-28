@@ -11,6 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Dependencies and the image move up: CPython 3.15.2 on
+  python-build-standalone `20261026`, sqlalchemy 2.1.6, alembic 1.20.1,
+  dulwich 1.2.20 and pydantic-settings 2.16.2. Dependabot cannot update
+  Python 3.15 projects yet, so these are bumped by hand (#983).
+
 ## [3.33.0] - 2026-10-28
 
 No migration, no backfill and no cache version bump.
