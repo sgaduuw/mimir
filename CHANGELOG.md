@@ -11,9 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.33.0] - 2026-10-28
+
+No migration, no backfill and no cache version bump.
+
 ### Added
 
-- `/llms.txt` is a map: a `## Lists` section with one line per list that has messages (name, list address, upstream), and `## Pages mimir adds over lore` for the home page, the merge window, the subsystem index and the maintainer profile. The sitemaps and `/privacy` move under `## Optional` (#980).
+- `/llms.txt` is a map: a `## Lists` section with one line per list that
+  has messages (name, list address, upstream), and `## Pages mimir adds over
+  lore` for the home page, the merge window, the subsystem index and the
+  maintainer profile. The sitemaps and `/privacy` move under `## Optional`
+  (#980).
 
 ## [3.32.0] - 2026-10-27
 
