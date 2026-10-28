@@ -14,12 +14,14 @@ Every message and thread page has a Markdown version at the same URL plus `.md`,
 - {{ label }}: `{{ site_base }}{{ path }}` (Markdown: `{{ site_base }}{{ md_path }}`)
 {% endfor %}
 
+{% if lists %}
 ## Lists
 
 {% for name, path, description in lists %}
 - [{{ name }}]({{ site_base }}{{ path }}): {{ description }}
 {% endfor %}
 
+{% endif %}
 ## Pages mimir adds over lore
 
 - [Home]({{ site_base }}/): every list, with its recent activity.

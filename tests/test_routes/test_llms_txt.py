@@ -259,3 +259,18 @@ def test_llms_txt_runs_one_inbox_query_however_many_inboxes(client):
     for i in range(5):
         _add_inbox(f"extra-{i}", last_article_date=datetime(2024, 1, 1, tzinfo=UTC))
     assert (before, inbox_selects()) == (1, 1)
+
+
+def test_llms_txt_has_no_lists_heading_before_any_inbox_has_messages(client):
+    """A fresh install: a heading over nothing is noise, so it is left out."""
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    with SessionLocal() as s:
+        s.execute(update(Inbox).values(last_article_date=None))
+        s.commit()
+    body = client.get("/llms.txt").get_data(as_text=True)
+    headings = re.findall(r"^## (.+)$", body, re.MULTILINE)
+    assert headings == ["URL shapes", "Pages mimir adds over lore", "Optional"]
