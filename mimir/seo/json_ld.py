@@ -16,6 +16,7 @@ module load).
 from collections.abc import Sequence
 from urllib.parse import quote
 
+from mimir._inbox_name import inbox_path
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 from mimir.models import Article
@@ -56,7 +57,7 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
                 {
                     "@type": "ListItem",
                     "position": i + 1,
-                    "url": f"{base}/{inbox.name}/",
+                    "url": base + inbox_path(inbox.name),
                     "name": inbox.name,
                 }
                 for i, inbox in enumerate(inboxes)
@@ -129,7 +130,7 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
         "@context": "https://schema.org",
         "@type": "DiscussionForum",
         "name": inbox.name,
-        "url": f"{base}/{inbox.name}/",
+        "url": base + inbox_path(inbox.name),
     }
     if active_threads:
         payload["mainEntity"] = {
@@ -248,7 +249,7 @@ def _graph_with_breadcrumbs(
                         "@type": "ListItem",
                         "position": 2,
                         "name": inbox_name,
-                        "item": f"{base}/{inbox_name}/",
+                        "item": base + inbox_path(inbox_name),
                     },
                     {
                         "@type": "ListItem",
@@ -338,7 +339,7 @@ def _json_ld_message(
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
-            "url": f"{base}/{inbox_name}/",
+            "url": base + inbox_path(inbox_name),
         },
     }
     # Snippet the body as the page shows it: JSON-LD `text` is yet
@@ -399,7 +400,7 @@ def _json_ld_search(
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
-            "url": f"{base}/{inbox_name}/",
+            "url": base + inbox_path(inbox_name),
         },
     }
 
@@ -434,7 +435,7 @@ def _json_ld_author(
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
-            "url": f"{base}/{inbox_name}/",
+            "url": base + inbox_path(inbox_name),
         },
     }
 
@@ -499,7 +500,7 @@ def _json_ld_thread(
         "isPartOf": {
             "@type": "WebSite",
             "name": inbox_name,
-            "url": f"{base}/{inbox_name}/",
+            "url": base + inbox_path(inbox_name),
         },
     }
     root_text = _text_for(root)

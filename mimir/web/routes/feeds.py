@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 from flask import abort
 
+from mimir._inbox_name import inbox_path
 from mimir.config import settings
 from mimir.dashboard import author_recent, recent_articles
 from mimir.extensions import SessionLocal
@@ -33,7 +34,7 @@ def inbox_feed(inbox_name: str):
         feed_id=f"{base}{inbox.name}/feed.atom",
         feed_title=f"{inbox.name} | {settings.site_name}",
         self_url=f"{base}{inbox.name}/feed.atom",
-        alternate_url=f"{base}{inbox.name}/",
+        alternate_url=base.rstrip("/") + inbox_path(inbox.name),
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
@@ -60,7 +61,7 @@ def author_feed(inbox_name: str, sub: str):
         feed_id=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
         feed_title=f"{sub} on {inbox.name} | {settings.site_name}",
         self_url=f"{base}{inbox.name}/author/{sub_quoted}/feed.atom",
-        alternate_url=f"{base}{inbox.name}/",
+        alternate_url=base.rstrip("/") + inbox_path(inbox.name),
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,

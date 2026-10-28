@@ -41,6 +41,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
+from mimir._inbox_name import inbox_path
 from mimir.config import settings
 from mimir.maintainer_directory import (
     all_maintainers,
@@ -1278,7 +1279,7 @@ def inbox_sitemap_xml(
         )
         inbox_latest = inbox_latest_dt.strftime("%Y-%m-%d") if inbox_latest_dt else None
         entries.append(
-            SitemapEntry(f"{base}/{inbox.name}/", inbox_latest, PRIORITY_HUB)
+            SitemapEntry(base + inbox_path(inbox.name), inbox_latest, PRIORITY_HUB)
         )
 
         # Distinct (year, month) pairs that actually have data, in
