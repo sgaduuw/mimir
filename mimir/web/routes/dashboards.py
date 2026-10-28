@@ -12,6 +12,7 @@ from flask import abort, redirect, render_template, request, url_for
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
+from mimir._inbox_name import inbox_path
 from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
@@ -248,7 +249,7 @@ def inbox_dashboard(inbox_name: str):
         spark=spark,
         year_decades=year_decades,
         active_subsystems=active_subsystems,
-        canonical_url=f"{base}/{inbox.name}/",
+        canonical_url=base + inbox_path(inbox.name),
         page_json_ld=_json_ld_inbox(base, inbox, active),
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
