@@ -9,6 +9,7 @@ duplicating the values.
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from flask import (
     Response,
@@ -18,11 +19,16 @@ from flask import (
     send_from_directory,
     url_for,
 )
+from sqlalchemy import select
 
 from mimir import robots
+from mimir._inbox_name import inbox_path
 from mimir.config import settings
 from mimir.extensions import SessionLocal
+from mimir.merge_window import MERGE_WINDOW_PATH
+from mimir.models import Inbox
 from mimir.seo.sitemaps import LLMS_TXT_PATH
+from mimir.subsystems import subsystem_index_path
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base, markdown_path
 
@@ -123,16 +129,31 @@ def security_txt():
     return Response(body, mimetype="text/plain")
 
 
+def _upstream_label(url: str) -> str:
+    """`lore.kernel.org/linux-fsdevel` for a mirror URL: a reader needs
+    the host and the list, not the scheme or a trailing slash."""
+    parts = urlsplit(url)
+    return (parts.netloc + parts.path).rstrip("/") or url
+
+
 @bp_web.route(LLMS_TXT_PATH)
 def llms_txt():
-    """What the site is and where its Markdown pages are, for AI agents
-    (#884, https://llmstxt.org/). The `*` stanza's Content-Signal is
-    copied from robots.txt through the same functions, so an invitation
-    to fetch the Markdown pages never contradicts what robots.txt says
-    agents may do with them."""
+    """What the site is, which lists it holds and where its Markdown
+    pages are, for AI agents (#884, #980, https://llmstxt.org/). The `*`
+    stanza's Content-Signal is copied from robots.txt through the same
+    functions, so an invitation to fetch the Markdown pages never
+    contradicts what robots.txt says agents may do with them."""
     with SessionLocal() as session:
         rule = robots.get_rule(session, "*")
         signals = rule.content_signals if rule is not None else None
+        # One query. An inbox with no messages is a blank page, so it is
+        # not advertised. Names are limited to `[a-z0-9-]` (`INBOX_NAME_RE`),
+        # so they need no Markdown escaping as link text.
+        inboxes = session.execute(
+            select(Inbox.name, Inbox.list_address, Inbox.upstream_url)
+            .where(Inbox.last_article_date.is_not(None))
+            .order_by(Inbox.name)
+        ).all()
     message = "/<inbox>/<YYYY>/<MM>/<id>"
     shapes = [
         ("A message", message),
@@ -143,6 +164,19 @@ def llms_txt():
         "llms.txt",
         content_signal=robots.format_content_signals(signals) if signals else None,
         shapes=[(label, path, markdown_path(path)) for label, path in shapes],
+        lists=[
+            (
+                name,
+                inbox_path(name),
+                ", ".join(
+                    ([address] if address else [])
+                    + ["mirrored from " + _upstream_label(upstream)]
+                ),
+            )
+            for name, address, upstream in inboxes
+        ],
+        merge_window_path=MERGE_WINDOW_PATH,
+        subsystem_index_shape=subsystem_index_path("<inbox>"),
     )
     # Jinja drops a template's final newline; a text file ends with one.
     return Response(body + "\n", mimetype="text/plain")

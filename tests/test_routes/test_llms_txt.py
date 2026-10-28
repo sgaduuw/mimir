@@ -36,7 +36,9 @@ def test_llms_txt_is_served_as_plain_text(client):
     assert "http://localhost/sitemap.xml" in body
     assert "http://localhost/messages-sitemap.xml" in body
     # In code spans, or a Markdown renderer drops `<inbox>` as an HTML tag.
-    assert len(re.findall(r"`http://localhost/<inbox>/[^`\s]+`", body)) == 6
+    assert (
+        len(re.findall(r"`http://localhost/<inbox>/[^`\s]+`", body)) == 7
+    )  # six message shapes, the subsystem index
 
 
 @pytest.mark.parametrize("change", ["seeded", "edited", "cleared"])
@@ -84,7 +86,7 @@ def test_llms_txt_url_shapes_resolve(client, tmp_path):
         )
         assert client.get(path).status_code == 200, path
         checked += 1
-    assert checked == 4  # message and thread, each in HTML and Markdown
+    assert checked == 5  # message and thread in two forms, the subsystem index
 
 
 def test_llms_txt_urls_use_the_configured_site_base_verbatim(client, monkeypatch):
@@ -95,7 +97,9 @@ def test_llms_txt_urls_use_the_configured_site_base_verbatim(client, monkeypatch
     body = client.get("/llms.txt").get_data(as_text=True)
     assert body.startswith("# Lists & <Co>\n"), body[:40]
     urls = re.findall(r"https?://[^\s)`]+", body)
-    assert len(urls) == 9, urls  # three shapes in two forms, 2 sitemaps, privacy
+    # Three shapes in two forms, the subsystem and maintainer shapes, two
+    # inboxes, home, merge window, two sitemaps and privacy.
+    assert len(urls) == 6 + 2 + 2 + 1 + 1 + 2 + 1, urls
     assert all(u.startswith("https://lists.example.org/a&b/") for u in urls), urls
     assert "localhost" not in body and "&amp;" not in body
 
@@ -119,3 +123,136 @@ def test_llms_txt_later_thread_page_shape_is_thread_page_url(client, tmp_path):
     }
     want = thread_page_url(int(art_id), date(int(year), int(month), 1), inbox, page=2)
     assert filled == {want, markdown_path(want)}, (filled, want)
+
+
+def _section(body: str, heading: str) -> list[str]:
+    """The lines of one `## heading` section, blank lines dropped."""
+    found = re.findall(
+        rf"^## {re.escape(heading)}\n(.*?)(?=^## |\Z)", body, re.MULTILINE | re.DOTALL
+    )
+    assert len(found) == 1, (heading, found)
+    return [line for line in found[0].splitlines() if line]
+
+
+def _links(lines: list[str]) -> list[tuple[str, str, str]]:
+    """`- [text](url): description` lines as (text, url, description)."""
+    out = []
+    for line in lines:
+        m = re.fullmatch(r"- \[([^\]]+)\]\(([^)]+)\)(?:: (.*))?", line)
+        assert m, line
+        out.append((m[1], m[2], m[3] or ""))
+    return out
+
+
+def _add_inbox(name, *, last_article_date=None, list_address=None):
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    with SessionLocal() as s:
+        s.add(
+            Inbox(
+                name=name,
+                mirror_path=f"/tmp/{name}",
+                upstream_url=f"https://lore.example.org/{name}/",
+                list_address=list_address,
+                last_article_date=last_article_date,
+            )
+        )
+        s.commit()
+
+
+def test_llms_txt_lists_exactly_the_inboxes_with_messages(client):
+    from datetime import UTC, datetime
+
+    _add_inbox("aardvark", last_article_date=datetime(2024, 1, 1, tzinfo=UTC))
+    _add_inbox("empty-one")  # no messages: the dashboard is a blank page
+    body = client.get("/llms.txt").get_data(as_text=True)
+    names = [name for name, _, _ in _links(_section(body, "Lists"))]
+    # Sorted by name, and the empty inbox is left out.
+    assert names == ["aardvark", "alpha", "beta"], names
+
+
+def test_llms_txt_list_line_names_address_and_upstream(client):
+    from datetime import UTC, datetime
+
+    when = datetime(2024, 1, 1, tzinfo=UTC)
+    _add_inbox("with-addr", last_article_date=when, list_address="w@lists.example.org")
+    _add_inbox("no-addr", last_article_date=when)
+    body = client.get("/llms.txt").get_data(as_text=True)
+    by_name = {n: d for n, _, d in _links(_section(body, "Lists"))}
+    assert by_name["with-addr"] == (
+        "w@lists.example.org, mirrored from lore.example.org/with-addr"
+    )
+    # No address: say only what is known.
+    assert by_name["no-addr"] == "mirrored from lore.example.org/no-addr"
+
+
+def test_llms_txt_list_links_equal_the_dashboard_canonical(client):
+    """Byte-identical, not equivalent: the link and the page's own
+    `<link rel="canonical">` are one spelling (AGENTS.md emitter/acceptor)."""
+    body = client.get("/llms.txt").get_data(as_text=True)
+    lists = _links(_section(body, "Lists"))
+    assert len(lists) == 2  # both seeded inboxes, or the loop proves nothing
+    for name, url, _ in lists:
+        page = client.get(f"/{name}/")
+        assert page.status_code == 200
+        found = re.findall(
+            r'<link rel="canonical" href="([^"]+)"', page.get_data(as_text=True)
+        )
+        assert found == [url], (found, url)
+
+
+def test_llms_txt_page_links_answer_200_and_shapes_have_routes(client):
+    body = client.get("/llms.txt").get_data(as_text=True)
+    lines = _section(body, "Pages mimir adds over lore")
+    links = _links([line for line in lines if line.startswith("- [")])
+    assert [t for t, _, _ in links] == ["Home", "Merge window"]
+    for _, url, _ in links:
+        assert client.get(url.removeprefix("http://localhost")).status_code == 200, url
+    shapes = [
+        re.search(r"`http://localhost(/[^`]+)`", line)[1]
+        for line in lines
+        if not line.startswith("- [")
+    ]
+    assert shapes == ["/<inbox>/subsystem/", "/maintainers/<address>"]
+    adapter = client.application.url_map.bind("localhost")
+    for shape in shapes:
+        path = shape.replace("<inbox>", "alpha").replace("<address>", "a@b.example")
+        # The route exists; the page behind a made-up address may still 404.
+        adapter.match(path)
+
+
+def test_llms_txt_optional_section_holds_sitemaps_and_privacy(client):
+    body = client.get("/llms.txt").get_data(as_text=True)
+    optional = _links(_section(body, "Optional"))
+    assert [t for t, _, _ in optional] == ["Sitemap", "Message sitemap", "Privacy"]
+    assert body.rstrip().splitlines()[-1].startswith("- [Privacy]")  # last section
+
+
+def test_llms_txt_runs_one_inbox_query_however_many_inboxes(client):
+    """No N+1: the count of statements reading `inboxes` does not grow."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import event
+
+    from mimir.extensions import SessionLocal
+
+    def inbox_selects() -> int:
+        seen: list[str] = []
+
+        def grab(conn, cursor, statement, parameters, context, executemany):
+            if re.search(r"\bFROM inboxes\b", statement):
+                seen.append(statement)
+
+        engine = SessionLocal().get_bind()
+        event.listen(engine, "before_cursor_execute", grab)
+        try:
+            assert client.get("/llms.txt").status_code == 200
+        finally:
+            event.remove(engine, "before_cursor_execute", grab)
+        return len(seen)
+
+    before = inbox_selects()
+    for i in range(5):
+        _add_inbox(f"extra-{i}", last_article_date=datetime(2024, 1, 1, tzinfo=UTC))
+    assert (before, inbox_selects()) == (1, 1)
