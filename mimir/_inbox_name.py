@@ -12,3 +12,11 @@ at load (#747) and cannot import `mimir.inboxes`, which imports
 import re
 
 INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+
+
+def inbox_path(name: str) -> str:
+    """Site-relative URL of an inbox's dashboard. The page's canonical,
+    its sitemap entry and the `/llms.txt` link all spell it from here, so
+    they are one string: a link that differs from the canonical by a
+    slash is a duplicate-URL signal."""
+    return f"/{name}/"
