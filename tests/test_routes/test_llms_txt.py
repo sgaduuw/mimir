@@ -200,6 +200,9 @@ def test_llms_txt_list_links_equal_the_dashboard_canonical(client):
             r'<link rel="canonical" href="([^"]+)"', page.get_data(as_text=True)
         )
         assert found == [url], (found, url)
+        # Both sides come from `inbox_path`, so they would agree on any
+        # spelling; the literal pins the spelling itself.
+        assert url == f"http://localhost/{name}/"
 
 
 def test_llms_txt_page_links_answer_200_and_shapes_have_routes(client):
