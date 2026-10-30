@@ -131,6 +131,9 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # The thread view's "more lines" fragment: ETag-validated in the
     # route, so revalidate every time.
     "web.api_message_body": "public, no-cache",
+    # The thread page's per-patch related list (#989): no validator, so a
+    # short max-age matching its 300 s cache.
+    "web.api_related_patches": "public, max-age=300",
     # Same ETag-revalidation posture: the validator moves with each
     # linux-next or Linus walk.
     "web.merge_window_page": "public, no-cache",

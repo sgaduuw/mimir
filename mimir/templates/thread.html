@@ -91,14 +91,14 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
   <ol>
   {%- for p in patch_index %}
     <li data-patch="{{ p.id }}">
-    {%- if p.id in patch_revisions %}
-      <details class="patch-detail" id="patch-{{ p.id }}">
+      {# Closed; opening it loads the related list once (D1 b): no
+         validator can carry that list, so it is not part of this page. #}
+      <details class="patch-detail" id="patch-{{ p.id }}" hx-get="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}" hx-trigger="toggle once" hx-target="find .patch-related" hx-swap="innerHTML">
         <summary><a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a></summary>
-        {% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}
+        {% if p.id in patch_revisions %}{% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}{% endif %}
+        <p><small><strong>Other recent patches touching these files</strong></small></p>
+        <div class="patch-related"></div>
       </details>
-    {%- else %}
-      <a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a>
-    {%- endif %}
     </li>
   {%- endfor %}
   </ol>

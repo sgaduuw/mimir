@@ -383,3 +383,46 @@ def test_a_change_to_another_revision_moves_the_etag_and_the_disclosure(
     html = after.get_data(as_text=True)
     start = html.index(f'<details class="patch-detail" id="patch-{p1}"')
     assert ">v0<" in _timeline(html, start)
+
+
+def test_each_patch_loads_its_related_patches_from_a_noindex_fragment(client, tmp_path):
+    """D1 (b): "Other recent patches touching these files" is not on `/t`
+    (no validator can carry it, and it costs up to about 0.5 s a patch).
+    Each patch in the index opens it on demand: `hx-get` fires once, on
+    the first toggle, at a fragment route that answers `noindex`."""
+    import re
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleFile
+
+    seeded = _seed_two_versions(tmp_path, 2)
+    p1, p2 = seeded["p1@x"][0], seeded["p2@x"][0]
+    with SessionLocal() as s:
+        # Both v2 patches touch one file, so each is the other's related
+        # patch, and both are recent: the list looks back 180 days.
+        s.add_all(ArticleFile(article_id=a, path="drivers/foo.c") for a in (p1, p2))
+        for aid in (p1, p2):
+            s.get(Article, aid).date = datetime.now(UTC)
+        s.commit()
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    tag = re.search(rf'<details class="patch-detail" id="patch-{p1}"[^>]*>', page)
+    assert tag, "no disclosure"
+    assert 'hx-trigger="toggle once"' in tag.group(0)
+    assert " href=" not in tag.group(0)
+    url = re.search(r'hx-get="([^"]+)"', tag.group(0)).group(1)
+    assert url == f"/api/alpha/related/{p1}"
+    fragment = client.get(url)
+    assert fragment.status_code == 200
+    assert fragment.headers["X-Robots-Tag"] == "noindex"
+    assert fragment.headers["Cache-Control"] == "public, max-age=300"
+    assert f"/{p2}" in fragment.get_data(as_text=True)
+    assert "<html" not in fragment.get_data(as_text=True)  # a fragment
+
+
+def test_the_related_fragment_is_404_outside_its_inbox(client, tmp_path):
+    from tests.test_routes._helpers import _ingest_one_article
+
+    art_id, _ = _ingest_one_article(tmp_path, "alpha", "rel-404@x")
+    assert client.get(f"/api/alpha/related/{art_id}").status_code == 200
+    assert client.get(f"/api/beta/related/{art_id}").status_code == 404
+    assert client.get("/api/alpha/related/99999999").status_code == 404
