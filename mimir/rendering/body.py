@@ -37,6 +37,7 @@ from mimir.rendering.blocks import (
 )
 from mimir.rendering.diff import _render_diff_block
 from mimir.rendering.linkify import linkify, plain_line
+from mimir.rendering.reflow import reflowable
 
 _CODE_FORMATTER = HtmlFormatter(
     noclasses=False, nobackground=True, cssclass="highlight"
@@ -323,13 +324,38 @@ def _render_block(
             context.lore_mirror_urls,
         )
 
+    def _text(lines: list[str]) -> str:
+        """Linkified text, each paragraph on its own so a reflowable one
+        can be wrapped (#989): `linkify` escapes HTML, so the span cannot
+        be added to its output afterwards. Top level only, never inside a
+        quote (decided 2026-10-30)."""
+        out: list[str] = []
+        paragraph: list[str] = []
+
+        def flush() -> None:
+            if paragraph:
+                html_text = _linkified(paragraph)
+                if depth == 0 and reflowable(paragraph):
+                    html_text = f'<span class="reflow">{html_text}</span>'
+                out.append(html_text)
+                paragraph.clear()
+
+        for line in lines:
+            if line.strip():
+                paragraph.append(line)
+            else:
+                flush()
+                out.append(line)
+        flush()
+        return "\n".join(out)
+
     if context.text_more is not None and len(block.lines) > BODY_TEXT_FOLD_LINES:
         left = len(block.lines) - BODY_TEXT_FOLD_LINES
         return (
-            f'<pre class="body-text-block">{_linkified(block.lines[:BODY_TEXT_FOLD_LINES])}</pre>'
+            f'<pre class="body-text-block">{_text(block.lines[:BODY_TEXT_FOLD_LINES])}</pre>'
             + _more_link(context, left, "lines")
         )
-    return f'<pre class="body-text-block">{_linkified(block.lines)}</pre>'
+    return f'<pre class="body-text-block">{_text(block.lines)}</pre>'
 
 
 def render_body(
