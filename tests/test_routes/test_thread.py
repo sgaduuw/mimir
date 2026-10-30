@@ -2421,9 +2421,11 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # revisions block is a render of data the page already reads, so it
 # must add none (#844 budget: +0 for both). 32 since #844 Part 3: the
 # status line reads the lifecycle row the pill already fetched, and the
-# card's own landing query is gone. 33/16 since #989: the whole thread's
-# rows are read once before the validator (`thread_rows`).
-THREAD_VIEW_STATEMENTS_200 = 33
+# card's own landing query is gone. #989 adds one statement before the
+# validator (the thread's series rows, filtered in SQL, for the digest)
+# and, on a 200 only, the whole thread's rows (`thread_rows`) for the
+# tabs and the Patches index: 34/16.
+THREAD_VIEW_STATEMENTS_200 = 34
 THREAD_VIEW_STATEMENTS_304 = 16
 
 
