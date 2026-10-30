@@ -420,7 +420,12 @@ def _advertised_urls_for(
     # The article's root IN ITS CANONICAL INBOX. Reading it from any
     # other inbox's row would be a different thread, so pairs are
     # matched explicitly rather than filtering on article_id alone.
-    root_by_pair: dict[tuple[int, int], int] = {}
+    # A row whose root is gone from the inbox (a partial `reindex
+    # --from-scratch`, a hand repair) would name a page that is not
+    # servable here; `unmaterialised_roots` condition (1), below, covers
+    # it. Pinned by
+    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
+    consolidated: dict[int, int] = {}
     for art_id, ix_id, root_id in session.execute(
         select(
             ArticleList.article_id, ArticleList.inbox_id, ArticleList.thread_root_id
@@ -431,14 +436,7 @@ def _advertised_urls_for(
         )
     ).all():
         if (art_id, ix_id) in wanted:
-            root_by_pair[(art_id, ix_id)] = root_id
-
-    # A root row whose root is gone from the inbox (a partial `reindex
-    # --from-scratch`, a hand repair) would name a page that is not
-    # servable here. `unmaterialised_roots` condition (1), below, covers
-    # roots with no row in this inbox at all. Pinned by
-    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
-    consolidated = {art_id: root_id for (art_id, _ix), root_id in root_by_pair.items()}
+            consolidated[art_id] = root_id
     root_articles = {
         a.id: a
         for a in session.execute(
