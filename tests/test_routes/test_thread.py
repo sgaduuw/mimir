@@ -2481,10 +2481,17 @@ def test_thread_view_renders_a_genuine_single_message_thread(client, tmp_path):
         "noindex": 'name="robots"' in html,
         "messages": html.count('class="thread-message"'),
         "interactionStatistic": "interactionStatistic" in posting,
+        "folded": "text-more" in html,
+        # In the rendered body, not just anywhere: the structured data and
+        # the meta description carry body text too.
+        "last line in body": lines[-1]
+        in html[html.index('class="message-body"') : html.index("</article>")],
     } == {
         "status": 200,
         "canonical": f"http://localhost{url}/t",
         "noindex": False,
         "messages": 1,
         "interactionStatistic": False,
+        "folded": False,
+        "last line in body": True,
     }
