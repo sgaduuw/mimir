@@ -31,6 +31,6 @@ Every message and thread page has a Markdown version at the same URL plus `.md`,
 
 ## Optional
 
-- [Sitemap]({{ site_base }}/sitemap.xml): the HTML pages, except single messages. The Markdown pages are not listed; add `.md` to a message or thread page URL.
-- [Message sitemap]({{ site_base }}/messages-sitemap.xml): single-message threads, and threads still being backfilled. A message in a thread is listed through its thread page.
+- [Sitemap]({{ site_base }}/sitemap.xml): the HTML pages. Every thread is listed by its thread page, a single message's included. The Markdown pages are not listed; add `.md` to a message or thread page URL.
+- [Message sitemap]({{ site_base }}/messages-sitemap.xml): the first message of threads whose thread page is not ready yet (still being backfilled).
 - [Privacy]({{ site_base }}/privacy): what is hidden and why.

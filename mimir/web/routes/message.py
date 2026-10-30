@@ -240,8 +240,8 @@ def message(
         #
         # Threading is inbox-scoped, so the target inbox's copy of the
         # conversation is a DIFFERENT node set: the root may be absent
-        # there, or the thread may be a singleton there. Each is
-        # checked against the target inbox's own rows rather than
+        # there, or this message may not be in that inbox's thread. Each
+        # is checked against the target inbox's own rows rather than
         # assumed from this inbox's. Anything unmet falls back to the
         # plain cross-post canonical.
         #
@@ -267,15 +267,14 @@ def message(
                         target_root = _article_by_message_id(session, target_root_msgid)
             in_target_thread = False
             if target_inbox is not None and target_root is not None:
-                # Its own row carries the root, and the thread is more
-                # than this message: a single-message thread has nothing
-                # to consolidate, and the message page is the RICHER of
-                # the two (subsystem header, lifecycle prose, attachments).
-                # The own-row half matters when that row names a root no
-                # longer in the inbox (a `reindex --from-scratch` leftover):
-                # `find_thread_root` falls back to the walk and
-                # `thread_is_materialised` only looks for NULL rows, but
-                # `thread_page_of` would not count this message.
+                # Its own row carries the root. A single-message thread
+                # counts too (#1003): every thread's aggregations live on
+                # its `/t`, so that is every message's canonical. This
+                # matters when the row names a root no longer in the inbox
+                # (a `reindex --from-scratch` leftover): `find_thread_root`
+                # falls back to the walk and `thread_is_materialised` only
+                # looks for NULL rows, but `thread_page_of` would not count
+                # this message.
                 in_target_thread = (
                     session.execute(
                         select(ArticleList.thread_root_id).where(
@@ -284,16 +283,6 @@ def message(
                         )
                     ).scalar_one_or_none()
                     == target_root.id
-                    and session.execute(
-                        select(ArticleList.article_id)
-                        .where(
-                            ArticleList.inbox_id == target_inbox.id,
-                            ArticleList.thread_root_id == target_root.id,
-                            ArticleList.article_id != article.id,
-                        )
-                        .limit(1)
-                    ).first()
-                    is not None
                 )
             if (
                 in_target_thread
