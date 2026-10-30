@@ -860,3 +860,35 @@ def test_a_card_cached_before_reposts_existed_still_decodes():
             reposts=[],
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("subject", "key", "version", "position", "kind"),
+    [
+        ("[PATCH v2 0/3] foo: bar", "k", "v2", 0, "cover"),
+        # A cover stored before the #212 backfill has no position.
+        ("[PATCH v2 0/3] foo: bar", "k", "v2", None, "cover"),
+        ("[PATCH v2 2/3] foo: bar", "k", "v2", 2, "patch"),
+        ("[PATCH] foo: bar", None, None, None, "patch"),
+        # A reply repeating a patch subject: ingest cleared its key and
+        # position (#820, #837).
+        ("[PATCH v2 2/3] foo: bar", None, None, None, "reply"),
+        ("Re: [PATCH v2 2/3] foo: bar", None, None, None, "reply"),
+        ("Looks good to me", None, None, None, "reply"),
+        (None, None, None, None, "reply"),
+    ],
+)
+def test_message_kind_is_the_one_patch_predicate(subject, key, version, position, kind):
+    """#989: the thread page's tabs, Patches index and counts all read
+    `message_kind`, built from the same predicates as the state card."""
+    from types import SimpleNamespace
+
+    from mimir.patch_state import message_kind
+
+    row = SimpleNamespace(
+        subject=subject,
+        patch_series_key=key,
+        patch_series_version=version,
+        patch_series_position=position,
+    )
+    assert message_kind(row) == kind
