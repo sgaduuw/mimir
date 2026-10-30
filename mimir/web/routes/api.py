@@ -12,13 +12,13 @@ from flask import Response, abort, render_template, request
 from sqlalchemy import select
 
 import mimir
-from mimir import cache, maintainer_allowlist
+from mimir import maintainer_allowlist
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
-from mimir.models import Article, ArticleFile, ArticleList
+from mimir.models import Article, ArticleList
 from mimir.rendering import render_body
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import recent_patches_touching
+from mimir.subsystems import related_patches
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _redact_trailer_address
 from mimir.web.routes._validators import allowlist_tag
@@ -86,23 +86,7 @@ def api_related_patches(inbox_name: str, article_id: int):
         ).scalar_one_or_none()
         if linked is None:
             abort(404)
-        paths = list(
-            session.execute(
-                select(ArticleFile.path).where(ArticleFile.article_id == article_id)
-            ).scalars()
-        )
-        related = (
-            cache.get_or_compute(
-                session,
-                f"msg_related:{article_id}",
-                300,
-                lambda: recent_patches_touching(
-                    session, paths, exclude_article_id=article_id, limit=5
-                ),
-            )
-            if paths
-            else []
-        )
+        related = related_patches(session, article_id)
         response = Response(
             render_template("_related_patch_list.html", related_patches=related)
         )

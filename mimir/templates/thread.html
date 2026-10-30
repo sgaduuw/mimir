@@ -80,7 +80,7 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
   <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="all">Everything <span class="tab-count">{{ tab_counts.all }}</span></button>
 </div>
 {% endif %}
-<div class="thread-messages" id="thread-messages">
+<div class="thread-messages" id="thread-messages"{% if show_tabs %} role="tabpanel" aria-label="Thread messages"{% endif %}>
 {# The Patches index (#989): the whole thread's patches, each linking the
    page and anchor that hold it. A patch of the root's series opens to
    its revisions, built by the same `_series_timeline` as its message
@@ -91,10 +91,12 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
   <ol>
   {%- for p in patch_index %}
     <li data-patch="{{ p.id }}">
+      <a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a>
       {# Closed; opening it loads the related list once (D1 b): no
-         validator can carry that list, so it is not part of this page. #}
+         validator can carry that list, so it is not part of this page.
+         Its summary is its own control, not the subject link. #}
       <details class="patch-detail" id="patch-{{ p.id }}" hx-get="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}" hx-trigger="toggle once" hx-target="find .patch-related" hx-swap="innerHTML">
-        <summary><a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a></summary>
+        <summary>{{ "Revisions and related patches" if p.id in patch_revisions else "Related patches" }}</summary>
         {% if p.id in patch_revisions %}{% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}{% endif %}
         <p><small><strong>Other recent patches touching these files</strong></small></p>
         <div class="patch-related"></div>

@@ -24,7 +24,6 @@ ROOT = Path(mimir.__file__).parent
 HELPERS = {
     ("patch_series.py", "same_series_sql"),
     ("patch_series.py", "same_series"),
-    ("patch_series.py", "in_same_series"),
     # Reads every series of a key, to cut it into series.
     ("patch_series_chains.py", "_load_key"),
 }
@@ -83,7 +82,7 @@ def test_series_key_is_compared_only_inside_the_helpers():
         for fn, line in _hits(path):
             (allowed if (rel, fn) in HELPERS else stray).append(f"{rel}:{line} {fn}")
     # Precondition: the scan sees the helpers' own spelling (one SQL,
-    # one ORM, one Python for loaded rows, and the two key reads in
-    # `_load_key`), so it cannot pass by seeing nothing.
-    assert len(allowed) == 5, allowed
+    # one ORM, and the two key reads in `_load_key`), so it cannot
+    # pass by seeing nothing.
+    assert len(allowed) == 4, allowed
     assert stray == []
