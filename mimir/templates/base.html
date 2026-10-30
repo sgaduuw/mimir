@@ -113,13 +113,25 @@
 </head>
 <body>
   <main class="container">
-    <nav>
+    {# aria-current="page" only where the link IS this page (#988). #}
+    {% macro nav_link(href) %}<a href="{{ href }}"{% if request.path == href %} aria-current="page"{% endif %}>{{ caller() }}</a>{% endmacro %}
+    <nav class="site-nav">
       <ul>
-        <li><a href="{{ url_for('web.index') }}"><strong>{{ site_name }}</strong></a></li>
+        <li>{% call nav_link(url_for('web.index')) %}<strong>{{ site_name }}</strong>{% endcall %}</li>
         {% if current_inbox %}
-        <li><a href="/{{ current_inbox }}/">{{ current_inbox }}</a></li>
-        <li><a href="/{{ current_inbox }}/today">today</a></li>
-        <li><a href="/{{ current_inbox }}/yesterday">yesterday</a></li>
+        <li>{% call nav_link('/' ~ current_inbox ~ '/') %}{{ current_inbox }}{% endcall %}</li>
+        {% endif %}
+      </ul>
+      {% if current_inbox %}
+      {# Phones show the two links above plus this toggle; the lists after it
+         open with `.nav-toggle[open] ~ ul`, the same sibling trick as the
+         subsystems menu below, and for the same reason. Wider screens hide
+         the toggle and show everything. There is one subsystems menu either
+         way, so its out-of-band refresh has a single target (#892). #}
+      <details class="nav-toggle"><summary>menu</summary></details>
+      <ul class="nav-menu">
+        <li>{% call nav_link('/' ~ current_inbox ~ '/today') %}today{% endcall %}</li>
+        <li>{% call nav_link('/' ~ current_inbox ~ '/yesterday') %}yesterday{% endcall %}</li>
         {# Tap or Enter toggles the <details> (CSS shows the sibling menu
            when it is open); hover shows the menu directly. The menu is NOT
            inside the <details>: a closed one never paints its content,
@@ -131,13 +143,12 @@
           <details class="dropdown"><summary>subsystems</summary></details>
           {{ subsystems_dd_menu(subsystem_hits, current_inbox) }}
         </li>
-        {% endif %}
       </ul>
+      {% endif %}
       <ul>
         {# The one site-wide page to browse; readers mostly arrive on a
            thread from a search engine, never seeing the front page (#891). #}
-        {% set mw_url = url_for('web.merge_window_page') %}
-        <li><small><a href="{{ mw_url }}"{% if request.path == mw_url %} aria-current="page"{% endif %}>Merge window</a></small></li>
+        <li><small>{% call nav_link(url_for('web.merge_window_page')) %}Merge window{% endcall %}</small></li>
       </ul>
     </nav>
     {% block content %}{% endblock %}

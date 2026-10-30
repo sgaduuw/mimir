@@ -11,6 +11,32 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.34.0] - 2026-10-30
+
+No migration, no backfill and no cache version bump.
+
+### Changed
+
+- Badge policy (#988). The activity chip (HOT, WARM, COOLING, STALE, DORMANT)
+  is gone from the lists ordered by recency or activity (the inbox dashboard,
+  today, yesterday, since, month and search), where every row carried the same
+  one; the thread and message headers keep it. "DORMANT no replies" now needs
+  a post at least 14 days old; a younger post with no replies has no chip.
+- The site nav fits a phone screen (#988). Below 768 px it shows the site
+  name and inbox, plus a "menu" button that opens today, yesterday,
+  subsystems and Merge window. It works without JavaScript, and every link
+  in it is at least 44 px tall. The nav link to the page you are on is
+  marked `aria-current="page"`.
+
+### Fixed
+
+- The year archive (`/<inbox>/<year>/`) is twelve rows of month, bar and
+  count instead of twelve columns whose text wrapped letter by letter (#998).
+  Months with no messages are plain text: in the current year, "not yet" for
+  the current month and later ones; everywhere else, "none". The link to the
+  next year only shows when that year has messages, and the heading is a
+  breadcrumb plus the year.
+
 ## [3.33.1] - 2026-10-30
 
 No migration, no backfill and no cache version bump.
