@@ -56,11 +56,12 @@ from mimir.threading import (
     thread_by_root_id,
     thread_is_materialised,
     thread_page_of,
+    thread_rows,
     thread_sort_key,
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import thread_summary_from
-from mimir.web.routes._validators import render_state_tag
+from mimir.web.routes._validators import render_state_tag, series_rows_tag
 from mimir.web.urls import (
     MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
@@ -250,18 +251,24 @@ def thread_view(
         cap = settings.thread_view_render_cap
         offset = (page - 1) * cap
 
+        # The whole thread's rows in page order, with series columns
+        # (#989): tabs, Patches index, each patch's page and a validator
+        # input. Indexed path only, like everything that names a page.
+        ordered_rows: list = []
         if thread_rooted:
-            # Paged: the slice is fetched, the totals are asked for
-            # separately, and the whole thread is never materialised
-            # ON THIS PATH. Scoped deliberately: `lifecycle_status_for_articles`
-            # below still runs a recursive `WITH RECURSIVE descendants`
-            # over the whole thread (scoped to this inbox), so the
-            # request as a whole does still walk it. A 5-minute cache keyed by the
-            # ETag's content part (shared by every page of the thread)
-            # amortises that; the sentence is about membership, not
-            # about the request.
-            # That is the point of the change, so do not "simplify" this
-            # by fetching everything and slicing in Python.
+            # Paged: the slice of MESSAGES is fetched, the totals are
+            # asked for separately, and no message body or ThreadNode is
+            # built for the rest of the thread ON THIS PATH. The whole
+            # thread's ROWS are read once, below, as columns only
+            # (`thread_rows`, #989). Scoped deliberately:
+            # `lifecycle_status_for_articles` below still runs a
+            # recursive `WITH RECURSIVE descendants` over the whole
+            # thread (scoped to this inbox), so the request as a whole
+            # does still walk it. A 5-minute cache keyed by the ETag's
+            # content part (shared by every page of the thread)
+            # amortises that. Do not "simplify" the slice by fetching
+            # every message and slicing in Python.
+            ordered_rows = thread_rows(session, inbox, article.id)
             agg = thread_aggregates(session, inbox, article.id)
             total_count = agg.total
             thread_max_date = agg.last_activity or article.date
@@ -357,7 +364,8 @@ def thread_view(
         content_input = (
             f"thread|{article.id}|{mimir.__version__}|{cap}|{membership_source}|"
             f"{total_count}|"
-            f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
+            f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}|"
+            f"{series_rows_tag(ordered_rows)}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"

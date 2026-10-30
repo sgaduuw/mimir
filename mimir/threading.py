@@ -531,29 +531,66 @@ def thread_by_root_id(
             ArticleList.inbox_id == inbox.id,
             ArticleList.thread_root_id == root_article_id,
         )
-        .order_by(
-            (Article.id != root_article_id),
-            # Same COALESCE as `thread_page_of`'s rank predicate. The
-            # two must agree on where dateless rows sit or a message
-            # canonicalises to a page that does not hold it.
-            #
-            # `Article.id` here is DEFENSIVE and deliberately untested:
-            # deleting it does not change behaviour on SQLite, because
-            # rows with equal dates already arrive in rowid order, which
-            # is the same order this imposes. So no fixture can
-            # distinguish it and mutation-testing reports it as a
-            # survivor. It stays because "equal keys happen to come back
-            # in id order" is a property of the current plan, not a
-            # guarantee, and the rank predicate above (which IS
-            # observable, and tested) sorts by it explicitly. The two
-            # disagreeing is the failure mode.
-            func.coalesce(Article.date, _DATE_FLOOR),
-            Article.id,
-        )
+        .order_by(*_thread_order(root_article_id))
         .offset(offset or None)
         .limit(limit)
     ).all()
     return [_node(r, None) for r in rows]
+
+
+def _thread_order(root_article_id: int) -> tuple:
+    """The thread page's order: root first, then `(date, id)`. One
+    expression for every reader that must agree with the page, so a
+    message's index in any of them is its index on the page."""
+    return (
+        (Article.id != root_article_id),
+        # Same COALESCE as `thread_page_of`'s rank predicate. The
+        # two must agree on where dateless rows sit or a message
+        # canonicalises to a page that does not hold it.
+        #
+        # `Article.id` here is DEFENSIVE and deliberately untested:
+        # deleting it does not change behaviour on SQLite, because
+        # rows with equal dates already arrive in rowid order, which
+        # is the same order this imposes. So no fixture can
+        # distinguish it and mutation-testing reports it as a
+        # survivor. It stays because "equal keys happen to come back
+        # in id order" is a property of the current plan, not a
+        # guarantee, and the rank predicate above (which IS
+        # observable, and tested) sorts by it explicitly. The two
+        # disagreeing is the failure mode.
+        func.coalesce(Article.date, _DATE_FLOOR),
+        Article.id,
+    )
+
+
+def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
+    """Every message of one thread in the page's order, with the series
+    columns `message_kind` reads (#989). The thread page reads it once,
+    before its validator, for the tabs, the Patches index, the page of
+    each patch (`index // cap + 1`, which equals `thread_page_of`) and the
+    patch-rows digest. Rows, not bodies: 14.5 ms for 12,342 messages on a
+    local synthetic database (2026-10-30), against 24.5 ms there for
+    `thread_by_root_id`, which production measured at 6 ms (2026-08-02).
+
+    Same precondition as `thread_by_root_id`: the article is its own
+    materialised root."""
+    return session.execute(
+        select(
+            Article.id,
+            Article.subject,
+            Article.date,
+            Article.patch_series_key,
+            Article.patch_series_head_id,
+            Article.patch_series_position,
+            Article.patch_series_version,
+        )
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+        )
+        .order_by(*_thread_order(root_article_id))
+    ).all()
 
 
 # The message page's window onto a thread longer than one thread-view
