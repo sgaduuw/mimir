@@ -553,7 +553,10 @@ def test_tab_colours_do_not_go_through_the_button_scoped_pico_colour():
     css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
     tab = _css_block(css, '.thread-tabs [role="tab"]')
     selected = _css_block(css, '.thread-tabs [role="tab"][aria-selected="true"]')
-    assert "var(--pico-color)" not in tab
+    for selector, body in re.findall(
+        r'(\.thread-tabs \[role="tab"\][^{]*)\{([^}]*)\}', css
+    ):
+        assert "var(--pico-color)" not in body, selector
     assert re.search(r"color:\s*var\(--pico-muted-color\)", tab)
     assert re.search(r"(?<!-)color:\s*inherit", selected)
 
