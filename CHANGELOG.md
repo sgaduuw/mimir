@@ -26,10 +26,14 @@ changes, not internal refactors. Categories: **Added**,
 - A single-message thread now has a thread page (`/t`) like every other
   thread, and that page carries its aggregations (#1003). The message page
   names it as canonical, `/sitemap.xml` lists it, IndexNow announces it,
-  and the body is shown in full there. Operators: the canonical of every
-  single-message thread changes once. `/messages-sitemap.xml` now lists
-  only threads still being backfilled, so it shrinks to almost nothing. No
-  Search Console action is needed.
+  and the body is shown in full there. Operators: search engines see
+  millions of canonical changes at once. On 2026-10-30 production had
+  2,857,252 single-message thread roots (of 6,253,896 roots, 46%, across
+  211 inboxes). Each one's message page changes its canonical to its `/t`,
+  and each URL moves from the `/messages-sitemap.xml` files to the
+  `/sitemap.xml` files, one for one. `/messages-sitemap.xml` now lists only
+  threads still being backfilled, so it is empty when no backfill is
+  running, as on 2026-10-30. No Search Console action is needed.
 
 ### Fixed
 
