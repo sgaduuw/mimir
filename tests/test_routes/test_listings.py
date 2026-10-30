@@ -114,6 +114,59 @@ def test_listings_ordered_by_activity_carry_no_activity_chip(client, frozen_cloc
         assert "badge-activity-" not in body, surface
 
 
+def test_every_dashboard_section_drops_the_activity_chip(client, frozen_clock):
+    """Pull requests, release announcements, tracker tiles and "this day
+    5 years ago" are recency lists too. The posts are old and unanswered,
+    so each would read DORMANT if the chip were shown (#988)."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList, Inbox
+
+    old = datetime(2024, 5, 1, tzinfo=UTC)
+    with SessionLocal() as s:
+        inbox = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        inbox.tracked_authors = {"Zed": "zed@example.com"}
+        years_ago = datetime.now(UTC) - timedelta(days=365 * 5)
+        for mid, subject, when in (
+            ("pull@x", "[GIT PULL] fixes for foo", old),
+            ("rel@x", "Linux 6.9", old),
+            ("track@x", "tracked subject", old),
+            ("hist@x", "five years ago", years_ago),
+        ):
+            art = Article(
+                message_id=mid,
+                subject=subject,
+                author="Zed <zed@example.com>",
+                date=when,
+                subject_normalized=subject.lower(),
+            )
+            s.add(art)
+            s.flush()
+            s.add(
+                ArticleList(
+                    article_id=art.id,
+                    inbox_id=inbox.id,
+                    epoch="0.git",
+                    commit_sha=f"{len(mid):02d}" * 20,
+                    thread_root_id=art.id,
+                )
+            )
+        s.commit()
+    body = client.get("/alpha/").get_data(as_text=True)
+    for subject in (
+        "[GIT PULL] fixes for foo",
+        "Linux 6.9",
+        "tracked subject",
+        "five years ago",
+    ):
+        assert subject in body, subject
+    assert body.count("Latest from Zed") == 1
+    assert "badge-activity-" not in body
+
+
 def test_yesterday_carries_no_activity_chip(client, frozen_clock):
     from datetime import datetime
 

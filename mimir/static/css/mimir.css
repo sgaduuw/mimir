@@ -687,6 +687,11 @@ pre.body-text-block {
   margin-bottom: 0.85rem;
 }
 
+/* An unanswered young pending patch renders the row with nothing in it (#988). */
+.msg-badges:empty {
+  display: none;
+}
+
 /* =====================================================================
    Revisions fold
    ---------------------------------------------------------------------
