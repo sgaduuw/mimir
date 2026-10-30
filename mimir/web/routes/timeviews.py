@@ -136,13 +136,20 @@ def threads_since_view(inbox_name: str, since_str: str):
 
 @bp_web.route("/<inbox_name>/<int:year>/")
 def year_archive(inbox_name: str, year: int):
-    """Year view for an inbox: 12 month cells with per-month message
-    counts, cells link to the month view."""
+    """Year view for an inbox: 12 month rows with a per-month message
+    count and a bar scaled to the busiest month. Rows with messages
+    link to the month view."""
     if year < _MIN_ARCHIVE_YEAR or year > _max_archive_year():
         abort(404)
+    now = datetime.now(UTC)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         volume = monthly_volume(session, inbox, year)
+        # An empty next year is a dead end, so only link forward when
+        # there is something there. `monthly_volume` is cached per year.
+        has_next = year + 1 <= _max_archive_year() and (
+            monthly_volume(session, inbox, year + 1).total > 0
+        )
     return render_template(
         "year.html",
         inbox_name=inbox.name,
@@ -150,7 +157,9 @@ def year_archive(inbox_name: str, year: int):
         year=year,
         volume=volume,
         prev_year=year - 1 if year - 1 >= _MIN_ARCHIVE_YEAR else None,
-        next_year=year + 1 if year + 1 <= _max_archive_year() else None,
+        next_year=year + 1 if has_next else None,
+        is_current_year=year == now.year,
+        current_month=now.month,
     )
 
 

@@ -78,8 +78,11 @@ def test_message_without_subsystems_shows_only_all_subsystems(client, tmp_path):
 
 def test_css_pins_hover_open_and_link_like_summary():
     css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    # Not in the phone menu (#988): there the panel opens in place, so a
+    # hover would shift the rows below it under the pointer.
     assert re.search(
-        r"@media \(hover: hover\)\s*\{\s*nav \.subsystems-dd:hover > ul\s*"
+        r"@media \(hover: hover\) and \(width >= 768px\)\s*\{\s*"
+        r"nav \.subsystems-dd:hover > ul\s*"
         r"\{\s*display:\s*flex;",
         css,
     )

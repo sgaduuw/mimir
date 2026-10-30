@@ -360,18 +360,29 @@ def _days_since_last_reply(
     return max(int(delta.days), 0)
 
 
-def _activity_heat(days_since_last_reply: int | None) -> tuple[str, str]:
+# A post with no replies is dormant only once it is this old: before
+# that it has simply not had time to be answered, and gets no chip.
+DORMANT_AFTER_DAYS = 14
+
+
+def _activity_heat(
+    days_since_last_reply: int | None, age_days: int | None = None
+) -> tuple[str, str]:
     """Map days-since-last-reply to (heat-class, count-label). Six
     buckets calibrated to kernel patch-review cadence:
     same-day = hot, within work-week = warm, within two work-weeks
     = cooling, then degrading on month-scale.
 
-    Returns ("dormant", "no replies") when None (no replies yet),
-    distinct from "stale" (replies have stopped). The bucket
+    Returns ("dormant", "no replies") when None (no replies yet) and
+    the post is `DORMANT_AFTER_DAYS` old or of unknown age, distinct
+    from "stale" (replies have stopped). A younger post with no
+    replies returns ("", ""): no chip (#988). The bucket
     boundaries are inclusive on the upper end."""
-    if days_since_last_reply is None:
-        return ("dormant", "no replies")
     d = days_since_last_reply
+    if d is None:
+        if age_days is None or age_days >= DORMANT_AFTER_DAYS:
+            return ("dormant", "no replies")
+        return ("", "")
     if d == 0:
         return ("hot", "today")
     if d <= 3:

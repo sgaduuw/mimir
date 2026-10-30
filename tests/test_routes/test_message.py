@@ -6,7 +6,7 @@ subject-normalized fallback grouping, and the 4-tuple URL
 identity contract)."""
 
 import re
-from datetime import UTC
+from datetime import UTC, timedelta
 from pathlib import Path
 
 import pytest
@@ -1268,8 +1268,8 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
 
 def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
     """A `[PATCH …]` subject opts the message page into the
-    badges row. With no extra inputs, the activity chip renders
-    with a `dormant` heat. Trailers/landings/series are absent.
+    badges row. With no extra inputs, a day-old post with no replies
+    has no activity chip (#988). Trailers/landings/series are absent.
     Badge redesign: `<aside class="patch-state">` replaced by
     `<div class="msg-badges">`."""
     _, url = _ingest_one_article(
@@ -1279,9 +1279,9 @@ def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
         subject="[PATCH 1/2] foo: add bar",
     )
     body = client.get(url).data.decode()
-    # Badge redesign: activity chip renders instead of the old card.
+    # Badge redesign: the badges row replaces the old card.
     assert 'class="msg-badges"' in body
-    assert 'class="badge badge-activity-' in body
+    assert "badge-activity-" not in body
     # Old card-level labels are gone.
     assert "Trailers:" not in body
     assert "Landed:" not in body
@@ -1447,8 +1447,8 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
 
 def test_patch_state_card_skips_empty_rows(client, tmp_path):
     """Badge redesign: a bare cover-letter render with no trailers,
-    no landing, no sibling revisions, and no replies renders the
-    dormant activity chip but no trailing labels. The old aside labels
+    no landing, no sibling revisions, and no replies renders no
+    trailing labels. The old aside labels
     (`Trailers:`, `Landed:`, `Series revisions:`, `Activity:`,
     `No replies`) are gone from the page; the badges row is the
     only patch-state surface. Pins the absence of the old rows."""
@@ -1464,9 +1464,69 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
     assert "Landed:" not in body
     assert "Series revisions:" not in body
     assert "Activity:" not in body
-    # Badges row renders with the dormant activity chip.
+    # Badges row renders; the cover is a day old with no replies, so it
+    # has no activity chip yet (#988).
     assert 'class="msg-badges"' in body
-    assert "badge-activity-dormant" in body
+    assert "badge-activity-" not in body
+
+
+@pytest.mark.parametrize(
+    ("age", "chip"),
+    [
+        (timedelta(minutes=5), ""),
+        (timedelta(days=13), ""),
+        (timedelta(days=14), "dormant"),
+    ],
+)
+def test_header_activity_chip_waits_for_an_unanswered_post_to_age(
+    client, tmp_path, age, chip
+):
+    """A patch with no replies gets "DORMANT no replies" on its header
+    only from 14 days; a younger one has no chip (#988)."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "unanswered@example.com", subject="[PATCH] foo: bar"
+    )
+    when = datetime.now(UTC) - age
+    with SessionLocal() as s:
+        s.get(Article, art_id).date = when
+        s.commit()
+    # The URL carries the article's year and month, so rebuild it.
+    url = f"/alpha/{when.year}/{when.month:02d}/{art_id}"
+    body = client.get(url).get_data(as_text=True)
+    assert 'class="msg-badges"' in body
+    assert re.findall(r'class="badge badge-activity-([a-z]*)"', body) == (
+        [chip] if chip else []
+    )
+
+
+def test_header_without_badges_has_no_blank_badges_row(client, tmp_path):
+    """A young, unanswered, pending patch has no activity chip and no
+    lifecycle pill. Its badges row must hold nothing, not whitespace:
+    the row's `:empty` rule hides it, whitespace would not match (#988)."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "young-pending@example.com", subject="[PATCH] foo: bar"
+    )
+    when = datetime.now(UTC) - timedelta(days=1)
+    with SessionLocal() as s:
+        s.get(Article, art_id).date = when
+        s.commit()
+    body = client.get(f"/alpha/{when.year}/{when.month:02d}/{art_id}").get_data(
+        as_text=True
+    )
+    assert "badge-activity-" not in body
+    assert "badge-lifecycle-" not in body
+    assert not re.search(r'<div class="msg-badges">\s+</div>', body)
+    assert '<div class="msg-badges"></div>' in body
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
@@ -2730,7 +2790,7 @@ def test_message_page_renders_badges_row_under_subject(client, tmp_path):
     )
     body = client.get(url).data.decode()
     assert 'class="msg-badges"' in body
-    assert 'class="badge badge-activity-' in body
+    assert "badge-activity-" not in body  # day old, no replies (#988)
 
 
 def test_message_page_no_patch_state_aside(client, tmp_path):
