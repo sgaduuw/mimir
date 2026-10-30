@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The year archive (`/<inbox>/<year>/`) is twelve rows of month, bar and
+  count instead of twelve columns whose text wrapped letter by letter (#998).
+  Months with no messages are plain text ("not yet" for the current month
+  and later ones, "none" for the rest). The link to the next year only shows
+  when that year has messages, and the heading is a breadcrumb plus the year.
+
 ## [3.33.1] - 2026-10-30
 
 No migration, no backfill and no cache version bump.
