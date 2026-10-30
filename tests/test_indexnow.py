@@ -442,9 +442,12 @@ def test_build_urls_emits_the_thread_url_for_a_multi_message_thread(client, tmp_
     assert urls[0].startswith("https://example.test/alpha/")
 
 
-def test_build_urls_keeps_the_message_url_for_a_single_message_thread(client, tmp_path):
-    """A single-message thread has nothing to consolidate, and its own
-    page is the richer one, so it stays its own URL."""
+def test_build_urls_advertises_the_thread_view_for_a_single_message_thread(
+    client, tmp_path
+):
+    """A single-message thread has a `/t` like every thread (#1003), and
+    that is what its message page names as canonical, so it is what gets
+    announced."""
     from mimir.extensions import SessionLocal
     from tests.test_routes._helpers import seed_thread_shape
 
@@ -455,8 +458,7 @@ def test_build_urls_keeps_the_message_url_for_a_single_message_thread(client, tm
         urls = indexnow.build_urls(s, ["solo@x"], base="https://example.test")
 
     assert len(urls) == 1
-    assert urls[0].endswith(f"/{art_id}")
-    assert not urls[0].endswith("/t")
+    assert urls[0].endswith(f"/{art_id}/t")
 
 
 def test_build_urls_falls_back_to_the_message_url_before_the_backfill(client, tmp_path):
@@ -534,9 +536,11 @@ def test_build_urls_respects_the_inbox_a_thread_is_multi_message_in(client, tmp_
     """The same root can head a real thread in one inbox and a
     single-message one in another, because threading is inbox-scoped.
 
-    Deciding on the root alone let a singleton inherit a sibling
-    inbox's thread URL. Every earlier test here used ONE inbox, so
-    dropping the inbox scoping entirely passed the whole suite.
+    Each pair is announced in its own inbox: deciding on the root alone
+    let one inbox's copy inherit a sibling inbox's thread URL. Every
+    earlier test here used ONE inbox, so dropping the inbox scoping
+    entirely passed the whole suite. Since #1003 both copies have a `/t`,
+    so the inbox in the URL is what this guards.
     """
     from sqlalchemy import select
 
@@ -571,19 +575,20 @@ def test_build_urls_respects_the_inbox_a_thread_is_multi_message_in(client, tmp_
         s.commit()
 
     # BOTH in one batch, which is what an ingest tick produces and
-    # what makes the bug reachable: the reply's pair contributes the
-    # "this root has replies" fact, and the root's pair must not
-    # inherit it across the inbox boundary.
+    # what makes the bug reachable: the reply's pair names alpha's
+    # thread, and the root's pair must not inherit it across the inbox
+    # boundary.
     with SessionLocal() as s:
         urls = indexnow.build_urls(s, ["ix1@x", "ix2@x"], base="")
 
     reply_id = seeded["ix2@x"][0]
     assert sorted(urls) == sorted(
-        [f"/beta/2024/01/{root_id}", f"/alpha/2024/01/{root_id}/t"]
+        [f"/beta/2024/01/{root_id}/t", f"/alpha/2024/01/{root_id}/t"]
     ), (
-        f"expected beta's singleton copy to stay a message URL and alpha's "
-        f"reply to consolidate; got {urls} (reply id {reply_id})"
+        f"expected beta's single-message copy to name beta's own thread view "
+        f"and alpha's reply alpha's; got {urls} (reply id {reply_id})"
     )
+    assert client.get(f"/beta/2024/01/{root_id}/t").status_code == 200
 
 
 def test_build_urls_skips_a_canonical_inbox_the_article_is_not_linked_to(
@@ -616,7 +621,7 @@ def test_build_urls_skips_a_canonical_inbox_the_article_is_not_linked_to(
     with SessionLocal() as s:
         urls = indexnow.build_urls(s, ["un1@x"], base="")
 
-    assert urls == [f"/alpha/2024/01/{art_id}"], urls
+    assert urls == [f"/alpha/2024/01/{art_id}/t"], urls
     assert client.get(urls[0]).status_code == 200
 
 
