@@ -86,4 +86,7 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 {% if prev_page_url %}
 <p><small><a href="{{ prev_page_url }}">Previous page</a></small></p>
 {% endif %}
+{% if show_tabs %}
+<script src="{{ url_for('static', filename='js/thread-tabs.js') }}" defer></script>
+{% endif %}
 {% endblock %}
