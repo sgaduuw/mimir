@@ -846,6 +846,50 @@ nav .subsystems-dd > ul > li:not(:only-child):last-child {
   border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
 }
 nav .subsystems-dd details[open] ~ ul { display: flex; }
-@media (hover: hover) {
+@media (hover: hover) and (width >= 768px) {
   nav .subsystems-dd:hover > ul { display: flex; }
+}
+
+/* Site nav (#988). Phones keep the site name and inbox on the first row
+   beside a "menu" toggle; the lists after the toggle stack below it once it
+   is open. 2.75rem is the 44 px touch target. Wider screens hide the toggle
+   and push Merge window to the right. Colours are Pico's. */
+@media (width < 768px) {
+  nav { flex-wrap: wrap; }
+  nav > ul:first-of-type { min-width: 0; }
+  nav > ul:first-of-type li { display: flex; align-items: center; min-width: 0; }
+  nav > ul:first-of-type li + li::before {
+    content: "/"; margin-right: 0.5rem; color: var(--pico-muted-color);
+  }
+  nav a,
+  nav summary { display: flex; align-items: center; min-height: 2.75rem; }
+  nav .nav-toggle { align-self: center; margin: 0; }
+  nav .nav-toggle > summary {
+    min-width: 2.75rem; padding: 0 0.75rem; line-height: inherit;
+    border: var(--pico-border-width) solid var(--pico-muted-border-color);
+    border-radius: var(--pico-border-radius);
+  }
+  nav .nav-toggle[open] > summary { margin-bottom: 0; }
+  nav .nav-toggle ~ ul {
+    display: none; flex: 1 0 100%; flex-direction: column; align-items: stretch;
+    margin-block: 0; margin-inline: calc(var(--pico-nav-element-spacing-horizontal) * -1);
+  }
+  nav .nav-toggle[open] ~ ul { display: flex; }
+  /* Padding equal to the link's negative margin: rows abut, targets never overlap. */
+  nav .nav-toggle ~ ul > li { padding-block: var(--pico-nav-link-spacing-vertical); }
+  /* Merge window is <small> beside the desktop row; in the list it is one row of many. */
+  nav .nav-toggle ~ ul small { font-size: inherit; }
+  /* The subsystems label lines up with the links; its panel opens in place
+     rather than over the rows below. */
+  nav .subsystems-dd details.dropdown > summary,
+  nav .subsystems-dd details.dropdown > summary:not([role]) {
+    margin: calc(var(--pico-nav-link-spacing-vertical) * -1) calc(var(--pico-nav-link-spacing-horizontal) * -1);
+    padding: 0 var(--pico-nav-link-spacing-horizontal);
+  }
+  nav .subsystems-dd > ul { position: static; min-width: 0; }
+  nav .subsystems-dd > ul li a { display: flex; align-items: center; }
+}
+@media (width >= 768px) {
+  nav .nav-toggle { display: none; }
+  nav .nav-menu { margin-right: auto; }
 }
