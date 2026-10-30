@@ -11,6 +11,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The thread page (`/t`) of a patch series has Discussion, Patches and
+  Everything tabs (#989). They only show or hide messages already on the
+  page, so every message is still on the page its canonical names; the
+  tab is kept in the URL fragment (`#patches`), and without JavaScript the
+  page shows everything as before. A thread with no replies opens on
+  Everything. The Patches tab lists every patch in the thread, linking
+  the page that holds it. Opening a patch shows other recent patches
+  touching the same files, loaded from the new `/api/<inbox>/related/<id>`
+  partial, and, for the root's own series, its revisions with links to the
+  diff against each previous revision.
+
 ## [3.35.0] - 2026-10-30
 
 ### Changed
