@@ -267,16 +267,15 @@ bp_web.add_app_template_filter(_is_previewable, "is_previewable")
 # `thread_url`: listings link the subject to the message page and the
 # reply count to the whole-thread view, so the thread view gains
 # inbound links from the pages that actually get crawled. It is the
-# canonical target for every message in a multi-message thread and the
-# URL the sitemap lists, yet before this filter the entire template set
-# contained exactly ONE link to it (`message.html`, conditional), while
-# ten templates linked message pages. A canonical target reachable only
-# through the pages that disclaim themselves is a weak structure,
-# whatever the canonical tag says.
+# canonical target for every message (single-message threads included,
+# #1003) and the URL the sitemap lists, yet before this filter the entire
+# template set contained exactly ONE link to it (`message.html`,
+# conditional), while ten templates linked message pages. A canonical
+# target reachable only through the pages that disclaim themselves is a
+# weak structure, whatever the canonical tag says.
 #
-# Callers must gate on the thread actually having replies; `/t` on a
-# single-message thread is a poorer page than the message itself and
-# deliberately not its canonical.
+# Callers link it from the reply count, so they gate on there being
+# replies; a thread with none reaches its `/t` through the message page.
 bp_web.add_app_template_filter(_thread_view_url, "thread_url")
 
 

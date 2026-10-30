@@ -1683,9 +1683,11 @@ afterthought:
   URLs only. `/messages-sitemap.xml` is a second, independent index
   (neither references the other, so it is not nesting) of each archive
   file's `messages-` sibling, with the same names and page numbers.
-  Those hold message URLs: single-message threads, and threads listed
-  by their root while the backfill has not reached them. Replies are
-  in neither, because they canonicalise to `/t`. The split costs
+  Those hold message URLs: only threads listed by their root while the
+  backfill has not reached them. Since #1003 a single-message thread is
+  in the `/t` file like any other, because its message page
+  canonicalises to its `/t`. Replies are in neither tree, because they
+  canonicalise to `/t`. The split costs
   nothing to build: `_archive_entries` tags each entry with
   its kind, which is the one `/t`-versus-message decision, and
   `_split_by_kind` cuts one build into both files. So there is one
