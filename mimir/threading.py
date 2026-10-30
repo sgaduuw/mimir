@@ -566,6 +566,19 @@ def _thread_order(root_article_id: int) -> tuple:
     )
 
 
+def _thread_select(inbox: Inbox, root_article_id: int, *columns):
+    """`columns` of the messages of one thread in one inbox: the join and
+    the two filters every thread-page reader shares."""
+    return (
+        select(*columns)
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+        )
+    )
+
+
 def thread_series_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
     """The thread's rows that carry a series column, for the thread page's
     validator (#989): their key, head, position and version decide each
@@ -576,21 +589,20 @@ def thread_series_rows(session: Session, inbox: Inbox, root_article_id: int) -> 
     A row with no series column has a kind that follows from its subject,
     which never changes."""
     return session.execute(
-        select(
+        _thread_select(
+            inbox,
+            root_article_id,
             Article.id,
             Article.patch_series_key,
             Article.patch_series_head_id,
             Article.patch_series_position,
             Article.patch_series_version,
         )
-        .join(ArticleList, ArticleList.article_id == Article.id)
         .where(
-            ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id == root_article_id,
             or_(
                 Article.patch_series_key.is_not(None),
                 Article.patch_series_position.is_not(None),
-            ),
+            )
         )
         .order_by(Article.id)
     ).all()
@@ -607,7 +619,9 @@ def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
     Same precondition as `thread_by_root_id`: the article is its own
     materialised root."""
     return session.execute(
-        select(
+        _thread_select(
+            inbox,
+            root_article_id,
             Article.id,
             Article.subject,
             Article.date,
@@ -615,13 +629,7 @@ def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
             Article.patch_series_head_id,
             Article.patch_series_position,
             Article.patch_series_version,
-        )
-        .join(ArticleList, ArticleList.article_id == Article.id)
-        .where(
-            ArticleList.inbox_id == inbox.id,
-            ArticleList.thread_root_id == root_article_id,
-        )
-        .order_by(*_thread_order(root_article_id))
+        ).order_by(*_thread_order(root_article_id))
     ).all()
 
 
