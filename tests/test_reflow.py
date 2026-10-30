@@ -135,3 +135,40 @@ def test_both_pages_mark_the_prose_and_only_phones_join_it(client, tmp_path):
         r"white-space:\s*normal;",
         css,
     )
+
+
+@pytest.mark.parametrize(
+    ("why", "lines"),
+    [
+        (
+            "a list of commits",
+            [
+                "1a2b3c4d5e6f mm/page_alloc: fix the watermark check on boost",
+                "7a8b9c0d1e2f mm/vmscan: avoid reclaim when the zone is balanced",
+                "a1b2c3d4e5f6 mm: fix it",
+            ],
+        ),
+        (
+            "a list of paths",
+            [
+                "drivers/gpu/drm/i915/display/intel_display_power_well.c",
+                "drivers/gpu/drm/i915/display/intel_display_power_map.c",
+            ],
+        ),
+        (
+            "base64",
+            [
+                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5",
+                "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphYmNkZWZnaGlqa2xtbm9wcXJzdHV2d3h5",
+                "QUJD",
+            ],
+        ),
+    ],
+)
+def test_one_item_per_line_text_is_not_prose(why, lines):
+    """Conservative by design (reflow.py docstring): text laid out one item
+    per line keeps its breaks. These are common in kernel mail (cover
+    letters, pull requests, attachments) and are not hard-wrapped prose."""
+    from mimir.rendering.reflow import reflowable
+
+    assert not reflowable(lines), why
