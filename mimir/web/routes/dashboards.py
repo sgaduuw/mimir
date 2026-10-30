@@ -229,7 +229,9 @@ def inbox_dashboard(inbox_name: str):
         lifecycle_status_by_id = lifecycle_status_for_articles(
             session, dashboard_ids, inbox.id
         )
-    base = _site_base()
+        base = _site_base()
+        # Inside the session: it asks which active threads have a `/t`.
+        page_json_ld = _json_ld_inbox(session, base, inbox, active)
     year_decades: list[tuple[int, list[int]]] = []
     if stats and stats.first_date and stats.last_date:
         year_decades = _year_decade_groups(stats.first_date.year, stats.last_date.year)
@@ -250,7 +252,7 @@ def inbox_dashboard(inbox_name: str):
         year_decades=year_decades,
         active_subsystems=active_subsystems,
         canonical_url=base + inbox_path(inbox.name),
-        page_json_ld=_json_ld_inbox(base, inbox, active),
+        page_json_ld=page_json_ld,
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
 

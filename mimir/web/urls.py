@@ -17,7 +17,7 @@ from urllib.parse import urlencode
 
 from flask import Response, abort, g, request
 from sqlalchemy import select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy.orm import Session
 
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
@@ -355,9 +355,9 @@ def _advertised_urls_for(
     """`article_id -> the URL to ADVERTISE for that article's conversation.`
 
     For surfaces that push or publish URLs to machines: the IndexNow
-    push today. Returns the thread view when the article's thread has
-    more than one message in its canonical inbox, and the plain message
-    URL otherwise.
+    push today. Returns the thread view page holding the article in its
+    canonical inbox, single-message threads included (#1003), and the
+    plain message URL when there is no thread page to name.
 
     Deliberately a DIFFERENT question from the one
     `mimir.web.routes.message` answers when it decides what a page
@@ -376,33 +376,22 @@ def _advertised_urls_for(
 
     Everything here is keyed on the `(article, inbox)` PAIR, never on
     the article or the root alone. Threading is inbox-scoped, so the
-    same root can head a five-message thread in one inbox and a
-    single-message one in another; deciding on the root alone let a
-    singleton thread inherit a sibling inbox's thread URL and advertise
-    a duplicate-content page that no other surface lists.
+    same root can head a different thread in each inbox; deciding on the
+    root alone let an article inherit a sibling inbox's thread URL and
+    advertise a page that no other surface lists.
 
-    Two cases, and only one of them needs to ask the database:
-
-    - The article is NOT its own root, so it is a reply, so the thread
-      has at least the root and this article. Multi-message by
-      construction.
-    - The article IS its own root, so the question is whether anything
-      replied to it in this inbox.
-
-    That second test uses the same `thread_parent` EXISTS that
-    `mimir.seo.sitemaps._singleton_root_ids` uses, and for the reason
-    documented there: counting POPULATED `thread_root_id` rows instead
-    undercounts mid-backfill, so a thread whose replies are not yet
-    filled reads as a singleton and gets advertised as a message URL
-    while its own page canonicalises to the thread view. Two
-    advertising surfaces must not disagree about what a singleton is.
+    There is no "has it any replies" test. A mid-backfill thread whose
+    replies are not yet rooted is caught by `unmaterialised_roots`, the
+    same predicate the sitemap and the message page use, and keeps its
+    message URL.
 
     Mid-backfill safety: an article whose own `thread_root_id` is still
     NULL falls back to its message URL, because without a root there is
     no thread URL to name. Less consolidated, never dangling.
 
-    Four queries plus one `thread_page_of` COUNT per article, all
-    on indexed columns. It was batch-independent until 3.8.0 made the
+    Five queries, two `unmaterialised_roots` statements per canonical
+    inbox, and one `thread_page_of` COUNT per article, all on indexed
+    columns. It was batch-independent until 3.8.0 made the
     advertised URL page-aware; see `indexnow.py` for the cost.
     """
     if not articles:
@@ -431,7 +420,12 @@ def _advertised_urls_for(
     # The article's root IN ITS CANONICAL INBOX. Reading it from any
     # other inbox's row would be a different thread, so pairs are
     # matched explicitly rather than filtering on article_id alone.
-    root_by_pair: dict[tuple[int, int], int] = {}
+    # A row whose root is gone from the inbox (a partial `reindex
+    # --from-scratch`, a hand repair) would name a page that is not
+    # servable here; `unmaterialised_roots` condition (1), below, covers
+    # it. Pinned by
+    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
+    consolidated: dict[int, int] = {}
     for art_id, ix_id, root_id in session.execute(
         select(
             ArticleList.article_id, ArticleList.inbox_id, ArticleList.thread_root_id
@@ -442,51 +436,6 @@ def _advertised_urls_for(
         )
     ).all():
         if (art_id, ix_id) in wanted:
-            root_by_pair[(art_id, ix_id)] = root_id
-
-    # Only pairs where the article IS the root need asking; a reply is
-    # multi-message by construction. That proposition is true and is
-    # not the one that matters: what the caller needs is "the thread
-    # page URL is servable in this inbox", and those come apart when a
-    # root row is gone from the inbox (a partial `reindex
-    # --from-scratch`, a hand repair), leaving a reply pointing at a
-    # root that is not here. What actually prevents the dangling push
-    # is `unmaterialised_roots` condition (1), which covers roots with
-    # no row in this inbox at all. Pinned by
-    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
-    root_pairs = {
-        (ix_id, root_id)
-        for (art_id, ix_id), root_id in root_by_pair.items()
-        if root_id == art_id
-    }
-    roots_with_replies: set[tuple[int, int]] = set()
-    if root_pairs:
-        child = aliased(Article)
-        child_link = aliased(ArticleList)
-        has_reply = (
-            select(child.id)
-            .join(child_link, child_link.article_id == child.id)
-            .where(
-                child.thread_parent == Article.message_id,
-                child_link.inbox_id == ArticleList.inbox_id,
-                child.id != Article.id,
-            )
-            .exists()
-        )
-        for ix_id, art_id in session.execute(
-            select(ArticleList.inbox_id, ArticleList.article_id)
-            .join(Article, Article.id == ArticleList.article_id)
-            .where(
-                ArticleList.article_id.in_({r for _ix, r in root_pairs}),
-                ArticleList.inbox_id.in_({ix for ix, _r in root_pairs}),
-                has_reply,
-            )
-        ).all():
-            roots_with_replies.add((ix_id, art_id))
-
-    consolidated: dict[int, int] = {}
-    for (art_id, ix_id), root_id in root_by_pair.items():
-        if root_id != art_id or (ix_id, root_id) in roots_with_replies:
             consolidated[art_id] = root_id
     root_articles = {
         a.id: a

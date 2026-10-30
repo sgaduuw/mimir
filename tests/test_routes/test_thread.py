@@ -226,22 +226,12 @@ def test_flat_view_link_reaches_the_message_page(
         assert f'id="m{article_id}"' in thread.get_data(as_text=True)
 
 
-def test_single_message_thread_does_not_canonicalise_to_its_thread_view(
-    client,
-    tmp_path,
-):
-    """A one-message thread has nothing to consolidate: the message
-    page already IS the whole conversation, and it is the richer of the
-    two surfaces (subsystem header, lifecycle badges, the indexable
-    lifecycle prose, attachments). Handing its authority to `/t` would
-    trade all of that away for no gain, so it keeps its own canonical.
-
-    The `/t` page still exists and renders; it is simply not the
-    canonical target."""
+def test_single_message_thread_canonicalises_to_its_thread_view(client, tmp_path):
+    """Every thread's aggregations live on its `/t` (#1003), so a
+    one-message thread's message page names that `/t`, as a reply's does."""
     _, url = _ingest_one_article(tmp_path, "alpha", "solo@example.com")
     html = client.get(url).get_data(as_text=True)
-    assert _canonical_of(html).endswith(url)
-    assert not _canonical_of(html).endswith("/t")
+    assert _canonical_of(html) == f"http://localhost{url}/t"
     assert client.get(url + "/t").status_code == 200
 
 
@@ -365,10 +355,12 @@ def test_canonical_never_points_at_a_thread_without_the_message(client, tmp_path
 
     Seeds exactly that: the reply is cross-posted to beta and pinned
     canonical there, while its root stays alpha-only. Consolidation now
-    resolves against BETA's copy of the conversation, where the reply
-    is a singleton, so the canonical is beta's message page rather than
-    any thread view. What matters is the invariant, not which URL wins:
-    it resolves, contains the message, and is terminal.
+    resolves against BETA's copy of the conversation. `_cross_post` adds
+    beta's row with no `thread_root_id`, so the column cannot rank the
+    reply there (`unmaterialised_roots` condition 1) and the canonical is
+    beta's message page rather than any thread view. What matters is the
+    invariant, not which URL wins: it resolves, contains the message, and
+    is terminal.
     """
     seeded = _seed_three_message_thread(tmp_path, "alpha")
     _, reply_url, _ = seeded["reply"]
@@ -467,7 +459,7 @@ def test_every_message_canonical_resolves_and_contains_that_message(
 
 
 def test_thread_view_carries_the_roots_patch_surfaces(client, tmp_path):
-    """Message pages in a multi-message thread canonicalise here, so
+    """Every message page in the thread canonicalises here (#1003), so
     the target must not be the poorer document.
 
     Without this the consolidation would drop exactly the lifecycle
@@ -617,12 +609,10 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     """Whatever the sitemap lists must be the page that page's own
     canonical points at.
 
-    For a single-message thread the message page is canonical (it IS
-    the whole conversation, and carries the patch surfaces `/t` omits),
-    so listing `/t` instead publishes the thinner of two self-canonical
-    near-duplicates and drops the canonical one entirely, with nothing
-    relating them. `message.py` already carries this rule; the sitemap
-    has to mirror it.
+    A single-message thread's canonical is its `/t`, like every thread's
+    (#1003), so the sitemap lists that `/t` and not the message page.
+    Listing the other would publish a URL whose own page names a
+    different canonical.
 
     Scoped to a SINGLE inbox on purpose. Across inboxes the rule is
     deliberately weaker: a cross-posted article is listed in every
@@ -1698,20 +1688,15 @@ def test_rebased_subsystem_row_below_the_max_moves_the_etag(client, tmp_path, su
     )
 
 
-def test_single_message_rule_agrees_between_message_page_and_thread_view(
+def test_a_self_parented_message_names_a_thread_view_that_holds_it_once(
     client,
     tmp_path,
 ):
-    """The two surfaces must count the same thread.
-
-    `thread.py` de-duplicates nodes (a self-referential In-Reply-To
-    makes the recursive CTE re-emit one article per level), so a
-    self-parent renders ONE message. `message.py` gates consolidation
-    on the same walk, and if it counts the UNDEDUPED rows it sees 1001
-    and consolidates onto a `/t` that shows a single message and drops
-    the message page's attachments and related surfaces, i.e. exactly
-    the trade the single-message rule exists to prevent. Unlike the
-    containment check, `len()` has no safe direction.
+    """A self-referential In-Reply-To makes the recursive CTE re-emit one
+    article per level, so `thread.py` de-duplicates nodes and renders ONE
+    message. Since #1003 a one-message thread canonicalises to its `/t`
+    too, so the claim to check is containment: the canonical names the
+    `/t`, and that page renders this message exactly once.
     """
     from tests.test_routes._helpers import seed_thread_shape
 
@@ -1723,9 +1708,7 @@ def test_single_message_rule_agrees_between_message_page_and_thread_view(
     count = rendered.count('class="thread-message"')
 
     assert count == 1
-    assert canonical.endswith(url), (
-        f"a {count}-message thread view must not be the canonical target"
-    )
+    assert canonical == f"http://localhost{url}/t"
 
 
 @pytest.mark.parametrize("listing", ["/alpha/", "/alpha/yesterday"])
@@ -1783,13 +1766,10 @@ def test_listings_link_the_reply_count_to_the_thread_view(client, tmp_path, list
 
 
 def test_single_message_threads_are_not_linked_to_their_thread_view(client, tmp_path):
-    """The other direction, and the one that keeps the link honest.
-
-    `/t` on a single-message thread is the POORER page (it drops the
-    attachments, related surfaces and lifecycle prose the message page
-    carries), which is exactly why it is deliberately not that
-    message's canonical. Advertising it from a listing would push
-    crawlers at a page the site itself declines to nominate.
+    """The listing links its reply count, so a thread with no replies has
+    no count to link. Since #1003 that `/t` is the message's canonical and
+    is reached through the message page's own thread link; whether a
+    listing row should link it too is the listing redesign's call (#991).
     """
     from tests.test_routes._helpers import _ingest_one_article
 
@@ -2473,3 +2453,45 @@ def test_thread_view_statement_budget(client, tmp_path):
         THREAD_VIEW_STATEMENTS_200,
         THREAD_VIEW_STATEMENTS_304,
     )
+
+
+def test_thread_view_renders_a_genuine_single_message_thread(client, tmp_path):
+    """#1003: a single-message thread's `/t` is its indexed page. A plain
+    singleton, not the self-cycle above: one message, self-canonical, no
+    `noindex`, no reply count in the structured data (there are no
+    replies), and the whole body rather than the first
+    `BODY_TEXT_FOLD_LINES` lines behind a "more" link, which exists to keep
+    long threads light."""
+    from mimir.rendering.body import BODY_TEXT_FOLD_LINES
+
+    lines = [f"plain line {i}" for i in range(BODY_TEXT_FOLD_LINES + 20)]
+    _, url = _ingest_one_article(
+        tmp_path, "alpha", "genuine-solo@x", body="\n".join(lines).encode()
+    )
+    r = client.get(url + "/t")
+    html = r.get_data(as_text=True)
+    posting = next(
+        g
+        for g in _json_ld_blocks(html)[0]["@graph"]
+        if g["@type"] == "DiscussionForumPosting"
+    )
+    assert {
+        "status": r.status_code,
+        "canonical": _canonical_of(html),
+        "noindex": 'name="robots"' in html,
+        "messages": html.count('class="thread-message"'),
+        "interactionStatistic": "interactionStatistic" in posting,
+        "folded": "text-more" in html,
+        # In the rendered body, not just anywhere: the structured data and
+        # the meta description carry body text too.
+        "last line in body": lines[-1]
+        in html[html.index('class="message-body"') : html.index("</article>")],
+    } == {
+        "status": 200,
+        "canonical": f"http://localhost{url}/t",
+        "noindex": False,
+        "messages": 1,
+        "interactionStatistic": False,
+        "folded": False,
+        "last line in body": True,
+    }
