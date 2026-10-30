@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_bar.html" import bar_meter %}
 {% block title %}{{ year }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}Monthly archives of the {{ inbox_name }} mailing list for {{ year }}.{% endblock %}
 {% block content %}
@@ -15,7 +16,7 @@
     {% endif %}
   </ul>
   <ul>
-    <li><small>{{ '{:,}'.format(volume.total) }} message{{ '' if volume.total == 1 else 's' }} this year</small></li>
+    <li><small>{{ '{:,}'.format(volume.total) }} message{{ '' if volume.total == 1 else 's' }} {{ 'so far this year' if is_current_year else 'in ' ~ year }}</small></li>
   </ul>
   <ul>
     {% if next_year %}
@@ -27,22 +28,23 @@
 {% if volume.total == 0 %}
 <p><em>No messages indexed for this year.</em></p>
 {% else %}
-<div class="grid">
+{% set busiest = volume.months | map(attribute=1) | max %}
+<ul class="year-rows">
   {% for month_num, count in volume.months %}
     {% if count > 0 %}
-    <article class="year-month-tile">
-      <h4 class="year-month-name">
-        <a href="/{{ inbox_name }}/{{ year }}/{{ '%02d' % month_num }}/">{{ month_names[month_num - 1] }}</a>
-      </h4>
-      <small>{{ '{:,}'.format(count) }} message{{ '' if count == 1 else 's' }}</small>
-    </article>
+    <li class="year-row">
+      <a href="/{{ inbox_name }}/{{ year }}/{{ '%02d' % month_num }}/">{{ month_names[month_num - 1] }}</a>
+      {{ bar_meter(count, busiest, '%s%% of the busiest month' % (count * 100 // busiest)) }}
+      <span class="count">{{ '{:,}'.format(count) }}</span>
+    </li>
     {% else %}
-    <article class="year-month-tile year-month-tile--empty">
-      <h4 class="year-month-name">{{ month_names[month_num - 1] }}</h4>
-      <small><em>no messages</em></small>
-    </article>
+    <li class="year-row year-row--empty">
+      <span>{{ month_names[month_num - 1] }}</span>
+      <span></span>
+      <span class="count count--none">{{ 'not yet' if is_current_year else 'none' }}</span>
+    </li>
     {% endif %}
   {% endfor %}
-</div>
+</ul>
 {% endif %}
 {% endblock %}
