@@ -93,12 +93,15 @@ def test_phone_menu_holds_the_one_target_the_partial_refreshes(client, tmp_path)
     assert oob_ids == ["subsystems-dd-menu"]
     assert re.findall(r'\bid="subsystems-dd-menu"', page) == ['id="subsystems-dd-menu"']
 
-    toggle = page.find('<details class="nav-toggle">')
-    menu = re.search(r'<ul class="nav-menu">', page)
-    assert toggle != -1, "no phone menu toggle in the nav"
-    assert menu, "no phone menu list in the nav"
-    # `.nav-toggle[open] ~ ul` opens the menu, so it must follow the toggle.
-    assert toggle < menu.start()
-    ms, me = _element_at(page, menu.start())
+    assert '<details class="nav-toggle">' in page, "no phone menu toggle in the nav"
+    # `.nav-toggle[open] ~ ul` reaches only siblings: following the toggle
+    # in document order is not enough, a wrapper would leave it unopenable.
+    menu = re.search(
+        r'<details class="nav-toggle">.*?</details>\s*(<ul class="nav-menu">)',
+        page,
+        re.DOTALL,
+    )
+    assert menu, "the menu list does not directly follow the toggle"
+    ms, me = _element_at(page, menu.start(1))
     ts, _ = _by_id(page, "subsystems-dd-menu")
     assert ms < ts < me, "the OOB target is outside the phone menu"
