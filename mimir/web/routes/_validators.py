@@ -46,11 +46,11 @@ def allowlist_tag() -> str:
 
 
 def series_rows_tag(rows) -> str:
-    """Digest of the series columns of a thread's rows (#989), for the
-    thread page's validator. `message_kind`, the Patches index and the
-    tabs read them, and `backfill-patch-series --reprocess` can rewrite
-    them without adding a message. Rows with no series column are left
-    out: their kind follows from the subject alone, which never changes."""
+    """Digest of a thread's series rows (#989, `thread_series_rows`, which
+    filters in SQL to the rows with a series column), for the thread page's
+    validator. `message_kind`, the Patches index and the tabs read those
+    columns, and `backfill-patch-series --reprocess` can rewrite them
+    without adding a message."""
     return _digest(
         repr(
             (
@@ -62,7 +62,6 @@ def series_rows_tag(rows) -> str:
             )
         )
         for r in rows
-        if r.patch_series_key is not None or r.patch_series_position is not None
     )
 
 

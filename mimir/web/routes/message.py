@@ -17,7 +17,6 @@ from sqlalchemy import exists, select
 from sqlalchemy.orm import aliased
 
 import mimir
-from mimir import cache
 from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.extensions import SessionLocal
@@ -34,7 +33,8 @@ from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import recent_patches_touching, subsystems_for_article
+from mimir.subsystems import related_patches as cached_related_patches
+from mimir.subsystems import subsystems_for_article
 from mimir.threading import (
     ThreadNode,
     dedupe_thread,
@@ -691,30 +691,9 @@ def message(
         # so a single connection covers the whole render, opening a
         # second SessionLocal here previously cost an extra connect /
         # WAL-snapshot acquire per message page.
-        touched_paths = list(
-            session.execute(
-                select(ArticleFile.path).where(ArticleFile.article_id == article.id)
-            ).scalars()
-        )
-        # `recent_patches_touching` is a `path IN (...)` join over
-        # `article_files × articles` that gets reused across every
-        # render of this article. Cache it; new ingest activity on
-        # the same paths surfaces within the 5-minute TTL.
-        related_patches = (
-            cache.get_or_compute(
-                session,
-                f"msg_related:{article.id}",
-                300,
-                lambda: recent_patches_touching(
-                    session,
-                    touched_paths,
-                    exclude_article_id=article.id,
-                    limit=5,
-                ),
-            )
-            if touched_paths
-            else []
-        )
+        # Cached by id for 5 minutes; shared with the thread page's
+        # per-patch fragment (#989).
+        related_patches = cached_related_patches(session, article.id)
         # Per-patch state card (#208): consolidates trailer roll-up,
         # mainline-landing record, patch-series timeline + per-revision
         # diff links, and thread-activity summary into one card. The

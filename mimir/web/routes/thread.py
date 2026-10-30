@@ -44,7 +44,7 @@ from mimir.models import (
     Article,
     ArticleList,
 )
-from mimir.patch_series import in_same_series, slot_rank
+from mimir.patch_series import slot_rank
 from mimir.patch_state import message_kind, patch_state_for_article, patch_timelines
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
@@ -379,8 +379,14 @@ def thread_view(
             response = Response(status=304)
             response.set_etag(etag)
             return response
-        # A 200 from here on: now the whole thread's rows (#989).
-        ordered_rows = thread_rows(session, inbox, article.id) if thread_rooted else []
+        # A 200 from here on: now the whole thread's rows (#989), for the
+        # kinds the full page and the HTMX slice render. The Markdown page
+        # renders neither.
+        ordered_rows = (
+            thread_rows(session, inbox, article.id)
+            if thread_rooted and not markdown
+            else []
+        )
 
         # One bulk read rather than one `read_message` per node: that
         # reopened the epoch's dulwich Repo every time, 31-79% of this
@@ -546,9 +552,11 @@ def thread_view(
         remaining = max(0, total_count - (offset + len(rendered_nodes)))
 
         # Tabs (#989): display only, so every message is still rendered
-        # here. Counted as the issue counts them: replies, patches,
-        # everything (a cover is in neither of the first two). No rows on
-        # the CTE fallback, so no kinds and no tabs there.
+        # here. Counted as the issue counts them ("Discussion 76 | Patches
+        # 27 | Everything 104" for 1 cover, 27 patches, 76 replies):
+        # replies, patches, everything. A cover, the root's or another
+        # posting's, is in neither of the first two; accepted in review. No
+        # rows on the CTE fallback, so no kinds and no tabs there.
         kinds = {row.id: message_kind(row) for row in ordered_rows}
         kind_counts = Counter(kinds.values())
         tab_counts = {
@@ -561,9 +569,11 @@ def thread_view(
         # page holding the patch: its index in the page-ordered rows,
         # which `thread_page_of` agrees with (pinned by a test), through
         # the one thread-page URL builder.
+        # Rendered by `thread.html` only: not for the HTMX slice, which
+        # would otherwise re-read the whole series on every "load more".
         patch_index = []
         patch_revisions: dict = {}
-        if show_tabs:
+        if show_tabs and representation == "full":
             patch_index = [
                 {
                     "id": row.id,
@@ -579,21 +589,17 @@ def thread_view(
             # Revisions inline only for the root's own series when the root
             # is a cover: exactly the rows `render_state_tag` digests, so
             # the timelines need no validator input of their own (D5).
+            # `patch_timelines` reads that series only, so a patch of
+            # another series in the thread gets no entry.
             root_row = ordered_rows[0]
             if kinds[root_row.id] == "cover":
-                in_series = [
-                    row.id
-                    for row in ordered_rows
-                    if kinds[row.id] == "patch" and in_same_series(row, root_row)
-                ]
-                if in_series:
-                    patch_revisions = patch_timelines(
-                        session,
-                        root_row.patch_series_key,
-                        root_row.patch_series_head_id,
-                        in_series,
-                        inbox.name,
-                    )
+                patch_revisions = patch_timelines(
+                    session,
+                    root_row.patch_series_key,
+                    root_row.patch_series_head_id,
+                    [p["id"] for p in patch_index],
+                    inbox.name,
+                )
 
     thread_summary = thread_summary_from(authors, thread_max_date, total_count)
     context = dict(

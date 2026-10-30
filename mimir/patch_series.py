@@ -179,14 +179,6 @@ def same_series(key: str, head_id: int | None):
     return and_(Article.patch_series_key == key, series_head() == (head_id or 0))
 
 
-def in_same_series(a, b) -> bool:
-    """`same_series` for two loaded rows (Python, not SQL): the same key
-    and the same head, NULL head as 0."""
-    return a.patch_series_key == b.patch_series_key and (
-        a.patch_series_head_id or 0
-    ) == (b.patch_series_head_id or 0)
-
-
 def same_posting(article: Article):
     """ORM condition: an `Article` was posted with `article`, meaning the
     same series and the same version string, cover and patches alike.

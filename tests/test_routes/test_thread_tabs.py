@@ -426,3 +426,107 @@ def test_the_related_fragment_is_404_outside_its_inbox(client, tmp_path):
     assert client.get(f"/api/alpha/related/{art_id}").status_code == 200
     assert client.get(f"/api/beta/related/{art_id}").status_code == 404
     assert client.get("/api/alpha/related/99999999").status_code == 404
+
+
+def test_the_htmx_slice_and_markdown_do_not_read_what_only_the_full_page_renders(
+    client, tmp_path, monkeypatch
+):
+    """The Patches index and its revisions are rendered by `thread.html`
+    only. The HTMX slice (`_thread_messages.html`) needs the kinds, not the
+    series read; the Markdown page needs neither. Each "load more" click on
+    a large series thread should not re-read the whole series."""
+    import mimir.web.routes.thread as thread_route
+
+    calls = []
+    real_timelines = thread_route.patch_timelines
+    real_rows = thread_route.thread_rows
+
+    def spy_timelines(*a, **kw):
+        calls.append("patch_timelines")
+        return real_timelines(*a, **kw)
+
+    def spy_rows(*a, **kw):
+        calls.append("thread_rows")
+        return real_rows(*a, **kw)
+
+    monkeypatch.setattr(thread_route, "patch_timelines", spy_timelines)
+    monkeypatch.setattr(thread_route, "thread_rows", spy_rows)
+    seeded = _seed_two_versions(tmp_path, 3)
+    url = seeded["c@x"][1] + "/t"
+
+    assert client.get(url).status_code == 200
+    assert calls == ["thread_rows", "patch_timelines"]  # precondition
+
+    calls.clear()
+    assert client.get(url, headers={"HX-Request": "true"}).status_code == 200
+    assert "patch_timelines" not in calls, calls
+
+    calls.clear()
+    assert client.get(url + ".md").status_code == 200
+    assert calls == [], calls
+
+
+def test_the_tabs_control_a_labelled_tabpanel(client, tmp_path):
+    """WAI-ARIA tabs pattern: the element the tabs' `aria-controls` names is
+    a `tabpanel` with an accessible name, or a screen reader announces three
+    tabs that control nothing it can name."""
+    import re
+
+    seeded, _ = _seed_series_thread(tmp_path)
+    html = client.get(seeded["cov@x"][1] + "/t").get_data(as_text=True)
+    controls = set(re.findall(r'role="tab"[^>]*aria-controls="([^"]+)"', html))
+    assert controls == {"thread-messages"}  # precondition
+    panel = re.search(r'<[^>]*\bid="thread-messages"[^>]*>', html).group(0)
+    assert 'role="tabpanel"' in panel, panel
+    assert "aria-labelledby=" in panel or "aria-label=" in panel, panel
+
+
+def test_a_patch_disclosure_s_summary_holds_no_link(client, tmp_path):
+    """A link inside `<summary>` nests one control in another: a tap on the
+    subject navigates instead of opening the revisions and related list,
+    leaving only the marker as the toggle target."""
+    import re
+
+    seeded = _seed_two_versions(tmp_path, 2)
+    html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    summaries = re.findall(
+        r'<details class="patch-detail"[^>]*>\s*<summary>(.*?)</summary>',
+        html,
+        re.DOTALL,
+    )
+    assert len(summaries) == 2  # precondition
+    for s in summaries:
+        assert "<a " not in s, s
+
+
+def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
+    """D5: inline revisions only for the root's own series, the rows the
+    validator digests. A patch of another series in the same thread keeps
+    its index row and related list, but not its timeline, even when that
+    series has two versions of it."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    seeded = _seed_two_versions(tmp_path, 2)
+    p2 = seeded["p2@x"][0]
+    with SessionLocal() as s:
+        older = (
+            s.query(Article)
+            .filter(
+                Article.patch_series_position == 2,
+                Article.patch_series_version == "v1",
+            )
+            .one()
+        )
+        # p2 and its v1 move to a series of their own.
+        for a in (older, s.get(Article, p2)):
+            a.patch_series_key = "o" * 40
+        s.commit()
+    html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    start = html.index(f'<details class="patch-detail" id="patch-{p2}"')
+    disclosure = html[start : html.index("</details>", start)]
+    assert "<summary>Related patches</summary>" in disclosure
+    assert "revisions-fold" not in disclosure
+    # Precondition: p1, in the root's series, does get its timeline.
+    p1 = seeded["p1@x"][0]
+    assert "Revisions and related patches" in html.split(f'id="patch-{p1}"')[1][:400]

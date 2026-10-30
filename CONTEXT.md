@@ -2488,8 +2488,10 @@ per-patch related list (#989) is that same list and cache key
 it is part of neither `/t` nor its validator.
 
 The thread view also carries `series_rows_tag` (#989): a digest of the
-series columns of every row in the thread, read once before the ETag
-(`threading.thread_rows`). The tabs, the Patches index and each
+thread's rows that carry a series column, filtered in SQL and read
+before the ETag (`threading.thread_series_rows`). The whole thread's
+rows (`threading.thread_rows`) are read only after the 304 check, for
+the full page and the HTMX slice. The tabs, the Patches index and each
 message's kind read those columns, and a `backfill-patch-series
 --reprocess` can rewrite them without adding a message. The per-patch
 revisions need no input of their own: they are built only for the
