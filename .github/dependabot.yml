@@ -10,6 +10,8 @@ updates:
         patterns: ["*"]
 
   # Reads pyproject.toml + uv.lock together (uv ecosystem updates both).
+  # Dependabot supports Python up to 3.14, so uv bumps are manual (#983);
+  # kept so they resume by themselves.
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
