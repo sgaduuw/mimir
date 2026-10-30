@@ -2,7 +2,10 @@
 `/<inbox>/yesterday`, `/<inbox>/since/<date>`, year and
 month archive routes, and the date-shaped 404 guards."""
 
+import re
 from datetime import UTC
+
+from freezegun import freeze_time
 
 from tests.test_routes._helpers import _title_of
 
@@ -440,3 +443,55 @@ def test_since_total_uses_the_same_window_start_as_the_threads(
         s.commit()
     body = client.get(f"/{inbox_name}/since/2000-01-01").data.decode()
     assert re.search(r"\b1 message\s*across", body), body[:600]
+
+
+# --- year archive rows (#998) ---
+
+_MONTH_HREF_RE = re.compile(r'href="(/alpha/2024/\d\d/)"')
+
+
+def _year_rows(body: str) -> list[str]:
+    return re.findall(r'<li class="year-row[^"]*">.*?</li>', body, re.DOTALL)
+
+
+def test_year_archive_is_twelve_rows(client, frozen_clock):
+    body = client.get("/alpha/2024/").data.decode()
+    assert len(_year_rows(body)) == 12
+    assert "year-month-tile" not in body
+
+
+def test_year_archive_empty_months_are_not_links(client, frozen_clock):
+    """alpha seeds Jan (2) and Mar (1) of 2024; every other month is
+    empty and must render as plain text."""
+    body = client.get("/alpha/2024/").data.decode()
+    assert _MONTH_HREF_RE.findall(body) == ["/alpha/2024/01/", "/alpha/2024/03/"]
+
+
+def test_year_archive_bar_is_proportional_to_busiest_month(client, frozen_clock):
+    body = client.get("/alpha/2024/").data.decode()
+    widths = [float(w) for w in re.findall(r'<rect[^>]*\bwidth="([\d.]+)"', body)]
+    # Jan 2 is the busiest month, Mar 1 is half of it; empty rows
+    # draw no bar.
+    assert widths == [100.0, 50.0]
+
+
+def test_year_archive_empty_month_label_follows_the_year(client):
+    """ "not yet" in the current year, "none" in a past year."""
+    with freeze_time("2024-06-15 12:00:00"):
+        current = client.get("/alpha/2024/").data.decode()
+    with freeze_time("2026-06-15 12:00:00"):
+        past = client.get("/alpha/2024/").data.decode()
+    label = lambda body: re.findall(  # noqa: E731
+        r'<span class="count count--none">([^<]*)</span>', body
+    )
+    assert label(current) == ["not yet"] * 10
+    assert label(past) == ["none"] * 10
+
+
+def test_year_archive_hides_next_year_without_data(client, frozen_clock):
+    # 2025 has no articles: no link forward from 2024 ...
+    assert 'href="/alpha/2025/"' not in client.get("/alpha/2024/").data.decode()
+    # ... but 2023 still links to 2024, which has data, and back to 2022.
+    body = client.get("/alpha/2023/").data.decode()
+    assert 'href="/alpha/2024/"' in body
+    assert 'href="/alpha/2022/"' in body

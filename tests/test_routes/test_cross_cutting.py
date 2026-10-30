@@ -46,8 +46,14 @@ def test_pages_use_external_stylesheet_not_inline_style_blocks(client):
         assert link_re.search(body), f"`{path}` missing the external mimir.css link tag"
 
 
+_INLINE_SCRIPT_RE = re.compile(
+    r"<script\b(?![^>]*\bsrc=)(?![^>]*\btype=[\"']application/ld\+json)", re.IGNORECASE
+)
+
+
 def test_pages_emit_no_inline_style_attributes(client, tmp_path):
-    """Security pass: no rendered page carries a `style="..."` attr.
+    """Security pass: no rendered page carries a `style="..."` attr or
+    an inline `<script>` block (#988).
     Inline styles would force CSP `style-src` to keep `'unsafe-inline'`,
     which widens the XSS blast radius (an attacker who finds an HTML-
     escape gap can land a `<span style="...">` payload that runs CSS
@@ -71,10 +77,22 @@ def test_pages_emit_no_inline_style_attributes(client, tmp_path):
         "/alpha/yesterday",
         "/alpha/2024/",
         "/alpha/2024/01/",
+        "/alpha/search?q=sweep",
+        "/merge-window",
         msg_url,
     ]
     for path in routes:
-        body = client.get(path).data.decode()
+        response = client.get(path)
+        assert response.status_code == 200, path
+        body = response.data.decode()
+        # An inline executable script is blocked by `script-src 'self'`
+        # just as silently as an inline style. JSON-LD (a data block,
+        # never executed) and `src=` scripts are fine.
+        inline = _INLINE_SCRIPT_RE.search(body)
+        assert inline is None, (
+            f"`{path}` carries an inline <script> block, which the CSP "
+            f"blocks:\n{inline and body[inline.start() : inline.start() + 200]}"
+        )
         assert 'style="' not in body, (
             f"`{path}` carries an inline style attribute, "
             "which forces CSP to keep `'unsafe-inline'` on "
