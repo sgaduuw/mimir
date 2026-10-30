@@ -83,9 +83,12 @@ def test_inbox_year_archive_renders_year_label(client, inbox_name):
 
 def test_year_archive_has_inbox_breadcrumb(client, inbox_name):
     body = client.get(f"/{inbox_name}/2024/").data.decode()
+    # Pico's breadcrumb: its selector is the lowercase label over `ul > li`,
+    # and anything else falls back to its plain nav, which pushes the year
+    # to the far right.
     assert (
-        f'<nav aria-label="Breadcrumb"><a href="/{inbox_name}/">{inbox_name}</a>'
-        " / 2024</nav>"
+        f'<nav aria-label="breadcrumb"><ul><li><a href="/{inbox_name}/">'
+        f"{inbox_name}</a></li><li>2024</li></ul></nav>"
     ) in body
 
 
