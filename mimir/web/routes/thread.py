@@ -58,6 +58,7 @@ from mimir.threading import (
     thread_is_materialised,
     thread_page_of,
     thread_rows,
+    thread_series_rows,
     thread_sort_key,
 )
 from mimir.web._blueprint import bp_web
@@ -252,10 +253,12 @@ def thread_view(
         cap = settings.thread_view_render_cap
         offset = (page - 1) * cap
 
-        # The whole thread's rows in page order, with series columns
-        # (#989): tabs, Patches index, each patch's page and a validator
-        # input. Indexed path only, like everything that names a page.
-        ordered_rows: list = []
+        # The thread's series rows, for the validator (#989). The whole
+        # thread's rows, which the tabs and the Patches index need, are
+        # read only on a 200, below: on the largest thread they cost
+        # 22.8 ms against 2.5 ms for these. Indexed path only, like
+        # everything that names a page.
+        series_rows: list = []
         if thread_rooted:
             # Paged: the slice of MESSAGES is fetched, the totals are
             # asked for separately, and no message body or ThreadNode is
@@ -269,7 +272,7 @@ def thread_view(
             # content part (shared by every page of the thread)
             # amortises that. Do not "simplify" the slice by fetching
             # every message and slicing in Python.
-            ordered_rows = thread_rows(session, inbox, article.id)
+            series_rows = thread_series_rows(session, inbox, article.id)
             agg = thread_aggregates(session, inbox, article.id)
             total_count = agg.total
             thread_max_date = agg.last_activity or article.date
@@ -366,7 +369,7 @@ def thread_view(
             f"thread|{article.id}|{mimir.__version__}|{cap}|{membership_source}|"
             f"{total_count}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}|"
-            f"{series_rows_tag(ordered_rows)}"
+            f"{series_rows_tag(series_rows)}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"
@@ -376,6 +379,8 @@ def thread_view(
             response = Response(status=304)
             response.set_etag(etag)
             return response
+        # A 200 from here on: now the whole thread's rows (#989).
+        ordered_rows = thread_rows(session, inbox, article.id) if thread_rooted else []
 
         # One bulk read rather than one `read_message` per node: that
         # reopened the epoch's dulwich Repo every time, 31-79% of this

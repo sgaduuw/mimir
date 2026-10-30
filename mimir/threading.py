@@ -26,7 +26,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import exists, func, literal, select, text, tuple_
+from sqlalchemy import exists, func, literal, or_, select, text, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
@@ -484,8 +484,11 @@ def thread_by_root_id(
     the materialised `article_lists.thread_root_id` instead of walking
     `thread_parent`. Measured on production 2026-08-02 against the
     largest thread in the corpus (syzbot, 12,342 messages, depth 63):
-    **6 ms here against 14,424 ms for the recursive walk**, which was
-    93% of that page's response time and was paid even on a 304.
+    6 ms here against 14,424 ms for the recursive walk, which was 93% of
+    that page's response time and was paid even on a 304. Re-measured
+    2026-10-30 on production, the whole thread with its `ThreadNode`s
+    built: 41.4 ms (median of 5, warm cache), so the 6 ms is stale; the
+    page reads one slice of it, never the whole thread.
 
     Two differences from `get_thread`, both deliberate:
 
@@ -563,14 +566,43 @@ def _thread_order(root_article_id: int) -> tuple:
     )
 
 
+def thread_series_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
+    """The thread's rows that carry a series column, for the thread page's
+    validator (#989): their key, head, position and version decide each
+    message's kind, and a reprocess can rewrite them without adding a
+    message. Filtered in SQL, so a 304 does not read the whole thread:
+    2.5 ms against 22.8 ms for `thread_rows` on the 12,342-message syzbot
+    thread, which has no such rows (production, 2026-10-30, median of 5).
+    A row with no series column has a kind that follows from its subject,
+    which never changes."""
+    return session.execute(
+        select(
+            Article.id,
+            Article.patch_series_key,
+            Article.patch_series_head_id,
+            Article.patch_series_position,
+            Article.patch_series_version,
+        )
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+            or_(
+                Article.patch_series_key.is_not(None),
+                Article.patch_series_position.is_not(None),
+            ),
+        )
+        .order_by(Article.id)
+    ).all()
+
+
 def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
     """Every message of one thread in the page's order, with the series
-    columns `message_kind` reads (#989). The thread page reads it once,
-    before its validator, for the tabs, the Patches index, the page of
-    each patch (`index // cap + 1`, which equals `thread_page_of`) and the
-    patch-rows digest. Rows, not bodies: 14.5 ms for 12,342 messages on a
-    local synthetic database (2026-10-30), against 24.5 ms there for
-    `thread_by_root_id`, which production measured at 6 ms (2026-08-02).
+    columns `message_kind` reads (#989): the tabs, the Patches index and
+    the page of each patch (`index // cap + 1`, which equals
+    `thread_page_of`). Only after the validator, on a 200: 22.8 ms for
+    the 12,342-message syzbot thread on production (2026-10-30, median of
+    5, warm cache), too much for every 304.
 
     Same precondition as `thread_by_root_id`: the article is its own
     materialised root."""
