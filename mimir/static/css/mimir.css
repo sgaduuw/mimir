@@ -13,7 +13,7 @@
   --mimir-accent: light-dark(#b07400, #ffbf00);
 }
 
-/* Bar meter (_bar.html): width lives on the SVG rect, colour here. */
+/* Bar meter (year.html): width lives on the SVG rect, colour here. */
 .bar-meter { display: block; width: 100%; height: 0.5rem; color: var(--mimir-accent); }
 
 /* Count column: right-aligned so the digits line up down a list. */
