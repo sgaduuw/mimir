@@ -78,9 +78,14 @@ def test_inbox_year_archive_renders_year_label(client, inbox_name):
     body = client.get(f"/{inbox_name}/2024/").data.decode()
     # Page title block lifts the year into <title>.
     assert "<title>2024 | " in body
-    # The h2 heading carries the "archive · 2024" pattern (template-
-    # stable across nested <small>/<em> wrappers around the year).
-    assert "archive · 2024" in body
+    assert "<h1>2024</h1>" in body
+
+
+def test_year_archive_has_inbox_breadcrumb(client, inbox_name):
+    body = client.get(f"/{inbox_name}/2024/").data.decode()
+    crumb = re.search(r'<nav aria-label="Breadcrumb">(.*?)</nav>', body, re.DOTALL)
+    assert crumb is not None
+    assert f'<a href="/{inbox_name}/">{inbox_name}</a> / 2024' in crumb.group(1)
 
 
 def test_inbox_month_archive_renders_month_label(client, inbox_name):
@@ -476,7 +481,8 @@ def test_year_archive_bar_is_proportional_to_busiest_month(client, frozen_clock)
 
 
 def test_year_archive_empty_month_label_follows_the_month(client):
-    """ "not yet" in the current year, "none" in a past year."""
+    """ "not yet" for the current month and later ones, "none" for every
+    other empty month, in any year."""
     with freeze_time("2024-06-15 12:00:00"):
         current = client.get("/alpha/2024/").data.decode()
     with freeze_time("2026-06-15 12:00:00"):

@@ -16,16 +16,15 @@ changes, not internal refactors. Categories: **Added**,
 - Design tokens for the UI redesign (#988): `--mimir-ink`, `--mimir-muted`,
   `--mimir-hairline`, `--mimir-link` and `--mimir-accent` as `light-dark()`
   pairs, a bar meter macro (`_bar.html`) and a right-aligned count column
-  class. Tests now fail on any inline `<script>` block as well as any
-  `style=` attribute, across more pages.
+  class.
 
 ### Fixed
 
 - The year archive (`/<inbox>/<year>/`) is twelve rows of month, bar and
   count instead of twelve columns whose text wrapped letter by letter (#998).
-  Months with no messages are plain text ("not yet" for the current month and
-  later ones, "none" for the rest), and the link to the next year only shows when that year has
-  messages.
+  Months with no messages are plain text ("not yet" for the current month
+  and later ones, "none" for the rest). The link to the next year only shows
+  when that year has messages, and the heading is a breadcrumb plus the year.
 
 ## [3.33.1] - 2026-10-30
 

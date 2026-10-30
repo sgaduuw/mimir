@@ -559,7 +559,7 @@ pre.body-text-block {
    row holds together down to 320 px. Rows are at least 44 px tall. */
 .year-rows {
   list-style: none;
-  max-width: 56rem;
+  max-width: 900px;
   margin: 0 auto;
   padding: 0;
 }
