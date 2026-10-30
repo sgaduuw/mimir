@@ -225,3 +225,161 @@ def test_the_tabs_script_loads_only_where_there_are_tabs(client, tmp_path):
         r'\.thread-message:not\(\[data-kind="patch"\]\):not\(\[data-root\]\)\s*\{[^}]*display:\s*none',
         css,
     )
+
+
+def _seed_two_versions(tmp_path, n: int):
+    """v1 of an n-patch series in its own thread, then v2 in a thread of
+    its own with one reply, so each v2 patch has a revisions timeline (v1,
+    v2) with a diff link. One repository, so every body (and so every
+    series diff) can be read. Returns the map for the v2 thread; its
+    message ids are `c@x`, `p<i>@x` and `r@x`."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import seed_thread_shape
+
+    key = "w" * 40
+    patches = range(1, n + 1)
+    edges = (
+        [("c1@x", None)]
+        + [(f"q{i}@x", "c1@x") for i in patches]
+        + [("c@x", None)]
+        + [(f"p{i}@x", "c@x") for i in patches]
+        + [("r@x", "p1@x")]
+    )
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    with SessionLocal() as s:
+        for mid, (aid, _url) in seeded.items():
+            if mid == "r@x":
+                continue
+            version = "v1" if mid in {"c1@x"} | {f"q{i}@x" for i in patches} else "v2"
+            pos = 0 if mid.startswith("c") else int(mid[1:].split("@")[0])
+            a = s.get(Article, aid)
+            a.subject = f"[PATCH {version} {pos}/{n}] foo: part {pos}"
+            a.patch_series_key = key
+            a.patch_series_version = version
+            a.patch_series_position = pos
+        s.commit()
+    return {m: seeded[m] for m in ["c@x", "r@x", *(f"p{i}@x" for i in patches)]}
+
+
+def test_the_patches_index_links_each_patch_to_the_page_that_renders_it(
+    client, tmp_path, monkeypatch
+):
+    """Rows cover the whole thread; each links to the page and anchor that
+    hold the patch, checked by fetching that page, not by recomputing it."""
+    import re
+
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_two_versions(tmp_path, 3)
+    html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    index = html.split('class="patch-index"')[1].split("</section>")[0]
+    links = dict(
+        re.findall(r'data-patch="(\d+)".*?<a href="([^"]+)"', index, re.DOTALL)
+    )
+    patches = {str(seeded[f"p{i}@x"][0]) for i in (1, 2, 3)}
+    assert set(links) == patches
+    pages = {link.split("#")[0] for link in links.values()}
+    assert len(pages) > 1  # precondition: the patches span pages
+    for aid, link in links.items():
+        path, anchor = link.split("#")
+        assert anchor == f"m{aid}"
+        page = client.get(path).get_data(as_text=True)
+        assert f'id="m{aid}"' in page, f"{link} does not render {aid}"
+
+
+def _timeline(html: str, start: int) -> str:
+    """The `<ol class="revisions-timeline">` of the first revisions fold
+    at or after `start`."""
+    rest = html[start:]
+    i = rest.index('class="revisions-timeline"')
+    return rest[i : rest.index("</ol>", i)]
+
+
+def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_path):
+    """Each in-series patch's revisions on `/t` are byte-identical to the
+    ones its own message page renders (one builder, `_series_timeline`),
+    and every diff link resolves. Per-position diffs are not in the series
+    diff sitemap (covers only), so the message page is the reference."""
+    import html as htmllib
+    import re
+
+    seeded = _seed_two_versions(tmp_path, 3)
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    checked = 0
+    for i in (1, 2, 3):
+        aid, url = seeded[f"p{i}@x"]
+        start = page.find(f'<details class="patch-detail" id="patch-{aid}"')
+        assert start != -1, f"no disclosure for p{i}"
+        on_t = _timeline(page, start)
+        msg = client.get(url).get_data(as_text=True)
+        assert on_t == _timeline(msg, msg.index('class="revisions-fold"'))
+        diffs = re.findall(r'href="([^"]*/series/[^"]*)"', on_t)
+        assert len(diffs) == 1, diffs  # precondition: v1 to v2
+        assert client.get(htmllib.unescape(diffs[0])).status_code == 200
+        checked += 1
+    assert checked == 3
+
+
+def test_the_disclosures_cost_the_same_statements_for_any_series_size(client, tmp_path):
+    """One batched read for every patch's revisions (count executions):
+    a 3-patch and a 30-patch series run the same number of statements.
+    Holds while the series stays under `selectinload`'s 500-row batch."""
+    from sqlalchemy import delete, event
+
+    from mimir.extensions import SessionLocal, engine
+    from mimir.models import CacheEntry
+
+    counts = {}
+    for n in (3, 30):
+        (tmp_path / str(n)).mkdir()
+        seeded = _seed_two_versions(tmp_path / str(n), n)
+        with SessionLocal() as s:
+            s.execute(delete(CacheEntry))
+            s.commit()
+        seen = []
+
+        def grab(*a, seen=seen):
+            seen.append(a[2])
+
+        event.listen(engine, "before_cursor_execute", grab)
+        try:
+            html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+        finally:
+            event.remove(engine, "before_cursor_execute", grab)
+        assert html.count('class="patch-detail"') == n  # precondition
+        counts[n] = len(seen)
+    assert counts[3] == counts[30], counts
+
+
+def test_a_change_to_another_revision_moves_the_etag_and_the_disclosure(
+    client, tmp_path
+):
+    """The disclosures need no validator input of their own because, for a
+    cover root, `render_state_tag` digests every position of its series
+    (D5). A reprocess that renumbers v1 of a patch, in another thread, must
+    move this page's ETag and show in that patch's timeline."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    seeded = _seed_two_versions(tmp_path, 2)
+    url = seeded["c@x"][1] + "/t"
+    before = client.get(url)  # primes the caches
+    p1 = seeded["p1@x"][0]
+    with SessionLocal() as s:
+        older = (
+            s.query(Article)
+            .filter(
+                Article.patch_series_position == 1,
+                Article.patch_series_version == "v1",
+            )
+            .one()
+        )
+        older.patch_series_version = "v0"
+        s.commit()
+    after = client.get(url)
+    assert after.headers["ETag"] != before.headers["ETag"]
+    html = after.get_data(as_text=True)
+    start = html.index(f'<details class="patch-detail" id="patch-{p1}"')
+    assert ">v0<" in _timeline(html, start)

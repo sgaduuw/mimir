@@ -1860,6 +1860,23 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
         f"the sitemap advertises {page1}"
     )
 
+    # 5. The Patches index (#989). Its row for a patch links the page that
+    # holds it, plus the anchor: the same bytes as the advertised page.
+    # Making `m3` a patch adds the index; no page or canonical moves.
+    with SessionLocal() as s:
+        patch = s.get(Article, reply_id)
+        patch.subject = "[PATCH 1/1] foo: the fourth message"
+        patch.patch_series_key = "i" * 40
+        patch.patch_series_position = 1
+        s.commit()
+    page = client.get(page1.replace("http://localhost", "")).get_data(as_text=True)
+    index = page.split('class="patch-index"')[1].split("</section>")[0]
+    row = re.search(rf'data-patch="{reply_id}".*?<a href="([^"]+)"', index, re.DOTALL)
+    assert row, "no index row for the patch"
+    assert row.group(1) == holder.replace("http://localhost", "") + f"#m{reply_id}", (
+        f"the Patches index links {row.group(1)}, the sitemap advertises {holder}"
+    )
+
 
 def test_sitemap_index_coarsens_small_years_and_preserves_months(
     client, tmp_path, monkeypatch

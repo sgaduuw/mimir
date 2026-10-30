@@ -81,6 +81,29 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 </div>
 {% endif %}
 <div class="thread-messages" id="thread-messages">
+{# The Patches index (#989): the whole thread's patches, each linking the
+   page and anchor that hold it. A patch of the root's series opens to
+   its revisions, built by the same `_series_timeline` as its message
+   page's fold, so the diff links are server-rendered (#846). CSS shows
+   the index on the Patches tab, and always without JS. #}
+{% if patch_index %}
+<section class="patch-index" aria-label="Patches in this thread">
+  <ol>
+  {%- for p in patch_index %}
+    <li data-patch="{{ p.id }}">
+    {%- if p.id in patch_revisions %}
+      <details class="patch-detail" id="patch-{{ p.id }}">
+        <summary><a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a></summary>
+        {% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}
+      </details>
+    {%- else %}
+      <a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a>
+    {%- endif %}
+    </li>
+  {%- endfor %}
+  </ol>
+</section>
+{% endif %}
 {% include "_thread_messages.html" %}
 </div>
 {% if prev_page_url %}
