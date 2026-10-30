@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Badge policy (#988). The activity chip (HOT, WARM, COOLING, STALE, DORMANT)
+  is gone from the lists ordered by recency or activity (the inbox dashboard,
+  today, yesterday, since, month and search), where every row carried the same
+  one; the thread and message headers keep it. "DORMANT no replies" now needs
+  a post at least 14 days old, so a message minutes old reads HOT. The status
+  sentence on a patch's page spells the review count out ("2 reviews, 2 by
+  maintainers"); the chips keep `: 2 (2M)`. Cache namespace bumped to 5, so
+  every cached row refills once after the deploy.
+
 ### Fixed
 
 - The year archive (`/<inbox>/<year>/`) is twelve rows of month, bar and

@@ -504,6 +504,13 @@ def _status_line_filter(status) -> str:
     precedence (LANDED > SUPERSEDED > QUEUED > REVIEWED > PENDING)."""
     if status is None:
         return ""
+    sentence = _status_sentence(status)
+    if sentence and status.count_words:
+        sentence += f" {status.count_words}."
+    return sentence
+
+
+def _status_sentence(status) -> str:
     state = status.state
     commit = f" as {status.commit_sha[:12]}" if status.commit_sha else ""
     if status.committed_at:

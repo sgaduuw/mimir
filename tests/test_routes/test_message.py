@@ -1464,9 +1464,11 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
     assert "Landed:" not in body
     assert "Series revisions:" not in body
     assert "Activity:" not in body
-    # Badges row renders with the dormant activity chip.
+    # Badges row renders with the activity chip. The cover is minutes
+    # old, so it is not dormant (#988).
     assert 'class="msg-badges"' in body
-    assert "badge-activity-dormant" in body
+    assert 'class="badge badge-activity-' in body
+    assert "badge-activity-dormant" not in body
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):
