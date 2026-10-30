@@ -841,7 +841,7 @@ nav .subsystems-dd > ul > li:not(:only-child):last-child {
   border-top: var(--pico-border-width) solid var(--pico-muted-border-color);
 }
 nav .subsystems-dd details[open] ~ ul { display: flex; }
-@media (hover: hover) {
+@media (hover: hover) and (width >= 768px) {
   nav .subsystems-dd:hover > ul { display: flex; }
 }
 
@@ -871,7 +871,9 @@ nav .subsystems-dd details[open] ~ ul { display: flex; }
   }
   nav .nav-toggle[open] ~ ul { display: flex; }
   /* Padding equal to the link's negative margin: rows abut, targets never overlap. */
-  nav .nav-toggle ~ ul li { padding-block: var(--pico-nav-link-spacing-vertical); }
+  nav .nav-toggle ~ ul > li { padding-block: var(--pico-nav-link-spacing-vertical); }
+  /* Merge window is <small> beside the desktop row; in the list it is one row of many. */
+  nav .nav-toggle ~ ul small { font-size: inherit; }
   /* The subsystems label lines up with the links; its panel opens in place
      rather than over the rows below. */
   nav .subsystems-dd details.dropdown > summary,
