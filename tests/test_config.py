@@ -1,6 +1,6 @@
 """Validation contracts on `mimir.config.Settings`.
 
-The module-level `settings = Settings()` instance is built at import
+The module-level `settings = Settings(_env_file=None)` instance is built at import
 time, so a misconfigured `.env` fails the app before it can serve a
 request, which is the right posture for a long-running service. The
 constraint that protects production from accidentally shipping a
@@ -27,7 +27,7 @@ def test_settings_rejects_short_secret_key():
     just throws, so the import-time failure is what protects the
     deploy from a weak session-signing key."""
     with pytest.raises(ValidationError) as exc_info:
-        Settings(secret_key="short")
+        Settings(_env_file=None, secret_key="short")
     # The error must specifically reference the length constraint;
     # a generic raise would mean some other validator caught it,
     # not the one we care about.
@@ -40,20 +40,22 @@ def test_settings_accepts_exactly_min_length_secret_key():
     """The boundary: 16 chars is fine, 15 isn't. Pin the exact
     threshold so a regression that bumped `min_length` to 17 (or
     dropped it to 8) gets caught."""
-    s = Settings(secret_key="a" * 16)
+    s = Settings(_env_file=None, secret_key="a" * 16)
     assert s.secret_key == "a" * 16
 
     with pytest.raises(ValidationError):
-        Settings(secret_key="a" * 15)
+        Settings(_env_file=None, secret_key="a" * 15)
 
 
 def test_settings_rejects_render_cap_below_one():
     """`thread_view_render_cap` decides thread page URLs, so a value
     below 1 must fail at startup rather than be clamped at each of
     its call sites (#612)."""
-    assert Settings(thread_view_render_cap=1).thread_view_render_cap == 1
+    assert (
+        Settings(_env_file=None, thread_view_render_cap=1).thread_view_render_cap == 1
+    )
     with pytest.raises(ValidationError) as exc_info:
-        Settings(thread_view_render_cap=0)
+        Settings(_env_file=None, thread_view_render_cap=0)
     assert "thread_view_render_cap" in str(exc_info.value)
 
 
@@ -66,7 +68,7 @@ def test_settings_trees_seeds_curated_defaults_on_fresh_deploy(monkeypatch):
     monkeypatch.setenv("SECRET_KEY", "x" * 32)
     from mimir.config import Settings
 
-    s = Settings()
+    s = Settings(_env_file=None)
     assert set(s.trees.keys()) == {
         "linus",
         "linux-next",
@@ -97,27 +99,27 @@ def test_settings_trees_env_override_wins(monkeypatch):
     monkeypatch.setenv("TREES__bcachefs__PATH", "trees/bcachefs.git")
     from mimir.config import Settings
 
-    s = Settings()
+    s = Settings(_env_file=None)
     assert set(s.trees.keys()) == {"bcachefs"}
 
 
 def test_settings_has_broker_read_pool_size_default():
     """Default to os.cpu_count() so the pool sizes itself to the host by
     default. Operators override via BROKER_READ_POOL_SIZE."""
-    s = Settings(secret_key="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, secret_key="test-secret-key-not-real-12345678")
     assert s.broker_read_pool_size == (os.cpu_count() or 4)
 
 
 def test_settings_has_broker_writer_queue_depth_default():
     """Default 256 absorbs ~2-3 s of burst at typical write rates per the
     Phase 1 spec. Operators override via BROKER_WRITER_QUEUE_DEPTH."""
-    s = Settings(secret_key="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, secret_key="test-secret-key-not-real-12345678")
     assert s.broker_writer_queue_depth == 256
 
 
 def test_settings_broker_writer_queue_depth_env_override(monkeypatch):
     monkeypatch.setenv("BROKER_WRITER_QUEUE_DEPTH", "1024")
-    s = Settings(secret_key="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, secret_key="test-secret-key-not-real-12345678")
     assert s.broker_writer_queue_depth == 1024
 
 
@@ -126,7 +128,7 @@ def test_settings_has_mainline_commit_batch_size_default():
     size. Operators tune via MAINLINE_COMMIT_BATCH_SIZE."""
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.mainline_commit_batch_size == 100
 
 
@@ -134,7 +136,7 @@ def test_settings_mainline_commit_batch_size_env_override(monkeypatch):
     monkeypatch.setenv("MAINLINE_COMMIT_BATCH_SIZE", "50")
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.mainline_commit_batch_size == 50
 
 
@@ -143,7 +145,7 @@ def test_settings_has_ingest_batch_flush_seconds_default():
     Operators tune via INGEST_BATCH_FLUSH_SECONDS."""
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.ingest_batch_flush_seconds == 0.5
 
 
@@ -151,7 +153,7 @@ def test_settings_ingest_batch_flush_seconds_env_override(monkeypatch):
     monkeypatch.setenv("INGEST_BATCH_FLUSH_SECONDS", "2.5")
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.ingest_batch_flush_seconds == 2.5
 
 
@@ -161,7 +163,7 @@ def test_settings_has_related_discussions_window_days_default():
     recall and cold-compute cost (#71)."""
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_window_days == 365
 
 
@@ -169,7 +171,7 @@ def test_settings_related_discussions_window_days_env_override(monkeypatch):
     monkeypatch.setenv("RELATED_DISCUSSIONS_WINDOW_DAYS", "90")
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_window_days == 90
 
 
@@ -180,7 +182,7 @@ def test_settings_has_related_discussions_bot_senders_default():
     bot-authored roots (#71 follow-up)."""
     from mimir.config import Settings
 
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_bot_senders == [
         "syzkaller.appspotmail.com",
         "lkp@intel.com",
@@ -196,7 +198,7 @@ def test_settings_related_discussions_bot_senders_env_override(monkeypatch):
     monkeypatch.setenv(
         "RELATED_DISCUSSIONS_BOT_SENDERS", json.dumps(["a@x.test", "b@y.test"])
     )
-    s = Settings(SECRET_KEY="test-secret-key-not-real-12345678")
+    s = Settings(_env_file=None, SECRET_KEY="test-secret-key-not-real-12345678")
     assert s.related_discussions_bot_senders == ["a@x.test", "b@y.test"]
 
 
@@ -223,7 +225,7 @@ def test_settings_refuses_a_non_slug_inbox_key(name):
     and the broker refuses a non-slug name on the wire (#738), so a bad
     key must stop boot rather than stop ingest later (#747)."""
     with pytest.raises(ValidationError) as excinfo:
-        Settings(secret_key="x" * 32, inboxes=_inbox(name))
+        Settings(_env_file=None, secret_key="x" * 32, inboxes=_inbox(name))
     assert _refused_key(excinfo.value) == name
 
 
@@ -240,11 +242,28 @@ def test_settings_refuses_a_non_slug_inbox_key_from_nested_env(monkeypatch):
         "https://lore.kernel.org/linux-arm-kernel",
     )
     with pytest.raises(ValidationError) as excinfo:
-        Settings()
+        Settings(_env_file=None)
     assert _refused_key(excinfo.value) == "linux_arm_kernel"
 
 
 def test_settings_accepts_slug_inbox_keys():
-    assert set(Settings(secret_key="x" * 32).inboxes) == {"lkml", "linux-fsdevel"}
-    s = Settings(secret_key="x" * 32, inboxes=_inbox("linux-arm-kernel"))
+    assert set(Settings(_env_file=None, secret_key="x" * 32).inboxes) == {
+        "lkml",
+        "linux-fsdevel",
+    }
+    s = Settings(
+        _env_file=None, secret_key="x" * 32, inboxes=_inbox("linux-arm-kernel")
+    )
     assert set(s.inboxes) == {"linux-arm-kernel"}
+
+
+def test_warm_cache_fast_every_reads_only_the_scheduler_variable(monkeypatch):
+    """WARM_CACHE_EVERY is the one cadence name (scheduler.sh reads only
+    it). WARM_CACHE_FAST_EVERY must not move the setting (#1006)."""
+    from mimir.config import Settings
+
+    monkeypatch.setenv("WARM_CACHE_FAST_EVERY", "7")
+    monkeypatch.delenv("WARM_CACHE_EVERY", raising=False)
+    assert Settings(_env_file=None, secret_key="x" * 32).warm_cache_fast_every == 60
+    monkeypatch.setenv("WARM_CACHE_EVERY", "9")
+    assert Settings(_env_file=None, secret_key="x" * 32).warm_cache_fast_every == 9
