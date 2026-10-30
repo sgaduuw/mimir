@@ -921,3 +921,9 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .thread-messages[data-tab="discussion"] .thread-message[data-kind="patch"]:not([data-root]) { display: none; }
 .thread-messages[data-tab="patches"] .thread-message:not([data-kind="patch"]):not([data-root]) { display: none; }
 .tab-empty { color: var(--pico-muted-color); }
+/* The Patches index shows on the Patches tab, and always without JS. */
+.thread-messages[data-tab="discussion"] .patch-index,
+.thread-messages[data-tab="all"] .patch-index { display: none; }
+.patch-index ol { padding-left: 0; list-style: none; }
+.patch-index li { padding: 0.25rem 0; border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color); }
+.patch-index a { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }

@@ -1424,11 +1424,12 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
     from tests.test_routes._helpers import seed_thread_shape
 
     _label, prepare, mutate = case
-    if surface != "message" and _label == "series_head":
-        # The head is spelled only in the revisions fold's diff links,
-        # which the thread view does not render; its ETag still moves
-        # (shared `render_state_tag`), checked by the matrix above.
-        pytest.skip("the thread view renders no diff link")
+    if surface == "thread_md" and _label == "series_head":
+        # The head is spelled only in the revisions fold's diff links. The
+        # HTML thread view renders that fold (#844), the Markdown one does
+        # not; its ETag still moves (shared `render_state_tag`), checked by
+        # the matrix above.
+        pytest.skip("the Markdown thread page renders no diff link")
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
