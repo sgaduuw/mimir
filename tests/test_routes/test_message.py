@@ -1470,19 +1470,12 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
     assert "badge-activity-" not in body
 
 
-@pytest.mark.parametrize(
-    ("age", "chip"),
-    [
-        (timedelta(minutes=5), ""),
-        (timedelta(days=13), ""),
-        (timedelta(days=14), "dormant"),
-    ],
-)
-def test_header_activity_chip_waits_for_an_unanswered_post_to_age(
-    client, tmp_path, age, chip
-):
-    """A patch with no replies gets "DORMANT no replies" on its header
-    only from 14 days; a younger one has no chip (#988)."""
+def test_header_activity_chip_waits_for_an_unanswered_post_to_age(client, tmp_path):
+    """A patch with no replies gets "DORMANT no replies" on its header at
+    14 days (#988). The 0/13/14-day boundary is pinned on the heat itself,
+    `test_activity_heat_without_replies_is_dormant_only_once_old`; this is
+    the one header-level check."""
+    age, chip = timedelta(days=14), "dormant"
     from datetime import datetime
 
     from mimir.extensions import SessionLocal

@@ -647,12 +647,14 @@ def _bulk_uncached(
         last_at = coerce_dt(thread_dates.get(row.id))
         article_at = coerce_dt(row.article_date)
         days: int | None
-        age_days = max(0, (now - _aware_utc(article_at)).days) if article_at else None
-        if last_at is None or article_at is None:
+        article_at_aware = _aware_utc(article_at) if article_at else None
+        # A future-dated post has a negative age, which is under
+        # `DORMANT_AFTER_DAYS` like a fresh one: the same result, no clamp.
+        age_days = (now - article_at_aware).days if article_at_aware else None
+        if last_at is None or article_at_aware is None:
             days = None
         else:
             last_at_aware = _aware_utc(last_at)
-            article_at_aware = _aware_utc(article_at)
             if last_at_aware <= article_at_aware:
                 days = None
             else:
