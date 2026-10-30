@@ -70,8 +70,48 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
   </small>
 </p>
 
+{# Display-only tabs (#989): every message stays in the HTML, so each is
+   still on the page its canonical names. `hidden` until thread-tabs.js
+   runs; without JS the reader sees everything. Counts are whole-thread. #}
+{% if show_tabs %}
+<div class="thread-tabs" role="tablist" aria-label="Show messages" hidden data-replies="{{ tab_counts.discussion }}">
+  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="discussion">Discussion <span class="tab-count">{{ tab_counts.discussion }}</span></button>
+  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="patches">Patches <span class="tab-count">{{ tab_counts.patches }}</span></button>
+  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="all">Everything <span class="tab-count">{{ tab_counts.all }}</span></button>
+</div>
+{% endif %}
+<div class="thread-messages" id="thread-messages"{% if show_tabs %} role="tabpanel" aria-label="Thread messages"{% endif %}>
+{# The Patches index (#989): the whole thread's patches, each linking the
+   page and anchor that hold it. A patch of the root's series opens to
+   its revisions, built by the same `_series_timeline` as its message
+   page's fold, so the diff links are server-rendered (#846). CSS shows
+   the index on the Patches tab, and always without JS. #}
+{% if patch_index %}
+<section class="patch-index" aria-label="Patches in this thread">
+  <ol>
+  {%- for p in patch_index %}
+    <li data-patch="{{ p.id }}">
+      <a href="{{ p.href }}">{{ p.subject or '(no subject)' }}</a>
+      {# Closed; opening it loads the related list once (D1 b): no
+         validator can carry that list, so it is not part of this page.
+         Its summary is its own control, not the subject link. #}
+      <details class="patch-detail" id="patch-{{ p.id }}" hx-get="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}" hx-trigger="toggle once" hx-target="find .patch-related" hx-swap="innerHTML">
+        <summary>{{ "Revisions and related patches" if p.id in patch_revisions else "Related patches" }}</summary>
+        {% if p.id in patch_revisions %}{% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}{% endif %}
+        <p><small><strong>Other recent patches touching these files</strong></small></p>
+        <div class="patch-related"></div>
+      </details>
+    </li>
+  {%- endfor %}
+  </ol>
+</section>
+{% endif %}
 {% include "_thread_messages.html" %}
+</div>
 {% if prev_page_url %}
 <p><small><a href="{{ prev_page_url }}">Previous page</a></small></p>
+{% endif %}
+{% if show_tabs %}
+<script src="{{ url_for('static', filename='js/thread-tabs.js') }}" defer></script>
 {% endif %}
 {% endblock %}
