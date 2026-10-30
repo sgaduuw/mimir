@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.34.0] - 2026-10-30
+
+No migration, no backfill and no cache version bump.
+
 ### Changed
 
 - Badge policy (#988). The activity chip (HOT, WARM, COOLING, STALE, DORMANT)
@@ -32,11 +36,6 @@ changes, not internal refactors. Categories: **Added**,
   the current month and later ones; everywhere else, "none". The link to the
   next year only shows when that year has messages, and the heading is a
   breadcrumb plus the year.
-- The phone layout of the site nav no longer reaches other navigation on a
-  page (#988): the merge window's subsystem list is one wrapped line again
-  instead of one link per line, and the month archive no longer shows a "/"
-  between its "prev" and "up" links. The year archive's breadcrumb now reads
-  "inbox / year" on one line instead of pushing the year to the far right.
 
 ## [3.33.1] - 2026-10-30
 
