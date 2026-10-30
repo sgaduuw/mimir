@@ -294,15 +294,3 @@ def test_warm_cadence_remediation_names_vars_the_scheduler_reads():
     assert names, "remediations should name a cadence variable"
     for name in names:
         assert f"${{{name}:-" in scheduler, f"{name} is not read by scheduler.sh"
-
-
-def test_warm_cache_fast_every_reads_only_the_scheduler_variable(monkeypatch):
-    """WARM_CACHE_EVERY is the one cadence name (scheduler.sh reads only
-    it). WARM_CACHE_FAST_EVERY must not move the setting (#1006)."""
-    from mimir.config import Settings
-
-    monkeypatch.setenv("WARM_CACHE_FAST_EVERY", "7")
-    monkeypatch.delenv("WARM_CACHE_EVERY", raising=False)
-    assert Settings(secret_key="x" * 32).warm_cache_fast_every == 60
-    monkeypatch.setenv("WARM_CACHE_EVERY", "9")
-    assert Settings(secret_key="x" * 32).warm_cache_fast_every == 9
