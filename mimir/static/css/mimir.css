@@ -6,18 +6,10 @@
 
 
 /* --- Design tokens (#987, #988) ---
-   light-dark() pairs, like the Pygments classes below. Where Pico has
-   the variable, the token aliases it (its muted, border and primary
-   values already pass 4.5:1 against its own backgrounds in both modes);
-   only ink and the bar fill are new. Dark values come from Pico's dark
-   palette. */
+   Muted, border and link colours are Pico's own variables; only the bar
+   fill is new. */
 :root {
-  --mimir-ink: light-dark(#1b1d22, #e0e3e7);
-  --mimir-muted: var(--pico-muted-color);
-  --mimir-hairline: var(--pico-muted-border-color);
-  --mimir-link: var(--pico-primary);
-  --mimir-link-hover: var(--pico-primary-hover);
-  /* Bar fill: a graphic, so 3:1 is the bar, not 4.5:1. */
+  /* A graphic, so it needs 3:1 against the page, not 4.5:1. */
   --mimir-accent: light-dark(#b07400, #ffbf00);
 }
 
@@ -30,7 +22,7 @@
   font-variant-numeric: tabular-nums;
   font-weight: 700;
 }
-.count--none { font-weight: 400; color: var(--mimir-muted); }
+.count--none { font-weight: 400; color: var(--pico-muted-color); }
 
 
 /* --- Pygments diff classes (from base.html) --- */
@@ -558,7 +550,6 @@ pre.body-text-block {
    counts never wrap; the bar column takes whatever width is left, so the
    row holds together down to 320 px. Rows are at least 44 px tall. */
 .year-rows {
-  list-style: none;
   max-width: 900px;
   margin: 0 auto;
   padding: 0;
@@ -572,11 +563,11 @@ pre.body-text-block {
   min-height: 2.75rem;
   margin: 0;
   padding: 0;
-  border-bottom: 1px solid var(--mimir-hairline);
+  border-bottom: 1px solid var(--pico-muted-border-color);
   white-space: nowrap;
 }
 .year-row a { display: flex; align-items: center; min-height: 2.75rem; }
-.year-row--empty { color: var(--mimir-muted); }
+.year-row--empty { color: var(--pico-muted-color); }
 
 /* =====================================================================
    Badge primitive

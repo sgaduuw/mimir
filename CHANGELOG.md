@@ -11,13 +11,6 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
-### Changed
-
-- Design tokens for the UI redesign (#988): `--mimir-ink`, `--mimir-muted`,
-  `--mimir-hairline`, `--mimir-link` and `--mimir-accent` as `light-dark()`
-  pairs, a bar meter macro (`_bar.html`) and a right-aligned count column
-  class.
-
 ### Fixed
 
 - The year archive (`/<inbox>/<year>/`) is twelve rows of month, bar and

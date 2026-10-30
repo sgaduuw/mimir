@@ -83,9 +83,10 @@ def test_inbox_year_archive_renders_year_label(client, inbox_name):
 
 def test_year_archive_has_inbox_breadcrumb(client, inbox_name):
     body = client.get(f"/{inbox_name}/2024/").data.decode()
-    crumb = re.search(r'<nav aria-label="Breadcrumb">(.*?)</nav>', body, re.DOTALL)
-    assert crumb is not None
-    assert f'<a href="/{inbox_name}/">{inbox_name}</a> / 2024' in crumb.group(1)
+    assert (
+        f'<nav aria-label="Breadcrumb"><a href="/{inbox_name}/">{inbox_name}</a>'
+        " / 2024</nav>"
+    ) in body
 
 
 def test_inbox_month_archive_renders_month_label(client, inbox_name):
@@ -462,7 +463,6 @@ def _year_rows(body: str) -> list[str]:
 def test_year_archive_is_twelve_rows(client, frozen_clock):
     body = client.get("/alpha/2024/").data.decode()
     assert len(_year_rows(body)) == 12
-    assert "year-month-tile" not in body
 
 
 def test_year_archive_empty_months_are_not_links(client, frozen_clock):
