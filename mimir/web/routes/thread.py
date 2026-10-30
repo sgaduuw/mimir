@@ -561,7 +561,6 @@ def thread_view(
         tab_counts = {
             "discussion": kind_counts["reply"],
             "patches": kind_counts["patch"],
-            "all": total_count,
         }
         show_tabs = total_count > 1 and kind_counts["patch"] > 0
         # The Patches index covers the whole thread. Each row links the
