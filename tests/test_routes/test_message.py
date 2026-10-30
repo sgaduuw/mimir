@@ -2570,9 +2570,9 @@ def test_message_page_etag_follows_target_inbox_thread_canonical(client, tmp_pat
     """#656 case 1: the canonical is built from the CANONICAL inbox's
     copy of the thread, while the thread date in the ETag comes from the
     requested inbox. A change only in the target inbox's thread (here the
-    root gets filed there, so the reply stops being a singleton) moves
-    the canonical to the thread page and leaves the requested inbox's
-    thread untouched."""
+    root gets filed there, so the root the reply's row names becomes
+    present) moves the canonical to the thread page and leaves the
+    requested inbox's thread untouched."""
     from sqlalchemy import delete, select
 
     from mimir.extensions import SessionLocal
@@ -2608,7 +2608,8 @@ def test_message_page_etag_follows_target_inbox_thread_canonical(client, tmp_pat
 
     first = client.get(reply_url)
     assert first.status_code == 200
-    # Precondition: a singleton in beta, so the message URL, not a page.
+    # Precondition: the reply's beta row names a root not yet filed in
+    # beta, so the own-row check fails: the message URL, not a page.
     assert "/beta/" in _canonical_href(first)
     assert "/t" not in _canonical_href(first)
 

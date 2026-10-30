@@ -11,6 +11,21 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- A single-message thread's message page now names its thread page (`/t`)
+  as canonical, like every other thread's (#1003). `/sitemap.xml`,
+  IndexNow, the inbox page's structured data and the message page's
+  thread link point at that page too, and it shows the whole message
+  body. Operators: search engines see millions of canonical changes at
+  once. On 2026-10-30 production had 2,857,252 single-message thread roots
+  (of 6,253,896 roots, 46%, across 211 inboxes). Each one's message page
+  changes its canonical to its `/t`, and each URL moves from the
+  `/messages-sitemap.xml` files to the `/sitemap.xml` files, one for one.
+  `/messages-sitemap.xml` now lists only threads still being backfilled,
+  so it is empty when no backfill is running, as on 2026-10-30. No Search
+  Console action is needed.
+
 ## [3.34.0] - 2026-10-30
 
 No migration, no backfill and no cache version bump.
@@ -27,17 +42,6 @@ No migration, no backfill and no cache version bump.
   subsystems and Merge window. It works without JavaScript, and every link
   in it is at least 44 px tall. The nav link to the page you are on is
   marked `aria-current="page"`.
-- A single-message thread now has a thread page (`/t`) like every other
-  thread, and that page carries its aggregations (#1003). The message page
-  names it as canonical, `/sitemap.xml` lists it, IndexNow announces it,
-  and the body is shown in full there. Operators: search engines see
-  millions of canonical changes at once. On 2026-10-30 production had
-  2,857,252 single-message thread roots (of 6,253,896 roots, 46%, across
-  211 inboxes). Each one's message page changes its canonical to its `/t`,
-  and each URL moves from the `/messages-sitemap.xml` files to the
-  `/sitemap.xml` files, one for one. `/messages-sitemap.xml` now lists only
-  threads still being backfilled, so it is empty when no backfill is
-  running, as on 2026-10-30. No Search Console action is needed.
 
 ### Fixed
 

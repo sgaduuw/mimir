@@ -355,10 +355,12 @@ def test_canonical_never_points_at_a_thread_without_the_message(client, tmp_path
 
     Seeds exactly that: the reply is cross-posted to beta and pinned
     canonical there, while its root stays alpha-only. Consolidation now
-    resolves against BETA's copy of the conversation, where the reply
-    is a singleton, so the canonical is beta's message page rather than
-    any thread view. What matters is the invariant, not which URL wins:
-    it resolves, contains the message, and is terminal.
+    resolves against BETA's copy of the conversation. `_cross_post` adds
+    beta's row with no `thread_root_id`, so the column cannot rank the
+    reply there (`unmaterialised_roots` condition 1) and the canonical is
+    beta's message page rather than any thread view. What matters is the
+    invariant, not which URL wins: it resolves, contains the message, and
+    is terminal.
     """
     seeded = _seed_three_message_thread(tmp_path, "alpha")
     _, reply_url, _ = seeded["reply"]
@@ -607,12 +609,10 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     """Whatever the sitemap lists must be the page that page's own
     canonical points at.
 
-    For a single-message thread the message page is canonical (it IS
-    the whole conversation, and carries the patch surfaces `/t` omits),
-    so listing `/t` instead publishes the thinner of two self-canonical
-    near-duplicates and drops the canonical one entirely, with nothing
-    relating them. `message.py` already carries this rule; the sitemap
-    has to mirror it.
+    A single-message thread's canonical is its `/t`, like every thread's
+    (#1003), so the sitemap lists that `/t` and not the message page.
+    Listing the other would publish a URL whose own page names a
+    different canonical.
 
     Scoped to a SINGLE inbox on purpose. Across inboxes the rule is
     deliberately weaker: a cross-posted article is listed in every

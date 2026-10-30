@@ -99,7 +99,7 @@ def dedupe_thread(nodes: list) -> list:
     once per level up to MAX_DEPTH. The thread view and the message
     page must count the SAME thread: the view renders the deduped list,
     so a message page counting the raw one would report 1001 messages
-    (and window a thread it should render whole) where the view shows 1.
+    where the view shows 1.
     """
     seen: set[int] = set()
     out = []

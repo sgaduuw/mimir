@@ -574,8 +574,8 @@ def _active_thread(article_id, *, reply_count, subject="A thread"):
 
 def test_inbox_json_ld_item_list_points_at_thread_views(client):
     """The `ItemList` on `/<inbox>/` claims to be the active
-    DISCUSSIONS, so a discussion with replies must point at the thread
-    view rather than at its root message.
+    DISCUSSIONS, so every discussion points at its thread view rather
+    than at its root message, a single-message one included (#1003).
 
     Pointing at the root message put structured data handed to Google
     at odds with the page it names, which disclaims itself via
@@ -719,10 +719,10 @@ def test_thread_lastmod_understates_rather_than_overstates_mid_backfill(
     the MEMBERSHIP SOURCE: rewrite membership from the materialised
     column to a `thread_parent` walk and this is what fails, because
     such a walk would count the unbackfilled reply. That matters
-    because the sibling `_singleton_root_ids` deliberately uses the
-    `thread_parent` form, so "make these two consistent" is a plausible
-    future edit, and it would silently change what a mid-backfill
-    sitemap advertises.
+    because the old `_singleton_root_ids` (removed in #1003) used the
+    `thread_parent` form, so "make them consistent" was a plausible
+    edit, and it would silently change what a mid-backfill sitemap
+    advertises.
 
     The safety direction it documents is real: `<lastmod>` can only
     DELAY a re-crawl, never pin one, so understating costs freshness
