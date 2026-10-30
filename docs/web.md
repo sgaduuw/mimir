@@ -76,6 +76,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
+| `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
 
 Unsupported maintainer addresses remain visible as text without profile links.
 Unknown or unsupported profile addresses return 404.

@@ -26,7 +26,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import exists, func, literal, select, text, tuple_
+from sqlalchemy import exists, func, literal, or_, select, text, tuple_
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
@@ -484,8 +484,11 @@ def thread_by_root_id(
     the materialised `article_lists.thread_root_id` instead of walking
     `thread_parent`. Measured on production 2026-08-02 against the
     largest thread in the corpus (syzbot, 12,342 messages, depth 63):
-    **6 ms here against 14,424 ms for the recursive walk**, which was
-    93% of that page's response time and was paid even on a 304.
+    6 ms here against 14,424 ms for the recursive walk, which was 93% of
+    that page's response time and was paid even on a 304. Re-measured
+    2026-10-30 on production, the whole thread with its `ThreadNode`s
+    built: 41.4 ms (median of 5, warm cache), so the 6 ms is stale; the
+    page reads one slice of it, never the whole thread.
 
     Two differences from `get_thread`, both deliberate:
 
@@ -531,29 +534,95 @@ def thread_by_root_id(
             ArticleList.inbox_id == inbox.id,
             ArticleList.thread_root_id == root_article_id,
         )
-        .order_by(
-            (Article.id != root_article_id),
-            # Same COALESCE as `thread_page_of`'s rank predicate. The
-            # two must agree on where dateless rows sit or a message
-            # canonicalises to a page that does not hold it.
-            #
-            # `Article.id` here is DEFENSIVE and deliberately untested:
-            # deleting it does not change behaviour on SQLite, because
-            # rows with equal dates already arrive in rowid order, which
-            # is the same order this imposes. So no fixture can
-            # distinguish it and mutation-testing reports it as a
-            # survivor. It stays because "equal keys happen to come back
-            # in id order" is a property of the current plan, not a
-            # guarantee, and the rank predicate above (which IS
-            # observable, and tested) sorts by it explicitly. The two
-            # disagreeing is the failure mode.
-            func.coalesce(Article.date, _DATE_FLOOR),
-            Article.id,
-        )
+        .order_by(*_thread_order(root_article_id))
         .offset(offset or None)
         .limit(limit)
     ).all()
     return [_node(r, None) for r in rows]
+
+
+def _thread_order(root_article_id: int) -> tuple:
+    """The thread page's order: root first, then `(date, id)`. One
+    expression for every reader that must agree with the page, so a
+    message's index in any of them is its index on the page."""
+    return (
+        (Article.id != root_article_id),
+        # Same COALESCE as `thread_page_of`'s rank predicate. The
+        # two must agree on where dateless rows sit or a message
+        # canonicalises to a page that does not hold it.
+        #
+        # `Article.id` here is DEFENSIVE and deliberately untested:
+        # deleting it does not change behaviour on SQLite, because
+        # rows with equal dates already arrive in rowid order, which
+        # is the same order this imposes. So no fixture can
+        # distinguish it and mutation-testing reports it as a
+        # survivor. It stays because "equal keys happen to come back
+        # in id order" is a property of the current plan, not a
+        # guarantee, and the rank predicate above (which IS
+        # observable, and tested) sorts by it explicitly. The two
+        # disagreeing is the failure mode.
+        func.coalesce(Article.date, _DATE_FLOOR),
+        Article.id,
+    )
+
+
+def thread_series_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
+    """The thread's rows that carry a series column, for the thread page's
+    validator (#989): their key, head, position and version decide each
+    message's kind, and a reprocess can rewrite them without adding a
+    message. Filtered in SQL, so a 304 does not read the whole thread:
+    2.5 ms against 22.8 ms for `thread_rows` on the 12,342-message syzbot
+    thread, which has no such rows (production, 2026-10-30, median of 5).
+    A row with no series column has a kind that follows from its subject,
+    which never changes."""
+    return session.execute(
+        select(
+            Article.id,
+            Article.patch_series_key,
+            Article.patch_series_head_id,
+            Article.patch_series_position,
+            Article.patch_series_version,
+        )
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+            or_(
+                Article.patch_series_key.is_not(None),
+                Article.patch_series_position.is_not(None),
+            ),
+        )
+        .order_by(Article.id)
+    ).all()
+
+
+def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
+    """Every message of one thread in the page's order, with the series
+    columns `message_kind` reads (#989): the tabs, the Patches index and
+    the page of each patch (`index // cap + 1`, which equals
+    `thread_page_of`). Only after the validator, on a 200: 22.8 ms for
+    the 12,342-message syzbot thread on production (2026-10-30, median of
+    5, warm cache), too much for every 304.
+
+    Same precondition as `thread_by_root_id`: the article is its own
+    materialised root."""
+    return session.execute(
+        select(
+            Article.id,
+            Article.subject,
+            Article.date,
+            Article.patch_series_key,
+            Article.patch_series_head_id,
+            Article.patch_series_position,
+            Article.patch_series_version,
+        )
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .where(
+            ArticleList.inbox_id == inbox.id,
+            ArticleList.thread_root_id == root_article_id,
+        )
+        .order_by(*_thread_order(root_article_id))
+    ).all()
 
 
 # The message page's window onto a thread longer than one thread-view

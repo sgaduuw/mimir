@@ -45,6 +45,26 @@ def allowlist_tag() -> str:
     return _digest(settings.email_allowlist)
 
 
+def series_rows_tag(rows) -> str:
+    """Digest of a thread's series rows (#989, `thread_series_rows`, which
+    filters in SQL to the rows with a series column), for the thread page's
+    validator. `message_kind`, the Patches index and the tabs read those
+    columns, and `backfill-patch-series --reprocess` can rewrite them
+    without adding a message."""
+    return _digest(
+        repr(
+            (
+                r.id,
+                r.patch_series_key,
+                r.patch_series_head_id,
+                r.patch_series_position,
+                r.patch_series_version,
+            )
+        )
+        for r in rows
+    )
+
+
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     """Everything a page renders ABOUT `article_id` that no message
     carries and no thread-shape signal covers.

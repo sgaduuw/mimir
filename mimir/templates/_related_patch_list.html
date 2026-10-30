@@ -1,0 +1,16 @@
+{# "Other recent patches touching these files": the message page's list,
+   and the thread page's per-patch fragment (#989) from
+   `/api/<inbox>/related/<id>`. One markup for both. #}
+{% if related_patches %}
+<ul class="related-patch-list">
+  {% for p in related_patches %}
+  <li>
+    <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
+    <small>&middot; {{ p.author|safe_from }}
+      &middot; {{ p.date.strftime('%Y-%m-%d') if p.date else '' }}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p><small>No other recent patches touch these files.</small></p>
+{% endif %}
