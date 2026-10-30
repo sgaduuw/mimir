@@ -195,3 +195,33 @@ def test_the_htmx_slice_carries_each_message_s_kind(client, tmp_path, monkeypatc
     by_id = {aid: mid for mid, (aid, _) in seeded.items()}
     for aid, tag in tags.items():
         assert f'data-kind="{kinds[by_id[aid]]}"' in tag, tag
+
+
+def test_the_tabs_script_loads_only_where_there_are_tabs(client, tmp_path):
+    """A static, deferred file (CSP: no inline script), only on a thread
+    page that renders the tablist. CSS does the hiding, keyed on the
+    container's `data-tab`, so appended messages follow without JS work."""
+    import re
+    from pathlib import Path
+
+    import mimir
+    from tests.test_routes._helpers import _ingest_one_article
+
+    seeded, _ = _seed_series_thread(tmp_path)
+    tag = re.compile(r'<script src="/static/js/thread-tabs\.js" defer></script>')
+    assert tag.search(client.get(seeded["cov@x"][1] + "/t").get_data(as_text=True))
+    (tmp_path / "solo").mkdir()
+    _, solo = _ingest_one_article(tmp_path / "solo", "alpha", "solo-js@x")
+    for url in (solo, solo + "/t"):
+        assert "thread-tabs.js" not in client.get(url).get_data(as_text=True), url
+    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    assert re.search(
+        r'\.thread-messages\[data-tab="discussion"\] '
+        r'\.thread-message\[data-kind="patch"\]:not\(\[data-root\]\)\s*\{[^}]*display:\s*none',
+        css,
+    )
+    assert re.search(
+        r'\.thread-messages\[data-tab="patches"\] '
+        r'\.thread-message:not\(\[data-kind="patch"\]\):not\(\[data-root\]\)\s*\{[^}]*display:\s*none',
+        css,
+    )

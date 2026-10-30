@@ -899,3 +899,25 @@ nav .subsystems-dd details[open] ~ ul { display: flex; }
 /* Pico styles a breadcrumb only as `nav[aria-label=breadcrumb]` over
    `ul > li`; its default divider is ">". */
 nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
+
+/* Thread tabs (#989). thread-tabs.js sets data-tab on the message
+   container; these rules hide what that tab does not show, so messages
+   an HTMX append brings in follow without script work. The root shows in
+   every tab. Underline tabs per #987; 2.75rem is the 44 px touch target. */
+.thread-tabs {
+  display: flex; gap: 0.25rem; margin: 1rem 0;
+  border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color);
+}
+.thread-tabs [role="tab"] {
+  width: auto; min-height: 2.75rem; margin: 0 0 -1px; padding: 0.5rem 0.75rem;
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: none; box-shadow: none; color: var(--pico-color); font-weight: 400;
+}
+.thread-tabs [role="tab"][aria-selected="true"] {
+  border-bottom-color: var(--mimir-accent); font-weight: 600;
+}
+.thread-tabs [role="tab"]:focus-visible { outline: 2px solid var(--pico-primary-focus); }
+.thread-tabs .tab-count { color: var(--pico-muted-color); font-variant-numeric: tabular-nums; }
+.thread-messages[data-tab="discussion"] .thread-message[data-kind="patch"]:not([data-root]) { display: none; }
+.thread-messages[data-tab="patches"] .thread-message:not([data-kind="patch"]):not([data-root]) { display: none; }
+.tab-empty { color: var(--pico-muted-color); }
