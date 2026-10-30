@@ -1424,11 +1424,12 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
     from tests.test_routes._helpers import seed_thread_shape
 
     _label, prepare, mutate = case
-    if surface != "message" and _label == "series_head":
-        # The head is spelled only in the revisions fold's diff links,
-        # which the thread view does not render; its ETag still moves
-        # (shared `render_state_tag`), checked by the matrix above.
-        pytest.skip("the thread view renders no diff link")
+    if surface == "thread_md" and _label == "series_head":
+        # The head is spelled only in the revisions fold's diff links. The
+        # HTML thread view renders that fold (#844), the Markdown one does
+        # not; its ETag still moves (shared `render_state_tag`), checked by
+        # the matrix above.
+        pytest.skip("the Markdown thread page renders no diff link")
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
@@ -2420,9 +2421,12 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # revisions block is a render of data the page already reads, so it
 # must add none (#844 budget: +0 for both). 32 since #844 Part 3: the
 # status line reads the lifecycle row the pill already fetched, and the
-# card's own landing query is gone.
-THREAD_VIEW_STATEMENTS_200 = 32
-THREAD_VIEW_STATEMENTS_304 = 15
+# card's own landing query is gone. #989 adds one statement before the
+# validator (the thread's series rows, filtered in SQL, for the digest)
+# and, on a 200 only, the whole thread's rows (`thread_rows`) for the
+# tabs and the Patches index: 34/16.
+THREAD_VIEW_STATEMENTS_200 = 34
+THREAD_VIEW_STATEMENTS_304 = 16
 
 
 def test_thread_view_statement_budget(client, tmp_path):

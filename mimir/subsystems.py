@@ -527,6 +527,29 @@ class RelatedPatch(BaseModel):
 cache.register("RelatedPatch", RelatedPatch)
 
 
+def related_patches(session: Session, article_id: int) -> list[RelatedPatch]:
+    """ "Other recent patches touching these files" for one article: its
+    own paths through `recent_patches_touching`, cached by id for 300 s
+    (`msg_related:{id}`). One helper for the message page and the thread
+    page's fragment (#989). Cached by id and not validated, a documented
+    exception (CONTEXT.md): the list follows other threads' activity."""
+    paths = list(
+        session.execute(
+            select(ArticleFile.path).where(ArticleFile.article_id == article_id)
+        ).scalars()
+    )
+    if not paths:
+        return []
+    return cache.get_or_compute(
+        session,
+        f"msg_related:{article_id}",
+        300,
+        lambda: recent_patches_touching(
+            session, paths, exclude_article_id=article_id, limit=5
+        ),
+    )
+
+
 def recent_patches_touching(
     session: Session,
     paths: list[str],

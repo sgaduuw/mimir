@@ -24,6 +24,7 @@ the single predicate every one of those surfaces consults.
 
 import hashlib
 import logging
+from collections import Counter
 
 from flask import (
     Response,
@@ -44,7 +45,7 @@ from mimir.models import (
     ArticleList,
 )
 from mimir.patch_series import slot_rank
-from mimir.patch_state import patch_state_for_article
+from mimir.patch_state import message_kind, patch_state_for_article, patch_timelines
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
 from mimir.subsystems import article_paths, is_cover, subsystems_for_paths
@@ -56,11 +57,13 @@ from mimir.threading import (
     thread_by_root_id,
     thread_is_materialised,
     thread_page_of,
+    thread_rows,
+    thread_series_rows,
     thread_sort_key,
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import thread_summary_from
-from mimir.web.routes._validators import render_state_tag
+from mimir.web.routes._validators import render_state_tag, series_rows_tag
 from mimir.web.urls import (
     MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
@@ -250,18 +253,26 @@ def thread_view(
         cap = settings.thread_view_render_cap
         offset = (page - 1) * cap
 
+        # The thread's series rows, for the validator (#989). The whole
+        # thread's rows, which the tabs and the Patches index need, are
+        # read only on a 200, below: on the largest thread they cost
+        # 22.8 ms against 2.5 ms for these. Indexed path only, like
+        # everything that names a page.
+        series_rows: list = []
         if thread_rooted:
-            # Paged: the slice is fetched, the totals are asked for
-            # separately, and the whole thread is never materialised
-            # ON THIS PATH. Scoped deliberately: `lifecycle_status_for_articles`
-            # below still runs a recursive `WITH RECURSIVE descendants`
-            # over the whole thread (scoped to this inbox), so the
-            # request as a whole does still walk it. A 5-minute cache keyed by the
-            # ETag's content part (shared by every page of the thread)
-            # amortises that; the sentence is about membership, not
-            # about the request.
-            # That is the point of the change, so do not "simplify" this
-            # by fetching everything and slicing in Python.
+            # Paged: the slice of MESSAGES is fetched, the totals are
+            # asked for separately, and no message body or ThreadNode is
+            # built for the rest of the thread ON THIS PATH. The whole
+            # thread's ROWS are read once, below, as columns only
+            # (`thread_rows`, #989). Scoped deliberately:
+            # `lifecycle_status_for_articles` below still runs a
+            # recursive `WITH RECURSIVE descendants` over the whole
+            # thread (scoped to this inbox), so the request as a whole
+            # does still walk it. A 5-minute cache keyed by the ETag's
+            # content part (shared by every page of the thread)
+            # amortises that. Do not "simplify" the slice by fetching
+            # every message and slicing in Python.
+            series_rows = thread_series_rows(session, inbox, article.id)
             agg = thread_aggregates(session, inbox, article.id)
             total_count = agg.total
             thread_max_date = agg.last_activity or article.date
@@ -357,7 +368,8 @@ def thread_view(
         content_input = (
             f"thread|{article.id}|{mimir.__version__}|{cap}|{membership_source}|"
             f"{total_count}|"
-            f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}"
+            f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}|"
+            f"{series_rows_tag(series_rows)}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"
@@ -367,6 +379,14 @@ def thread_view(
             response = Response(status=304)
             response.set_etag(etag)
             return response
+        # A 200 from here on: now the whole thread's rows (#989), for the
+        # kinds the full page and the HTMX slice render. The Markdown page
+        # renders neither.
+        ordered_rows = (
+            thread_rows(session, inbox, article.id)
+            if thread_rooted and not markdown
+            else []
+        )
 
         # One bulk read rather than one `read_message` per node: that
         # reopened the epoch's dulwich Repo every time, 31-79% of this
@@ -531,6 +551,56 @@ def thread_view(
             )
         remaining = max(0, total_count - (offset + len(rendered_nodes)))
 
+        # Tabs (#989): display only, so every message is still rendered
+        # here. Counted as the issue counts them ("Discussion 76 | Patches
+        # 27 | Everything 104" for 1 cover, 27 patches, 76 replies):
+        # replies, patches, everything. A cover, the root's or another
+        # posting's, is in neither of the first two; accepted in review. No
+        # rows on the CTE fallback, so no kinds and no tabs there.
+        kinds = {row.id: message_kind(row) for row in ordered_rows}
+        kind_counts = Counter(kinds.values())
+        tab_counts = {
+            "discussion": kind_counts["reply"],
+            "patches": kind_counts["patch"],
+            "all": total_count,
+        }
+        show_tabs = total_count > 1 and kind_counts["patch"] > 0
+        # The Patches index covers the whole thread. Each row links the
+        # page holding the patch: its index in the page-ordered rows,
+        # which `thread_page_of` agrees with (pinned by a test), through
+        # the one thread-page URL builder.
+        # Rendered by `thread.html` only: not for the HTMX slice, which
+        # would otherwise re-read the whole series on every "load more".
+        patch_index = []
+        patch_revisions: dict = {}
+        if show_tabs and representation == "full":
+            patch_index = [
+                {
+                    "id": row.id,
+                    "subject": row.subject,
+                    "href": thread_page_url(
+                        root_node.id, root_node.date, inbox.name, i // cap + 1
+                    )
+                    + f"#m{row.id}",
+                }
+                for i, row in enumerate(ordered_rows)
+                if kinds[row.id] == "patch"
+            ]
+            # Revisions inline only for the root's own series when the root
+            # is a cover: exactly the rows `render_state_tag` digests, so
+            # the timelines need no validator input of their own (D5).
+            # `patch_timelines` reads that series only, so a patch of
+            # another series in the thread gets no entry.
+            root_row = ordered_rows[0]
+            if kinds[root_row.id] == "cover":
+                patch_revisions = patch_timelines(
+                    session,
+                    root_row.patch_series_key,
+                    root_row.patch_series_head_id,
+                    [p["id"] for p in patch_index],
+                    inbox.name,
+                )
+
     thread_summary = thread_summary_from(authors, thread_max_date, total_count)
     context = dict(
         inbox_name=inbox.name,
@@ -545,6 +615,11 @@ def thread_view(
         remaining=remaining,
         page_size=cap,
         thread_summary=thread_summary,
+        kinds=kinds,
+        tab_counts=tab_counts,
+        show_tabs=show_tabs,
+        patch_index=patch_index,
+        patch_revisions=patch_revisions,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
         root_url=_msg_url(root_node, inbox.name),

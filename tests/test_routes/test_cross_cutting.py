@@ -63,26 +63,39 @@ def test_pages_emit_no_inline_style_attributes(client, tmp_path):
     `/` (index hero + cards), `/<inbox>/` (dashboard sparkline),
     `/<inbox>/<year>/` (month tiles), `/<inbox>/<year>/<mm>/<id>`
     (thread tree depth, patch-state aside, body-text block,
-    keyboard-help dialog from base.html on every page).
+    keyboard-help dialog from base.html on every page), and the thread
+    view with its tabs and Patches index, full and as the HTMX slice
+    (#989).
     """
+    from tests.test_routes.test_thread_tabs import _seed_series_thread
+
+    # The series first: each seeding repoints alpha's mirror, and the
+    # message page needs its own blob, where `/t` renders without one.
+    (tmp_path / "series").mkdir()
+    series, _ = _seed_series_thread(tmp_path / "series")
+    thread_url = series["cov@x"][1] + "/t"
     _, msg_url = _ingest_one_article(
         tmp_path,
         "alpha",
         "inline-style-sweep@example.com",
     )
+    htmx = {"HX-Request": "true"}
     routes = [
-        "/",
-        "/alpha/",
-        "/alpha/today",
-        "/alpha/yesterday",
-        "/alpha/2024/",
-        "/alpha/2024/01/",
-        "/alpha/search?q=sweep",
-        "/merge-window",
-        msg_url,
+        ("/", {}),
+        ("/alpha/", {}),
+        ("/alpha/today", {}),
+        ("/alpha/yesterday", {}),
+        ("/alpha/2024/", {}),
+        ("/alpha/2024/01/", {}),
+        ("/alpha/search?q=sweep", {}),
+        ("/merge-window", {}),
+        (msg_url, {}),
+        (msg_url + "/t", {}),
+        (thread_url, {}),
+        (thread_url, htmx),
     ]
-    for path in routes:
-        response = client.get(path)
+    for path, headers in routes:
+        response = client.get(path, headers=headers)
         assert response.status_code == 200, path
         body = response.data.decode()
         # An inline executable script is blocked by `script-src 'self'`

@@ -203,7 +203,7 @@ wheels = [
 
 [[package]]
 name = "mimir"
-version = "3.35.0"
+version = "3.36.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
