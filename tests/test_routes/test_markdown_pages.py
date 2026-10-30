@@ -105,7 +105,7 @@ def test_message_md_canonical_header_is_the_html_canonical(client, tmp_path):
     r = client.get(url + ".md")
     assert r.status_code == 200
     assert _link_canonical(r) == _canonical(page)
-    assert _canonical(page).endswith(url)  # precondition: self-canonical
+    assert _canonical(page).endswith(url + "/t")  # precondition: its `/t` (#1003)
 
 
 def test_reply_md_canonical_names_the_thread_page(client, tmp_path):
