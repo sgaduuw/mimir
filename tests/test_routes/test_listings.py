@@ -64,5 +64,71 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
     # pill_label for LANDED is the state name uppercased; the template
     # may insert whitespace before the label text but the word appears.
     assert "LANDED" in body
-    # Activity chip always renders alongside the lifecycle badge.
-    assert 'class="badge badge-activity-' in body
+    # A list ordered by recency gives every row the same heat (#988).
+    assert "badge-activity-" not in body
+
+
+def _surfaces(client):
+    """Anchor the seed on the frozen day and return the listing URLs
+    that are already ordered by recency or activity, one per surface."""
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, MainlineCommit
+
+    with SessionLocal() as s:
+        for mid, when in (
+            ("art1@example.com", datetime(2024, 6, 15, 11, 0, tzinfo=UTC)),
+            ("art4@example.com", datetime(2024, 6, 15, 11, 30, tzinfo=UTC)),
+        ):
+            s.scalar(select(Article).where(Article.message_id == mid)).date = when
+        s.add(
+            MainlineCommit(
+                commit_sha="f" * 40,
+                message_id="art1@example.com",
+                tree_name="linus",
+                committed_at=datetime(2024, 6, 15, 11, 45, tzinfo=UTC),
+            )
+        )
+        s.commit()
+    return {
+        "dashboard": "/alpha/",
+        "today": "/alpha/today",
+        "since": "/alpha/since/2024-06-14",
+        "month": "/alpha/2024/06/",
+        "search": "/alpha/search?q=hello",
+    }
+
+
+def test_listings_ordered_by_activity_carry_no_activity_chip(client, frozen_clock):
+    """Every row of the dashboard ("Recent messages" and the active
+    threads), today, since, month and search is HOT or the same heat:
+    the chip says nothing there (#988). The lifecycle chip still
+    distinguishes the rows."""
+    for surface, url in _surfaces(client).items():
+        body = client.get(url).get_data(as_text=True)
+        assert "hello alpha" in body, surface
+        assert 'class="badge badge-lifecycle-landed"' in body, surface
+        assert "badge-activity-" not in body, surface
+
+
+def test_yesterday_carries_no_activity_chip(client, frozen_clock):
+    from datetime import datetime
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    _surfaces(client)
+    with SessionLocal() as s:
+        s.scalar(
+            select(Article).where(Article.message_id == "art1@example.com")
+        ).date = datetime(2024, 6, 14, 11, 0, tzinfo=UTC)
+        s.commit()
+    body = client.get("/alpha/yesterday").get_data(as_text=True)
+    assert "hello alpha" in body
+    assert 'class="badge badge-lifecycle-landed"' in body
+    assert "badge-activity-" not in body

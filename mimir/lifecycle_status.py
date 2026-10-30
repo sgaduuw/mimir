@@ -85,6 +85,7 @@ class LifecycleStatusInfo:
     activity_detail: str = "no replies"
     pill_label: str = ""
     count_suffix: str | None = None
+    count_words: str | None = None
     tooltip: str | None = None
     commit_sha: str | None = None
     committed_at: datetime | None = None
@@ -553,6 +554,18 @@ def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
     return f": {total} ({maintainer_count}M)"
 
 
+def _format_count_words(total: int, maintainer_count: int) -> str | None:
+    """`_format_count_suffix` as words, for prose with room for them:
+    `2 reviews, 2 by maintainers`. None when the count is zero."""
+    if total == 0:
+        return None
+    words = f"{total} review{'' if total == 1 else 's'}"
+    if maintainer_count:
+        who = "a maintainer" if maintainer_count == 1 else "maintainers"
+        words += f", {maintainer_count} by {who}"
+    return words
+
+
 def _cover_rollup(own: LifecycleStatus, row) -> tuple[LifecycleStatus, str | None]:
     """A cover's state and `rollup` from its posting's patches (#938).
     `row` is a bulk row with at least one stored patch (`row.slots`).
@@ -647,6 +660,7 @@ def _bulk_uncached(
         last_at = coerce_dt(thread_dates.get(row.id))
         article_at = coerce_dt(row.article_date)
         days: int | None
+        age_days = max(0, (now - _aware_utc(article_at)).days) if article_at else None
         if last_at is None or article_at is None:
             days = None
         else:
@@ -656,7 +670,7 @@ def _bulk_uncached(
                 days = None
             else:
                 days = max(0, (now - last_at_aware).days)
-        heat, detail = _activity_heat(days)
+        heat, detail = _activity_heat(days, age_days)
 
         pill_label = _format_pill_label(state, tree)
         if rollup and state == LifecycleStatus.PENDING:
@@ -697,6 +711,9 @@ def _bulk_uncached(
             activity_detail=detail,
             pill_label=pill_label,
             count_suffix=count_suffix,
+            count_words=_format_count_words(
+                row.review_total or 0, row.review_maintainer or 0
+            ),
             tooltip=tooltip,
             commit_sha=commit_sha,
             committed_at=coerce_dt(committed_at),
@@ -766,6 +783,7 @@ __all__ = [
     "LifecycleStatusInfo",
     "_bulk_uncached",
     "_format_count_suffix",
+    "_format_count_words",
     "_format_pill_label",
     "_format_tooltip",
     "lifecycle_status_for_articles",

@@ -89,7 +89,7 @@ STATES = {
     "landed": ("landed", f"Landed in mainline as {LINUS_SHA[:12]} on 2024-06-20."),
     "superseded": ("superseded", "Superseded by v2 (posted 2024-01-08)."),
     "queued": ("queued", f"Queued in net-next as {NEXT_SHA[:12]} on 2024-06-01."),
-    "reviewed": ("reviewed", "Reviewed."),
+    "reviewed": ("reviewed", "Reviewed. 1 review."),
     "pending": (None, None),
 }
 
@@ -407,3 +407,17 @@ def test_the_markdown_status_line_is_the_html_pill_text(client, tmp_path, shape)
     )
     want = pill + (f" ({tip})" if tip else "")
     assert _md_status(client.get(url + ".md").get_data(as_text=True)) == want
+
+
+def test_the_status_line_spells_the_review_counts_out():
+    """The pill keeps `: 2 (2M)`; the sentence has room for words (#988)."""
+    from mimir.lifecycle_status import LifecycleStatusInfo
+    from mimir.web.filters import _status_line_filter
+
+    info = LifecycleStatusInfo(
+        state_value="reviewed", count_words="2 reviews, 2 by maintainers"
+    )
+    assert _status_line_filter(info) == "Reviewed. 2 reviews, 2 by maintainers."
+    assert _status_line_filter(LifecycleStatusInfo(state_value="reviewed")) == (
+        "Reviewed."
+    )
