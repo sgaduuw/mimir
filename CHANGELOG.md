@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The site nav fits a phone screen (#988). Below 768 px it shows the site
+  name and inbox, plus a "menu" button that opens today, yesterday,
+  subsystems and Merge window. It works without JavaScript, and every link
+  in it is at least 44 px tall. The nav link to the page you are on is
+  marked `aria-current="page"`.
+
 ### Fixed
 
 - The year archive (`/<inbox>/<year>/`) is twelve rows of month, bar and

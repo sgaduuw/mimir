@@ -75,3 +75,30 @@ def test_nav_dropdown_follows_an_in_thread_htmx_swap(client, tmp_path):
         "nav still lists the previous message's subsystems"
     )
     assert "/alpha/subsystem/bcachefs/" in menu
+
+
+def test_phone_menu_holds_the_one_target_the_partial_refreshes(client, tmp_path):
+    """#988: on phones the subsystems menu lives inside the collapsible nav
+    menu. The swap only works if the page has exactly one element with the
+    partial's out-of-band id, and that element sits in the list the menu
+    toggle opens, so the refresh lands there on phone and desktop alike."""
+    _, url = _ingest_one_article(tmp_path, "alpha", "dd-phone@example.com")
+    page = client.get(url).get_data(as_text=True)
+    partial = client.get(url, headers={"HX-Request": "true"}).get_data(as_text=True)
+
+    oob_ids = [
+        re.search(r'\bid="([^"]+)"', m.group(0)).group(1)
+        for m in re.finditer(r'<\w+\b[^>]*\bhx-swap-oob="true"[^>]*>', partial)
+    ]
+    assert oob_ids == ["subsystems-dd-menu"]
+    assert re.findall(r'\bid="subsystems-dd-menu"', page) == ['id="subsystems-dd-menu"']
+
+    toggle = page.find('<details class="nav-toggle">')
+    menu = re.search(r'<ul class="nav-menu">', page)
+    assert toggle != -1, "no phone menu toggle in the nav"
+    assert menu, "no phone menu list in the nav"
+    # `.nav-toggle[open] ~ ul` opens the menu, so it must follow the toggle.
+    assert toggle < menu.start()
+    ms, me = _element_at(page, menu.start())
+    ts, _ = _by_id(page, "subsystems-dd-menu")
+    assert ms < ts < me, "the OOB target is outside the phone menu"
