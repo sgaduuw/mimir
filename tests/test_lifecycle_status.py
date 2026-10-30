@@ -2,7 +2,7 @@
 5-state lifecycle taxonomy (Landed / Superseded / Queued / Reviewed
 / Pending)."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -335,6 +335,18 @@ def test_format_count_suffix_omits_when_zero():
     assert _format_count_suffix(1, 0) == ": 1 (0M)"
     assert _format_count_suffix(6, 3) == ": 6 (3M)"
     assert _format_count_suffix(12, 4) == ": 12 (4M)"
+
+
+def test_a_message_minutes_old_is_not_dormant(session):
+    """`DORMANT no replies` read on messages minutes old in the recent
+    list (#988). Until it is old enough it gets no chip at all."""
+    fresh = _seed_article(
+        session, "fresh@x", date=datetime.now(UTC) - timedelta(minutes=5)
+    )
+    old = _seed_article(session, "old@x", date=datetime.now(UTC) - timedelta(days=90))
+    got = lifecycle_status_for_articles(session, [fresh.id, old.id], _lkml(session))
+    assert got[fresh.id].activity_heat == ""
+    assert got[old.id].activity_heat == "dormant"
 
 
 def test_format_tooltip_landed_with_reviewers():
