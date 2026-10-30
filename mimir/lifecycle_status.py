@@ -647,6 +647,7 @@ def _bulk_uncached(
         last_at = coerce_dt(thread_dates.get(row.id))
         article_at = coerce_dt(row.article_date)
         days: int | None
+        age_days = max(0, (now - _aware_utc(article_at)).days) if article_at else None
         if last_at is None or article_at is None:
             days = None
         else:
@@ -656,7 +657,7 @@ def _bulk_uncached(
                 days = None
             else:
                 days = max(0, (now - last_at_aware).days)
-        heat, detail = _activity_heat(days)
+        heat, detail = _activity_heat(days, age_days)
 
         pill_label = _format_pill_label(state, tree)
         if rollup and state == LifecycleStatus.PENDING:

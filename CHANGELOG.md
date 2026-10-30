@@ -13,6 +13,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Badge policy (#988). The activity chip (HOT, WARM, COOLING, STALE, DORMANT)
+  is gone from the lists ordered by recency or activity (the inbox dashboard,
+  today, yesterday, since, month and search), where every row carried the same
+  one; the thread and message headers keep it. "DORMANT no replies" now needs
+  a post at least 14 days old; a younger post with no replies has no chip.
 - The site nav fits a phone screen (#988). Below 768 px it shows the site
   name and inbox, plus a "menu" button that opens today, yesterday,
   subsystems and Merge window. It works without JavaScript, and every link

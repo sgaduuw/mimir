@@ -763,6 +763,25 @@ def test_activity_heat_buckets(days, expected):
     assert _activity_heat(days) == expected
 
 
+@pytest.mark.parametrize(
+    "age,expected",
+    [
+        (0, ("", "")),
+        (1, ("", "")),
+        (13, ("", "")),
+        (14, ("dormant", "no replies")),
+        (400, ("dormant", "no replies")),
+        (None, ("dormant", "no replies")),
+    ],
+)
+def test_activity_heat_without_replies_is_dormant_only_once_old(age, expected):
+    """No replies is not dormancy until the post itself is old (#988):
+    a younger one has had no time to be answered, and gets no chip."""
+    from mimir.patch_state import _activity_heat
+
+    assert _activity_heat(None, age) == expected
+
+
 def test_series_timeline_treats_null_position_as_zero(seeded_db):
     """The pill treats a NULL position as 0 (a cover before the #212
     backfill), so the revisions fold must too, or a SUPERSEDED pill

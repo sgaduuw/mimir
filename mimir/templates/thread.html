@@ -47,7 +47,7 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 <div class="msg-badges">
   {%- with status = lifecycle_status %}
   {%- include "_lifecycle_badges.html" %}
-  {%- endwith %}
+  {%- endwith -%}
 </div>
 {% endif %}
 {% include "_status_line.html" %}
