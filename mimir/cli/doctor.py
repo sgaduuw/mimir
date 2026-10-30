@@ -238,7 +238,7 @@ def _check_warm_cadence(role, settings, session_factory) -> CheckResult:
             name="Warm-cache cadence",
             status=STATUS_WARNING,
             value=f"fast={fast}s slow={slow}s (fast should be smaller)",
-            remediation="Set WARM_CACHE_FAST_EVERY < WARM_CACHE_SLOW_EVERY.",
+            remediation="Set WARM_CACHE_EVERY < WARM_CACHE_SLOW_EVERY.",
         )
     return CheckResult(
         name="Warm-cache cadence",
@@ -259,7 +259,7 @@ def _check_warm_refresh_window(role, settings, session_factory) -> CheckResult:
             name="Warm-cache refresh windows",
             status=STATUS_WARNING,
             value=f"fast_window={window}s vs fast_every={fast}s (window > 30x cadence)",
-            remediation="Reduce WARM_CACHE_FAST_REFRESH_WINDOW_SEC or raise WARM_CACHE_FAST_EVERY.",
+            remediation="Reduce WARM_CACHE_FAST_REFRESH_WINDOW_SEC or raise WARM_CACHE_EVERY.",
         )
     slow_window = settings.warm_cache_slow_refresh_window_sec
     return CheckResult(

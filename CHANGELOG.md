@@ -11,6 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- `mimir doctor`'s warm-cadence warnings now tell you to set
+  `WARM_CACHE_EVERY`, the variable the scheduler reads (#1006). They named
+  `WARM_CACHE_FAST_EVERY`, which the scheduler ignored. Doctor now ignores
+  it too.
+
 ## [3.35.0] - 2026-10-30
 
 ### Changed
