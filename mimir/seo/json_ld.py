@@ -22,6 +22,7 @@ from mimir.datetime_utils import aware_utc
 from mimir.models import Article
 from mimir.parser import ParsedArticle
 from mimir.rendering import render_body_text
+from mimir.threading import unmaterialised_roots
 
 JSON_LD_TEXT_MAX = 2000
 
@@ -66,7 +67,7 @@ def _json_ld_index(base: str, inboxes=()) -> dict:
     return payload
 
 
-def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
+def _json_ld_inbox(session, base: str, inbox, active_threads=()) -> dict:
     """schema.org payload for `/<inbox_name>/`, a `DiscussionForum`
     container plus an `ItemList` of the currently-most-active threads
     so the page reads as a topical hub for crawlers. `active_threads`
@@ -76,8 +77,16 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
     from mimir.web.filters import _clean_subject_filter
-    from mimir.web.urls import _thread_view_url
+    from mimir.web.urls import _msg_url, _thread_view_url
 
+    # Each thread is named by the URL its own message page names as
+    # canonical: its `/t`, unless the column cannot rank it, in which case
+    # the message URL (#1003). One batched predicate, two statements.
+    unrankable = (
+        unmaterialised_roots(session, inbox.id, [t.id for t in active_threads])
+        if active_threads
+        else set()
+    )
     payload: dict = {
         "@context": "https://schema.org",
         "@type": "DiscussionForum",
@@ -93,10 +102,14 @@ def _json_ld_inbox(base: str, inbox, active_threads=()) -> dict:
                 {
                     "@type": "ListItem",
                     "position": i + 1,
-                    # Every thread's `/t`, single-message ones included
-                    # (#1003). In this inbox, not the canonical one: the
-                    # list is rendered on `/<inbox>/`, as is its count.
-                    "url": f"{base}{_thread_view_url(t, inbox.name)}",
+                    # In this inbox, not the canonical one: the list is
+                    # rendered on `/<inbox>/`, as is its count.
+                    "url": base
+                    + (
+                        _msg_url(t, inbox.name)
+                        if t.id in unrankable
+                        else _thread_view_url(t, inbox.name)
+                    ),
                     "name": _clean_subject_filter(t.subject) or "(no subject)",
                 }
                 for i, t in enumerate(active_threads)
