@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.33.1] - 2026-10-30
+
+No migration, no backfill and no cache version bump.
+
 ### Changed
 
 - Dependencies and the image move up: CPython 3.15.2 on
