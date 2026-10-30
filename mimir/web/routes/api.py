@@ -12,12 +12,13 @@ from flask import Response, abort, render_template, request
 from sqlalchemy import select
 
 import mimir
-from mimir import maintainer_allowlist
+from mimir import cache, maintainer_allowlist
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
-from mimir.models import Article, ArticleList
+from mimir.models import Article, ArticleFile, ArticleList
 from mimir.rendering import render_body
 from mimir.store import MessageNotFound, read_message
+from mimir.subsystems import recent_patches_touching
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _redact_trailer_address
 from mimir.web.routes._validators import allowlist_tag
@@ -61,6 +62,53 @@ def api_recent(inbox_name: str):
         recent_next_offset=offset + RECENT_PAGE_SIZE,
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
+
+
+@bp_web.route("/api/<inbox_name>/related/<int:article_id>")
+def api_related_patches(inbox_name: str, article_id: int):
+    """The thread page's per-patch "Other recent patches touching these
+    files" (#989), fetched when a reader opens that patch in the Patches
+    index. Not rendered on `/t`: the list follows other threads' activity,
+    which `/t`'s validator cannot carry, and it costs up to about 0.5 s a
+    patch (a full 180-day scan, measured 2026-10-30), 57 s for a
+    517-patch thread inline.
+
+    Same data and cache key as the message page's list, `msg_related`, a
+    documented exception (CONTEXT.md): cached by id, not validated. 404
+    unless the article is linked to this inbox."""
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        linked = session.execute(
+            select(ArticleList.article_id).where(
+                ArticleList.article_id == article_id,
+                ArticleList.inbox_id == inbox.id,
+            )
+        ).scalar_one_or_none()
+        if linked is None:
+            abort(404)
+        paths = list(
+            session.execute(
+                select(ArticleFile.path).where(ArticleFile.article_id == article_id)
+            ).scalars()
+        )
+        related = (
+            cache.get_or_compute(
+                session,
+                f"msg_related:{article_id}",
+                300,
+                lambda: recent_patches_touching(
+                    session, paths, exclude_article_id=article_id, limit=5
+                ),
+            )
+            if paths
+            else []
+        )
+        response = Response(
+            render_template("_related_patch_list.html", related_patches=related)
+        )
+    # A fragment is not a page, and /api/ is robots-disallowed already.
+    response.headers["X-Robots-Tag"] = "noindex"
+    return response
 
 
 @bp_web.route("/api/<inbox_name>/body/<int:article_id>")

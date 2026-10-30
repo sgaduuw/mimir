@@ -115,15 +115,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 <section class="related-patches">
   <details>
     <summary><strong>Other recent patches touching these files</strong></summary>
-    <ul>
-      {% for p in related_patches %}
-      <li>
-        <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
-        <small>&middot; {{ p.author|safe_from }}
-          &middot; {{ p.date.strftime('%Y-%m-%d') if p.date else '' }}</small>
-      </li>
-      {% endfor %}
-    </ul>
+    {% include "_related_patch_list.html" %}
   </details>
 </section>
 {% endif %}
