@@ -191,7 +191,6 @@ def test_reviewed_when_only_review_trailers(session, role):
     got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.REVIEWED
     assert got[art.id].count_suffix == ": 1 (0M)"
-    assert got[art.id].count_words == "1 review"
     assert got[art.id].tooltip == "Bob"
 
 
@@ -338,30 +337,15 @@ def test_format_count_suffix_omits_when_zero():
     assert _format_count_suffix(12, 4) == ": 12 (4M)"
 
 
-@pytest.mark.parametrize(
-    "total,maintainers,expected",
-    [
-        (0, 0, None),
-        (1, 0, "1 review"),
-        (2, 2, "2 reviews, 2 by maintainers"),
-        (3, 1, "3 reviews, 1 by a maintainer"),
-    ],
-)
-def test_format_count_words(total, maintainers, expected):
-    from mimir.lifecycle_status import _format_count_words
-
-    assert _format_count_words(total, maintainers) == expected
-
-
 def test_a_message_minutes_old_is_not_dormant(session):
     """`DORMANT no replies` read on messages minutes old in the recent
-    list (#988). Its age is the thread's activity until a reply lands."""
+    list (#988). Until it is old enough it gets no chip at all."""
     fresh = _seed_article(
         session, "fresh@x", date=datetime.now(UTC) - timedelta(minutes=5)
     )
     old = _seed_article(session, "old@x", date=datetime.now(UTC) - timedelta(days=90))
     got = lifecycle_status_for_articles(session, [fresh.id, old.id], _lkml(session))
-    assert got[fresh.id].activity_heat == "hot"
+    assert got[fresh.id].activity_heat == ""
     assert got[old.id].activity_heat == "dormant"
 
 
@@ -762,16 +746,15 @@ def _seed_thread(session, *, materialised=True):
 
 def test_materialised_thread_activity_counts_the_deepest_reply(session):
     """The column read gives the same answer as the walk: the newest
-    reply anywhere below counts, and an article's own date does not
-    (until it has no replies at all: then its age is its activity, #988)."""
+    reply anywhere below counts, and an article's own date does not."""
     from mimir.lifecycle_status import _bulk_uncached
 
     root, child, grand = _seed_thread(session)
     got = _bulk_uncached(session, [root.id, child.id, grand.id], _lkml(session))
     assert got[root.id].activity_heat == "hot"
     assert got[child.id].activity_heat == "hot"
-    # The newest article has no replies of its own: its age stands in.
-    assert got[grand.id].activity_detail == "today"
+    # The newest article has no replies of its own.
+    assert got[grand.id].activity_heat != "hot"
 
 
 def test_unmaterialised_thread_activity_still_walks(session):

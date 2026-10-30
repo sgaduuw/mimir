@@ -361,7 +361,7 @@ def _days_since_last_reply(
 
 
 # A post with no replies is dormant only once it is this old: before
-# that it has simply not had time to be answered.
+# that it has simply not had time to be answered, and gets no chip.
 DORMANT_AFTER_DAYS = 14
 
 
@@ -376,13 +376,13 @@ def _activity_heat(
     Returns ("dormant", "no replies") when None (no replies yet) and
     the post is `DORMANT_AFTER_DAYS` old or of unknown age, distinct
     from "stale" (replies have stopped). A younger post with no
-    replies is as active as its own age (#988). The bucket
+    replies returns ("", ""): no chip (#988). The bucket
     boundaries are inclusive on the upper end."""
     d = days_since_last_reply
     if d is None:
         if age_days is None or age_days >= DORMANT_AFTER_DAYS:
             return ("dormant", "no replies")
-        d = age_days
+        return ("", "")
     if d == 0:
         return ("hot", "today")
     if d <= 3:

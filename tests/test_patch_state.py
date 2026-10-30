@@ -766,9 +766,9 @@ def test_activity_heat_buckets(days, expected):
 @pytest.mark.parametrize(
     "age,expected",
     [
-        (0, ("hot", "today")),
-        (1, ("warm", "1d")),
-        (13, ("cooling", "13d")),
+        (0, ("", "")),
+        (1, ("", "")),
+        (13, ("", "")),
         (14, ("dormant", "no replies")),
         (400, ("dormant", "no replies")),
         (None, ("dormant", "no replies")),
@@ -776,7 +776,7 @@ def test_activity_heat_buckets(days, expected):
 )
 def test_activity_heat_without_replies_is_dormant_only_once_old(age, expected):
     """No replies is not dormancy until the post itself is old (#988):
-    a message minutes old has had no time to be answered."""
+    a younger one has had no time to be answered, and gets no chip."""
     from mimir.patch_state import _activity_heat
 
     assert _activity_heat(None, age) == expected
