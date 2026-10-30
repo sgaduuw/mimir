@@ -82,3 +82,116 @@ def test_a_reprocessed_patch_row_moves_the_thread_etag(client, tmp_path):
     after = client.get(url)
     assert after.status_code == 200
     assert after.headers["ETag"] != before.headers["ETag"]
+
+
+def _seed_series_thread(tmp_path):
+    """A cover letter, two patches of its posting and one reply. Returns
+    `seed_thread_shape`'s map plus each message's expected kind."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("cov@x", None),
+            ("p1@x", "cov@x"),
+            ("p2@x", "cov@x"),
+            ("rev@x", "p1@x"),
+        ],
+    )
+    series = {
+        "cov@x": ("[PATCH v2 0/2] foo: do the thing", 0),
+        "p1@x": ("[PATCH v2 1/2] foo: first", 1),
+        "p2@x": ("[PATCH v2 2/2] foo: second", 2),
+    }
+    with SessionLocal() as s:
+        for mid, (subject, position) in series.items():
+            a = s.get(Article, seeded[mid][0])
+            a.subject = subject
+            a.patch_series_key = "t" * 40
+            a.patch_series_version = "v2"
+            a.patch_series_position = position
+        s.commit()
+    kinds = {"cov@x": "cover", "p1@x": "patch", "p2@x": "patch", "rev@x": "reply"}
+    return seeded, kinds
+
+
+def _articles(html: str) -> dict[int, str]:
+    """`article id -> its opening <article> tag` for each message rendered."""
+    import re
+
+    return {
+        int(m.group(1)): m.group(0)
+        for m in re.finditer(r'<article class="thread-message" id="m(\d+)"[^>]*>', html)
+    }
+
+
+def test_every_message_is_rendered_and_carries_its_kind(client, tmp_path):
+    """Tabs are display only: the page still renders every message, so the
+    canonical invariant holds (each message is on the page its canonical
+    names). Each carries its kind for the script, and the root says so."""
+    seeded, kinds = _seed_series_thread(tmp_path)
+    html = client.get(seeded["cov@x"][1] + "/t").get_data(as_text=True)
+    tags = _articles(html)
+    assert set(tags) == {aid for aid, _ in seeded.values()}
+    for mid, (aid, _url) in seeded.items():
+        assert f'data-kind="{kinds[mid]}"' in tags[aid], (mid, tags[aid])
+    assert [aid for aid, tag in tags.items() if "data-root" in tag] == [
+        seeded["cov@x"][0]
+    ]
+
+
+def test_the_tablist_counts_the_whole_thread_and_starts_hidden(client, tmp_path):
+    """Whole-thread counts, as the issue counts them: replies, patches and
+    everything (the cover is in neither of the first two). `hidden` until
+    the script runs, so without JS the reader sees every message and no
+    inert buttons. The reply count lets the script open on Everything when
+    there is nothing to discuss."""
+    import re
+
+    seeded, _ = _seed_series_thread(tmp_path)
+    html = client.get(seeded["cov@x"][1] + "/t").get_data(as_text=True)
+    tablist = re.search(r'<div class="thread-tabs" role="tablist"[^>]*>', html)
+    assert tablist, "no tablist"
+    assert " hidden" in tablist.group(0)
+    assert 'data-replies="1"' in tablist.group(0)
+    counts = dict(
+        re.findall(
+            r'<button[^>]*data-tab="(\w+)"[^>]*>[^<]*<span class="tab-count">(\d+)</span>',
+            html,
+        )
+    )
+    assert counts == {"discussion": "1", "patches": "2", "all": "4"}
+
+
+def test_no_tablist_without_patches_or_with_one_message(client, tmp_path):
+    from tests.test_routes._helpers import _ingest_one_article, seed_thread_shape
+
+    _, solo = _ingest_one_article(tmp_path, "alpha", "solo-tabs@x")
+    (tmp_path / "talk").mkdir()
+    talk = seed_thread_shape(
+        tmp_path / "talk", "alpha", [("t0@x", None), ("t1@x", "t0@x")]
+    )
+    for url in (solo, talk["t0@x"][1]):
+        html = client.get(url + "/t").get_data(as_text=True)
+        assert 'role="tablist"' not in html, url
+        assert 'class="thread-message"' in html  # precondition: it rendered
+
+
+def test_the_htmx_slice_carries_each_message_s_kind(client, tmp_path, monkeypatch):
+    """#990's rule on `/t`: what an HTMX append brings carries its own
+    per-message data, so the script can sort appended messages too."""
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded, kinds = _seed_series_thread(tmp_path)
+    fragment = client.get(
+        seeded["cov@x"][1] + "/t/2", headers={"HX-Request": "true"}
+    ).get_data(as_text=True)
+    tags = _articles(fragment)
+    assert len(tags) == 2  # precondition: page 2 of 2
+    by_id = {aid: mid for mid, (aid, _) in seeded.items()}
+    for aid, tag in tags.items():
+        assert f'data-kind="{kinds[by_id[aid]]}"' in tag, tag

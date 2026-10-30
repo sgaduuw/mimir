@@ -15,7 +15,11 @@
 {% for node, parsed, url in messages %}
 {# Anchored so a permalink can deep-link into the conversation, and so
    the message pages' link can land on the right message. #}
-<article class="thread-message" id="m{{ node.id }}">
+{# `data-kind` and `data-root` are per message, so an HTMX append carries
+   them (#989, #990's rule): `thread-tabs.js` sorts by them. #}
+<article class="thread-message" id="m{{ node.id }}"
+  {%- if kinds and node.id in kinds %} data-kind="{{ kinds[node.id] }}"{% endif %}
+  {%- if node.id == root.id %} data-root{% endif %}>
   <header>
     <h2><a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a></h2>
     <p>

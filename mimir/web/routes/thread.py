@@ -24,6 +24,7 @@ the single predicate every one of those surfaces consults.
 
 import hashlib
 import logging
+from collections import Counter
 
 from flask import (
     Response,
@@ -44,7 +45,7 @@ from mimir.models import (
     ArticleList,
 )
 from mimir.patch_series import slot_rank
-from mimir.patch_state import patch_state_for_article
+from mimir.patch_state import message_kind, patch_state_for_article
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
 from mimir.subsystems import article_paths, is_cover, subsystems_for_paths
@@ -540,6 +541,18 @@ def thread_view(
         remaining = max(0, total_count - (offset + len(rendered_nodes)))
 
     thread_summary = thread_summary_from(authors, thread_max_date, total_count)
+    # Tabs (#989): display only, so every message is still rendered here.
+    # Counted as the issue counts them: replies, patches, everything (a
+    # cover is in neither of the first two). No rows on the CTE fallback,
+    # so no kinds and no tabs there.
+    kinds = {row.id: message_kind(row) for row in ordered_rows}
+    kind_counts = Counter(kinds.values())
+    tab_counts = {
+        "discussion": kind_counts["reply"],
+        "patches": kind_counts["patch"],
+        "all": total_count,
+    }
+    show_tabs = total_count > 1 and kind_counts["patch"] > 0
     context = dict(
         inbox_name=inbox.name,
         current_inbox=inbox.name,
@@ -553,6 +566,9 @@ def thread_view(
         remaining=remaining,
         page_size=cap,
         thread_summary=thread_summary,
+        kinds=kinds,
+        tab_counts=tab_counts,
+        show_tabs=show_tabs,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
         root_url=_msg_url(root_node, inbox.name),
