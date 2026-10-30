@@ -26,8 +26,15 @@ changes, not internal refactors. Categories: **Added**,
 - On a phone, hard-wrapped prose in a message reads as normal text instead
   of a staircase of short lines (#989), on the message page and the thread
   page. Only plain paragraphs are joined: quotes, diffs, code, lists,
-  trailers, tables and indented lines keep their line breaks, and desktop
-  is unchanged. The stored message is untouched.
+  trailers, tables, commit lists, paths and indented lines keep their line
+  breaks, and desktop is unchanged. The stored message is untouched.
+
+### Fixed
+
+- `mimir doctor`'s warm-cadence warnings now tell you to set
+  `WARM_CACHE_EVERY`, the variable the scheduler reads (#1006). They named
+  `WARM_CACHE_FAST_EVERY`, which the scheduler ignored. Doctor now ignores
+  it too.
 
 ## [3.35.0] - 2026-10-30
 
