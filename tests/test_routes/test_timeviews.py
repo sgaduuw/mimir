@@ -483,6 +483,20 @@ def test_year_archive_bar_is_proportional_to_busiest_month(client, frozen_clock)
     assert widths == [100.0, 50.0]
 
 
+def test_year_archive_bar_is_an_svg_with_a_text_equivalent(client, frozen_clock):
+    """The CSP forbids `style=`, so the bar is an SVG whose width is a
+    `rect` attribute; the aria-label is its text equivalent (#988)."""
+    body = client.get("/alpha/2024/").data.decode()
+    svgs = re.findall(r'<svg class="bar-meter".*?</svg>', body, re.DOTALL)
+    assert len(svgs) == 2
+    assert 'aria-label="100% of the busiest month"' in svgs[0]
+    assert 'aria-label="50% of the busiest month"' in svgs[1]
+    for svg in svgs:
+        assert 'viewBox="0 0 100 6"' in svg
+        assert 'role="img"' in svg
+        assert "style=" not in svg
+
+
 def test_year_archive_empty_month_label_follows_the_month(client):
     """ "not yet" for the current month and later ones, "none" for every
     other empty month, in any year."""
