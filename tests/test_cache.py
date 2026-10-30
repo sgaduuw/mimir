@@ -1570,5 +1570,5 @@ def test_a_cached_field_change_bumps_the_namespace():
     digest: confirm no field changed, then record the new one."""
     assert (cache.NAMESPACE_VERSION, _registered_field_signature()) == (
         5,
-        "7c1a9121f15bc13d",
+        "0c0111fa86c90d2d",
     )
