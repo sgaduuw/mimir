@@ -760,7 +760,7 @@ def test_resolve_tree_label_uses_the_display_name_or_the_slug():
 def test_activity_heat_buckets(days, expected):
     from mimir.patch_state import _activity_heat
 
-    assert _activity_heat(days) == expected
+    assert _activity_heat(days, None) == expected
 
 
 @pytest.mark.parametrize(
