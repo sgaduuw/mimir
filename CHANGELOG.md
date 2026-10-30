@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.33.1] - 2026-10-30
+
+No migration, no backfill and no cache version bump.
+
+### Changed
+
+- Dependencies and the image move up: CPython 3.15.2 on
+  python-build-standalone `20261026`, sqlalchemy 2.1.6, alembic 1.20.1,
+  dulwich 1.2.20, pydantic 2.14.2 and pydantic-settings 2.16.2 (#983).
+
 ## [3.33.0] - 2026-10-28
 
 No migration, no backfill and no cache version bump.
