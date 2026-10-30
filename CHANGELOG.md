@@ -11,18 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.36.0] - 2026-10-30
+
 ### Changed
 
 - The thread page (`/t`) of a patch series has Discussion, Patches and
   Everything tabs (#989). They only show or hide messages already on the
   page, so every message is still on the page its canonical names; the
   tab is kept in the URL fragment (`#patches`), and without JavaScript the
-  page shows everything as before. A thread with no replies opens on
+  page shows every message as before, plus the Patches index. A thread with no replies opens on
   Everything. The Patches tab lists every patch in the thread, linking
   the page that holds it. Opening a patch shows other recent patches
   touching the same files, loaded from the new `/api/<inbox>/related/<id>`
-  partial, and, for the root's own series, its revisions with links to the
-  diff against each previous revision.
+  partial, and, when the thread starts with a cover letter, each patch's
+  revisions with links to the diff against each previous revision.
 - On a phone, hard-wrapped prose in a message reads as normal text instead
   of a staircase of short lines (#989), on the message page and the thread
   page. Only plain paragraphs are joined: quotes, diffs, code, lists,
