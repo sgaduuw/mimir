@@ -475,7 +475,7 @@ def test_year_archive_bar_is_proportional_to_busiest_month(client, frozen_clock)
     assert widths == [100.0, 50.0]
 
 
-def test_year_archive_empty_month_label_follows_the_year(client):
+def test_year_archive_empty_month_label_follows_the_month(client):
     """ "not yet" in the current year, "none" in a past year."""
     with freeze_time("2024-06-15 12:00:00"):
         current = client.get("/alpha/2024/").data.decode()
@@ -484,7 +484,8 @@ def test_year_archive_empty_month_label_follows_the_year(client):
     label = lambda body: re.findall(  # noqa: E731
         r'<span class="count count--none">([^<]*)</span>', body
     )
-    assert label(current) == ["not yet"] * 10
+    # Empty in 2024: Feb, Apr, May, Jun (the current month), then Jul-Dec.
+    assert label(current) == ["none"] * 4 + ["not yet"] * 6
     assert label(past) == ["none"] * 10
 
 

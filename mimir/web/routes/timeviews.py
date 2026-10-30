@@ -141,6 +141,7 @@ def year_archive(inbox_name: str, year: int):
     link to the month view."""
     if year < _MIN_ARCHIVE_YEAR or year > _max_archive_year():
         abort(404)
+    now = datetime.now(UTC)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
         volume = monthly_volume(session, inbox, year)
@@ -157,7 +158,8 @@ def year_archive(inbox_name: str, year: int):
         volume=volume,
         prev_year=year - 1 if year - 1 >= _MIN_ARCHIVE_YEAR else None,
         next_year=year + 1 if has_next else None,
-        is_current_year=year == datetime.now(UTC).year,
+        is_current_year=year == now.year,
+        current_month=now.month,
     )
 
 
