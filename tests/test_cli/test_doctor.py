@@ -268,3 +268,41 @@ def test_doctor_warns_on_missing_mirror_path(runner, seeded_db, monkeypatch, tmp
         f"{mirror_check['value']!r}"
     )
     assert payload["summary"]["warning"] >= 1
+
+
+def test_warm_cadence_remediation_names_vars_the_scheduler_reads():
+    """The doctor tells operators to set a cadence variable; the
+    scheduler sidecar (deploy/scheduler.sh) is what acts on it. Every
+    *_EVERY name in the remediation must be one the script reads (#1006)."""
+    import re
+    from types import SimpleNamespace
+
+    from mimir.cli.doctor import _check_warm_cadence, _check_warm_refresh_window
+
+    settings = SimpleNamespace(
+        warm_cache_fast_every=3600,
+        warm_cache_slow_every=60,
+        warm_cache_fast_refresh_window_sec=10**6,
+        warm_cache_slow_refresh_window_sec=7200,
+    )
+    scheduler = (Path(__file__).parents[2] / "deploy" / "scheduler.sh").read_text()
+    names = set()
+    for check in (_check_warm_cadence, _check_warm_refresh_window):
+        remediation = check(None, settings, None).remediation
+        assert remediation, f"{check.__name__} must warn for these settings"
+        names |= set(re.findall(r"WARM_CACHE_\w*EVERY", remediation))
+    assert names, "remediations should name a cadence variable"
+    for name in names:
+        assert f"${{{name}:-" in scheduler, f"{name} is not read by scheduler.sh"
+
+
+def test_warm_cache_fast_every_reads_only_the_scheduler_variable(monkeypatch):
+    """WARM_CACHE_EVERY is the one cadence name (scheduler.sh reads only
+    it). WARM_CACHE_FAST_EVERY must not move the setting (#1006)."""
+    from mimir.config import Settings
+
+    monkeypatch.setenv("WARM_CACHE_FAST_EVERY", "7")
+    monkeypatch.delenv("WARM_CACHE_EVERY", raising=False)
+    assert Settings(secret_key="x" * 32).warm_cache_fast_every == 60
+    monkeypatch.setenv("WARM_CACHE_EVERY", "9")
+    assert Settings(secret_key="x" * 32).warm_cache_fast_every == 9

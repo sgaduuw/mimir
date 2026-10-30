@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mimir._inbox_name import INBOX_NAME_RE
@@ -331,13 +331,9 @@ class Settings(BaseSettings):
     # Cadence for the fast warm tier (seconds). Drives the
     # scheduler's per-minute warm tick. The fast tier covers
     # sitemaps + a handful of cheap front-page helpers, where
-    # freshness matters more than recompute cost. WARM_CACHE_EVERY
-    # is kept as an alias for back-compat with the pre-tier-split
-    # single-cadence env var. Override via WARM_CACHE_FAST_EVERY.
-    warm_cache_fast_every: int = Field(
-        default=60,
-        validation_alias=AliasChoices("WARM_CACHE_FAST_EVERY", "WARM_CACHE_EVERY"),
-    )
+    # freshness matters more than recompute cost. Override via
+    # WARM_CACHE_EVERY, the one name deploy/scheduler.sh reads.
+    warm_cache_fast_every: int = Field(default=60, validation_alias="WARM_CACHE_EVERY")
 
     # Cadence for the slow warm tier (seconds). Drives the
     # scheduler's hourly warm tick. The slow tier covers
