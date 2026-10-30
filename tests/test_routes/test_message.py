@@ -1499,9 +1499,34 @@ def test_header_activity_chip_waits_for_an_unanswered_post_to_age(
     url = f"/alpha/{when.year}/{when.month:02d}/{art_id}"
     body = client.get(url).get_data(as_text=True)
     assert 'class="msg-badges"' in body
-    assert re.findall(r'class="badge badge-activity-([a-z]+)"', body) == (
+    assert re.findall(r'class="badge badge-activity-([a-z]*)"', body) == (
         [chip] if chip else []
     )
+
+
+def test_header_without_badges_has_no_blank_badges_row(client, tmp_path):
+    """A young, unanswered, pending patch has no activity chip and no
+    lifecycle pill. Its badges row must hold nothing, not whitespace:
+    the row's `:empty` rule hides it, whitespace would not match (#988)."""
+    from datetime import datetime
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    art_id, _ = _ingest_one_article(
+        tmp_path, "alpha", "young-pending@example.com", subject="[PATCH] foo: bar"
+    )
+    when = datetime.now(UTC) - timedelta(days=1)
+    with SessionLocal() as s:
+        s.get(Article, art_id).date = when
+        s.commit()
+    body = client.get(f"/alpha/{when.year}/{when.month:02d}/{art_id}").get_data(
+        as_text=True
+    )
+    assert "badge-activity-" not in body
+    assert "badge-lifecycle-" not in body
+    assert not re.search(r'<div class="msg-badges">\s+</div>', body)
+    assert '<div class="msg-badges"></div>' in body
 
 
 def test_message_page_emits_breadcrumb_list(client, tmp_path):

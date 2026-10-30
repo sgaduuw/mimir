@@ -18,8 +18,6 @@ changes, not internal refactors. Categories: **Added**,
   today, yesterday, since, month and search), where every row carried the same
   one; the thread and message headers keep it. "DORMANT no replies" now needs
   a post at least 14 days old; a younger post with no replies has no chip.
-  Cache namespace bumped to 5, because a cached activity heat can now be empty,
-  so every cached row refills once after the deploy.
 
 ### Fixed
 
