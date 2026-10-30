@@ -41,7 +41,7 @@
     <li class="year-row year-row--empty">
       <span>{{ month_names[month_num - 1] }}</span>
       <span></span>
-      <span class="count count--none">{{ 'not yet' if is_current_year else 'none' }}</span>
+      <span class="count count--none">{{ 'not yet' if is_current_year and month_num > current_month else 'none' }}</span>
     </li>
     {% endif %}
   {% endfor %}
