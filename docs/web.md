@@ -98,10 +98,10 @@ a crawler's budget exactly as the HTML pages do.
 
 ## Discovery and canonical URLs
 
-Messages in a multi-message thread point their canonical link at the thread page
-containing them. Single-message threads retain their message URL. Thread pages
-are self-canonical and appear in sitemaps. Incompletely materialized threads use
-the root message URL until their membership can be determined.
+Every message points its canonical link at the thread page containing it,
+including a single-message thread's. Thread pages are self-canonical and appear
+in sitemaps. Incompletely materialized threads use the root message URL until
+their membership can be determined.
 
 | Path | Contents |
 | --- | --- |
@@ -111,7 +111,7 @@ the root message URL until their membership can be determined.
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
-| `/<inbox>/<YYYY>/messages-sitemap.xml` | A year's message pages: single-message threads, and threads still being backfilled |
+| `/<inbox>/<YYYY>/messages-sitemap.xml` | A year's message pages: the roots of threads still being backfilled |
 | `/<inbox>/<YYYY>/<MM>/messages-sitemap.xml` | A month's message pages |
 | `/sitemap-maintainers.xml` | Supported maintainer profiles |
 | `/sitemap-series-diffs-<h>.xml` | Cover-letter diffs between adjacent revisions of each series whose key starts with `<h>` (`0` to `f`) |

@@ -23,6 +23,13 @@ changes, not internal refactors. Categories: **Added**,
   subsystems and Merge window. It works without JavaScript, and every link
   in it is at least 44 px tall. The nav link to the page you are on is
   marked `aria-current="page"`.
+- A single-message thread now has a thread page (`/t`) like every other
+  thread, and that page carries its aggregations (#1003). The message page
+  names it as canonical, `/sitemap.xml` lists it, IndexNow announces it,
+  and the body is shown in full there. Operators: the canonical of every
+  single-message thread changes once. `/messages-sitemap.xml` now lists
+  only threads still being backfilled, so it shrinks to almost nothing. No
+  Search Console action is needed.
 
 ### Fixed
 
