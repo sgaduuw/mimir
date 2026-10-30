@@ -572,32 +572,46 @@ def _active_thread(article_id, *, reply_count, subject="A thread"):
     )
 
 
-def test_inbox_json_ld_item_list_points_at_thread_views(client):
+def test_inbox_json_ld_item_list_points_at_thread_views(client, monkeypatch):
     """The `ItemList` on `/<inbox>/` claims to be the active
     DISCUSSIONS, so every discussion points at its thread view rather
-    than at its root message, a single-message one included (#1003).
+    than at its root message, a single-message one included (#1003),
+    unless the column cannot rank it: then the message URL, which is what
+    its own page names as canonical, with or without replies.
 
     Pointing at the root message put structured data handed to Google
     at odds with the page it names, which disclaims itself via
     `<link rel="canonical">`.
     """
-    from mimir.seo.json_ld import _json_ld_inbox
+    import mimir.seo.json_ld as json_ld
 
-    class _Inbox:
-        name = "alpha"
+    asked = []
 
-    payload = _json_ld_inbox(
+    def unrankable(_session, inbox_id, ids):
+        asked.append((inbox_id, ids))
+        return {33, 44}
+
+    # Patched where `_json_ld_inbox` reads it.
+    monkeypatch.setattr(json_ld, "unmaterialised_roots", unrankable)
+    payload = json_ld._json_ld_inbox(
+        None,
         "https://example.test",
-        _Inbox(),
+        SimpleNamespace(id=7, name="alpha"),
         active_threads=[
             _active_thread(11, reply_count=4, subject="Has replies"),
             _active_thread(22, reply_count=0, subject="Solo"),
+            _active_thread(33, reply_count=0, subject="Solo, unrooted"),
+            _active_thread(44, reply_count=2, subject="Mid-backfill"),
         ],
     )
     urls = [item["url"] for item in payload["mainEntity"]["itemListElement"]]
-    assert urls[0] == "https://example.test/alpha/2024/03/11/t", urls
-    # A single-message thread too (#1003): every thread's canonical is its `/t`.
-    assert urls[1] == "https://example.test/alpha/2024/03/22/t", urls
+    assert asked == [(7, [11, 22, 33, 44])]  # one batched question
+    assert urls == [
+        "https://example.test/alpha/2024/03/11/t",
+        "https://example.test/alpha/2024/03/22/t",
+        "https://example.test/alpha/2024/03/33",
+        "https://example.test/alpha/2024/03/44",
+    ], urls
 
 
 def _seed_backfilling_root(tmp_path, prefix: str, when=None) -> tuple[int, str]:
