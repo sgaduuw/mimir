@@ -96,12 +96,10 @@ def dedupe_thread(nodes: list) -> list:
 
     A cyclic `thread_parent` (sender-controlled `In-Reply-To`, no cycle
     guard at ingest) makes the recursive CTE re-emit the same article
-    once per level up to MAX_DEPTH. Both the thread view and the
-    message page's consolidation gate must count the SAME thread: the
-    view renders the deduped list, so a gate counting the raw one sees
-    1001 messages where the page shows 1, and consolidates onto a
-    single-message thread view, which is exactly what the
-    single-message rule exists to prevent.
+    once per level up to MAX_DEPTH. The thread view and the message
+    page must count the SAME thread: the view renders the deduped list,
+    so a message page counting the raw one would report 1001 messages
+    where the view shows 1.
     """
     seen: set[int] = set()
     out = []

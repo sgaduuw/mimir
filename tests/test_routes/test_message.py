@@ -80,9 +80,9 @@ def test_message_wrong_inbox_redirects_to_canonical(client, tmp_path):
     """An article that exists but is not linked to the requested inbox
     301s to its canonical message URL (#648), so URLs already in crawler
     queues from the misassigned-list-address bug consolidate instead of
-    404ing. For a self-canonical page the Location equals the path in
-    the page's own `<link rel="canonical">`; a threaded page's tag
-    carries on to its thread page (see the reply test below)."""
+    404ing. The Location is the message URL; that page's own
+    `<link rel="canonical">` carries on to its thread page, a
+    single-message thread's included (#1003)."""
     _, real_url = _ingest_one_article(
         tmp_path,
         "alpha",
@@ -97,7 +97,7 @@ def test_message_wrong_inbox_redirects_to_canonical(client, tmp_path):
 
     assert r.status_code == 301
     assert r.headers["Location"] == real_url
-    assert canonical.endswith(r.headers["Location"])
+    assert canonical.endswith(r.headers["Location"] + "/t")
     # Not pinned for long: the canonical can move (#644).
     assert r.headers["Cache-Control"] == "public, no-cache"
 
@@ -1551,7 +1551,8 @@ def test_message_page_emits_breadcrumb_list(client, tmp_path):
     assert items[1]["item"].endswith("/alpha/")
     assert items[2]["position"] == 3
     assert items[2]["name"] == "brief subject"
-    assert items[2]["item"].endswith(f"/{art_id}")
+    # The leaf follows the page's canonical, which is its `/t` (#1003).
+    assert items[2]["item"].endswith(f"/{art_id}/t")
 
 
 def test_message_breadcrumb_subject_truncated_to_80(client, tmp_path):
@@ -2569,9 +2570,9 @@ def test_message_page_etag_follows_target_inbox_thread_canonical(client, tmp_pat
     """#656 case 1: the canonical is built from the CANONICAL inbox's
     copy of the thread, while the thread date in the ETag comes from the
     requested inbox. A change only in the target inbox's thread (here the
-    root gets filed there, so the reply stops being a singleton) moves
-    the canonical to the thread page and leaves the requested inbox's
-    thread untouched."""
+    root gets filed there, so the root the reply's row names becomes
+    present) moves the canonical to the thread page and leaves the
+    requested inbox's thread untouched."""
     from sqlalchemy import delete, select
 
     from mimir.extensions import SessionLocal
@@ -2607,7 +2608,8 @@ def test_message_page_etag_follows_target_inbox_thread_canonical(client, tmp_pat
 
     first = client.get(reply_url)
     assert first.status_code == 200
-    # Precondition: a singleton in beta, so the message URL, not a page.
+    # Precondition: the reply's beta row names a root not yet filed in
+    # beta, so the own-row check fails: the message URL, not a page.
     assert "/beta/" in _canonical_href(first)
     assert "/t" not in _canonical_href(first)
 

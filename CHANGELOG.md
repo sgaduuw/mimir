@@ -11,6 +11,21 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- A single-message thread's message page now names its thread page (`/t`)
+  as canonical, like every other thread's (#1003). `/sitemap.xml`,
+  IndexNow, the inbox page's structured data and the message page's
+  thread link point at that page too, and it shows the whole message
+  body. Operators: search engines see millions of canonical changes at
+  once. On 2026-10-30 production had 2,857,252 single-message thread roots
+  (of 6,253,896 roots, 46%, across 211 inboxes). Each one's message page
+  changes its canonical to its `/t`, and each URL moves from the
+  `/messages-sitemap.xml` files to the `/sitemap.xml` files, one for one.
+  `/messages-sitemap.xml` now lists only threads still being backfilled,
+  so it is empty once the backfill has completed, as on 2026-10-30. No
+  Search Console action is needed.
+
 ## [3.34.0] - 2026-10-30
 
 No migration, no backfill and no cache version bump.

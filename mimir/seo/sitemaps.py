@@ -72,7 +72,7 @@ logger = logging.getLogger(__name__)
 #      everyone reaches for, and it is not the binding one.
 #   2. SQLite's SQLITE_LIMIT_VARIABLE_NUMBER is 32,766 on this build
 #      (measured 2026-07-30, sqlite 3.50.4). A page slice is passed
-#      whole to five call sites as an expanding `IN` list (six
+#      whole to four call sites as an expanding `IN` list (five
 #      statements: `unmaterialised_roots` issues two), so
 #      the slice width IS a bound-parameter count.
 #
@@ -328,13 +328,11 @@ def _archive_entries(
     drift is silent: the sitemap would list a URL whose own page names a
     different canonical.
 
-    A singleton's lastmod is its own date by definition, said
-    explicitly rather than left to the aggregate, which keeps this
-    coherent with `_singleton_root_ids` BY CONSTRUCTION. That function
-    reads `thread_parent` while the aggregate reads the materialised
-    column, so a wrong column value could otherwise make a
-    single-message page, which can never change, advertise another
-    thread's date. For correct data the branch is a no-op.
+    Every root gets its thread view (#1003), single-message threads
+    included, except one `unmaterialised_roots` returns: the column
+    cannot rank it, so it keeps its message URL. That is the one
+    predicate; a second test such as "has a reply" would disagree with
+    the pages' canonicals.
     """
     rows = {
         art_id: date
@@ -344,7 +342,6 @@ def _archive_entries(
     }
     # Snapshot order, not query order: the slice is the contract.
     roots = [(i, rows[i]) for i in page_ids if rows.get(i) is not None]
-    singleton_ids = _singleton_root_ids(session, inbox, page_ids)
     last_activity = _thread_last_activity(session, inbox, page_ids)
     message_counts = _thread_message_counts(session, inbox, page_ids)
     unrankable_roots = unmaterialised_roots(session, inbox.id, page_ids)
@@ -364,15 +361,15 @@ def _archive_entries(
         activity = last_activity.get(art_id)
         count = message_counts.get(art_id, 1)
         # A thread the column cannot fully rank is advertised as its
-        # root's MESSAGE url, exactly like a singleton, because that is
-        # what its messages claim as their canonical in that state. The
+        # root's MESSAGE url, because that is what its messages claim
+        # as their canonical in that state. The
         # thread view still exists and is still self-canonical; it is
         # simply not advertised while nothing can agree on how many
         # pages it has. Listing `/t` here instead would advertise a URL
         # that the messages themselves disclaim, which is the
         # incoherence `test_sitemap_is_coherent_midway_through_a_backfill`
         # exists to catch, and did.
-        if art_id in singleton_ids or art_id in unrankable_roots:
+        if art_id in unrankable_roots:
             # The lastmod is the ROOT's date, not the thread's newest
             # activity, and for an unrankable thread that is a
             # deliberate understatement rather than an oversight. The
@@ -398,7 +395,8 @@ def _archive_entries(
             # **6,074,908** thread roots hold more than 75 messages and
             # so paginate, adding **24,753** URLs, or +0.41%. (The
             # denominator counts every root's advertised URL, most of
-            # which are singleton MESSAGE urls rather than `/t`; it is
+            # which were singleton MESSAGE urls rather than `/t` until
+            # #1003; it is
             # the right denominator for "how much does pagination add
             # to the sitemap", which is the question being asked.) An earlier version of this note
             # compared that figure to 32,229, which is the number of
@@ -688,53 +686,6 @@ def _thread_message_counts(
     )
 
 
-def _singleton_root_ids(session, inbox: Inbox, root_ids: list[int]) -> set[int]:
-    """Of `root_ids`, those whose thread is just themselves in this
-    inbox (no reply hangs off them here).
-
-    Deliberately still derived from `thread_parent` rather than from
-    `article_lists.thread_root_id`, unlike the own-root test in
-    `_archive_roots_query`. A `GROUP BY thread_root_id HAVING
-    count = 1` counts only POPULATED members, so mid-backfill (root
-    seeded, replies still NULL) a five-message thread counts as one and
-    gets published as a message URL while its own page canonicalises to
-    the thread URL, i.e. the sitemap listing a page that disclaims
-    itself. BOTH backfill drivers commit one pass at a time (the RPC
-    handler submits each as its own WriteOp; the broker's startup path
-    drives the same `drive_passes` seam and commits between passes), so
-    that state is reachable and committed on every inbox, and durable
-    if a run is interrupted.
-
-    The column form also buys nothing measurable here: 3.0-4.1 ms
-    against 3.4 ms for this one on 5000 ids, at both 500k and 2.1M
-    rows. Faster-looking and wrong is a bad trade.
-
-    Correlated EXISTS, not a join: as a join the planner stops driving
-    from `articles IN (ids)` past a few hundred ids and scans every
-    article-list row in the inbox instead, i.e. O(ids x inbox rows),
-    measured at 3950 ms for 5000 ids over a 50k-row inbox.
-    """
-    if not root_ids:
-        return set()
-    child = aliased(Article)
-    has_reply = (
-        select(child.id)
-        .join(ArticleList, ArticleList.article_id == child.id)
-        .where(
-            child.thread_parent == Article.message_id,
-            ArticleList.inbox_id == inbox.id,
-            child.id != Article.id,
-        )
-        .exists()
-    )
-    with_replies = set(
-        session.execute(select(Article.id).where(Article.id.in_(root_ids), has_reply))
-        .scalars()
-        .all()
-    )
-    return set(root_ids) - with_replies
-
-
 def _month_root_ids(
     session: Session, inbox: Inbox, year: int, month: int, *, force: bool = False
 ) -> list[int]:
@@ -778,16 +729,20 @@ def _month_root_ids(
     return ids
 
 
-# The `split` keys hold both trees of a file, `(thread, message)`.
+# These keys hold both trees of a file, `(thread, message)`. Renamed from
+# `yearsplit`/`monthsplit` when single-message roots moved to the thread
+# tree (#1003): rows cut under the old split would list them as message
+# URLs for up to a TTL after deploy. A rename, not a NAMESPACE_VERSION
+# bump, because nothing else cached changed meaning.
 def _year_pages_key(inbox_name: str, year: int) -> str:
     return (
-        f"sitemap:yearsplit:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
+        f"sitemap:yeartrees:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
     )
 
 
 def _month_page_key(inbox_name: str, year: int, month: int, page: int) -> str:
     return (
-        f"sitemap:monthsplit:{inbox_name}:{year:04d}-{month:02d}:{page}"
+        f"sitemap:monthtrees:{inbox_name}:{year:04d}-{month:02d}:{page}"
         f":{settings.thread_view_render_cap}"
     )
 

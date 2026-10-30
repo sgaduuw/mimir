@@ -194,8 +194,10 @@ def test_article_paths_reads_the_posting_by_the_series_key_index(seeded_db):
 # a subsystem line to render (the rules index and the allowlist load on
 # a cold cache), but its 304 renders nothing and stays +0 too. The
 # patch page's 47 is since #844 Part 3, which dropped the card's own
-# landing query (the status line reads the pill's row).
-MESSAGE_PAGE_STATEMENTS = {"p1@x": (47, 21), "cover@x": (None, 19)}
+# landing query (the status line reads the pill's row). #1003 dropped the
+# canonical's "does the thread have another member" lookup: -1 on every
+# count.
+MESSAGE_PAGE_STATEMENTS = {"p1@x": (46, 20), "cover@x": (None, 18)}
 
 
 def test_message_page_statement_budget(client, tmp_path):
