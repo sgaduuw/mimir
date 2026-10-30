@@ -88,3 +88,29 @@ def test_inbox_item_list_follows_the_message_canonical_mid_backfill(client, tmp_
     listed, canonical = _listed_and_canonical(client, root_id, msg_path)
     assert canonical == f"http://localhost{msg_path}"  # precondition: no /t claim
     assert listed == [canonical], listed
+
+
+def test_inbox_item_list_follows_the_message_canonical_for_a_rooted_singleton(
+    client, tmp_path
+):
+    """The healthy direction, on the real dashboard and predicate: a rooted
+    single-message thread is named by its `/t`, which is its canonical."""
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from mimir.web.urls import _msg_url
+    from tests.test_routes._helpers import seed_thread_shape
+
+    solo_id, _ = seed_thread_shape(tmp_path, "alpha", [("rooted@x", None)])["rooted@x"]
+    with SessionLocal() as s:
+        s.execute(
+            update(Article)
+            .where(Article.id == solo_id)
+            .values(date=datetime.now(UTC) - timedelta(hours=1))
+        )
+        s.commit()
+        msg_path = _msg_url(s.get(Article, solo_id), "alpha")
+    listed, canonical = _listed_and_canonical(client, solo_id, msg_path)
+    assert canonical == f"http://localhost{msg_path}/t"  # precondition: a /t claim
+    assert listed == [canonical], listed
