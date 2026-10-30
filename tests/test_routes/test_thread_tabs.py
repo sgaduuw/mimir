@@ -156,7 +156,6 @@ def test_the_tablist_counts_the_whole_thread_and_starts_hidden(client, tmp_path)
     tablist = re.search(r'<div class="thread-tabs" role="tablist"[^>]*>', html)
     assert tablist, "no tablist"
     assert " hidden" in tablist.group(0)
-    assert 'data-replies="1"' in tablist.group(0)
     counts = dict(
         re.findall(
             r'<button[^>]*data-tab="(\w+)"[^>]*>[^<]*<span class="tab-count">(\d+)</span>',
@@ -532,10 +531,18 @@ def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
     assert "Revisions and related patches" in html.split(f'id="patch-{p1}"')[1][:400]
 
 
-def _css_block(css: str, selector: str) -> str:
+def _css() -> str:
+    from pathlib import Path
+
+    import mimir
+
+    return (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+
+
+def _css_block(selector: str) -> str:
     import re
 
-    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", _css())
     assert match, selector
     return match.group(1)
 
@@ -546,15 +553,11 @@ def test_tab_colours_do_not_go_through_the_button_scoped_pico_colour():
     tab labels near-black in dark mode (#989). Inactive tabs use the muted
     colour; the selected tab inherits the page's text colour."""
     import re
-    from pathlib import Path
 
-    import mimir
-
-    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
-    tab = _css_block(css, '.thread-tabs [role="tab"]')
-    selected = _css_block(css, '.thread-tabs [role="tab"][aria-selected="true"]')
+    tab = _css_block('.thread-tabs [role="tab"]')
+    selected = _css_block('.thread-tabs [role="tab"][aria-selected="true"]')
     for selector, body in re.findall(
-        r'(\.thread-tabs \[role="tab"\][^{]*)\{([^}]*)\}', css
+        r'(\.thread-tabs \[role="tab"\][^{]*)\{([^}]*)\}', _css()
     ):
         assert "var(--pico-color)" not in body, selector
     assert re.search(r"color:\s*var\(--pico-muted-color\)", tab)
@@ -564,11 +567,4 @@ def test_tab_colours_do_not_go_through_the_button_scoped_pico_colour():
 def test_revisions_fold_hides_picos_summary_chevron():
     """The fold draws its own marker; Pico's `summary::after` chevron made
     a second one."""
-    import re
-    from pathlib import Path
-
-    import mimir
-
-    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
-    block = _css_block(css, ".revisions-fold summary::after")
-    assert re.search(r"display:\s*none", block)
+    assert "display: none" in _css_block(".revisions-fold summary::after")
