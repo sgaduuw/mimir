@@ -2466,10 +2466,11 @@ with an ordinary request instead of clearing them, which is the only way
 to see a cache the validator cannot, and it asserts the change is
 visible in the body so a case cannot pass by construction. It runs
 every matrix case on both surfaces except one pairing: `series_head` on
-the thread view, which renders no revisions fold, so the head (spelled
-only in the fold's diff links) cannot reach its body; that ETag still
-moves through the shared `render_state_tag`, which the validator matrix
-checks. The static address allowlist, `Settings.email_allowlist`, is the same
+the thread view's Markdown form, which renders no revisions fold, so the
+head (spelled only in the fold's diff links) cannot reach its body; that
+ETag still moves through the shared `render_state_tag`, which the
+validator matrix checks. The HTML thread view renders the root's fold,
+and since #989 each patch's too, so it runs that case. The static address allowlist, `Settings.email_allowlist`, is the same
 kind of input as the render cap: an env knob that restarts the same
 image. `allowlist_tag()` in `_validators.py` puts it into
 `render_state_tag` (message and thread pages and their `.md` forms), the
@@ -2481,7 +2482,21 @@ five surfaces and asserts a 200 whose body no longer shows the address.
 Known exceptions: time-relative output (the activity chip ages within the TTL;
 no validator can carry `now()`), and the related-patches and
 related-discussions lists, which are cached by id and are not validator
-inputs at all, by the same choice as before 3.13.0.
+inputs at all, by the same choice as before 3.13.0. The thread page's
+per-patch related list (#989) is that same list and cache key
+(`msg_related`), fetched on demand from `/api/<inbox>/related/<id>`, so
+it is part of neither `/t` nor its validator.
+
+The thread view also carries `series_rows_tag` (#989): a digest of the
+thread's rows that carry a series column, filtered in SQL and read
+before the ETag (`threading.thread_series_rows`). The whole thread's
+rows (`threading.thread_rows`) are read only after the 304 check, for
+the full page and the HTMX slice. The tabs, the Patches index and each
+message's kind read those columns, and a `backfill-patch-series
+--reprocess` can rewrite them without adding a message. The per-patch
+revisions need no input of their own: they are built only for the
+root's series when the root is a cover, and `render_state_tag` digests
+every position of that series.
 
 ## Version source of truth
 
@@ -2594,6 +2609,14 @@ can silently go wrong:
   pointing at a page that does not hold the message. The alternative,
   letting each surface decide for itself, is what produced every
   blocking defect across this feature's six review rounds.
+
+**The 40-line fold stays (#814, #989).** On a thread with more than one
+message, a plain-text block or top-level quote past 40 lines
+(`BODY_TEXT_FOLD_LINES`) is cut, with a link to the rest: htmx swaps in
+the whole body, and without JS the link opens the message page. It
+exists for page weight, measured in production: syzbot's `/t/70` went
+from 3.45 MB to 0.49 MB. A one-message thread is not cut (#1003): its
+`/t` is its indexed copy. Revisited for #989 and kept as is.
 
 ## Why the message page windows a long thread (#798)
 
