@@ -484,8 +484,9 @@ def test_year_archive_empty_month_label_follows_the_month(client):
     label = lambda body: re.findall(  # noqa: E731
         r'<span class="count count--none">([^<]*)</span>', body
     )
-    # Empty in 2024: Feb, Apr, May, Jun (the current month), then Jul-Dec.
-    assert label(current) == ["none"] * 4 + ["not yet"] * 6
+    # Empty in 2024: Feb, Apr, May are over; Jun (the current month)
+    # and Jul-Dec are still to come.
+    assert label(current) == ["none"] * 3 + ["not yet"] * 7
     assert label(past) == ["none"] * 10
 
 
