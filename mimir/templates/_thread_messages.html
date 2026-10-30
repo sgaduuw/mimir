@@ -29,8 +29,11 @@
      whole-thread render the referenced messages are almost always
      already on this page. #}
   {# `.message-body` is what the "more lines" link swaps out; the full
-     text comes from the fragment route, not from this page. #}
-  <div class="message-body">{{ parsed.body|render_body(compact=True, text_more=(url, url_for('web.api_message_body', inbox_name=inbox_name, article_id=node.id))) }}</div>
+     text comes from the fragment route, not from this page. Not for a
+     one-message thread (#1003): this page is its indexed copy, and the
+     fold exists to keep long threads light. `total_count` is in the
+     ETag, so the switch needs no input of its own. #}
+  <div class="message-body">{{ parsed.body|render_body(compact=True, text_more=(url, url_for('web.api_message_body', inbox_name=inbox_name, article_id=node.id)) if total_count > 1 else None) }}</div>
   {% elif parsed %}
   <p><em>(no body)</em></p>
   {% else %}
