@@ -77,16 +77,12 @@ def _json_ld_inbox(session, base: str, inbox, active_threads=()) -> dict:
     # Lazy imports break a `web → seo → web` cycle: these helpers
     # live in web.py with the rest of the display filters.
     from mimir.web.filters import _clean_subject_filter
-    from mimir.web.urls import _msg_url, _thread_view_url
+    from mimir.web.urls import _msg_url, thread_page_url
 
     # Each thread is named by the URL its own message page names as
     # canonical: its `/t`, unless the column cannot rank it, in which case
     # the message URL (#1003). One batched predicate, two statements.
-    unrankable = (
-        unmaterialised_roots(session, inbox.id, [t.id for t in active_threads])
-        if active_threads
-        else set()
-    )
+    unrankable = unmaterialised_roots(session, inbox.id, [t.id for t in active_threads])
     payload: dict = {
         "@context": "https://schema.org",
         "@type": "DiscussionForum",
@@ -108,7 +104,7 @@ def _json_ld_inbox(session, base: str, inbox, active_threads=()) -> dict:
                     + (
                         _msg_url(t, inbox.name)
                         if t.id in unrankable
-                        else _thread_view_url(t, inbox.name)
+                        else thread_page_url(t.id, t.date, inbox.name)
                     ),
                     "name": _clean_subject_filter(t.subject) or "(no subject)",
                 }
