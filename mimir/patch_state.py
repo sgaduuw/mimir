@@ -428,7 +428,7 @@ DORMANT_AFTER_DAYS = 14
 
 
 def _activity_heat(
-    days_since_last_reply: int | None, age_days: int | None = None
+    days_since_last_reply: int | None, age_days: int | None
 ) -> tuple[str, str]:
     """Map days-since-last-reply to (heat-class, count-label). Six
     buckets calibrated to kernel patch-review cadence:
