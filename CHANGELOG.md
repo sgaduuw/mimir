@@ -9,7 +9,7 @@ Entries describe behaviour, schema, config, and CLI/route shape
 changes, not internal refactors. Categories: **Added**,
 **Changed**, **Deprecated**, **Removed**, **Fixed**, **Security**.
 
-## [Unreleased]
+## [3.36.0] - 2026-10-30
 
 ### Changed
 
