@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.36.1] - 2026-10-30
+
+### Fixed
+
+- The thread tabs (Discussion, Patches, Everything) were near-black on
+  the dark background, a regression in 3.36.0 (#989). Inactive tabs are
+  muted, the selected tab uses the page text colour.
+- The Revisions fold on a patch showed two disclosure markers; it now
+  shows one.
+
 ## [3.36.0] - 2026-10-30
 
 ### Changed
