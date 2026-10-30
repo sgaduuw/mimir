@@ -430,8 +430,8 @@ def thread_view(
                 sum(dels for _, _, dels in files) if counted else None,
             )
 
-        # The root's patch surfaces. Message pages in a multi-message
-        # thread canonicalise here, and the message page is otherwise
+        # The root's patch surfaces. Every message page in the thread
+        # canonicalises here (#1003), and the message page is otherwise
         # the RICHER document, so without these the consolidation would
         # trade away exactly the lifecycle prose this release added as
         # indexable text for "did $series land" queries, plus the
