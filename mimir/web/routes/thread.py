@@ -71,7 +71,6 @@ from mimir.web.urls import (
     _markdown_response,
     _msg_url,
     _site_base,
-    _thread_view_url,
     markdown_path,
     thread_page_url,
 )
@@ -140,7 +139,7 @@ def thread_view(
         # inside `redirect()`, i.e. a 500 on a public URL. Cloudflare
         # forwards those bytes rather than rejecting them.
         #
-        # Built with `_thread_view_url`. Every emitter of a thread-page
+        # Built with `thread_page_url`. Every emitter of a thread-page
         # URL now resolves through `urls.thread_page_url` (and through
         # `_msg_path` beneath it), so the redirect target, this page's
         # canonical, the message page's canonical, the sitemap `<loc>`
@@ -164,7 +163,7 @@ def thread_view(
         # still green. `test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical`
         # now holds them together.
         if explicit_page and page == 1:
-            target = _thread_view_url(article, inbox.name)
+            target = thread_page_url(article.id, article.date, inbox.name)
             return redirect(markdown_path(target) if markdown else target, code=301)
 
         # One thread, one URL. Asking for `/t` on a reply is a coherent

@@ -116,15 +116,6 @@ def _msg_path(article_id: int, date, inbox_name: str) -> str:
     return f"/{inbox_name}/0000/00/{article_id}"
 
 
-def _thread_view_url(article: Article, inbox_name: str) -> str:
-    """Whole-thread URL for a thread ROOT: the root's message URL plus
-    a `/t` suffix. Keeps the date segments (so the age-at-a-glance
-    property of the URL scheme survives) and adds one path token rather
-    than a new top-level namespace. Callers are responsible for passing
-    a root; `/t` on a reply 301s to the root's own thread view."""
-    return _msg_url(article, inbox_name) + "/t"
-
-
 def thread_page_url(article_id: int, date, inbox_name: str, page: int = 1) -> str:
     """One page of a thread view, from a root's `(id, date)` rather than
     an Article.

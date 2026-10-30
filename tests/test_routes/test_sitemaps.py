@@ -1767,7 +1767,7 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
     The other two do NOT share the page suffix. `routes/message.py` and
     `urls._advertised_urls_for` each build it themselves:
 
-        thread_view_url = _thread_view_url(root, name)
+        thread_view_url = thread_page_url(root.id, root.date, name)
         if page_no > 1:
             thread_view_url += f"/{page_no}"
 
@@ -3392,7 +3392,7 @@ def test_single_message_thread_is_byte_identical_across_every_emitter(client, tm
     from mimir import indexnow
     from mimir.extensions import SessionLocal
     from mimir.models import Article
-    from mimir.web.urls import _thread_view_url
+    from mimir.web.urls import thread_page_url
     from tests.test_routes._helpers import seed_thread_shape
 
     solo_id, solo_url = seed_thread_shape(tmp_path, "alpha", [("one@x", None)])["one@x"]
@@ -3401,7 +3401,7 @@ def test_single_message_thread_is_byte_identical_across_every_emitter(client, tm
     with SessionLocal() as s:
         art = s.get(Article, solo_id)
         pushed = indexnow.build_urls(s, [art.message_id], base="http://localhost")
-        helper = "http://localhost" + _thread_view_url(art, "alpha")
+        helper = "http://localhost" + thread_page_url(art.id, art.date, "alpha")
     thread_url = f"http://localhost{solo_url}/t"
     assert helper == thread_url  # the helper is the reference spelling
 
