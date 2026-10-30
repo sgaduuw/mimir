@@ -7,7 +7,8 @@
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ] %}
-<h1>{{ inbox_name }} <small><em>archive · {{ year }}</em></small></h1>
+<nav aria-label="Breadcrumb"><a href="/{{ inbox_name }}/">{{ inbox_name }}</a> / {{ year }}</nav>
+<h1>{{ year }}</h1>
 
 <nav>
   <ul>
