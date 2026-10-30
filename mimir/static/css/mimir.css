@@ -866,8 +866,8 @@ nav .subsystems-dd details[open] ~ ul { display: flex; }
   }
   nav .nav-toggle[open] > summary { margin-bottom: 0; }
   nav .nav-toggle ~ ul {
-    display: none; flex-basis: 100%; flex-direction: column; align-items: stretch;
-    margin: 0;
+    display: none; flex: 1 0 100%; flex-direction: column; align-items: stretch;
+    margin-block: 0; margin-inline: calc(var(--pico-nav-element-spacing-horizontal) * -1);
   }
   nav .nav-toggle[open] ~ ul { display: flex; }
   /* Padding equal to the link's negative margin: rows abut, targets never overlap. */
