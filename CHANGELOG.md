@@ -23,8 +23,8 @@ changes, not internal refactors. Categories: **Added**,
   changes its canonical to its `/t`, and each URL moves from the
   `/messages-sitemap.xml` files to the `/sitemap.xml` files, one for one.
   `/messages-sitemap.xml` now lists only threads still being backfilled,
-  so it is empty when no backfill is running, as on 2026-10-30. No Search
-  Console action is needed.
+  so it is empty once the backfill has completed, as on 2026-10-30. No
+  Search Console action is needed.
 
 ## [3.34.0] - 2026-10-30
 
