@@ -530,3 +530,45 @@ def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
     # Precondition: p1, in the root's series, does get its timeline.
     p1 = seeded["p1@x"][0]
     assert "Revisions and related patches" in html.split(f'id="patch-{p1}"')[1][:400]
+
+
+def _css_block(css: str, selector: str) -> str:
+    import re
+
+    match = re.search(re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    assert match, selector
+    return match.group(1)
+
+
+def test_tab_colours_do_not_go_through_the_button_scoped_pico_colour():
+    """Pico scopes `--pico-color: var(--pico-primary-inverse)` onto every
+    button, which is black in amber, so `color: var(--pico-color)` made the
+    tab labels near-black in dark mode (#989). Inactive tabs use the muted
+    colour; the selected tab inherits the page's text colour."""
+    import re
+    from pathlib import Path
+
+    import mimir
+
+    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    tab = _css_block(css, '.thread-tabs [role="tab"]')
+    selected = _css_block(css, '.thread-tabs [role="tab"][aria-selected="true"]')
+    for selector, body in re.findall(
+        r'(\.thread-tabs \[role="tab"\][^{]*)\{([^}]*)\}', css
+    ):
+        assert "var(--pico-color)" not in body, selector
+    assert re.search(r"color:\s*var\(--pico-muted-color\)", tab)
+    assert re.search(r"(?<!-)color:\s*inherit", selected)
+
+
+def test_revisions_fold_hides_picos_summary_chevron():
+    """The fold draws its own marker; Pico's `summary::after` chevron made
+    a second one."""
+    import re
+    from pathlib import Path
+
+    import mimir
+
+    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
+    block = _css_block(css, ".revisions-fold summary::after")
+    assert re.search(r"display:\s*none", block)
