@@ -2760,8 +2760,9 @@ chip + lifecycle pill, sitting on the same baseline under the
 Subject. Both badges share a single CSS `.badge` primitive
 (monospace + uppercase, identical height + padding). Activity
 varies by colour-coded dot, six heat states from same-day "hot"
-to dormant. An unanswered post under 14 days old (`DORMANT_AFTER_DAYS`)
-has no chip on its header: it has not had time to be answered. Lifecycle varies by pill label + colour, five states
+to dormant. An unanswered post under 14 days old
+(`DORMANT_AFTER_DAYS`) has no chip on its header: it has not had time
+to be answered. Lifecycle varies by pill label + colour, five states
 plus an inline count `: N (XM)` for review-trailer total +
 maintainer-subset. Per-reviewer names live in the pill's tooltip
 (commit hash + timestamp on the leading line; one reviewer per

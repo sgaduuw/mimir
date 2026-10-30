@@ -115,7 +115,7 @@
   <main class="container">
     {# aria-current="page" only where the link IS this page (#988). #}
     {% macro nav_link(href) %}<a href="{{ href }}"{% if request.path == href %} aria-current="page"{% endif %}>{{ caller() }}</a>{% endmacro %}
-    <nav>
+    <nav class="site-nav">
       <ul>
         <li>{% call nav_link(url_for('web.index')) %}<strong>{{ site_name }}</strong>{% endcall %}</li>
         {% if current_inbox %}
