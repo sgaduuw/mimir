@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.35.0] - 2026-10-30
+
 ### Changed
 
 - A single-message thread's message page now names its thread page (`/t`)
