@@ -23,6 +23,11 @@ changes, not internal refactors. Categories: **Added**,
   touching the same files, loaded from the new `/api/<inbox>/related/<id>`
   partial, and, for the root's own series, its revisions with links to the
   diff against each previous revision.
+- On a phone, hard-wrapped prose in a message reads as normal text instead
+  of a staircase of short lines (#989), on the message page and the thread
+  page. Only plain paragraphs are joined: quotes, diffs, code, lists,
+  trailers, tables and indented lines keep their line breaks, and desktop
+  is unchanged. The stored message is untouched.
 
 ## [3.35.0] - 2026-10-30
 

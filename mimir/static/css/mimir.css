@@ -927,3 +927,11 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .patch-index ol { padding-left: 0; list-style: none; }
 .patch-index li { padding: 0.25rem 0; border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color); }
 .patch-index a { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+
+/* Phone re-flow (#989). The renderer wraps hard-wrapped prose paragraphs
+   in .reflow (mimir/rendering/reflow.py decides which); on a phone their
+   lines join, so 72-column mail does not staircase at 40. Desktop keeps
+   the original breaks. One HTML for both. */
+@media (width < 768px) {
+  pre.body-text-block .reflow { white-space: normal; }
+}
