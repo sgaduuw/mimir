@@ -558,10 +558,6 @@ def thread_view(
         # rows on the CTE fallback, so no kinds and no tabs there.
         kinds = {row.id: message_kind(row) for row in ordered_rows}
         kind_counts = Counter(kinds.values())
-        tab_counts = {
-            "discussion": kind_counts["reply"],
-            "patches": kind_counts["patch"],
-        }
         show_tabs = total_count > 1 and kind_counts["patch"] > 0
         # The Patches index covers the whole thread. Each row links the
         # page holding the patch: its index in the page-ordered rows,
@@ -614,7 +610,7 @@ def thread_view(
         page_size=cap,
         thread_summary=thread_summary,
         kinds=kinds,
-        tab_counts=tab_counts,
+        kind_counts=kind_counts,
         show_tabs=show_tabs,
         patch_index=patch_index,
         patch_revisions=patch_revisions,
