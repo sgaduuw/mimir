@@ -997,7 +997,6 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
    its breakpoints like everything else. */
 .message-body pre.body-text-block {
   max-width: 80ch;
-  padding: 0;
   background: none;
   color: var(--pico-color);
   font-size: 0.84375rem;
