@@ -21,17 +21,29 @@
   {%- if node.id in kinds %} data-kind="{{ kinds[node.id] }}"{% endif %}
   {%- if node.id == root.id %} data-root{% endif %}>
   <header>
-    <h2><a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a></h2>
-    <p>
-      <strong>From:</strong> {{ node.author|safe_from }}<br>
-      <strong>Date:</strong> {{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') if node.date else '?' }}
+    {# The subject only where it differs from the thread's (`heading_ids`,
+       #989); the page's h1 says it otherwise. #}
+    {% if node.id in heading_ids %}<h2><a href="{{ url }}">{{ node.subject|clean_subject or '(no subject)' }}</a></h2>{% endif %}
+    {% set who = node.author|display_name %}
+    <p class="card-byline">
+      <span class="avatar" aria-hidden="true">{{ '?' if who == 'unknown sender' else who[:1]|upper }}</span>
+      <strong>{{ who }}</strong>
+      {%- if node.id in reply_to %}
+      <span class="replied-to">replied to <a href="{{ reply_to[node.id][1] }}">{{ reply_to[node.id][0]|display_name }}</a></span>
+      {%- endif %}
+      {# The date links the message's own page, the crawl path; `#` is this card's permalink. #}
+      <a class="card-date" href="{{ url }}">
+        {%- if node.date %}<time datetime="{{ node.date.isoformat() }}" title="{{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') }}">{{ node.date.strftime('%b') }} {{ node.date.day }}, {{ node.date.strftime('%H:%M') }}</time>{% else %}<time>?</time>{% endif -%}
+      </a>
+      <a class="permalink" href="#m{{ node.id }}" aria-label="Permalink to this message">#</a>
     </p>
   </header>
   {% if parsed and parsed.body %}
   {# Message-ID linkification and the parent-quote jump link are both
      omitted: they need per-message bulk lookups, and inside a
      whole-thread render the referenced messages are almost always
-     already on this page. #}
+     already on this page. The header's "replied to" is the one parent
+     reference, from the page's own nodes. #}
   {# `.message-body` is what the "more lines" link swaps out; the full
      text comes from the fragment route, not from this page. Not for a
      one-message thread (#1003): this page is its indexed copy, and the
