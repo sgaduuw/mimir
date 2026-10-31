@@ -225,3 +225,42 @@ def test_the_json_ld_breadcrumb_is_the_visible_one(client, tmp_path):
         assert item == base + href
     canonical = re.search(r'<link rel="canonical" href="([^"]+)"', html).group(1)
     assert items[-1][1] == canonical
+
+
+def test_a_message_landing_earlier_moves_an_off_page_parent_s_link_and_the_etag(
+    client, tmp_path, monkeypatch
+):
+    """The page a parent sits on shifts only when a message joins the
+    thread ahead of it, which moves `total_count` and so the validator."""
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    # `n@x` starts as a thread of its own, then joins the root's, dated
+    # before `a@x`.
+    seeded = _seed_chat(tmp_path, [*CHAIN, ("n@x", None)], authors=WHO)
+    root_id = seeded["r@x"][0]
+    with SessionLocal() as s:
+        root = s.get(Article, root_id)
+        page1 = thread_page_url(root.id, root.date, "alpha", 1)
+        page2 = thread_page_url(root.id, root.date, "alpha", 2)
+    parent_a = f"#m{seeded['a@x'][0]}"
+    before = client.get(page2)
+    link_before = _replied_to(_card(before.get_data(as_text=True), seeded["b@x"][0]))
+    assert link_before[0] == page1 + parent_a  # precondition: a is on page 1
+    with SessionLocal() as s:
+        n = s.get(Article, seeded["n@x"][0])
+        n.thread_parent = "r@x"
+        n.date = s.get(Article, seeded["a@x"][0]).date - timedelta(days=1)
+        s.execute(
+            select(ArticleList).where(ArticleList.article_id == n.id)
+        ).scalar_one().thread_root_id = root_id
+        s.commit()
+    after = client.get(page2)
+    link_after = _replied_to(_card(after.get_data(as_text=True), seeded["b@x"][0]))
+    assert link_after[0] == parent_a  # a moved onto this page
+    assert after.headers["ETag"] != before.headers["ETag"]
