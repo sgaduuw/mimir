@@ -21,28 +21,11 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
    below are <h2>, since each message is a section of this document
    rather than a page of its own. Matches the lead-with-h1 rule from
    3.6.3. #}
-<h1>{{ root.subject|clean_subject or '(no subject)' }}</h1>
+{% include "_thread_header.html" %}
 {# The root's status surfaces, mirroring the message page. Message
    pages canonicalise here, so without these the consolidation would
-   drop the lifecycle prose, subsystem attribution, and review roll-up
-   that make this archive distinctive in search. #}
-{% if subsystem_hits %}
-{% from "_subsystem_link.html" import maintainer_links, subsystem_link %}
-<p><small><strong>Subsystems:</strong>
-  {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
-  {{ maintainer_links(subsystem_hits) }}
-</small></p>
-{% endif %}
-{# A cover's whole posting (#844): lore shows each patch's diffstat,
-   not the series' total. #}
-{% if series_totals and series_totals[0] %}
-{% set _patches, _files, _ins, _dels = series_totals %}
-<p><small><strong>Series:</strong>
-  {{ _patches }} patch{{ '' if _patches == 1 else 'es' }}
-  {%- if _files %} touching {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif %}
-  {%- if _ins is not none %}, +{{ _ins }}/-{{ _dels }}{% endif %}
-</small></p>
-{% endif %}
+   drop the lifecycle prose and review roll-up that make this archive
+   distinctive in search. #}
 {% if patch_state and patch_state.is_patch and lifecycle_status %}
 <div class="msg-badges">
   {%- with status = lifecycle_status %}
@@ -62,11 +45,8 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 {% with revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}
 <p>
   <small>
-    {{ total_count }} message{{ '' if total_count == 1 else 's' }},
-    {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
-    {{ thread_summary.last_activity_rel }}
-    {%- if total_pages > 1 %} &middot; page {{ page }} of {{ total_pages }}{% endif %}
-    &middot; <a href="{{ root_url }}">open the first message on its own page</a>
+    {%- if total_pages > 1 %}page {{ page }} of {{ total_pages }} &middot; {% endif -%}
+    <a href="{{ root_url }}">open the first message on its own page</a>
   </small>
 </p>
 
@@ -98,7 +78,6 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
       <details class="patch-detail" id="patch-{{ p.id }}" hx-get="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}" hx-trigger="toggle once" hx-target="find .patch-related" hx-swap="innerHTML">
         <summary>{{ "Revisions and related patches" if p.id in patch_revisions else "Related patches" }}</summary>
         {% if p.id in patch_revisions %}{% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}{% endif %}
-        {# The heading comes with the list, so no JS leaves no empty box. #}
         <noscript><p><small><a href="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}">Other recent patches touching these files</a></small></p></noscript>
         <div class="patch-related"></div>
       </details>
