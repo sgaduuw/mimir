@@ -335,3 +335,33 @@ def test_on_the_recursive_walk_a_parent_on_another_page_links_to_it(
         f"{page1}#m{seeded['a@x'][0]}",
         "Bob Barker",
     )
+
+
+def test_a_card_never_prints_a_hidden_address_and_names_a_nameless_sender_as_unknown(
+    client, tmp_path
+):
+    """The card's byline and "replied to" use `display_name`: a sender with
+    no usable name (bare address, email-shaped name) is "unknown sender",
+    never their non-allowlisted address."""
+    import re
+
+    seeded = _seed_chat(
+        tmp_path,
+        CHAIN,
+        authors={
+            "r@x": "Ada Lovelace <ada@example.org>",
+            "a@x": "bare@example.org",
+            "b@x": '"named@example.org" <named@example.org>',
+            "c@x": "Di Prince <di@example.org>",
+        },
+    )
+    html = client.get(seeded["r@x"][1] + "/t").get_data(as_text=True)
+    for mid in ("a@x", "b@x"):
+        head = re.search(
+            r"<header>(.*?)</header>", _card(html, seeded[mid][0]), re.DOTALL
+        ).group(1)
+        assert "<strong>unknown sender</strong>" in head, mid
+        assert '<span class="avatar" aria-hidden="true">?</span>' in head, mid
+        assert "@example.org" not in head, mid
+    assert _replied_to(_card(html, seeded["b@x"][0]))[1] == "unknown sender"
+    assert _replied_to(_card(html, seeded["c@x"][0]))[1] == "unknown sender"
