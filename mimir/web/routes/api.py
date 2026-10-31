@@ -88,7 +88,9 @@ def api_related_patches(inbox_name: str, article_id: int):
             abort(404)
         related = related_patches(session, article_id)
         response = Response(
-            render_template("_related_patch_list.html", related_patches=related)
+            render_template(
+                "_related_patch_list.html", related_patches=related, heading=True
+            )
         )
     # A fragment is not a page, and /api/ is robots-disallowed already.
     response.headers["X-Robots-Tag"] = "noindex"

@@ -202,21 +202,19 @@ def test_last_activity_is_the_newest_message_not_the_oldest(
         "fixture did not spread the dates; the assertion below is vacuous"
     )
 
-    from mimir.web.filters import _relative_time
-
     html = client.get(root_url + "/t").get_data(as_text=True)
-    # Scoped to the summary line. Asserting against the whole page is a
-    # substring collision waiting to happen: `_relative_time` renders an
-    # ISO date for old messages, and every message's own `Date:` header
-    # contains its date, so the OLDEST date is present on the page no
-    # matter which one the summary reports.
-    summary = re.search(r"message[s]?,\s*\d+ author[s]?,\s*([^<\n&]+)", html)
-    assert summary, f"no summary line in the page: {html[:400]}"
-    reported = summary.group(1).strip()
-    assert reported == _relative_time(max(dates)), (
-        f"summary reports last activity as {reported!r}, expected "
-        f"{_relative_time(max(dates))!r} (oldest is "
-        f"{_relative_time(min(dates))!r})"
+    # Scoped to the byline. Asserting against the whole page is a
+    # substring collision waiting to happen: every message's own `Date:`
+    # header contains its date, so the OLDEST date is present on the page
+    # no matter which one the byline reports.
+    summary = re.search(r"Last reply (\w{3} \d+, \d{4})", html)
+    assert summary, f"no byline in the page: {html[:400]}"
+    newest = max(dates)
+    expected = f"{newest.strftime('%b')} {newest.day}, {newest.year}"
+    oldest = min(dates)
+    assert summary.group(1) == expected, (
+        f"byline reports last activity as {summary.group(1)!r}, expected "
+        f"{expected!r} (oldest is {oldest.strftime('%b')} {oldest.day}, {oldest.year})"
     )
 
 
@@ -612,7 +610,7 @@ def test_a_non_canonical_page_number_does_not_self_nominate(
     Werkzeug's `int` converter matches `\\d+`, so a leading zero is
     accepted and every zero-padding is a distinct URL for one page. No
     emitter in the codebase produces them (the link, the sitemap entry
-    and the canonical all come from `_thread_view_url`), so the only way
+    and the canonical all come from `thread_page_url`), so the only way
     to arrive is by hand or by a mangling intermediary, and adding a
     redirect would be code for a caller that does not exist.
 

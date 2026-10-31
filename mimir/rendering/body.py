@@ -19,6 +19,7 @@ orchestrator.
 import html
 from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import groupby
 
 from markupsafe import Markup
 from pygments import highlight
@@ -330,23 +331,15 @@ def _render_block(
         be added to its output afterwards. Top level only, never inside a
         quote (decided 2026-10-30)."""
         out: list[str] = []
-        paragraph: list[str] = []
-
-        def flush() -> None:
-            if paragraph:
-                html_text = _linkified(paragraph)
-                if depth == 0 and reflowable(paragraph):
-                    html_text = f'<span class="reflow">{html_text}</span>'
-                out.append(html_text)
-                paragraph.clear()
-
-        for line in lines:
-            if line.strip():
-                paragraph.append(line)
-            else:
-                flush()
-                out.append(line)
-        flush()
+        for has_text, run in groupby(lines, key=lambda line: bool(line.strip())):
+            run = list(run)
+            if not has_text:
+                out.extend(run)
+                continue
+            html_text = _linkified(run)
+            if depth == 0 and reflowable(run):
+                html_text = f'<span class="reflow">{html_text}</span>'
+            out.append(html_text)
         return "\n".join(out)
 
     if context.text_more is not None and len(block.lines) > BODY_TEXT_FOLD_LINES:

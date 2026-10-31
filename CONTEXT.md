@@ -2498,6 +2498,14 @@ revisions need no input of their own: they are built only for the
 root's series when the root is a cover, and `render_state_tag` digests
 every position of that series.
 
+The thread view's header lists this inbox's busiest subsystem first (#989).
+That is `most_active_subsystems_in_inbox`'s top id for the last 7 days: a
+cached ranking, read before the ETag and never computed there
+(`compute_on_miss=False`), which moves with the inbox's traffic and not
+with the thread. Its id is in the ETag's content part, so a cold cache is
+the empty tag and the ETag moves when the cache warms. It costs one cache
+read on the 304.
+
 ## Version source of truth
 
 `pyproject.toml`'s `version` field. Read at runtime via
