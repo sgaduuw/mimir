@@ -49,6 +49,8 @@ os.environ.setdefault("FLASK_DEBUG", "false")
 # avoidance uses a thread-local flag (`_HANDLER_TLS`), independent
 # of this process-wide setting.
 os.environ["MIMIR_IS_BROKER"] = "true"
+# Ignore the developer's `.env`: it would leak into the import-time settings.
+os.environ["MIMIR_ENV_FILE"] = ""
 
 from datetime import UTC  # noqa: E402  (module-level setup runs above)
 
