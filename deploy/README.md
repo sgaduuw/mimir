@@ -203,8 +203,8 @@ Googlebot at 80% can draw it down to 20%, Applebot at 10% only gets the top
 tenth, so a busy low-share crawler can no longer take the token a search
 crawler needs. The percentage still caps the crawler's own rate, which is why
 the shares do not have to add up to 100. Unlisted crawlers rank at
-`CRAWLER_DEFAULT_UA_PCT` and the impossible-headers bucket at its own
-percentage.
+`CRAWLER_DEFAULT_UA_PCT` (by default level with the 10% listed crawlers) and
+the impossible-headers bucket at its own percentage.
 
 A crawler you did not list is still recognised by a product token: a name
 ending in a marker, followed by a slash, such as `GPTBot/1.0`,
@@ -242,8 +242,8 @@ pair is a client faking a click. It charges the global bucket but
 not the unlisted pool, and a declared crawler keeps its own bucket. Like the
 rest of the gate it does nothing while the global budget is `0`.
 
-The global bucket, the pool, the impossible-headers bucket and each listed
-crawler's bucket are shared by all gunicorn workers of one web instance,
+The global bucket, the pool, the overflow bucket, the impossible-headers bucket
+and each listed crawler's bucket are shared by all gunicorn workers of one web instance,
 through a small file in `/dev/shm` (or the temp directory when there is no
 `/dev/shm`), so global 120 with Applebot at 10% is 12 a minute for the
 instance however many workers it runs. The buckets of unlisted crawlers stay
@@ -253,7 +253,9 @@ or one token if that is more. In any window an instance admits at most that
 window's share of the budget plus ten seconds' worth. Each web instance has
 its own buckets, so with several instances (containers) behind a balancer,
 give each its share: two instances with `CRAWLER_BUDGET_PER_MINUTE=50` are a
-global 100.
+global 100. If the file cannot be created, a `crawler budget: cannot share
+buckets` warning is logged and each worker keeps its own buckets, as before
+3.37.0.
 
 To pick a budget, measure the crawler's request rate in the access log first
 (its `ua` field), then set the global budget to about a third of the combined

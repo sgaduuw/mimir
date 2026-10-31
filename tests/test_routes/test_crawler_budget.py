@@ -10,6 +10,7 @@ import multiprocessing
 import os
 import re
 import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -1012,7 +1013,8 @@ def test_from_settings_creates_one_file_only_when_the_budget_is_on(
     CrawlerBudget.from_settings(Settings())  # a second worker, same file
     files = [p.name for p in tmp_path.iterdir()]
     assert len(files) == 1
-    assert files[0].startswith(f"mimir-crawler-budget-{os.getppid()}-")
+    assert files[0].startswith("mimir-crawler-budget-")
+    assert f"-{os.getppid()}-" in files[0]
 
 
 def test_a_worker_whose_clock_read_lags_never_moves_a_stamp_back(tmp_path):
@@ -1030,3 +1032,51 @@ def test_a_worker_whose_clock_read_lags_never_moves_a_stamp_back(tmp_path):
     assert b.check(APPLEBOT) is None  # 49
     assert a.check(APPLEBOT) is None  # still 1010: nothing to refill
     assert a.ua_tokens("Applebot") == pytest.approx(48)
+
+
+# Found by the pre-PR whole-diff review; each was red at dfd2268.
+
+
+def test_unwritable_shared_dir_does_not_take_down_the_import(tmp_path, monkeypatch):
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setattr(crawler_budget, "shared_dir", lambda: str(missing))
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    lines = _warnings(lambda: CrawlerBudget.from_settings(Settings()))
+    assert any("cannot share buckets" in m for m in lines)
+    gate = CrawlerBudget.from_settings(Settings())
+    assert gate.check(APPLEBOT) is None
+
+
+def _hammer_inherited(gate, deadline, q):
+    asked = admitted = 0
+    while time.monotonic() < deadline:
+        asked += 1
+        admitted += gate.check(APPLEBOT) is None
+    q.put((asked, admitted))
+
+
+def test_gate_built_before_fork_still_excludes_children(tmp_path):
+    # gunicorn --preload builds the gate in the master, then forks.
+    path = str(tmp_path / "budget")
+    gate = CrawlerBudget(600, {"Applebot": 100}, 4, 120, shared_path=path)
+    window = 3.0
+    deadline = time.monotonic() + window
+    ctx = multiprocessing.get_context("fork")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(target=_hammer_inherited, args=(gate, deadline, q))
+        for _ in range(4)
+    ]
+    for p in procs:
+        p.start()
+    # A timeout so a child stuck after fork fails the test, never hangs it.
+    results = [q.get(timeout=60) for _ in procs]
+    for p in procs:
+        p.join(timeout=60)
+    assert sum(asked > 0 for asked, _ in results) >= 2, results  # precondition
+    assert sum(n for _, n in results) <= 10 * window + 100 + 1, results
+
+
+def test_compose_comment_matches_shared_buckets():
+    compose = (Path(__file__).resolve().parents[2] / "compose.yaml").read_text()
+    assert "Buckets are per worker" not in compose
