@@ -976,8 +976,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .bar-meter .bar-removed { fill: var(--pico-muted-color); }
 
 /* Message cards (#989): the author leads, then who it answers, the date
-   and the permalink. Text colours stay the page's own: muted text is
-   under 4.5:1 on the light background. */
+   and the permalink. */
 .card-byline { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; margin: 0 0 0.5rem; }
 .avatar {
   display: inline-flex; align-items: center; justify-content: center;
@@ -987,6 +986,32 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 }
 .card-date, .permalink { font-size: 0.85rem; }
 .card-date { margin-left: auto; }
+
+/* Message body (#1033), on the thread and message pages: mail text on the
+   page, not on Pico's grey code slab, with quotes in muted text behind a
+   rule. Pico colours a <pre> with its code colour, which is the muted
+   one, so body text takes the page colour back or quotes would not stand
+   out. Pico's muted colour clears 4.5:1 on both schemes: 5.4:1 on the
+   light background and 4.8:1 on the dark one (pico 2.1.1 amber, measured
+   2026-11-01). 0.84375rem is 13.5px at Pico's base size, and scales with
+   its breakpoints like everything else. */
+.message-body pre.body-text-block {
+  max-width: 80ch;
+  background: none;
+  color: var(--pico-color);
+  font-size: 0.84375rem;
+  line-height: 1.6;
+}
+.message-body blockquote {
+  margin: 0.5rem 0;
+  padding: 0 0 0 0.75rem;
+  border-inline-start: 3px solid var(--pico-muted-color);
+  color: var(--pico-muted-color);
+}
+.message-body blockquote pre.body-text-block { color: inherit; }
+/* The cut's link (`_more_link` in mimir/rendering/body.py): a quiet line
+   under the cut text, still a real link for crawlers and no-JS. */
+.text-more { margin: 0.25rem 0 0.75rem; font-size: 0.85rem; }
 
 /* Thread outline (#989): a closed disclosure everywhere, and on a wide
    screen a sidebar where `::details-content` lets CSS show a closed
