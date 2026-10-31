@@ -167,7 +167,11 @@ def _outline_rows(nodes, *, root, kinds, ordered, cap, page, inbox_name, total_c
     for row in rows:
         row["href"] = href(row["node"].id)
         row["here"] = row["node"].id in here
-    if total_count > len(nodes):
+    # Guarded on the rows read, not on `total_count`: that is read before
+    # the validator and `ordered` after it, with no snapshot between, so a
+    # reindex can leave fewer rows than the count says, and an ingest more,
+    # which would make a "0 more" row. Both must hold.
+    if total_count > len(nodes) and len(ordered) > len(nodes):
         rows.append(
             {
                 "kind": "more",

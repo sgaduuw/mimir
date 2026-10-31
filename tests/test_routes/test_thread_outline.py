@@ -378,3 +378,90 @@ def test_outline_depth_is_linear_on_a_long_chain_and_a_long_cycle():
     assert outline_depths(chain)[count - 1] == count - 1
     outline_depths(ring)
     assert time.perf_counter() - start < 2
+
+
+def test_a_thread_that_shrinks_between_the_reads_still_renders(
+    client, tmp_path, monkeypatch
+):
+    """`total_count` is read before the validator and the whole thread's
+    rows after it, with no snapshot between: a `reindex --from-scratch` can
+    remove rows in between. The outline's "N more" row must come from the
+    rows actually read, not from the count."""
+    monkeypatch.setattr(thread_route, "OUTLINE_ROWS", 4)
+    seeded = _seed_outline_thread(tmp_path)
+    real = thread_route.thread_rows
+    monkeypatch.setattr(thread_route, "thread_rows", lambda *a, **k: real(*a, **k)[:4])
+    resp = client.get(seeded["c@x"][1] + "/t")
+    assert resp.status_code == 200
+    rows = _outline(resp.get_data(as_text=True))
+    assert rows and rows[0][0] == "root"
+
+
+def test_the_cte_fallback_lists_every_message_and_its_links_resolve(
+    client, tmp_path, monkeypatch
+):
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_outline_thread(tmp_path)
+    with SessionLocal() as s:
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == seeded["q3@x"][0])
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    html = _get(client, seeded["c@x"][1] + "/t").get_data(as_text=True)
+    rows = _outline(html)
+    # No kinds on the fallback: every message but the root is a reply row.
+    assert [k for k, *_ in rows] == ["root"] + ["reply"] * 6
+    for _k, _d, _h, href, _t in rows:
+        url, _, anchor = href.partition("#")
+        target = html if not url else _get(client, url).get_data(as_text=True)
+        assert f'id="{anchor}"' in target, href
+
+
+def test_a_thread_that_grows_between_the_reads_lists_no_empty_more_row(
+    client, tmp_path, monkeypatch
+):
+    """A message ingested after the outline's rows are read and before
+    `thread_rows` is not counted in `total_count`: no "0 more" row."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    seeded = _seed_outline_thread(tmp_path, EDGES[:5])  # five: all listed
+    root_id = seeded["c@x"][0]
+    real = thread_route.thread_rows
+
+    def late_arrival(session, inbox, root_article_id):
+        with SessionLocal() as s:
+            root = s.get(Article, root_id)
+            late = Article(
+                message_id="late@x",
+                subject="Re: late",
+                author="Late <late@example.org>",
+                date=root.date,
+                thread_parent="c@x",
+            )
+            s.add(late)
+            s.flush()
+            s.add(
+                ArticleList(
+                    article_id=late.id,
+                    inbox_id=inbox.id,
+                    epoch="0.git",
+                    commit_sha="f" * 40,
+                    thread_root_id=root_id,
+                )
+            )
+            s.commit()
+        return real(session, inbox, root_article_id)
+
+    monkeypatch.setattr(thread_route, "thread_rows", late_arrival)
+    resp = client.get(seeded["c@x"][1] + "/t")
+    assert resp.status_code == 200
+    rows = _outline(resp.get_data(as_text=True))
+    assert [r for r in rows if r[0] == "more"] == [], rows[-1]
