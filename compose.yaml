@@ -166,8 +166,8 @@ services:
       # SITE_NAME: lkml-mirror
       # SECURITY_CONTACT: mailto:security@example.com
       # Throttle a heavy crawler with 429 + Retry-After (off by default,
-      # see deploy/README.md "Crawler budgets"). Buckets are per worker
-      # at budget / WORKERS.
+      # see deploy/README.md "Crawler budgets"). The workers share the
+      # buckets through /dev/shm; unlisted crawlers' buckets are per worker.
       # CRAWLER_BUDGET_PER_MINUTE: "240"
       # CRAWLER_UA_BUDGETS: '{"Applebot": 50, "Bytespider": 0}'
       #   merged over the default crawler list (Applebot, Bytespider, ...
