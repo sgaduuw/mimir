@@ -177,8 +177,12 @@ class _Shared:
         # O_NOFOLLOW: the name is predictable, so never write through a
         # symlink someone else planted there.
         self._fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        os.ftruncate(self._fd, size)  # zero-filled on create, a no-op after
-        self.mem = mmap.mmap(self._fd, size)
+        try:
+            os.ftruncate(self._fd, size)  # zero-filled on create, a no-op after
+            self.mem = mmap.mmap(self._fd, size)
+        except OSError:
+            os.close(self._fd)
+            raise
 
     @contextmanager
     def lock(self) -> Iterator[None]:
@@ -187,10 +191,11 @@ class _Shared:
         # workers fork (gunicorn --preload) would have every worker
         # "holding" it at once. lockf is per process and not inherited.
         # It does not exclude threads of one process, which is why
-        # callers also hold a threading.Lock, and closing any fd on the
-        # file drops it, which is why this is the only one. The kernel
-        # drops it when a process dies, so a killed worker cannot wedge
-        # the rest.
+        # callers also hold a threading.Lock. Closing ANY fd on the file
+        # in this process drops it, and mmap holds a dup of ours, so
+        # there must be one gate per path per process (production builds
+        # exactly one, at import). The kernel drops it when a process
+        # dies, so a killed worker cannot wedge the rest.
         if self._fd is None:
             yield
             return
@@ -276,6 +281,7 @@ class CrawlerBudget:
         unlisted_pool_pct: int = 30,
         impossible_headers_pct: int = 1,
         shared_path: str | None = None,
+        split: int = 1,
     ):
         self.retry_after_sec = retry_after_sec
         self._clock = clock
@@ -284,13 +290,16 @@ class CrawlerBudget:
         self._total = total_per_minute
         self._default_pct = default_ua_pct
         self._impossible_pct = impossible_headers_pct
+        # The fixed buckets hold the instance's share divided by this:
+        # 1 when shared, the worker count when each worker keeps its own.
+        self._split = split
         now = clock()
         use_impossible = total_per_minute > 0 and impossible_headers_pct > 0
         # global, pool, overflow, one per listed crawler, impossible.
         slots = 3 + len(ua_percent) + use_impossible
         self._shared = _Shared(slots, shared_path)
         mem = self._shared.mem
-        self._global = _Bucket(total_per_minute, now, mem, 0)
+        self._global = _Bucket(total_per_minute / split, now, mem, 0)
         self._pool = self._bucket(unlisted_pool_pct, now, 1)
         self._overflow = self._bucket(default_ua_pct, now, 2)
         # Dict order is match order: the first configured crawler found
@@ -329,7 +338,8 @@ class CrawlerBudget:
     def _bucket(self, pct: int, now: float, slot: int) -> _Bucket:
         # A fixed bucket in shared memory, at its share of the whole
         # server's budget: every worker draws on the same tokens.
-        return _Bucket(self._total * pct / 100, now, self._shared.mem, slot)
+        per_minute = self._total * pct / 100 / self._split
+        return _Bucket(per_minute, now, self._shared.mem, slot)
 
     @classmethod
     def from_settings(cls, s: Settings) -> CrawlerBudget:
@@ -357,7 +367,7 @@ class CrawlerBudget:
                 f"mimir-crawler-budget-{pidns}-{os.getppid()}-{digest}",
             )
 
-        def build(shared_path: str | None) -> CrawlerBudget:
+        def build(shared_path: str | None, split: int = 1) -> CrawlerBudget:
             return cls(
                 s.crawler_budget_per_minute,
                 uas,
@@ -368,6 +378,7 @@ class CrawlerBudget:
                 unlisted_pool_pct=s.crawler_unlisted_pool_pct,
                 impossible_headers_pct=s.crawler_impossible_headers_pct,
                 shared_path=shared_path,
+                split=split,
             )
 
         try:
@@ -375,14 +386,17 @@ class CrawlerBudget:
         except OSError as exc:
             # The gate is built at import in every process, so a missing
             # or read-only directory must not stop the app from booting.
-            # Per-worker buckets are the pre-#1026 behaviour.
+            # Per-worker buckets at budget / WORKERS are the pre-#1026
+            # behaviour; a whole share in every worker would multiply the
+            # budget by the worker count.
             logger.warning(
                 "crawler budget: cannot share buckets through %s (%s); "
-                "each worker keeps its own",
+                "each worker keeps its own at budget / %d",
                 path,
                 exc,
+                s.web_workers,
             )
-            return build(None)
+            return build(None, split=s.web_workers)
 
     def crawler_key(self, user_agent: str | None) -> str | None:
         """The bucket key for a crawler request, None for anything else:
