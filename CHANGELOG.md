@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.38.0] - 2026-10-31
+
 ### Changed
 
 - The thread page's header is rebuilt (#989). A breadcrumb (inbox, year, month, thread) leads. The subject's prefix (`[LSF/MM/BPF TOPIC]`, `RFC`, `v4`, and the patch count) shows as small tags over a title without it, for patches. One byline gives who started the thread, when, and how many messages from how many authors it has, and when the last reply came. Three cards follow: the series (patches, files, an added and removed bar), its subsystems (three shown, the rest behind "Show more") and its maintainers (four shown, the rest behind "Show more"). This inbox's busiest subsystem of the last 7 days comes first in both lists. The page title, the structured data and the Markdown page keep the whole subject.
