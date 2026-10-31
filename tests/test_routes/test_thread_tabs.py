@@ -601,18 +601,13 @@ def test_a_thread_without_replies_renders_a_zero_discussion_count(client, tmp_pa
     assert counts == {"discussion": "0", "patches": "2", "all": "2"}
 
 
-def _page_with_one_patch_disclosure(client, tmp_path):
-    seeded = _seed_two_versions(tmp_path, 2)
-    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
-    return seeded, page
-
-
 def test_the_related_heading_is_not_on_the_page_without_the_fragment(client, tmp_path):
     """Without JS the fragment never loads. A heading on the page then
     stands over an empty box, so the heading arrives with the list."""
     import re
 
-    seeded, page = _page_with_one_patch_disclosure(client, tmp_path)
+    seeded = _seed_two_versions(tmp_path, 2)
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
     outside = re.sub(r"<noscript>.*?</noscript>", "", page, flags=re.DOTALL)
     assert page.count('class="patch-related"') == 2  # precondition
     assert "Other recent patches touching these files" not in outside
@@ -628,7 +623,8 @@ def test_each_disclosure_links_the_related_list_for_readers_without_js(
     `hx-get` fetches, so the two cannot drift."""
     import re
 
-    seeded, page = _page_with_one_patch_disclosure(client, tmp_path)
+    seeded = _seed_two_versions(tmp_path, 2)
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
     for mid in ("p1@x", "p2@x"):
         aid = seeded[mid][0]
         start = page.index(f'<details class="patch-detail" id="patch-{aid}"')
@@ -638,3 +634,17 @@ def test_each_disclosure_links_the_related_list_for_readers_without_js(
             r"<noscript>.*?href=\"([^\"]+)\".*?</noscript>", block, re.DOTALL
         )
         assert links == [get], (mid, links)
+
+
+def test_the_patch_index_rules_reach_its_rows_and_not_the_timeline_inside_one():
+    """A descendant `.patch-index li` also matched each patch's revisions
+    timeline, which gave its rows borders and its links a monospace face
+    that the cover letter's fold does not have (3.36.0). Every rule under
+    `.patch-index` starts at a child of it."""
+    import re
+
+    selectors = re.findall(r"^\.patch-index\s+([^{,]*)\{", _css(), re.MULTILINE)
+    assert selectors, "no rules to check"
+    for rest in selectors:
+        assert rest.startswith(">"), f".patch-index {rest.strip()}"
+    assert re.search(r"^\.patch-index > ol > li > a\s*\{", _css(), re.MULTILINE)

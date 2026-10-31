@@ -2424,9 +2424,11 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # card's own landing query is gone. #989 adds one statement before the
 # validator (the thread's series rows, filtered in SQL, for the digest)
 # and, on a 200 only, the whole thread's rows (`thread_rows`) for the
-# tabs and the Patches index: 34/16.
-THREAD_VIEW_STATEMENTS_200 = 34
-THREAD_VIEW_STATEMENTS_304 = 16
+# tabs and the Patches index: 34/16. The header lists this inbox's busiest
+# subsystem first, a cached ranking read before the validator (it is an
+# ETag input): one more statement on both, 35/17.
+THREAD_VIEW_STATEMENTS_200 = 35
+THREAD_VIEW_STATEMENTS_304 = 17
 
 
 def test_thread_view_statement_budget(client, tmp_path):
