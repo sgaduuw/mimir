@@ -1,6 +1,9 @@
 {# "Other recent patches touching these files": the message page's list,
    and the thread page's per-patch fragment (#989) from
-   `/api/<inbox>/related/<id>`. One markup for both. #}
+   `/api/<inbox>/related/<id>`. One markup for both. `heading` is set only
+   by the fragment: the thread page has no empty box without JS. #}
+{% if heading %}<p><small><strong>Other recent patches touching these files</strong></small></p>
+{% endif %}
 {% if related_patches %}
 <ul class="related-patch-list">
   {% for p in related_patches %}
