@@ -44,11 +44,13 @@ from mimir.models import (
     Article,
     ArticleList,
 )
+from mimir.patch_revisions import subject_tags
 from mimir.patch_series import slot_rank
 from mimir.patch_state import message_kind, patch_state_for_article, patch_timelines
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
 from mimir.subsystems import article_paths, is_cover, subsystems_for_paths
+from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
 from mimir.threading import (
     dedupe_thread,
     find_thread_root,
@@ -62,7 +64,7 @@ from mimir.threading import (
     thread_sort_key,
 )
 from mimir.web._blueprint import bp_web
-from mimir.web.filters import thread_summary_from
+from mimir.web.filters import _clean_subject_filter, thread_summary_from
 from mimir.web.routes._validators import render_state_tag, series_rows_tag
 from mimir.web.urls import (
     MD_SUFFIX,
@@ -359,6 +361,16 @@ def thread_view(
         # edge and every crawler holding a validator that pins the
         # exact "did $series land" text this release made canonical.
         state_tag = render_state_tag(session, article.id, root_msgid)
+        # The header cards list this inbox's own subsystem first, which is
+        # its busiest of the last 7 days: a cached ranking, read here and
+        # never computed (`compute_on_miss=False`, the request-path
+        # posture). It moves with activity, not with this thread, so its
+        # top id is an ETag input; a cold cache is the empty tag, and the
+        # ETag moves when it warms.
+        busiest = most_active_subsystems_in_inbox(
+            session, inbox, days=7, limit=1, compute_on_miss=False
+        )
+        own_subsystem_id = busiest[0].id if busiest else None
         # Split so the ETag is the content part plus the representation
         # (which page, full or htmx). The root's pill and card depend on
         # the content part alone, so their caches key by it: one entry
@@ -368,7 +380,7 @@ def thread_view(
             f"thread|{article.id}|{mimir.__version__}|{cap}|{membership_source}|"
             f"{total_count}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}|"
-            f"{series_rows_tag(series_rows)}"
+            f"{series_rows_tag(series_rows)}|{own_subsystem_id or ''}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"
@@ -418,6 +430,10 @@ def thread_view(
         subsystem_hits = subsystems_for_paths(
             session, [row[2] for row in root_paths if row[2]]
         )
+        # This inbox's own subsystem first (stable: the rest keep the
+        # matcher's order), so the Subsystems and Maintainers cards lead
+        # with what the list is about.
+        subsystem_hits = sorted(subsystem_hits, key=lambda h: h.id != own_subsystem_id)
         subsystem_names = [h.name for h in subsystem_hits]
         # Only for a cover: a single patch carries git's diffstat in its
         # own body, so a total there would copy lore. The patches' rows
@@ -596,6 +612,10 @@ def thread_view(
                 )
 
     thread_summary = thread_summary_from(authors, thread_max_date, total_count)
+    # The header's prefix tags and stripped title, from the parsers' own
+    # bracket (`patch_bracket`); the <title> and structured data keep the
+    # whole subject.
+    title_tags, title_text = subject_tags(_clean_subject_filter(root_node.subject))
     context = dict(
         inbox_name=inbox.name,
         current_inbox=inbox.name,
@@ -609,6 +629,9 @@ def thread_view(
         remaining=remaining,
         page_size=cap,
         thread_summary=thread_summary,
+        last_activity=thread_max_date,
+        title_tags=title_tags,
+        title_text=title_text,
         kinds=kinds,
         kind_counts=kind_counts,
         show_tabs=show_tabs,

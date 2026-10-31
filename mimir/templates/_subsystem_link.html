@@ -30,6 +30,13 @@
 {%- endmacro %}
 
 
+{# One maintainer, linked to a profile page where the profile route
+   serves one: the gate `maintainer_links` and the thread header's
+   maintainers card share. #}
+{% macro maintainer_link(name, addr) -%}
+{% set url = addr | maintainer_link_url %}{% if url %}<a href="{{ url }}">{{ name }}</a>{% else %}{{ name }}{% endif %}
+{%- endmacro %}
+
 {# The `M:` maintainers of `hits`, after a subsystem list, each linked
    to a profile page where the profile route serves one. Shared by the
    message page and the thread view (#844), so both apply one gate.
@@ -40,7 +47,6 @@
 {%- set maints = hits | subsystem_maintainers -%}
 {%- if maints %}
 &middot; <strong>Maintainer{{ '' if maints|length == 1 else 's' }}:</strong>
-{% for name, addr in maints %}{% set url = addr | maintainer_link_url %}{% if url %}<a
-  href="{{ url }}">{{ name }}</a>{% else %}{{ name }}{% endif %}{% if not loop.last %}, {% endif %}{% endfor %}
+{% for name, addr in maints %}{{ maintainer_link(name, addr) }}{% if not loop.last %}, {% endif %}{% endfor %}
 {%- endif %}
 {%- endmacro %}

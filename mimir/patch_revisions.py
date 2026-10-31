@@ -97,6 +97,36 @@ def patch_bracket(subject: str) -> tuple[str, str] | None:
     return None
 
 
+# What the thread header shows of a sender-written prefix: a handful of
+# short tags, not however many a subject carries.
+_MAX_TAGS = 6
+_MAX_TAG_LEN = 40
+
+
+def subject_tags(subject: str | None) -> tuple[list[str], str]:
+    """`(tags, title)` for the thread header (#989): the prefix of a patch
+    subject as short tags, and the title without it. The brackets are the
+    ones `patch_bracket` decides on, so a subject is stripped for the
+    header exactly when it is a patch for the parsers; the tags are the
+    leading list tag it skips (`[LSF/MM/BPF TOPIC]`) and the words of the
+    deciding bracket other than `PATCH` and `N/M` (`RFC`, `v4`). A subject
+    that is not a patch comes back whole, with no tags."""
+    subject = subject or ""
+    bracket = patch_bracket(subject)
+    if bracket is None:
+        return [], subject
+    inside, title = bracket
+    words = []
+    first = _BRACKET_RE.match(subject.strip())
+    if first is not None and first.group(1) != inside:
+        words.append(first.group(1).strip())
+    for word in inside.split():
+        word = re.sub(r"^PATCH(?=v\d)", "", word, flags=re.IGNORECASE)
+        if word.upper() != "PATCH" and not _ANY_N_OF_M_RE.fullmatch(word):
+            words.append(word)
+    return [w[:_MAX_TAG_LEN] for w in words[:_MAX_TAGS]], title
+
+
 @dataclass(frozen=True)
 class ParsedPatchSubject:
     """One in-series patch subject parsed out of `[PATCH ... N/M] title`.

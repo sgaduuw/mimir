@@ -17,7 +17,9 @@ COUNTS = {
     ("p2@x", "fs/bar/c.c"): (0, 0),
     ("old@x", "net/zzz/old.c"): (99, 99),
 }
-_TOTALS = re.compile(r"(\d+) patch(?:es)? touching (\d+) files?(?:, \+(\d+)/-(\d+))?")
+# The thread header's Series card, as text: "2 patches, 3 files", then
+# "+14 −3" in its own line (the minus is an entity in the HTML).
+_TOTALS = re.compile(r"(\d+) patch(?:es)?, (\d+) files?(?:\s+\+(\d+) &minus;(\d+))?")
 
 
 def _count(seeded, mid, path, counts):
