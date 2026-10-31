@@ -1764,18 +1764,16 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
     sitemap `<loc>` and the thread page's own canonical), and both go
     through `thread_page_url`, so it cannot see the other two.
 
-    The other two do NOT share the page suffix. `routes/message.py` and
-    `urls._advertised_urls_for` each build it themselves:
+    The other two, `routes/message.py` and `urls._advertised_urls_for`,
+    also build it with `thread_page_url`, which owns the `/N` suffix:
 
-        thread_view_url = thread_page_url(root.id, root.date, name)
-        if page_no > 1:
-            thread_view_url += f"/{page_no}"
+        thread_view_url = thread_page_url(
+            target_root.id, target_root.date, target_inbox.name, page_no
+        )
 
-    Only the `_msg_path` PREFIX is shared. The `/N` suffix is three
-    parallel implementations of one rule, which is the emitter/acceptor
-    shape CONTEXT.md records as this project's recurring defect, and the
-    route accepts `/t/2` in exactly one spelling so a divergence is a
-    404 or a duplicate-URL signal rather than a test failure.
+    Only a caller passing a wrong `page_no` can still diverge, and the
+    route accepts `/t/2` in exactly one spelling, so that is a 404 or a
+    duplicate-URL signal rather than a test failure.
 
     So this pins every emitter against ONE string, the one the sitemap
     published, and additionally asserts CONTAINMENT (MEMORY.md
