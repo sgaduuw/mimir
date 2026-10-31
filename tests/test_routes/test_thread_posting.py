@@ -108,7 +108,7 @@ def test_series_totals_count_the_posting_s_patches_and_distinct_files(client, tm
     patch's file is another posting's."""
     seeded = _seed(tmp_path)
     html = client.get(seeded["cover@x"][1] + "/t").get_data(as_text=True)
-    found = re.findall(r"(\d+) patch(?:es)? touching (\d+) files?", _visible(html))
+    found = re.findall(r"(\d+) patch(?:es)?, (\d+) files?", _visible(html))
     assert found == [("2", "3")], found
 
 
