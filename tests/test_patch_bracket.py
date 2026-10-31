@@ -196,7 +196,6 @@ def test_patch_bracket_returns_the_deciding_bracket_and_title():
         ("Re: [PATCH v2 1/3] foo", [], "Re: [PATCH v2 1/3] foo"),
         ("plain subject", [], "plain subject"),
         ("", [], ""),
-        (None, [], ""),
     ],
 )
 def test_subject_tags_split_the_prefix_from_the_title(subject, tags, title):

@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Each message on the thread page leads with its author (#989): an initials avatar, the name, "replied to" the author of the message it answers (a link to that message, on this page or the page that holds it), the date (a link to the message's own page, with the year when it is not the year the thread started) and a `#` permalink. The subject heading shows only where it differs from the thread's after stripping `Re:`. The "N patches" tag is gone; the Series card has the count. The structured-data breadcrumb now follows the visible one: inbox, year, month, thread.
+
 ## [3.38.0] - 2026-10-31
 
 ### Changed
