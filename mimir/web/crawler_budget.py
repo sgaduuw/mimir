@@ -167,8 +167,9 @@ class _Shared:
     def __init__(self, slots: int, path: str | None):
         size = _HEADER.size + slots * _SLOT.size
         self._fd: int | None = None
+        self.mem: mmap.mmap | bytearray
         if path is None:
-            self.mem = mmap.mmap(-1, size)
+            self.mem = bytearray(size)
             return
         # O_NOFOLLOW: the name is predictable, so never write through a
         # symlink someone else planted there.
@@ -203,28 +204,26 @@ class _Bucket:
         self,
         per_minute: float,
         now: float,
-        mem: mmap.mmap | None = None,
+        mem: mmap.mmap | bytearray | None = None,
         slot: int = 0,
     ):
         self.rate = per_minute / 60  # tokens per second
         self.capacity = max(per_minute * BURST_SECONDS / 60, 1.0)
-        self._mem = mem
+        # An unlisted bucket gets a private buffer of its own; the same
+        # pack/unpack then serves both kinds.
+        self._mem = bytearray(_HEADER.size + _SLOT.size) if mem is None else mem
         self._off = _HEADER.size + slot * _SLOT.size
-        self._local = [self.capacity, now]  # unused when shared
+        if mem is None:
+            self.fill(now)
         self.last_used = now
         self.deferred = dict.fromkeys(REFUSALS, 0)  # since the last log line
         self.last_log: float | None = None
 
     def _get(self) -> tuple[float, float]:
-        if self._mem is None:
-            return self._local[0], self._local[1]
         return _SLOT.unpack_from(self._mem, self._off)
 
     def _set(self, tokens: float, stamp: float) -> None:
-        if self._mem is None:
-            self._local[:] = [tokens, stamp]
-        else:
-            _SLOT.pack_into(self._mem, self._off, tokens, stamp)
+        _SLOT.pack_into(self._mem, self._off, tokens, stamp)
 
     @property
     def tokens(self) -> float:
@@ -460,23 +459,19 @@ class CrawlerBudget:
         if bucket.last_log is not None and now - bucket.last_log < _LOG_EVERY_SEC:
             return
         counts = bucket.deferred
-        by = " ".join(f"{name}={counts[name]}" for name in REFUSALS)
-        if key == IMPOSSIBLE_KEY:
-            logger.warning(
-                "crawler budget: matched on request headers, not User-Agent: "
-                'rule="Sec-Fetch-Site: none with Referer" deferred=%d %s pid=%d',
-                sum(counts.values()),
-                by,
-                os.getpid(),
-            )
-        else:
-            logger.warning(
-                "crawler budget: crawler=%s deferred=%d %s pid=%d",
-                key,
-                sum(counts.values()),
-                by,
-                os.getpid(),
-            )
+        what = (
+            'matched on request headers, not User-Agent: rule="Sec-Fetch-Site: '
+            'none with Referer"'
+            if key == IMPOSSIBLE_KEY
+            else f"crawler={key}"
+        )
+        logger.warning(
+            "crawler budget: %s deferred=%d %s pid=%d",
+            what,
+            sum(counts.values()),
+            " ".join(f"{name}={counts[name]}" for name in REFUSALS),
+            os.getpid(),
+        )
         bucket.deferred = dict.fromkeys(REFUSALS, 0)
         bucket.last_log = now
 
