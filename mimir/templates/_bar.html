@@ -1,9 +1,0 @@
-{# Proportional bar meter (#988). The CSP forbids `style=`, so the
-   width is an SVG `rect` attribute, the same trick as `_sparkline.html`.
-   `value / maximum` sets the width (0 to 100 in the 100 x 6 viewBox);
-   `label` is the text equivalent for assistive tech. Colour comes from
-   `currentColor`, set by `.bar-meter` in mimir.css. #}
-{% macro bar_meter(value, maximum, label) -%}
-{% set pct = (value / maximum * 100) if maximum > 0 else 0 -%}
-<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ label }}"><rect width="{{ pct | round(1) }}" height="6" fill="currentColor" opacity="0.9"/></svg>
-{%- endmacro %}

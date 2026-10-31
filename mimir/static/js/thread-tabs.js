@@ -20,10 +20,16 @@
   empty.hidden = true;
   box.insertBefore(empty, box.firstChild);
 
+  /* A patch other than the root; the root shows in every tab. */
+  function isPatch(el) {
+    return el.getAttribute("data-kind") === "patch" && !el.hasAttribute("data-root");
+  }
+
   /* Messages the tab shows besides the root, which shows everywhere. */
   function shown(name) {
-    if (name === "patches") return box.querySelectorAll('.thread-message[data-kind="patch"]:not([data-root])');
-    return box.querySelectorAll('.thread-message:not([data-kind="patch"]):not([data-root])');
+    return Array.prototype.filter.call(box.querySelectorAll(".thread-message:not([data-root])"), function (el) {
+      return isPatch(el) === (name === "patches");
+    });
   }
 
   function updateEmpty() {
@@ -44,26 +50,23 @@
     updateEmpty();
   }
 
-  /* The tab a fragment asks for, or null when it names none. */
+  /* The tab a fragment asks for, with the message it names (or null),
+   * or null when it names no tab. */
   function fromHash() {
     var hash = location.hash.slice(1);
-    if (names.indexOf(hash) !== -1) return hash;
+    if (names.indexOf(hash) !== -1) return { name: hash, el: null };
     if (/^m\d+$/.test(hash)) {
       var el = document.getElementById(hash);
-      if (el && box.contains(el)) {
-        return el.getAttribute("data-kind") === "patch" && !el.hasAttribute("data-root")
-          ? "patches" : "discussion";
-      }
+      if (el && box.contains(el)) return { name: isPatch(el) ? "patches" : "discussion", el: el };
     }
     return null;
   }
 
   function openFromHash() {
-    var name = fromHash();
-    if (!name) return false;
-    select(name, false);
-    var el = /^#m\d+$/.test(location.hash) && document.getElementById(location.hash.slice(1));
-    if (el) el.scrollIntoView();
+    var hit = fromHash();
+    if (!hit) return false;
+    select(hit.name, false);
+    if (hit.el) hit.el.scrollIntoView();
     return true;
   }
 
@@ -93,6 +96,7 @@
   tablist.hidden = false;
   if (!openFromHash()) {
     /* Nothing to discuss yet: open on everything, not on an empty column. */
-    select(Number(tablist.getAttribute("data-replies")) > 0 ? "discussion" : "all", false);
+    var replies = tablist.querySelector('[data-tab="discussion"] .tab-count');
+    select(Number(replies.textContent) > 0 ? "discussion" : "all", false);
   }
 })();

@@ -245,18 +245,14 @@ def _build_xml(
     `YYYY-MM-DD` is what Google's docs recommend for crawl-scheduling
     and is what mimir emits.
 
-    The over-cap warning exists because a breach is silent by
-    construction: the document renders, the route serves 200, and the
-    crawler discards it. Every caller derives its own entry count from
-    a different query, so this is the one place that sees the number
-    that actually matters. The index is the surface with LESS headroom:
-    sitemaps.org caps it at 50,000 `<sitemap>` entries too, and it held
-    3,542 on 2026-10-07 (7% of the limit, after year bucketing; see
-    `_month_counts`) against a worst-case urlset of about 20,012 (40%).
-    It is also the one that grows
-    without bound: every calendar month adds about one entry per inbox,
-    and an `admin inbox add` for a historically-imported list can add
-    hundreds at once.
+    The over-cap warning is `_warn_if_over_cap`'s. The index is the
+    surface with LESS headroom: sitemaps.org caps it at 50,000
+    `<sitemap>` entries too, and it held 3,542 on 2026-10-07 (7% of the
+    limit, after year bucketing; see `_month_counts`) against a
+    worst-case urlset of about 20,012 (40%). It is also the one that
+    grows without bound: every calendar month adds about one entry per
+    inbox, and an `admin inbox add` for a historically-imported list can
+    add hundreds at once.
     """
     _warn_if_over_cap(entries, root_tag)
     root = Element(root_tag, xmlns="http://www.sitemaps.org/schemas/sitemap/0.9")
@@ -394,14 +390,12 @@ def _archive_entries(
             # Measured against production 2026-08-03: **16,726** of
             # **6,074,908** thread roots hold more than 75 messages and
             # so paginate, adding **24,753** URLs, or +0.41%. (The
-            # denominator counts every root's advertised URL, most of
-            # which were singleton MESSAGE urls rather than `/t` until
-            # #1003; it is
-            # the right denominator for "how much does pagination add
-            # to the sitemap", which is the question being asked.) An earlier version of this note
-            # compared that figure to 32,229, which is the number of
-            # sitemap FILES in the index, not URLs, and so overstated
-            # the cost by about 188x. Pagination adds no index entries
+            # denominator counts every root's advertised URL; it is the
+            # right denominator for "how much does pagination add to the
+            # sitemap", which is the question being asked.) An earlier
+            # version of this note compared that figure to 32,229, which
+            # is the number of sitemap FILES in the index, not URLs, and
+            # so overstated the cost by about 188x. Pagination adds no index entries
             # at all. Re-derive both numbers, and say which population
             # they count, before deriving anything from them.
             #
@@ -729,11 +723,7 @@ def _month_root_ids(
     return ids
 
 
-# These keys hold both trees of a file, `(thread, message)`. Renamed from
-# `yearsplit`/`monthsplit` when single-message roots moved to the thread
-# tree (#1003): rows cut under the old split would list them as message
-# URLs for up to a TTL after deploy. A rename, not a NAMESPACE_VERSION
-# bump, because nothing else cached changed meaning.
+# These keys hold both trees of a file, `(thread, message)`.
 def _year_pages_key(inbox_name: str, year: int) -> str:
     return (
         f"sitemap:yeartrees:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
@@ -973,14 +963,14 @@ def sitemap_indexes_xml(
                     pair = cached.get(key)
                     if pair is not None and is_year:
                         pair = _unpack_year_pages(pair)[0]  # `name` is page 1
-                    threads, singles = pair or (None, None)
+                    threads, messages = pair or (None, None)
                     entries.append(
                         (directory + name, threads and threads.last_modified)
                     )
                     message_entries.append(
                         (
                             f"{directory}messages-{name}",
-                            singles and singles.last_modified,
+                            messages and messages.last_modified,
                         )
                     )
         # Reuse global_latest as the maintainers urlset's lastmod: it's

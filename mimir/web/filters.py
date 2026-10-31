@@ -44,10 +44,10 @@ from mimir.web._blueprint import bp_web
 from mimir.web.urls import (
     _msg_path,
     _msg_url,
-    _thread_view_url,
     attachment_path,
     is_addressable_reviewer_address,
     markdown_path,
+    thread_page_url,
 )
 
 bp_web.add_app_template_filter(
@@ -264,9 +264,10 @@ bp_web.add_app_template_filter(_msg_url, "msg_url")
 bp_web.add_app_template_global(_msg_path, "msg_path")
 bp_web.add_app_template_filter(_is_previewable, "is_previewable")
 
-# `thread_url`: listings link the subject to the message page and the
-# reply count to the whole-thread view, so the thread view gains
-# inbound links from the pages that actually get crawled. It is the
+# `thread_page_url(id, date, inbox_name)`: listings link the subject to
+# the message page and the reply count to the whole-thread view, so the
+# thread view gains inbound links from the pages that actually get
+# crawled. It is the
 # canonical target for every message (single-message threads included,
 # #1003) and the URL the sitemap lists, yet before this filter the entire
 # template set contained exactly ONE link to it (`message.html`,
@@ -276,7 +277,7 @@ bp_web.add_app_template_filter(_is_previewable, "is_previewable")
 #
 # Callers link it from the reply count, so they gate on there being
 # replies; a thread with none reaches its `/t` through the message page.
-bp_web.add_app_template_filter(_thread_view_url, "thread_url")
+bp_web.add_app_template_global(thread_page_url, "thread_page_url")
 
 
 @bp_web.app_template_filter("render_body")
