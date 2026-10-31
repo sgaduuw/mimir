@@ -154,7 +154,9 @@ DEFAULT_CRAWLER_UA_BUDGETS: dict[str, int] = {
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=str(PROJECT_ROOT / ".env"),
+        # Empty MIMIR_ENV_FILE skips the file; the test suite sets it so a
+        # developer's `.env` cannot leak into the import-time `settings`.
+        env_file=os.environ.get("MIMIR_ENV_FILE", str(PROJECT_ROOT / ".env")) or None,
         extra="ignore",
         # `__` as nested delimiter enables `FIELD__subkey__subsubkey`
         # env vars for dict-of-model fields like `trees` and `inboxes`.
