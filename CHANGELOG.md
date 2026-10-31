@@ -18,6 +18,7 @@ changes, not internal refactors. Categories: **Added**,
 ### Changed
 
 - Each message on the thread page leads with its author (#989): an initials avatar, the name, "replied to" the author of the message it answers (a link to that message, on this page or the page that holds it), the date (a link to the message's own page, with the year when it is not the year the thread started) and a `#` permalink. The subject heading shows only where it differs from the thread's after stripping `Re:`. The "N patches" tag is gone; the Series card has the count. The structured-data breadcrumb now follows the visible one: inbox, year, month, thread.
+- Message bodies on the thread and message pages sit on the page instead of a grey box (#1033): monospace text at about 13.5 px with a line height of 1.6, no wider than 80 characters. Quoted text is muted behind a 3 px rule, and the "N more lines" link under a cut block is smaller.
 
 ### Fixed
 
