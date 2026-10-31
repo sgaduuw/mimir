@@ -483,6 +483,38 @@ def test_year_archive_bar_is_proportional_to_busiest_month(client, frozen_clock)
     assert widths == [100.0, 50.0]
 
 
+def test_year_archive_bar_is_an_svg_with_a_text_equivalent(client, frozen_clock):
+    """The CSP forbids `style=`, so the bar is an SVG whose width is a
+    `rect` attribute; the aria-label is its text equivalent (#988)."""
+    body = client.get("/alpha/2024/").data.decode()
+    svgs = re.findall(r'<svg class="bar-meter".*?</svg>', body, re.DOTALL)
+    assert len(svgs) == 2
+    assert 'aria-label="100% of the busiest month"' in svgs[0]
+    assert 'aria-label="50% of the busiest month"' in svgs[1]
+    for svg in svgs:
+        assert 'viewBox="0 0 100 6"' in svg
+        assert 'role="img"' in svg
+        assert 'fill="currentColor"' in svg
+        assert "style=" not in svg
+
+
+def test_year_archive_bar_width_is_rounded(client, frozen_clock, tmp_path):
+    """The bar width is rounded to one decimal, not a long float (#988).
+    alpha seeds Jan (2) and Mar (1) of 2024; one more January message
+    makes Mar a third of the busiest month."""
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("jan-extra@x", None)],
+        date_for={"jan-extra@x": "Mon, 15 Jan 2024 12:00:00 +0000"},
+    )
+    body = client.get("/alpha/2024/").data.decode()
+    widths = re.findall(r'<rect[^>]*\bwidth="([^"]+)"', body)
+    assert widths == ["100.0", "33.3"]
+
+
 def test_year_archive_empty_month_label_follows_the_month(client):
     """ "not yet" for the current month and later ones, "none" for every
     other empty month, in any year."""
@@ -506,3 +538,34 @@ def test_year_archive_hides_next_year_without_data(client, frozen_clock):
     body = client.get("/alpha/2023/").data.decode()
     assert 'href="/alpha/2024/"' in body
     assert 'href="/alpha/2022/"' in body
+
+
+def test_daily_reply_count_links_to_the_thread_view(client, tmp_path, frozen_clock):
+    """The "N replies today" link on `/<inbox>/today` is the thread's `/t`,
+    the same URL the thread page names as canonical (#1016)."""
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from mimir.web.urls import _msg_url
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("dy-root@x", None), ("dy-reply@x", "dy-root@x")]
+    )
+    now = datetime.now(UTC)
+    with SessionLocal() as s:
+        for mid, ago in (("dy-root@x", 2), ("dy-reply@x", 1)):
+            s.execute(
+                update(Article)
+                .where(Article.id == seeded[mid][0])
+                .values(date=now - timedelta(hours=ago))
+            )
+        s.commit()
+        msg_path = _msg_url(s.get(Article, seeded["dy-root@x"][0]), "alpha")
+    body = client.get("/alpha/today").get_data(as_text=True)
+    canonical = client.get(msg_path + "/t").get_data(as_text=True)
+    assert f'<link rel="canonical" href="http://localhost{msg_path}/t">' in canonical
+    assert f'<a href="{msg_path}/t">1 reply today</a>' in body

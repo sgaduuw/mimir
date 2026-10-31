@@ -33,8 +33,7 @@ from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import related_patches as cached_related_patches
-from mimir.subsystems import subsystems_for_article
+from mimir.subsystems import related_patches, subsystems_for_article
 from mimir.threading import (
     ThreadNode,
     dedupe_thread,
@@ -693,7 +692,7 @@ def message(
         # WAL-snapshot acquire per message page.
         # Cached by id for 5 minutes; shared with the thread page's
         # per-patch fragment (#989).
-        related_patches = cached_related_patches(session, article.id)
+        patches_touching = related_patches(session, article.id)
         # Per-patch state card (#208): consolidates trailer roll-up,
         # mainline-landing record, patch-series timeline + per-revision
         # diff links, and thread-activity summary into one card. The
@@ -766,7 +765,7 @@ def message(
             thread_view_url=thread_view_url,
             page_json_ld=page_json_ld,
             subsystem_hits=subsystem_hits,
-            related_patches=related_patches,
+            related_patches=patches_touching,
             patch_state=patch_state,
             lifecycle_status=lifecycle_status,
             markdown_url=markdown_path(_msg_url(article, inbox.name)),

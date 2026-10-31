@@ -612,7 +612,7 @@ def test_a_non_canonical_page_number_does_not_self_nominate(
     Werkzeug's `int` converter matches `\\d+`, so a leading zero is
     accepted and every zero-padding is a distinct URL for one page. No
     emitter in the codebase produces them (the link, the sitemap entry
-    and the canonical all come from `_thread_view_url`), so the only way
+    and the canonical all come from `thread_page_url`), so the only way
     to arrive is by hand or by a mangling intermediary, and adding a
     redirect would be code for a caller that does not exist.
 

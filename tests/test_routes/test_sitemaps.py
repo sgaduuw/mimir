@@ -1764,18 +1764,16 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
     sitemap `<loc>` and the thread page's own canonical), and both go
     through `thread_page_url`, so it cannot see the other two.
 
-    The other two do NOT share the page suffix. `routes/message.py` and
-    `urls._advertised_urls_for` each build it themselves:
+    The other two, `routes/message.py` and `urls._advertised_urls_for`,
+    also build it with `thread_page_url`, which owns the `/N` suffix:
 
-        thread_view_url = _thread_view_url(root, name)
-        if page_no > 1:
-            thread_view_url += f"/{page_no}"
+        thread_view_url = thread_page_url(
+            target_root.id, target_root.date, target_inbox.name, page_no
+        )
 
-    Only the `_msg_path` PREFIX is shared. The `/N` suffix is three
-    parallel implementations of one rule, which is the emitter/acceptor
-    shape CONTEXT.md records as this project's recurring defect, and the
-    route accepts `/t/2` in exactly one spelling so a divergence is a
-    404 or a duplicate-URL signal rather than a test failure.
+    Only a caller passing a wrong `page_no` can still diverge, and the
+    route accepts `/t/2` in exactly one spelling, so that is a 404 or a
+    duplicate-URL signal rather than a test failure.
 
     So this pins every emitter against ONE string, the one the sitemap
     published, and additionally asserts CONTAINMENT (MEMORY.md
@@ -3392,7 +3390,7 @@ def test_single_message_thread_is_byte_identical_across_every_emitter(client, tm
     from mimir import indexnow
     from mimir.extensions import SessionLocal
     from mimir.models import Article
-    from mimir.web.urls import _thread_view_url
+    from mimir.web.urls import thread_page_url
     from tests.test_routes._helpers import seed_thread_shape
 
     solo_id, solo_url = seed_thread_shape(tmp_path, "alpha", [("one@x", None)])["one@x"]
@@ -3401,7 +3399,7 @@ def test_single_message_thread_is_byte_identical_across_every_emitter(client, tm
     with SessionLocal() as s:
         art = s.get(Article, solo_id)
         pushed = indexnow.build_urls(s, [art.message_id], base="http://localhost")
-        helper = "http://localhost" + _thread_view_url(art, "alpha")
+        helper = "http://localhost" + thread_page_url(art.id, art.date, "alpha")
     thread_url = f"http://localhost{solo_url}/t"
     assert helper == thread_url  # the helper is the reference spelling
 

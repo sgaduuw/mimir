@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_bar.html" import bar_meter %}
 {% block title %}{{ year }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}Monthly archives of the {{ inbox_name }} mailing list for {{ year }}.{% endblock %}
 {% block content %}
@@ -35,7 +34,8 @@
     {% if count > 0 %}
     <li class="year-row">
       <a href="/{{ inbox_name }}/{{ year }}/{{ '%02d' % month_num }}/">{{ month_names[month_num - 1] }}</a>
-      {{ bar_meter(count, busiest, '%s%% of the busiest month' % (count * 100 // busiest)) }}
+      {# Proportional bar (#988). The CSP forbids `style=`, so the width is an SVG `rect` attribute, as in `_sparkline.html`. #}
+      <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ count * 100 // busiest }}% of the busiest month"><rect width="{{ (count / busiest * 100) | round(1) }}" height="6" fill="currentColor" opacity="0.9"/></svg>
       <span class="count">{{ '{:,}'.format(count) }}</span>
     </li>
     {% else %}
