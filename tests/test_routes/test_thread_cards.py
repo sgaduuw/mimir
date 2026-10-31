@@ -182,7 +182,7 @@ def test_the_title_comparison_is_linear_on_a_hostile_subject(client, tmp_path):
     )
     start = time.perf_counter()
     assert client.get(seeded["r@x"][1] + "/t").status_code == 200
-    assert time.perf_counter() - start < 10
+    assert time.perf_counter() - start < 2
 
 
 def test_a_rewritten_thread_parent_moves_the_page_etag_and_only_its_own(
@@ -264,3 +264,74 @@ def test_a_message_landing_earlier_moves_an_off_page_parent_s_link_and_the_etag(
     link_after = _replied_to(_card(after.get_data(as_text=True), seeded["b@x"][0]))
     assert link_after[0] == parent_a  # a moved onto this page
     assert after.headers["ETag"] != before.headers["ETag"]
+
+
+def test_off_page_parents_cost_one_statement_and_only_when_needed(
+    client, tmp_path, monkeypatch
+):
+    from sqlalchemy import event
+
+    import mimir.web.routes.thread as route
+    from mimir.extensions import SessionLocal, engine
+    from mimir.models import Article
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_chat(tmp_path, CHAIN, authors=WHO)
+    with SessionLocal() as s:
+        root = s.get(Article, seeded["r@x"][0])
+        page1 = thread_page_url(root.id, root.date, "alpha", 1)
+        page2 = thread_page_url(root.id, root.date, "alpha", 2)
+
+    inside: list[int] = []
+    statements: list[str] = []
+    real = route.thread_parents
+
+    def spy(*a, **k):
+        before = len(statements)
+        out = real(*a, **k)
+        inside.append(len(statements) - before)
+        return out
+
+    monkeypatch.setattr(route, "thread_parents", spy)
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        r1 = client.get(page1)  # parents all on page 1
+        assert inside == []
+        r2 = client.get(page2)  # b's parent a is on page 1
+        assert inside == [1]
+        r304 = client.get(page2, headers={"If-None-Match": r2.headers["ETag"]})
+        assert inside == [1]
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert (r1.status_code, r2.status_code, r304.status_code) == (200, 200, 304)
+
+
+def test_on_the_recursive_walk_a_parent_on_another_page_links_to_it(
+    client, tmp_path, monkeypatch
+):
+    """The fallback branch (`all_nodes`): one unrooted member sends the
+    thread down `get_thread`, and the marker still names the page."""
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_chat(tmp_path, CHAIN, authors=WHO)
+    with SessionLocal() as s:
+        s.execute(
+            select(ArticleList).where(ArticleList.article_id == seeded["c@x"][0])
+        ).scalar_one().thread_root_id = None
+        s.commit()
+        root = s.get(Article, seeded["r@x"][0])
+        page1 = thread_page_url(root.id, root.date, "alpha", 1)
+        page2 = thread_page_url(root.id, root.date, "alpha", 2)
+    html = client.get(page2).get_data(as_text=True)
+    assert _replied_to(_card(html, seeded["b@x"][0])) == (
+        f"{page1}#m{seeded['a@x'][0]}",
+        "Bob Barker",
+    )
