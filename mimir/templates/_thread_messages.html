@@ -33,7 +33,7 @@
       {%- endif %}
       {# The date links the message's own page, the crawl path; `#` is this card's permalink. The year shows when it is not the year the thread started. #}
       <a class="card-date" href="{{ url }}">
-        {%- if node.date %}<time datetime="{{ node.date.isoformat() }}" title="{{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') }}">{{ node.date.strftime('%b') }} {{ node.date.day }}, {% if not root.date or node.date.year != root.date.year %}{{ node.date.year }}, {% endif %}{{ node.date.strftime('%H:%M') }}</time>{% else %}?{% endif -%}
+        {%- if node.date %}<time datetime="{{ node.date.isoformat() }}" title="{{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') }}">{{ node.date.strftime('%b') }} {{ node.date.day }}, {% if node.date.year != root.date.year %}{{ node.date.year }}, {% endif %}{{ node.date.strftime('%H:%M') }}</time>{% else %}?{% endif -%}
       </a>
       <a class="permalink" href="#m{{ node.id }}" aria-label="Permalink to this message">#</a>
     </p>

@@ -2427,6 +2427,9 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # tabs and the Patches index: 34/16. The header lists this inbox's busiest
 # subsystem first, a cached ranking read before the validator (it is an
 # ETag input): one more statement on both, 35/17.
+# The outline (#989, from five messages) adds none on page 1, which reads
+# its rows with its own slice, and one on pages 2+ and on their 304s: 36/18
+# there, pinned in test_thread_outline.py. This two-message thread has none.
 THREAD_VIEW_STATEMENTS_200 = 35
 THREAD_VIEW_STATEMENTS_304 = 17
 

@@ -633,6 +633,28 @@ def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
     ).all()
 
 
+def outline_depths(nodes) -> dict[int, int]:
+    """`node id -> depth` among `nodes` only, for the thread page's outline
+    (#989): the number of listed ancestors, so a reply whose parent is not
+    listed (a patch, the cover, beyond the outline's cap, outside the
+    archive) is at depth 0. Iterative and linear, and a `thread_parent`
+    cycle or a self-parent ends the walk at the first repeat, so it gives a
+    finite depth: `dedupe_thread` exists because cycles happen."""
+    parent = {n.message_id: n.thread_parent for n in nodes}
+    depth: dict[str, int] = {}
+    for start in parent:
+        chain, cur, seen = [], start, set()
+        while cur in parent and cur not in depth and cur not in seen:
+            seen.add(cur)
+            chain.append(cur)
+            cur = parent[cur]
+        base = depth[cur] if cur in depth else -1
+        for message_id in reversed(chain):
+            base += 1
+            depth[message_id] = base
+    return {n.id: depth[n.message_id] for n in nodes}
+
+
 def thread_parents(
     session: Session, inbox: Inbox, root_article_id: int, message_ids: list[str]
 ) -> list:
@@ -641,8 +663,6 @@ def thread_parents(
     another page than their reply. One statement, scoped to the thread so a
     Message-ID cannot name a message of another one. Same precondition as
     `thread_by_root_id`."""
-    if not message_ids:
-        return []
     return session.execute(
         _thread_select(
             inbox, root_article_id, Article.id, Article.message_id, Article.author

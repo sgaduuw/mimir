@@ -2506,6 +2506,17 @@ with the thread. Its id is in the ETag's content part, so a cold cache is
 the empty tag and the ETag moves when the cache warms. It costs one cache
 read on the 304.
 
+The thread view's outline (#989) lists the thread's first `OUTLINE_ROWS`
+messages on every page of a thread of at least `OUTLINE_MIN_MESSAGES`, and
+their `thread_parent`s set the depths it shows, so a digest of their
+`(id, thread_parent)` is an ETag input (in `etag_input`, not `content_input`).
+The digest needs those rows before the 304 check. Page 1 reads them with its
+own slice (`limit=max(cap, OUTLINE_ROWS)`) and costs no statement; pages 2 and
+up read them in one more statement, on the 200 and on the 304: 36 and 18 for
+the pinned thread. The HTMX slice and the Markdown page render no outline, so
+they read and digest nothing for it. Rows past the cap are in neither the
+outline nor the digest.
+
 ## Version source of truth
 
 `pyproject.toml`'s `version` field. Read at runtime via

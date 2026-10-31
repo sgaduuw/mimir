@@ -41,7 +41,7 @@
 {% endif %}
 <h1>{{ title_text or '(no subject)' }}</h1>
 <p class="thread-byline">
-  {%- if root.author %}Started by <strong>{{ root.author|display_name }}</strong>{% else %}Started{% endif %}
+  Started by <strong>{{ root.author|display_name }}</strong>
   {%- if root.date %} on {{ day(root.date) }}{% endif %}
   {%- if total_count > 1 %} &middot; {{ total_count }} messages from {{ author_count }} author{{ '' if author_count == 1 else 's' }}
   {%- if last_activity %} &middot; Last reply {{ day(last_activity) }}{% endif %}{% endif %}
