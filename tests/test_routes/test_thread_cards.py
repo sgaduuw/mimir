@@ -344,7 +344,6 @@ def test_a_card_never_prints_a_hidden_address_and_names_a_nameless_sender_as_unk
     """The card's byline and "replied to" use `display_name`: a sender with
     no usable name (bare address, email-shaped name) is "unknown sender",
     never their non-allowlisted address."""
-    import re
 
     seeded = _seed_chat(
         tmp_path,

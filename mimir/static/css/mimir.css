@@ -987,3 +987,34 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 }
 .card-date, .permalink { font-size: 0.85rem; }
 .card-date { margin-left: auto; }
+
+/* Thread outline (#989): a closed disclosure everywhere, and on a wide
+   screen a sidebar where `::details-content` lets CSS show a closed
+   <details>. Browsers without it keep the disclosure. */
+.thread-outline ol { margin: 0.5rem 0 1rem; padding: 0; list-style: none; }
+.thread-outline li { margin: 0; padding: 0.15rem 0; list-style: none; font-size: 0.85rem; }
+.thread-outline a { display: flex; align-items: center; min-height: 2.75rem; }
+.thread-outline small { margin-left: 0.4rem; }
+.thread-outline li.here { box-shadow: inset 3px 0 0 var(--mimir-accent); }
+.thread-outline li.here > a { padding-left: 0.5rem; }
+.thread-outline li[data-depth="1"] { padding-left: 0.75rem; }
+.thread-outline li[data-depth="2"] { padding-left: 1.5rem; }
+.thread-outline li[data-depth="3"] { padding-left: 2.25rem; }
+.thread-outline li[data-depth="4"] { padding-left: 3rem; }
+.thread-outline li[data-depth="5"] { padding-left: 3.75rem; }
+.thread-outline li[data-depth="6"] { padding-left: 4.5rem; }
+.thread-outline li[data-depth="7"] { padding-left: 5.25rem; }
+.thread-outline li[data-depth="8"] { padding-left: 6rem; }
+.thread-outline li[data-depth="9"] { padding-left: 6.75rem; }
+.thread-outline li[data-depth="10"] { padding-left: 7.5rem; }
+.thread-outline li[data-depth="11"] { padding-left: 8.25rem; }
+.thread-outline li[data-depth="12"] { padding-left: 9rem; }
+@media (width >= 80rem) {
+  @supports selector(::details-content) {
+    .thread-outline a { min-height: 2rem; }
+    .thread-layout { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+    .thread-aside { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+    .thread-outline::details-content { content-visibility: visible; }
+    .thread-outline > summary { display: none; }
+  }
+}

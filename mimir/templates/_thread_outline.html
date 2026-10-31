@@ -1,0 +1,17 @@
+{# The thread page's outline (#989): the thread's first messages as a
+   jump-to list. Closed, and a plain disclosure without JS: on a phone it
+   stays one, on a wide screen CSS shows the list as a sidebar where the
+   browser supports `::details-content`. Vars: `outline` (rows from
+   `thread.py::_outline_rows`), `kind_counts`, `root`. #}
+<details class="thread-outline">
+  <summary>Jump to a message</summary>
+  <ol>
+    {%- for row in outline %}
+    <li class="outline-{{ row.kind }}{% if row.here %} here{% endif %}" data-depth="{{ [row.depth, 12]|min }}"><a href="{{ row.href }}">
+      {%- if row.kind == 'patches' %}Patches ({{ kind_counts.patch }})
+      {%- elif row.kind == 'more' %}{{ row.remaining }} more message{{ '' if row.remaining == 1 else 's' }}, not listed
+      {%- else %}{{ row.node.author|display_name }}{% if row.node.date %} <small>{{ row.node.date.strftime('%b') }} {{ row.node.date.day }}{% if root.date and row.node.date.year != root.date.year %}, {{ row.node.date.year }}{% endif %}</small>{% endif %}
+      {%- endif %}</a></li>
+    {%- endfor %}
+  </ol>
+</details>
