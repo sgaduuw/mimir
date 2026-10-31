@@ -37,8 +37,9 @@ first come, first served, and a busy low-share crawler took the token a
 search crawler needed: Googlebot got 429s from a full own bucket. The
 share still caps the crawler's own rate, so shares need not add up to
 100 (the defaults add up to 260): they are ranks plus caps, not
-reservations. Unlisted crawlers rank at the default percentage and the
-impossible-headers bucket at its own, which puts both at the bottom.
+reservations. Unlisted crawlers rank at the default percentage (with
+the defaults, level with the 10% listed crawlers) and the
+impossible-headers bucket at its own 1%, below everything.
 
 Shared across workers, and its error bound: gunicorn runs sync workers,
 one request per process, so a concurrency cap degenerates and a counter
@@ -46,10 +47,12 @@ in the broker would put an RPC on every crawler request. The fixed
 buckets (global, pool, overflow, impossible-headers and one per listed
 crawler) instead live in one small file mapped into every worker
 (`/dev/shm` where it exists), each a `(tokens, stamp)` pair updated
-under an `flock`. The file is named after the gunicorn master's pid and
+under a POSIX record lock (`lockf`). The file is named after the gunicorn master's pid and
 a hash of the budget layout, so a config change never reads another
 layout's slots; the first worker in fills the buckets, and the kernel
-drops a dead worker's lock. These buckets therefore hold the whole
+drops a dead worker's lock. If the file cannot be created, the gate
+logs a warning and falls back to per-worker buckets rather than fail
+the import. These buckets therefore hold the whole
 server's share (global 120, Applebot 10%: 12 a minute), however many
 workers there are. Before #1026 they were per worker at `budget /
 web_workers`, which at production settings left each worker's global
@@ -179,18 +182,23 @@ class _Shared:
 
     @contextmanager
     def lock(self) -> Iterator[None]:
-        # flock is per open file description, so it excludes the other
-        # workers but not threads sharing this fd; callers also hold a
-        # threading.Lock. The kernel drops it when a process dies, so a
-        # killed worker cannot wedge the rest.
+        # A POSIX record lock, not flock: flock belongs to the open file
+        # description, which a fork shares, so a gate built before the
+        # workers fork (gunicorn --preload) would have every worker
+        # "holding" it at once. lockf is per process and not inherited.
+        # It does not exclude threads of one process, which is why
+        # callers also hold a threading.Lock, and closing any fd on the
+        # file drops it, which is why this is the only one. The kernel
+        # drops it when a process dies, so a killed worker cannot wedge
+        # the rest.
         if self._fd is None:
             yield
             return
-        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        fcntl.lockf(self._fd, fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(self._fd, fcntl.LOCK_UN)
+            fcntl.lockf(self._fd, fcntl.LOCK_UN)
 
     def ready(self) -> bool:
         return _HEADER.unpack_from(self.mem, 0)[0] == _READY
@@ -335,23 +343,46 @@ class CrawlerBudget:
         )
         path = None
         if s.crawler_budget_per_minute > 0:
-            # One file per gunicorn master (each worker's parent) and per
-            # layout, so a changed config never reads another's slots.
+            # One file per gunicorn master (each worker's parent), per pid
+            # namespace (containers in one pod share /dev/shm, and their
+            # masters can have the same pid) and per layout, so a changed
+            # config never reads another's slots.
             digest = hashlib.sha256(repr(layout).encode()).hexdigest()[:12]
+            try:
+                pidns = os.stat("/proc/self/ns/pid").st_ino
+            except OSError:
+                pidns = 0
             path = os.path.join(
-                shared_dir(), f"mimir-crawler-budget-{os.getppid()}-{digest}"
+                shared_dir(),
+                f"mimir-crawler-budget-{pidns}-{os.getppid()}-{digest}",
             )
-        return cls(
-            s.crawler_budget_per_minute,
-            uas,
-            s.web_workers,
-            s.crawler_retry_after_sec,
-            markers=s.crawler_ua_markers,
-            default_ua_pct=s.crawler_default_ua_pct,
-            unlisted_pool_pct=s.crawler_unlisted_pool_pct,
-            impossible_headers_pct=s.crawler_impossible_headers_pct,
-            shared_path=path,
-        )
+
+        def build(shared_path: str | None) -> CrawlerBudget:
+            return cls(
+                s.crawler_budget_per_minute,
+                uas,
+                s.web_workers,
+                s.crawler_retry_after_sec,
+                markers=s.crawler_ua_markers,
+                default_ua_pct=s.crawler_default_ua_pct,
+                unlisted_pool_pct=s.crawler_unlisted_pool_pct,
+                impossible_headers_pct=s.crawler_impossible_headers_pct,
+                shared_path=shared_path,
+            )
+
+        try:
+            return build(path)
+        except OSError as exc:
+            # The gate is built at import in every process, so a missing
+            # or read-only directory must not stop the app from booting.
+            # Per-worker buckets are the pre-#1026 behaviour.
+            logger.warning(
+                "crawler budget: cannot share buckets through %s (%s); "
+                "each worker keeps its own",
+                path,
+                exc,
+            )
+            return build(None)
 
     def crawler_key(self, user_agent: str | None) -> str | None:
         """The bucket key for a crawler request, None for anything else:
