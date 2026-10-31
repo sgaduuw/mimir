@@ -20,11 +20,10 @@ from pydantic import ValidationError
 from mimir.config import Settings
 
 
-@pytest.fixture(autouse=True)
-def _ignore_dotenv(monkeypatch):
-    """`Settings` also reads the project `.env`; a developer's file must not
-    change a default being asserted here."""
-    monkeypatch.setitem(Settings.model_config, "env_file", None)
+def test_suite_ignores_the_developer_dotenv():
+    """conftest sets `MIMIR_ENV_FILE` empty before mimir is imported, so a
+    developer's `.env` cannot change the import-time `settings` (#1023)."""
+    assert Settings.model_config["env_file"] is None
 
 
 def test_settings_rejects_short_secret_key():
