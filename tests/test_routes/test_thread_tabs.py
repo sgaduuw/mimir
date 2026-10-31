@@ -599,3 +599,42 @@ def test_a_thread_without_replies_renders_a_zero_discussion_count(client, tmp_pa
         )
     )
     assert counts == {"discussion": "0", "patches": "2", "all": "2"}
+
+
+def _page_with_one_patch_disclosure(client, tmp_path):
+    seeded = _seed_two_versions(tmp_path, 2)
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    return seeded, page
+
+
+def test_the_related_heading_is_not_on_the_page_without_the_fragment(client, tmp_path):
+    """Without JS the fragment never loads. A heading on the page then
+    stands over an empty box, so the heading arrives with the list."""
+    import re
+
+    seeded, page = _page_with_one_patch_disclosure(client, tmp_path)
+    outside = re.sub(r"<noscript>.*?</noscript>", "", page, flags=re.DOTALL)
+    assert page.count('class="patch-related"') == 2  # precondition
+    assert "Other recent patches touching these files" not in outside
+    for aid in (seeded["p1@x"][0], seeded["p2@x"][0]):
+        fragment = client.get(f"/api/alpha/related/{aid}").get_data(as_text=True)
+        assert "Other recent patches touching these files" in fragment
+
+
+def test_each_disclosure_links_the_related_list_for_readers_without_js(
+    client, tmp_path
+):
+    """A reader without JS gets a `<noscript>` link to the very URL
+    `hx-get` fetches, so the two cannot drift."""
+    import re
+
+    seeded, page = _page_with_one_patch_disclosure(client, tmp_path)
+    for mid in ("p1@x", "p2@x"):
+        aid = seeded[mid][0]
+        start = page.index(f'<details class="patch-detail" id="patch-{aid}"')
+        block = page[start : page.index('class="patch-related"', start)]
+        get = re.search(r'hx-get="([^"]+)"', block).group(1)
+        links = re.findall(
+            r"<noscript>.*?href=\"([^\"]+)\".*?</noscript>", block, re.DOTALL
+        )
+        assert links == [get], (mid, links)

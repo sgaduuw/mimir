@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- A patch's "Other recent patches touching these files" on the thread page no longer opens to a heading over an empty box without JavaScript (#989). The heading now arrives with the list, and a `<noscript>` link points at the list.
 - The test suite no longer reads the developer's `.env` (#1023). A setting there, such as `WARM_CACHE_EVERY`, changed the settings built at import and failed the doctor tests. `MIMIR_ENV_FILE` now names the file settings are read from: it defaults to the project `.env`, and an empty value reads no file.
 
 ## [3.36.1] - 2026-10-30
