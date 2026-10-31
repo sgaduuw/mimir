@@ -568,3 +568,34 @@ def test_revisions_fold_hides_picos_summary_chevron():
     """The fold draws its own marker; Pico's `summary::after` chevron made
     a second one."""
     assert "display: none" in _css_block(".revisions-fold summary::after")
+
+
+def test_a_thread_without_replies_renders_a_zero_discussion_count(client, tmp_path):
+    """A blank count would read as non-zero to the script, which would open
+    the empty Discussion tab instead of Everything."""
+    import re
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path, "alpha", [("nr-cov@x", None), ("nr-p1@x", "nr-cov@x")]
+    )
+    with SessionLocal() as s:
+        for mid, subject, position in (
+            ("nr-cov@x", "[PATCH 0/1] bar", 0),
+            ("nr-p1@x", "[PATCH 1/1] bar: only", 1),
+        ):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = subject
+            a.patch_series_key = "n" * 40
+            a.patch_series_position = position
+        s.commit()
+    html = client.get(seeded["nr-cov@x"][1] + "/t").get_data(as_text=True)
+    counts = dict(
+        re.findall(
+            r'data-tab="(\w+)"[^>]*>[^<]*<span class="tab-count">([^<]*)</span>', html
+        )
+    )
+    assert counts == {"discussion": "0", "patches": "2", "all": "2"}
