@@ -11,6 +11,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.37.0] - 2026-10-31
+
+### Changed
+
+- A crawler's budget percentage is now also its priority on the global crawler budget (#1026). A crawler holding `pct` may take a global token only while the global bucket is more than `100 - pct` percent full, so Googlebot and bingbot (80%) are served ahead of Applebot and the other 10% crawlers, and unlisted crawlers and the impossible-headers bucket rank at their own small percentages. The percentage still caps the crawler's own rate.
+- The crawler budget's global, pool, impossible-headers and listed-crawler buckets are shared by all gunicorn workers of a web instance, through a small file in `/dev/shm` (#1026). They hold the instance's whole share instead of the budget divided by `WORKERS`; unlisted crawlers' buckets stay per worker. Each web instance still holds its own budget.
+- The `crawler budget:` warning splits its deferred count by the bucket that refused: `own=`, `global=` and `pool=` (#1026).
+
+### Fixed
+
+- Googlebot got `429` from the crawler budget while its own share was untouched (#1026). Every crawler request also needs a token from the global bucket, which held about one token per worker at production settings, so whichever crawler asked first took it, usually Applebot or ClaudeBot. Google slows its crawl on `429`.
+
 ## [3.36.1] - 2026-10-30
 
 ### Fixed
