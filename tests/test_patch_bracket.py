@@ -12,6 +12,7 @@ from mimir.patch_revisions import (
     ParsedPatchSubject,
     parse_in_series_patch_subject,
     patch_bracket,
+    subject_tags,
 )
 from mimir.patch_series import CoverLetter, parse_cover_letter, series_key
 
@@ -175,3 +176,63 @@ def test_patch_bracket_returns_the_deciding_bracket_and_title():
     assert patch_bracket("[PATCH v2 1/2] t") == ("PATCH v2 1/2", "t")
     assert patch_bracket("[RFC 0/6] t") == ("RFC 0/6", "t")
     assert patch_bracket("[PULL 0/6] t") is None
+
+
+@pytest.mark.parametrize(
+    ("subject", "tags", "title"),
+    [
+        (
+            "[LSF/MM/BPF TOPIC][RFC PATCH v4 00/27] Private Memory Nodes (w/ Compressed RAM)",
+            ["LSF/MM/BPF TOPIC", "RFC", "v4"],
+            "Private Memory Nodes (w/ Compressed RAM)",
+        ),
+        ("[PATCH v2 3/9] foo: bar", ["v2"], "foo: bar"),
+        ("[PATCH] foo: bar", [], "foo: bar"),
+        ("[PATCHv3 1/2] foo", ["v3"], "foo"),
+        ("[net-next v7 02/10] foo", ["net-next", "v7"], "foo"),
+        ("[U-Boot] [PATCH 0/3] title", ["U-Boot"], "title"),
+        # Not a patch: nothing is stripped, a prefix may be the whole point.
+        ("[GIT PULL] fixes for -rc2", [], "[GIT PULL] fixes for -rc2"),
+        ("Re: [PATCH v2 1/3] foo", [], "Re: [PATCH v2 1/3] foo"),
+        ("plain subject", [], "plain subject"),
+        ("", [], ""),
+        (None, [], ""),
+    ],
+)
+def test_subject_tags_split_the_prefix_from_the_title(subject, tags, title):
+    """The thread header's tags and its stripped title come from the one
+    bracket `patch_bracket` decides on (#989); a subject that is not a
+    patch keeps every character."""
+    assert subject_tags(subject) == (tags, title)
+
+
+def test_subject_tags_agree_with_patch_bracket_on_every_title():
+    """Whatever `patch_bracket` calls the title, `subject_tags` returns."""
+    for template, counts in BRACKETS:
+        subject = f"[{template.format(n=1)}] foo: bar"
+        got = patch_bracket(subject)
+        assert (got is not None) is counts, subject
+        if got is not None:
+            assert subject_tags(subject)[1] == got[1], subject
+
+
+def test_subject_tags_parse_hostile_subjects_in_linear_time():
+    """A sender writes the subject (AGENTS.md test rule 7)."""
+    import time
+
+    start = time.perf_counter()
+    for subject in (
+        "[" * 300_000,
+        "[a" * 300_000,
+        "[PATCH " + "v1 " * 300_000 + "]",
+        "[x][" * 100_000,
+        "[PATCH 1/2" + " 1/2" * 300_000,
+    ):
+        subject_tags(subject)
+    assert time.perf_counter() - start < 5
+
+
+def test_subject_tags_cap_what_a_sender_can_make_the_header_show():
+    tags, _ = subject_tags("[PATCH " + "x" * 500 + " a b c d e f g h 1/2] t")
+    assert len(tags) == 6
+    assert all(len(t) <= 40 for t in tags)

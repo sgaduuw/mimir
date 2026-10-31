@@ -20,6 +20,12 @@ from pydantic import ValidationError
 from mimir.config import Settings
 
 
+def test_suite_ignores_the_developer_dotenv():
+    """conftest sets `MIMIR_ENV_FILE` empty before mimir is imported, so a
+    developer's `.env` cannot change the import-time `settings` (#1023)."""
+    assert Settings.model_config["env_file"] is None
+
+
 def test_settings_rejects_short_secret_key():
     """`Settings.secret_key` carries `Field(min_length=16)`. A value
     below that length must raise `ValidationError` at construction
@@ -248,3 +254,15 @@ def test_settings_accepts_slug_inbox_keys():
     assert set(Settings(secret_key="x" * 32).inboxes) == {"lkml", "linux-fsdevel"}
     s = Settings(secret_key="x" * 32, inboxes=_inbox("linux-arm-kernel"))
     assert set(s.inboxes) == {"linux-arm-kernel"}
+
+
+def test_warm_cache_fast_every_reads_only_the_scheduler_variable(monkeypatch):
+    """WARM_CACHE_EVERY is the one cadence name (scheduler.sh reads only
+    it). WARM_CACHE_FAST_EVERY must not move the setting (#1006)."""
+    from mimir.config import Settings
+
+    monkeypatch.setenv("WARM_CACHE_FAST_EVERY", "7")
+    monkeypatch.delenv("WARM_CACHE_EVERY", raising=False)
+    assert Settings(secret_key="x" * 32).warm_cache_fast_every == 60
+    monkeypatch.setenv("WARM_CACHE_EVERY", "9")
+    assert Settings(secret_key="x" * 32).warm_cache_fast_every == 9

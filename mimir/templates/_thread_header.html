@@ -1,0 +1,87 @@
+{# The thread page's header (#989): where it sits, what it is called, who
+   started it and when it last moved, then what it touches. Every figure
+   is one the page's validator already carries, bar the busiest
+   subsystem, which `thread.py` folds into the ETag. Vars: `root`,
+   `title_tags`, `title_text`, `total_count`, `thread_summary`,
+   `last_activity`, `subsystem_hits`, `series_totals`. #}
+{% from "_subsystem_link.html" import maintainer_link, subsystem_link %}
+{% macro day(d) %}{{ d.strftime('%b') }} {{ d.day }}, {{ d.year }}{% endmacro %}
+{% set _tags = title_tags + (["%d patches"|format(series_totals[0]) if series_totals[0] != 1 else "1 patch"] if series_totals and series_totals[0] else []) %}
+<nav aria-label="breadcrumb"><ul>
+  <li><a href="/{{ inbox_name }}/">{{ inbox_name }}</a></li>
+  {%- if root.date %}
+  <li><a href="/{{ inbox_name }}/{{ root.date.year }}/">{{ root.date.year }}</a></li>
+  <li><a href="/{{ inbox_name }}/{{ root.date.year }}/{{ '%02d' % root.date.month }}/">{{ root.date.strftime('%B') }}</a></li>
+  {%- endif %}
+  <li aria-current="page">thread</li>
+</ul></nav>
+{% if _tags %}
+<ul class="thread-tags" aria-label="Subject tags">
+  {%- for tag in _tags %}
+  <li class="thread-tag{% if tag[:1]|lower == 'v' and tag[1:].isdigit() %} thread-tag-version{% endif %}">{{ tag }}</li>
+  {%- endfor %}
+</ul>
+{% endif %}
+<h1>{{ title_text or '(no subject)' }}</h1>
+<p class="thread-byline">
+  {%- if root.author %}Started by <strong>{{ root.author|display_name }}</strong>{% else %}Started{% endif %}
+  {%- if root.date %} on {{ day(root.date) }}{% endif %}
+  {%- if total_count > 1 %} &middot; {{ total_count }} messages from {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }}
+  {%- if last_activity %} &middot; Last reply {{ day(last_activity) }}{% endif %}{% endif %}
+</p>
+{% set _maints = subsystem_hits | subsystem_maintainers if subsystem_hits else [] %}
+{% set _has_series = series_totals and series_totals[0] %}
+{% if _has_series or subsystem_hits %}
+<div class="thread-cards">
+{% if _has_series %}
+{# A cover's whole posting (#844): lore shows each patch's diffstat, not
+   the series' total. #}
+{% set _patches, _files, _ins, _dels = series_totals %}
+<section class="thread-card" aria-labelledby="card-series">
+  <h2 id="card-series" class="card-label">Series</h2>
+  <p>{{ _patches }} patch{{ '' if _patches == 1 else 'es' }}
+    {%- if _files %}, {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif %}</p>
+  {% if _ins is not none %}
+  {# Two segments, added then removed. The CSP forbids `style=`, so the
+     split is an SVG attribute, as in year.html. #}
+  {% set _total = _ins + _dels %}
+  {% set _split = (_ins / _total * 100) | round(1) if _total else 0 %}
+  <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ '{:,}'.format(_ins) }} lines added, {{ '{:,}'.format(_dels) }} removed"><rect class="bar-added" width="{{ _split }}" height="6"/><rect class="bar-removed" x="{{ _split }}" width="{{ 100 - _split }}" height="6"/></svg>
+  <p><small>+{{ '{:,}'.format(_ins) }} &minus;{{ '{:,}'.format(_dels) }}</small></p>
+  {% endif %}
+</section>
+{% endif %}
+{% if subsystem_hits %}
+<section class="thread-card" aria-labelledby="card-subsystems">
+  <h2 id="card-subsystems" class="card-label">Subsystems ({{ subsystem_hits|length }})</h2>
+  <ul class="chips">
+    {%- for hit in subsystem_hits[:3] %}<li class="chip">{{ subsystem_link(hit.name, current_inbox) }}</li>{% endfor %}
+  </ul>
+  {% if subsystem_hits|length > 3 %}
+  <details>
+    <summary>Show {{ subsystem_hits|length - 3 }} more</summary>
+    <ul class="chips">
+      {%- for hit in subsystem_hits[3:] %}<li class="chip">{{ subsystem_link(hit.name, current_inbox) }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+{% if _maints %}
+<section class="thread-card" aria-labelledby="card-maintainers">
+  <h2 id="card-maintainers" class="card-label">Maintainers ({{ _maints|length }})</h2>
+  <ul class="chips">
+    {%- for name, addr in _maints[:4] %}<li class="chip">{{ maintainer_link(name, addr) }}</li>{% endfor %}
+  </ul>
+  {% if _maints|length > 4 %}
+  <details>
+    <summary>Show {{ _maints|length - 4 }} more</summary>
+    <ul class="chips">
+      {%- for name, addr in _maints[4:] %}<li class="chip">{{ maintainer_link(name, addr) }}</li>{% endfor %}
+    </ul>
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+</div>
+{% endif %}

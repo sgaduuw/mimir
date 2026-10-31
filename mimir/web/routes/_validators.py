@@ -50,19 +50,9 @@ def series_rows_tag(rows) -> str:
     filters in SQL to the rows with a series column), for the thread page's
     validator. `message_kind`, the Patches index and the tabs read those
     columns, and `backfill-patch-series --reprocess` can rewrite them
-    without adding a message."""
-    return _digest(
-        repr(
-            (
-                r.id,
-                r.patch_series_key,
-                r.patch_series_head_id,
-                r.patch_series_position,
-                r.patch_series_version,
-            )
-        )
-        for r in rows
-    )
+    without adding a message. Digests each row whole, so `rows` must be
+    exactly `thread_series_rows`' columns."""
+    return _digest(repr(tuple(r)) for r in rows)
 
 
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:

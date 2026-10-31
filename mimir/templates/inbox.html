@@ -30,7 +30,7 @@
            exactly when `/t` is the canonical target and contains what
            it claims. This is the inbound link that page was missing:
            this dashboard is sitemapped and is the inbox's hub. #}
-        &middot; {% if t.reply_count %}<a href="{{ t|thread_url(inbox_name) }}">{{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d</a>{% else %}{{ t.reply_count }} replies in 7d{% endif %}
+        &middot; {% if t.reply_count %}<a href="{{ thread_page_url(t.id, t.date, inbox_name) }}">{{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d</a>{% else %}{{ t.reply_count }} replies in 7d{% endif %}
         &middot; {{ t.author|safe_from }}</small>
     </li>
     {% endfor %}
