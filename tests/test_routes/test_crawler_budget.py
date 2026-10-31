@@ -3,9 +3,14 @@ answers 429 + Retry-After to a configured crawler over its budget.
 
 Time is injected through the gate's clock, never slept."""
 
+import concurrent.futures
 import json
 import logging
+import multiprocessing
 import os
+import re
+import time
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -42,6 +47,13 @@ def _gate(clock, *, total=100, uas=None, workers=1, retry=120, **kw):
         clock=clock,
         **kw,
     )
+
+
+@pytest.fixture(autouse=True)
+def _shared_files_in_tmp(tmp_path, monkeypatch):
+    # from_settings names its file after the parent pid, which in a test
+    # run is the shell's: keep each test's file to itself.
+    monkeypatch.setattr(crawler_budget, "shared_dir", lambda: str(tmp_path))
 
 
 def _install(monkeypatch, gate):
@@ -170,24 +182,29 @@ def test_429_path_opens_no_db_session_and_reads_no_blob(client, monkeypatch):
     assert r.status_code == 429
 
 
-def test_web_workers_divides_the_per_worker_rate():
-    # Global 120, 8 workers, Applebot 10%: 12 a minute overall, 1.5 a
-    # minute per worker (global bucket 15 a minute per worker).
+def test_shared_buckets_hold_the_whole_share_unlisted_divide_by_workers():
+    # Global 120, 8 workers, Applebot 10%: the shared buckets are the
+    # server's, 12 a minute for Applebot and a 20-token global bucket.
+    # An unlisted crawler's bucket is one worker's: 10% / 8 = 1.5.
     gate = _gate(Clock(), total=120, uas={"Applebot": 10}, workers=8)
-    assert gate.ua_per_worker_per_minute("Applebot") == pytest.approx(1.5)
-    assert gate.global_tokens() == pytest.approx(15 * crawler_budget.BURST_SECONDS / 60)
+    assert gate.ua_per_minute("Applebot") == pytest.approx(12)
+    assert gate.global_tokens() == pytest.approx(
+        120 * crawler_budget.BURST_SECONDS / 60
+    )
+    assert gate.check(GPTBOT) is None
+    assert gate.ua_per_minute("gptbot") == pytest.approx(1.5)
 
 
 def test_sub_one_per_minute_share_admits_one_then_every_60_over_rate_seconds():
-    # 60 * 10% / 8 workers = 0.75 a minute per worker.
+    # An unlisted crawler on one of 8 workers: 60 * 10% / 8 = 0.75 a minute.
     clock = Clock()
     gate = _gate(clock, total=60, uas={"Applebot": 10}, workers=8)
-    assert gate.ua_per_worker_per_minute("Applebot") == pytest.approx(0.75)
-    assert gate.check(APPLEBOT) is None
-    assert gate.check(APPLEBOT) == "Applebot"
+    assert gate.check(GPTBOT) is None
+    assert gate.ua_per_minute("gptbot") == pytest.approx(0.75)
+    assert gate.check(GPTBOT) == "gptbot"
     clock.now += 80  # 60 / 0.75
-    assert gate.check(APPLEBOT) is None
-    assert gate.check(APPLEBOT) == "Applebot"
+    assert gate.check(GPTBOT) is None
+    assert gate.check(GPTBOT) == "gptbot"
 
 
 def test_web_workers_reads_the_workers_env_var(monkeypatch):
@@ -304,9 +321,10 @@ def test_unlisted_crawler_gets_the_default_percentage_listed_gets_its_own():
     gate = _gate(Clock(), total=120, uas={"Applebot": 25}, workers=8)
     assert gate.check(GOOGLEBOT) is None
     assert gate.check(APPLEBOT) is None
-    # default 10% of 120 = 12 a minute overall = 1.5 per worker
-    assert gate.ua_per_worker_per_minute("googlebot") == pytest.approx(1.5)
-    assert gate.ua_per_worker_per_minute("Applebot") == pytest.approx(3.75)
+    # unlisted: default 10% of 120 = 12 a minute overall = 1.5 per worker;
+    # listed and shared: 25% of 120 for the whole server
+    assert gate.ua_per_minute("googlebot") == pytest.approx(1.5)
+    assert gate.ua_per_minute("Applebot") == pytest.approx(30)
 
 
 def test_unlisted_crawler_over_default_share_gets_429(client, monkeypatch):
@@ -336,10 +354,12 @@ def test_cubot_browser_never_gated_with_buckets_empty(client, monkeypatch):
 
 def test_unlisted_buckets_are_capped_and_overflow_shares_one(monkeypatch):
     monkeypatch.setattr(crawler_budget, "MAX_UNLISTED_BUCKETS", 2)
-    gate = _gate(Clock(), total=1000, uas={"Applebot": 100})
+    clock = Clock()
+    gate = _gate(clock, total=1000, uas={"Applebot": 100})
     assert gate.check(GOOGLEBOT) is None
     assert gate.check(BINGBOT) is None
     assert gate.unlisted_count() == 2
+    clock.now += 1  # the global bucket is full again, the overflow untouched
     # Past the cap, new crawlers share ONE bucket at the default share:
     # 10% of 1000 = 100 a minute, a 10 s bucket holds 16.67 tokens.
     results = [gate.check(f"x{i}bot/1.0 ") for i in range(17)]
@@ -485,15 +505,28 @@ def test_markers_are_literal_not_regex():
 
 
 def test_invented_crawler_names_share_the_unlisted_pool():
-    # Global 120, pool 30%: 36 a minute, a 10 s bucket holds 6 tokens.
-    gate = _gate(Clock(), total=120, uas={"Applebot": 10}, unlisted_pool_pct=30)
+    # Global 120, pool 30%: 36 a minute, a 10 s bucket holds 6 tokens. A
+    # 100% default share puts unlisted crawlers at the top of the global
+    # bucket, so the pool is what binds.
+    clock = Clock()
+    gate = _gate(
+        clock,
+        total=120,
+        uas={"Applebot": 10},
+        unlisted_pool_pct=30,
+        default_ua_pct=100,
+    )
     admitted = sum(gate.check(f"Mozilla (x{i}-bot/1.0)") is None for i in range(50))
     assert admitted == 6
     # A listed crawler never touches the pool and still gets its share
-    # (10% of 120 = 12 a minute, 2 tokens) during the flood.
+    # (10% of 120 = 12 a minute, 2 tokens) during the flood, once the
+    # global bucket is back above its 90% line.
+    clock.now += 4
+    pool = gate.pool_tokens()
     assert gate.check(APPLEBOT) is None
     assert gate.check(APPLEBOT) is None
     assert gate.check(APPLEBOT) == "Applebot"
+    assert gate.pool_tokens() == pool
 
 
 def test_pool_refusal_charges_no_bucket():
@@ -582,7 +615,7 @@ def test_default_crawler_list():
 
 def _production_shaped_gate(clock):
     """Default budgets, global 100 a minute over 16 workers (#848). The
-    gate is one worker's view: its buckets hold 1/16 of every share."""
+    listed buckets are shared, so they hold each crawler's whole share."""
     return CrawlerBudget(100, DEFAULT_CRAWLER_UA_BUDGETS, 16, 120, clock)
 
 
@@ -590,24 +623,24 @@ def _production_shaped_gate(clock):
 def test_search_crawlers_are_listed_by_default(ua, key):
     gate = _production_shaped_gate(Clock())
     assert gate.crawler_key(ua) == key
-    # 80% of 100 over 16 workers. An unlisted crawler has no bucket, so
-    # this also fails when the key merely equals the lowercased token.
-    assert gate.ua_per_worker_per_minute(key) == 5
+    # 80% of 100, shared by every worker. An unlisted crawler has no
+    # bucket, so this also fails when the key merely equals the token.
+    assert gate.ua_per_minute(key) == 80
 
 
-def _burst(gate, clock, ua):
-    """Three requests 20 s apart, all landing on this one worker."""
+def _burst(gate, clock, ua, step=20):
+    """Three requests `step` seconds apart."""
     answers = []
     for _ in range(3):
         answers.append(gate.check(ua))
-        clock.now += 20
+        clock.now += step
     return answers
 
 
 def test_search_crawler_burst_over_sixteen_workers_is_admitted():
     clock = Clock()
     gate = _production_shaped_gate(clock)
-    # 80% of 100 over 16 workers = 5 a minute, one token every 12 s.
+    # 80% of 100 = 80 a minute.
     assert _burst(gate, clock, GOOGLEBOT) == [None, None, None]
     assert _burst(gate, clock, BINGBOT) == [None, None, None]
 
@@ -615,9 +648,9 @@ def test_search_crawler_burst_over_sixteen_workers_is_admitted():
 def test_default_share_crawler_is_still_throttled_by_the_same_burst():
     clock = Clock()
     gate = _production_shaped_gate(clock)
-    # 10% of 100 over 16 workers = 0.625 a minute: the second request
-    # inside 96 s is refused. Keeps the gate on.
-    assert _burst(gate, clock, APPLEBOT) == [None, "Applebot", "Applebot"]
+    # 10% of 100 = 10 a minute, 1.67 tokens: three requests half a
+    # second apart, the second and third are refused. Keeps the gate on.
+    assert _burst(gate, clock, APPLEBOT, step=0.5) == [None, "Applebot", "Applebot"]
 
 
 @pytest.mark.parametrize("ua", HUMAN_UAS)
@@ -682,7 +715,7 @@ def test_from_settings_uses_the_merged_map(monkeypatch):
     assert gate.crawler_key(DEFAULT_LISTED["Slurp"]) == "Slurp"
     assert gate.crawler_key(APPLEBOT) == "Applebot"
     gate.check(APPLEBOT)
-    assert gate.ua_per_worker_per_minute("Applebot") == pytest.approx(60)
+    assert gate.ua_per_minute("Applebot") == pytest.approx(60)
 
 
 def test_nested_env_form_overrides_a_default_despite_lowercasing(monkeypatch):
@@ -744,7 +777,10 @@ def test_global_zero_disables_impossible_headers():
 
 
 def test_declared_crawler_keeps_its_own_bucket_when_headers_are_impossible():
-    gate = _gate(Clock(), total=1200)
+    # 50% for the header bucket keeps the global bucket's priority out of
+    # the way: Applebot at 1% and the header bucket at 1% would compete
+    # for the same top 1% of it.
+    gate = _gate(Clock(), total=1200, impossible_headers_pct=50)
     assert gate.check(APPLEBOT, **IMPOSSIBLE) is None
     assert gate.check(APPLEBOT, **IMPOSSIBLE) is None
     assert gate.check(APPLEBOT, **IMPOSSIBLE) == "Applebot"
@@ -827,9 +863,11 @@ def test_header_bucket_log_line_says_headers_not_user_agent():
     pid = os.getpid()
     assert _warnings(run) == [
         "crawler budget: matched on request headers, not User-Agent: "
-        f'rule="Sec-Fetch-Site: none with Referer" deferred=1 pid={pid}',
+        f'rule="Sec-Fetch-Site: none with Referer" deferred=1 own=1 global=0 pool=0 '
+        f"pid={pid}",
         "crawler budget: matched on request headers, not User-Agent: "
-        f'rule="Sec-Fetch-Site: none with Referer" deferred=2 pid={pid}',
+        f'rule="Sec-Fetch-Site: none with Referer" deferred=2 own=2 global=0 pool=0 '
+        f"pid={pid}",
     ]
 
 
@@ -841,7 +879,8 @@ def test_ua_log_line_is_unchanged_next_to_the_header_line():
             gate.check(APPLEBOT, **IMPOSSIBLE)
 
     assert _warnings(run) == [
-        f"crawler budget: crawler=Applebot deferred=1 pid={os.getpid()}"
+        "crawler budget: crawler=Applebot deferred=1 own=1 global=0 pool=0 "
+        f"pid={os.getpid()}"
     ]
 
 
@@ -854,7 +893,7 @@ def test_impossible_headers_pct_setting(monkeypatch):
     s = Settings()
     assert s.crawler_impossible_headers_pct == 7
     gate = CrawlerBudget.from_settings(s)
-    assert gate.impossible_per_worker_per_minute() == pytest.approx(84)
+    assert gate.impossible_per_minute() == pytest.approx(84)
 
 
 @pytest.mark.parametrize("value", ["-1", "101"])
@@ -862,3 +901,196 @@ def test_impossible_headers_pct_is_a_validated_percentage(monkeypatch, value):
     monkeypatch.setenv("CRAWLER_IMPOSSIBLE_HEADERS_PCT", value)
     with pytest.raises(ValueError):
         Settings()
+
+
+# Priority on the global bucket and buckets shared across workers (#1026).
+CLAUDEBOT = "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)"
+
+
+def _refusals(line):
+    """The per-bucket counts on a deferral log line, parsed."""
+    return {k: int(v) for k, v in re.findall(r"\b(own|global|pool)=(\d+)", line)}
+
+
+def test_googlebot_is_admitted_while_applebot_and_an_unlisted_crawler_saturate():
+    # The production shape that refused Googlebot: default budgets, 100 a
+    # minute, Applebot and ClaudeBot (unlisted) asking ten times a second.
+    clock = Clock()
+    gate = _production_shaped_gate(clock)
+    google = []
+    low_refused = 0
+    for tick in range(600):  # 60 s in 0.1 s steps
+        low_refused += gate.check(APPLEBOT) is not None
+        low_refused += gate.check(CLAUDEBOT) is not None
+        if tick % 10 == 0:
+            google.append(gate.check(GOOGLEBOT))
+        clock.now += 0.1
+    assert low_refused > 1000  # precondition: they really are saturating
+    assert len(google) == 60
+    assert google == [None] * 60
+
+
+def test_a_low_share_crawler_is_served_only_from_the_top_of_the_global_bucket():
+    # Global 600 a minute holds 100 tokens. bingbot at 50% draws it to 50.
+    gate = _gate(
+        Clock(), total=600, uas={"bingbot": 50, "Googlebot": 80, "Applebot": 10}
+    )
+    assert sum(gate.check(BINGBOT) is None for _ in range(200)) == 50
+    assert gate.global_tokens() == pytest.approx(50)
+    # Applebot's own bucket is full, but 50 is below its 90% line...
+    assert gate.ua_tokens("Applebot") == pytest.approx(10)
+    assert gate.check(APPLEBOT) == "Applebot"
+    # ...while Googlebot may draw the bucket down to 20%.
+    assert gate.check(GOOGLEBOT) is None
+
+
+def test_a_global_refusal_is_counted_as_one_on_the_log_line():
+    gate = _gate(Clock(), total=600, uas={"bingbot": 50, "Applebot": 10})
+    for _ in range(60):
+        gate.check(BINGBOT)
+    lines = _warnings(lambda: gate.check(APPLEBOT))
+    applebot = [m for m in lines if "crawler=Applebot " in m]
+    assert len(applebot) == 1
+    assert _refusals(applebot[0]) == {"own": 0, "global": 1, "pool": 0}
+
+
+def test_a_high_share_crawler_is_still_capped_by_its_own_share():
+    clock = Clock()
+    gate = _gate(clock, total=600, uas={"Googlebot": 80})  # 480 a minute
+    admitted = 0
+    for _ in range(1200):  # 60 s at 20 a second
+        admitted += gate.check(GOOGLEBOT) is None
+        clock.now += 0.05
+    # A minute's share plus its ten-second burst (80 tokens).
+    assert 480 <= admitted <= 480 + 80
+
+
+def test_two_gates_on_one_file_share_their_buckets(tmp_path):
+    path = str(tmp_path / "budget")
+    clock = Clock()
+    a = _gate(clock, total=1200, uas={"Applebot": 1}, shared_path=path)
+    b = _gate(clock, total=1200, uas={"Applebot": 1}, shared_path=path)
+    assert a.check(APPLEBOT) is None
+    assert a.check(APPLEBOT) is None  # 1% of 1200 holds 2 tokens
+    assert b.check(APPLEBOT) == "Applebot"
+    # The second gate found the slots running and did not refill them.
+    assert b.ua_tokens("Applebot") == pytest.approx(0)
+
+
+def _hammer(path, deadline):
+    """One process's share of the multi-process test: ask until the
+    deadline, report (asked, admitted)."""
+    gate = CrawlerBudget(600, {"Applebot": 100}, 4, 120, shared_path=path)
+    asked = admitted = 0
+    while time.monotonic() < deadline:
+        asked += 1
+        admitted += gate.check(APPLEBOT) is None
+    return asked, admitted
+
+
+def test_worker_processes_share_one_budget(tmp_path):
+    path = str(tmp_path / "budget")
+    window = 4.0
+    deadline = time.monotonic() + window
+    ctx = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(4, mp_context=ctx) as pool:
+        results = list(pool.map(_hammer, [path] * 4, [deadline] * 4))
+    # Precondition: at least two processes really asked at the same time.
+    assert sum(asked > 0 for asked, _ in results) >= 2, results
+    admitted = sum(n for _, n in results)
+    # 600 a minute is 10 a second; the bucket holds 100. Four private
+    # buckets would admit over 400.
+    assert admitted <= 10 * window + 100 + 1, results
+
+
+def test_from_settings_creates_one_file_only_when_the_budget_is_on(
+    tmp_path, monkeypatch
+):
+    CrawlerBudget.from_settings(Settings())  # the default budget is 0
+    assert list(tmp_path.iterdir()) == []
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    CrawlerBudget.from_settings(Settings())
+    CrawlerBudget.from_settings(Settings())  # a second worker, same file
+    files = [p.name for p in tmp_path.iterdir()]
+    assert len(files) == 1
+    assert files[0].startswith("mimir-crawler-budget-")
+    assert f"-{os.getppid()}-" in files[0]
+
+
+def test_a_worker_whose_clock_read_lags_never_moves_a_stamp_back(tmp_path):
+    # Worker B read the clock before waiting for the lock, so its `now`
+    # is behind the stamp worker A just wrote. Moving the stamp back
+    # would credit 1005..1010 twice.
+    path = str(tmp_path / "budget")
+    clock_a, clock_b = Clock(), Clock()
+    a = _gate(clock_a, total=600, uas={"Applebot": 100}, shared_path=path)
+    b = _gate(clock_b, total=600, uas={"Applebot": 100}, shared_path=path)
+    clock_a.now = clock_b.now = 1010.0
+    for _ in range(50):
+        assert a.check(APPLEBOT) is None  # 100 tokens down to 50
+    clock_b.now = 1005.0
+    assert b.check(APPLEBOT) is None  # 49
+    assert a.check(APPLEBOT) is None  # still 1010: nothing to refill
+    assert a.ua_tokens("Applebot") == pytest.approx(48)
+
+
+# Found by the pre-PR whole-diff review; each was red at dfd2268.
+
+
+def test_unwritable_shared_dir_does_not_take_down_the_import(tmp_path, monkeypatch):
+    missing = tmp_path / "does-not-exist"
+    monkeypatch.setattr(crawler_budget, "shared_dir", lambda: str(missing))
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    lines = _warnings(lambda: CrawlerBudget.from_settings(Settings()))
+    assert any("cannot share buckets" in m for m in lines)
+    gate = CrawlerBudget.from_settings(Settings())
+    assert gate.check(APPLEBOT) is None
+
+
+def _hammer_inherited(gate, deadline, q):
+    asked = admitted = 0
+    while time.monotonic() < deadline:
+        asked += 1
+        admitted += gate.check(APPLEBOT) is None
+    q.put((asked, admitted))
+
+
+def test_gate_built_before_fork_still_excludes_children(tmp_path):
+    # gunicorn --preload builds the gate in the master, then forks.
+    path = str(tmp_path / "budget")
+    gate = CrawlerBudget(600, {"Applebot": 100}, 4, 120, shared_path=path)
+    window = 3.0
+    deadline = time.monotonic() + window
+    ctx = multiprocessing.get_context("fork")
+    q = ctx.Queue()
+    procs = [
+        ctx.Process(target=_hammer_inherited, args=(gate, deadline, q))
+        for _ in range(4)
+    ]
+    for p in procs:
+        p.start()
+    # A timeout so a child stuck after fork fails the test, never hangs it.
+    results = [q.get(timeout=60) for _ in procs]
+    for p in procs:
+        p.join(timeout=60)
+    assert sum(asked > 0 for asked, _ in results) >= 2, results  # precondition
+    assert sum(n for _, n in results) <= 10 * window + 100 + 1, results
+
+
+def test_compose_comment_matches_shared_buckets():
+    compose = (Path(__file__).resolve().parents[2] / "compose.yaml").read_text()
+    assert "Buckets are per worker" not in compose
+
+
+# Found by the review round on the fixes; red at 19854fa.
+
+
+def test_fallback_keeps_pre_3_37_per_worker_totals(tmp_path, monkeypatch):
+    monkeypatch.setattr(crawler_budget, "shared_dir", lambda: str(tmp_path / "nope"))
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    monkeypatch.setenv("WORKERS", "8")
+    gate = CrawlerBudget.from_settings(Settings())
+    assert gate.ua_per_minute("Applebot") == pytest.approx(120 * 10 / 100 / 8)
+    assert gate.global_tokens() == pytest.approx(
+        120 / 8 * crawler_budget.BURST_SECONDS / 60
+    )
