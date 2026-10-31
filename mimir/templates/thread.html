@@ -50,6 +50,15 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
   </small>
 </p>
 
+{# Outline (#989): beside the messages on a wide screen, above them
+   otherwise. One list, one disclosure. #}
+{% if outline %}
+<div class="thread-layout">
+<aside class="thread-aside" aria-label="Outline">
+{% include "_thread_outline.html" %}
+</aside>
+<div class="thread-main">
+{% endif %}
 {# Display-only tabs (#989): every message stays in the HTML, so each is
    still on the page its canonical names. `hidden` until thread-tabs.js
    runs; without JS the reader sees everything. Counts are whole-thread. #}
@@ -93,5 +102,9 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 {% endif %}
 {% if show_tabs %}
 <script src="{{ url_for('static', filename='js/thread-tabs.js') }}" defer></script>
+{% endif %}
+{% if outline %}
+</div>
+</div>
 {% endif %}
 {% endblock %}
