@@ -633,6 +633,23 @@ def thread_rows(session: Session, inbox: Inbox, root_article_id: int) -> list:
     ).all()
 
 
+def thread_parents(
+    session: Session, inbox: Inbox, root_article_id: int, message_ids: list[str]
+) -> list:
+    """`(id, message_id, author)` of those messages of one thread, for the
+    thread page's "replied to" markers (#989): the parents that sit on
+    another page than their reply. One statement, scoped to the thread so a
+    Message-ID cannot name a message of another one. Same precondition as
+    `thread_by_root_id`."""
+    if not message_ids:
+        return []
+    return session.execute(
+        _thread_select(
+            inbox, root_article_id, Article.id, Article.message_id, Article.author
+        ).where(Article.message_id.in_(message_ids))
+    ).all()
+
+
 # The message page's window onto a thread longer than one thread-view
 # page (#798). The path limit matches the CSS depth ladder, which stops
 # indenting at 20.

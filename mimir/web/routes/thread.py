@@ -24,6 +24,7 @@ the single predicate every one of those surfaces consults.
 
 import hashlib
 import logging
+import re
 from collections import Counter
 
 from flask import (
@@ -59,6 +60,7 @@ from mimir.threading import (
     thread_by_root_id,
     thread_is_materialised,
     thread_page_of,
+    thread_parents,
     thread_rows,
     thread_series_rows,
     thread_sort_key,
@@ -78,6 +80,63 @@ from mimir.web.urls import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_RE_PREFIX = re.compile(r"^(?:re:\s*)+", re.IGNORECASE)
+
+
+def _title_key(subject: str | None) -> str:
+    """A subject as the cards compare it with the thread's: header folds
+    collapsed, `Re:` prefixes stripped, case folded."""
+    return _RE_PREFIX.sub("", _clean_subject_filter(subject)).strip().casefold()
+
+
+def _reply_markers(
+    session, inbox, root, nodes, *, page, cap, ordered_rows, all_nodes
+) -> dict:
+    """`node id -> (parent's author, href)` for each message on this page
+    whose parent is a message of the thread, for the cards' "replied to"
+    (#989). The href is `#m{id}` on this page and the thread page that holds
+    the parent otherwise (the Patches index's rank, `index // cap + 1`).
+    Nothing for a root, a self-parent or a parent outside the archive.
+
+    No traversal, so a `thread_parent` cycle is just two markers. The
+    parents on other pages cost one statement on the indexed path, none
+    when they are all here, and none on the CTE fallback, which holds the
+    whole thread."""
+    on_page = {n.message_id: (n.id, n.author) for n in nodes}
+    wanted = {
+        n.thread_parent
+        for n in nodes
+        if n.thread_parent and n.thread_parent != n.message_id
+    }
+    known = dict(on_page)
+    missing = [m for m in wanted if m not in known]
+    if missing and all_nodes is not None:
+        known.update({n.message_id: (n.id, n.author) for n in all_nodes})
+    elif missing:
+        for pid, mid, author in thread_parents(session, inbox, root.id, missing):
+            known[mid] = (pid, author)
+    page_of = {
+        row.id: i // cap + 1
+        for i, row in enumerate(ordered_rows if all_nodes is None else all_nodes)
+    }
+    markers = {}
+    for n in nodes:
+        parent = known.get(n.thread_parent) if n.thread_parent else None
+        if parent is None or n.thread_parent == n.message_id:
+            continue
+        pid, author = parent
+        parent_page = page if n.thread_parent in on_page else page_of.get(pid)
+        if parent_page is None:
+            continue
+        base = (
+            ""
+            if parent_page == page
+            else thread_page_url(root.id, root.date, inbox.name, parent_page)
+        )
+        markers[n.id] = (author, f"{base}#m{pid}")
+    return markers
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t" + MD_SUFFIX)
@@ -260,6 +319,7 @@ def thread_view(
         # 22.8 ms against 2.5 ms for these. Indexed path only, like
         # everything that names a page.
         series_rows: list = []
+        all_nodes = None  # set on the CTE fallback only
         if thread_rooted:
             # Paged: the slice of MESSAGES is fetched, the totals are
             # asked for separately, and no message body or ThreadNode is
@@ -384,7 +444,17 @@ def thread_view(
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"
-        etag_input = f"{content_input}|{page}|{representation}"
+        # What the cards say about each reply's parent, for the messages
+        # of THIS page only, so it is page-local and costs no statement:
+        # the slice is read above. Not in `content_input`, which keys the
+        # pill caches shared by every page of the thread.
+        parents_tag = hashlib.blake2s(
+            "|".join(
+                f"{n.id}:{n.thread_parent or ''}" for n in rendered_nodes
+            ).encode(),
+            digest_size=8,
+        ).hexdigest()
+        etag_input = f"{content_input}|{page}|{representation}|{parents_tag}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -422,6 +492,27 @@ def thread_view(
                     inbox.name,
                 )
             messages.append((node, parsed, _msg_url(node, inbox.name)))
+
+        # The cards' parent markers, and which cards keep their subject
+        # heading (only where it differs from the thread's, #989). Not for
+        # the Markdown page, which renders neither.
+        reply_to: dict = {}
+        heading_ids: set = set()
+        if not markdown:
+            root_key = _title_key(article.subject)
+            heading_ids = {
+                n.id for n in rendered_nodes if _title_key(n.subject) != root_key
+            }
+            reply_to = _reply_markers(
+                session,
+                inbox,
+                article,
+                rendered_nodes,
+                page=page,
+                cap=cap,
+                ordered_rows=ordered_rows,
+                all_nodes=all_nodes,
+            )
 
         # One read for both the subsystem line and the series totals.
         # A cover's files are its patches' (#844), so for a series this
@@ -611,7 +702,9 @@ def thread_view(
                     inbox.name,
                 )
 
-    thread_summary = thread_summary_from(authors, thread_max_date, total_count)
+    author_count = thread_summary_from(authors, thread_max_date, total_count)[
+        "author_count"
+    ]
     # The header's prefix tags and stripped title, from the parsers' own
     # bracket (`patch_bracket`); the <title> and structured data keep the
     # whole subject.
@@ -628,11 +721,13 @@ def thread_view(
         prev_page_url=prev_page_url,
         remaining=remaining,
         page_size=cap,
-        thread_summary=thread_summary,
+        author_count=author_count,
         last_activity=thread_max_date,
         title_tags=title_tags,
         title_text=title_text,
         kinds=kinds,
+        reply_to=reply_to,
+        heading_ids=heading_ids,
         kind_counts=kind_counts,
         show_tabs=show_tabs,
         patch_index=patch_index,
