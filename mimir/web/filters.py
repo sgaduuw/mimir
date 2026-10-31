@@ -264,9 +264,10 @@ bp_web.add_app_template_filter(_msg_url, "msg_url")
 bp_web.add_app_template_global(_msg_path, "msg_path")
 bp_web.add_app_template_filter(_is_previewable, "is_previewable")
 
-# `thread_page_url(id, date, inbox_name)`: listings link the subject to the message page and the
-# reply count to the whole-thread view, so the thread view gains
-# inbound links from the pages that actually get crawled. It is the
+# `thread_page_url(id, date, inbox_name)`: listings link the subject to
+# the message page and the reply count to the whole-thread view, so the
+# thread view gains inbound links from the pages that actually get
+# crawled. It is the
 # canonical target for every message (single-message threads included,
 # #1003) and the URL the sitemap lists, yet before this filter the entire
 # template set contained exactly ONE link to it (`message.html`,
