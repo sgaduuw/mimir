@@ -98,7 +98,8 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
       <details class="patch-detail" id="patch-{{ p.id }}" hx-get="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}" hx-trigger="toggle once" hx-target="find .patch-related" hx-swap="innerHTML">
         <summary>{{ "Revisions and related patches" if p.id in patch_revisions else "Related patches" }}</summary>
         {% if p.id in patch_revisions %}{% with patch_state = {"series": patch_revisions[p.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}{% endif %}
-        <p><small><strong>Other recent patches touching these files</strong></small></p>
+        {# The heading comes with the list, so no JS leaves no empty box. #}
+        <noscript><p><small><a href="{{ url_for('web.api_related_patches', inbox_name=inbox_name, article_id=p.id) }}">Other recent patches touching these files</a></small></p></noscript>
         <div class="patch-related"></div>
       </details>
     </li>
