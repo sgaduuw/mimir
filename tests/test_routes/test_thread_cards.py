@@ -3,6 +3,7 @@ the parent, the subject heading only where it differs."""
 
 import json
 import re
+from datetime import datetime
 
 from mimir.config import settings
 from mimir.web.urls import thread_page_url
@@ -365,3 +366,50 @@ def test_a_card_never_prints_a_hidden_address_and_names_a_nameless_sender_as_unk
         assert "@example.org" not in head, mid
     assert _replied_to(_card(html, seeded["b@x"][0]))[1] == "unknown sender"
     assert _replied_to(_card(html, seeded["c@x"][0]))[1] == "unknown sender"
+
+
+def _date_text(html, article_id):
+    """What a card's date shows: the text of its `<time>` (or bare `?`)."""
+    link = re.search(
+        r'<a class="card-date"[^>]*>(.*?)</a>', _card(html, article_id), re.DOTALL
+    ).group(1)
+    return re.sub(r"<[^>]+>", "", link).strip()
+
+
+def test_a_card_date_shows_the_year_only_when_it_is_not_the_threads(client, tmp_path):
+    """A thread that starts on 30 Dec 2025: a reply later that year has no
+    year, one across the New Year does, a reply in a later year does, and a
+    message with no date is a bare `?`."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    edges = [
+        ("r@x", None),
+        ("a@x", "r@x"),
+        ("b@x", "a@x"),
+        ("c@x", "b@x"),
+        ("d@x", "c@x"),
+    ]
+    seeded = _seed_chat(tmp_path, edges)
+    dates = {
+        "r@x": datetime(2025, 12, 30, 10, 0),
+        "a@x": datetime(2025, 12, 31, 23, 30),
+        "b@x": datetime(2026, 1, 1, 0, 30),
+        "c@x": datetime(2026, 3, 1, 9, 5),
+        "d@x": None,
+    }
+    with SessionLocal() as s:
+        for mid, when in dates.items():
+            s.get(Article, seeded[mid][0]).date = when
+        s.commit()
+    url = f"/alpha/2025/12/{seeded['r@x'][0]}/t"  # the URL carries the date
+    html = client.get(url).get_data(as_text=True)
+    shown = {mid: _date_text(html, aid) for mid, (aid, _) in seeded.items()}
+    assert shown == {
+        "r@x": "Dec 30, 10:00",
+        "a@x": "Dec 31, 23:30",
+        "b@x": "Jan 1, 2026, 00:30",
+        "c@x": "Mar 1, 2026, 09:05",
+        "d@x": "?",
+    }
+    assert "<time>?" not in html  # a `<time>` needs a datetime
