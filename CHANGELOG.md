@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The test suite no longer reads the developer's `.env` (#1023). A setting there, such as `WARM_CACHE_EVERY`, changed the settings built at import and failed the doctor tests. `MIMIR_ENV_FILE` now names the file settings are read from: it defaults to the project `.env`, and an empty value reads no file.
+
 ## [3.36.1] - 2026-10-30
 
 ### Fixed
