@@ -800,8 +800,9 @@ class Settings(BaseSettings):
     crawler_retry_after_sec: int = Field(default=120, ge=1)
 
     # gunicorn worker processes, read from the `WORKERS` the container
-    # already sets for `--workers`. The budget is enforced per worker at
-    # budget / web_workers, so this must match the real worker count.
+    # already sets for `--workers`. Unlisted crawlers' buckets are per
+    # worker at their share / web_workers, so this must match the real
+    # worker count; the other buckets are shared by all workers (#1026).
     web_workers: int = Field(default=1, ge=1, validation_alias="WORKERS")
 
     @field_validator("crawler_ua_budgets")

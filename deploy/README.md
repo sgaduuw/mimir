@@ -197,6 +197,15 @@ budget of 120 a minute, `{"Applebot": 10}` gives Applebot 12 a minute. A
 request needs a token in every bucket it draws on; a refused request spends
 none.
 
+A crawler's percentage is also its priority on the global bucket: it may take
+a global token only while that bucket is more than `100 - pct` percent full.
+Googlebot at 80% can draw it down to 20%, Applebot at 10% only gets the top
+tenth, so a busy low-share crawler can no longer take the token a search
+crawler needs. The percentage still caps the crawler's own rate, which is why
+the shares do not have to add up to 100. Unlisted crawlers rank at
+`CRAWLER_DEFAULT_UA_PCT` and the impossible-headers bucket at its own
+percentage.
+
 A crawler you did not list is still recognised by a product token: a name
 ending in a marker, followed by a slash, such as `GPTBot/1.0`,
 `AhrefsBot/7.0` or `curl/8.5.0`. A token that is just a marker (`bot/1.0`)
@@ -233,14 +242,18 @@ pair is a client faking a click. It charges the global bucket but
 not the unlisted pool, and a declared crawler keeps its own bucket. Like the
 rest of the gate it does nothing while the global budget is `0`.
 
-Buckets live in each gunicorn worker, so each refills at the budget divided by
-`WORKERS` (mimir reads the same `WORKERS` that sets `--workers`): global 120
-with 8 workers and Applebot at 10% is 12 a minute overall, 1.5 a minute per
-worker. A bucket holds ten seconds of its rate, or one token if that is more.
-In any window the workers together admit at most that window's share of the
-budget plus ten seconds' worth, so a worker can burst ten seconds' worth at
-start or after an idle spell. They admit less when a crawler's requests land
-unevenly on the workers.
+The global bucket, the pool, the impossible-headers bucket and each listed
+crawler's bucket are shared by all gunicorn workers of one web instance,
+through a small file in `/dev/shm` (or the temp directory when there is no
+`/dev/shm`), so global 120 with Applebot at 10% is 12 a minute for the
+instance however many workers it runs. The buckets of unlisted crawlers stay
+in each worker and refill at their share divided by `WORKERS` (mimir reads the
+same `WORKERS` that sets `--workers`). A bucket holds ten seconds of its rate,
+or one token if that is more. In any window an instance admits at most that
+window's share of the budget plus ten seconds' worth. Each web instance has
+its own buckets, so with several instances (containers) behind a balancer,
+give each its share: two instances with `CRAWLER_BUDGET_PER_MINUTE=50` are a
+global 100.
 
 To pick a budget, measure the crawler's request rate in the access log first
 (its `ua` field), then set the global budget to about a third of the combined
@@ -248,9 +261,10 @@ crawler rate and give each crawler a percentage of it (Applebot at about 9,000
 an hour, 150 a minute, is a global 50 with Applebot at 100, or a global 100
 with Applebot at 50). Watch its request rate and the `crawler budget:`
 warnings (logger `mimir.web.crawler_budget`, at most one line a minute per
-bucket per worker, with the deferred count; the header bucket's line reads
-`matched on request headers, not User-Agent` instead of `crawler=<name>`) and
-adjust. Crawlers slow down on
+bucket per worker, with the deferred count split by the bucket that refused:
+`own=` the crawler's own share, `global=` the global bucket at its priority,
+`pool=` the unlisted pool; the header bucket's line reads `matched on request
+headers, not User-Agent` instead of `crawler=<name>`) and adjust. Crawlers slow down on
 `429`, so the rate should settle near the budget.
 
 ## Reverse proxy

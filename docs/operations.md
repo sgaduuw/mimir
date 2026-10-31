@@ -24,7 +24,7 @@ the relevant service's `environment` block.
 | `SECURITY_CONTACT` | Enables `/security.txt`, for example `mailto:security@example.com` |
 | `TRUSTED_PROXY_HOPS` | Number of trusted proxies; zero for direct access |
 | `CRAWLER_BUDGET_PER_MINUTE`, `CRAWLER_UA_BUDGETS`, `CRAWLER_DEFAULT_UA_PCT`, `CRAWLER_UNLISTED_POOL_PCT`, `CRAWLER_UA_MARKERS`, `CRAWLER_RETRY_AFTER_SEC` | Optional `429` throttle for crawlers (the global budget is the master switch, per-crawler values are percentages merged over a default crawler list, unlisted recognised crawlers get the default percentage and share a pool), off by default; see [deploy/README.md](../deploy/README.md#crawler-budgets) |
-| `WORKERS` | Gunicorn worker count; also divides each crawler budget per worker |
+| `WORKERS` | Gunicorn worker count; also divides each unlisted crawler's budget per worker (the other crawler buckets are shared) |
 
 Keep database and socket settings consistent across services. Set the canonical
 site URL on the web, broker, and task services. Existing inbox records are edited
