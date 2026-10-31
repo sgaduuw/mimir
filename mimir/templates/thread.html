@@ -75,8 +75,8 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
    runs; without JS the reader sees everything. Counts are whole-thread. #}
 {% if show_tabs %}
 <div class="thread-tabs" role="tablist" aria-label="Show messages" hidden>
-  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="discussion">Discussion <span class="tab-count">{{ tab_counts.discussion }}</span></button>
-  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="patches">Patches <span class="tab-count">{{ tab_counts.patches }}</span></button>
+  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="discussion">Discussion <span class="tab-count">{{ kind_counts.reply }}</span></button>
+  <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="patches">Patches <span class="tab-count">{{ kind_counts.patch }}</span></button>
   <button type="button" role="tab" aria-selected="false" aria-controls="thread-messages" data-tab="all">Everything <span class="tab-count">{{ total_count }}</span></button>
 </div>
 {% endif %}
