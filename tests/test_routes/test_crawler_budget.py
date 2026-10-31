@@ -1080,3 +1080,17 @@ def test_gate_built_before_fork_still_excludes_children(tmp_path):
 def test_compose_comment_matches_shared_buckets():
     compose = (Path(__file__).resolve().parents[2] / "compose.yaml").read_text()
     assert "Buckets are per worker" not in compose
+
+
+# Found by the review round on the fixes; red at 19854fa.
+
+
+def test_fallback_keeps_pre_3_37_per_worker_totals(tmp_path, monkeypatch):
+    monkeypatch.setattr(crawler_budget, "shared_dir", lambda: str(tmp_path / "nope"))
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    monkeypatch.setenv("WORKERS", "8")
+    gate = CrawlerBudget.from_settings(Settings())
+    assert gate.ua_per_minute("Applebot") == pytest.approx(120 * 10 / 100 / 8)
+    assert gate.global_tokens() == pytest.approx(
+        120 / 8 * crawler_budget.BURST_SECONDS / 60
+    )
