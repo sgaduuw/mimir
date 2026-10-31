@@ -3432,3 +3432,22 @@ def test_message_page_response_is_bounded_relative_to_the_body(client, tmp_path)
     assert resp.status_code == 200
     ratio = len(resp.data) / len(body)
     assert ratio <= 20, f"{ratio:.0f}x amplification on a public page"
+
+
+def test_message_page_names_its_related_list_once(client, tmp_path):
+    """The message page's own `<summary>` heads the list; the fragment's
+    heading (#989) is the thread page's alone, so it is not shown twice."""
+    patch_body = (
+        b"diff --git a/fs/shared/file.c b/fs/shared/file.c\n@@ -1 +1 @@\n-x\n+y\n"
+    )
+    (tmp_path / "first").mkdir()
+    (tmp_path / "second").mkdir()
+    _ingest_one_article(
+        tmp_path / "first", "alpha", "first@example.com", body=patch_body
+    )
+    _, second_url = _ingest_one_article(
+        tmp_path / "second", "alpha", "second@example.com", body=patch_body
+    )
+    body = client.get(second_url).get_data(as_text=True)
+    assert "related-patch-list" in body  # precondition: the list rendered
+    assert body.count("Other recent patches touching these files") == 1
