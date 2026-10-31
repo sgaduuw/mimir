@@ -2512,8 +2512,7 @@ their `thread_parent`s set the depths it shows, so a digest of their
 `(id, thread_parent)` is an ETag input (in `etag_input`, not `content_input`).
 The digest needs those rows before the 304 check. Page 1 reads them with its
 own slice (`limit=max(cap, OUTLINE_ROWS)`) and costs no statement; pages 2 and
-up read them in one more statement, on the 200 and on the 304: 36 and 18 for
-the pinned thread. The HTMX slice and the Markdown page render no outline, so
+up read them in one more statement, on the 200 and on the 304. The HTMX slice and the Markdown page render no outline, so
 they read and digest nothing for it. Rows past the cap are in neither the
 outline nor the digest.
 

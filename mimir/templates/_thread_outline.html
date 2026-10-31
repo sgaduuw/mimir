@@ -10,7 +10,7 @@
     <li class="outline-{{ row.kind }}{% if row.here %} here{% endif %}" data-depth="{{ [row.depth, 12]|min }}"><a href="{{ row.href }}">
       {%- if row.kind == 'patches' %}Patches ({{ kind_counts.patch }})
       {%- elif row.kind == 'more' %}{{ row.remaining }} more message{{ '' if row.remaining == 1 else 's' }}, not listed
-      {%- else %}{{ row.node.author|display_name }}{% if row.node.date %} <small>{{ row.node.date.strftime('%b') }} {{ row.node.date.day }}{% if root.date and row.node.date.year != root.date.year %}, {{ row.node.date.year }}{% endif %}</small>{% endif %}
+      {%- else %}{{ row.node.author|display_name }}{% if row.node.date %} <small>{{ row.node.date.strftime('%b') }} {{ row.node.date.day }}{% if row.node.date.year != root.date.year %}, {{ row.node.date.year }}{% endif %}</small>{% endif %}
       {%- endif %}</a></li>
     {%- endfor %}
   </ol>
