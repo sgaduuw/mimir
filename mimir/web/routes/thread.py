@@ -24,7 +24,7 @@ the single predicate every one of those surfaces consults.
 
 import hashlib
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 
 from flask import (
     Response,
@@ -37,12 +37,14 @@ from flask import (
 from sqlalchemy import select
 
 import mimir
+from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import (
     Article,
     ArticleList,
+    Inbox,
 )
 from mimir.parser import normalize_subject
 from mimir.patch_revisions import subject_tags
@@ -65,6 +67,7 @@ from mimir.threading import (
     thread_rows,
     thread_series_rows,
     thread_sort_key,
+    unmaterialised_roots,
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _clean_subject_filter, thread_summary_from
@@ -98,6 +101,87 @@ def _message_href(root, inbox_name, page, article_id) -> str:
     bare fragment in it resolves to page 1, which does not hold the message
     (a copied permalink or a new-tab click lands on the wrong page)."""
     return thread_page_url(root.id, root.date, inbox_name, page) + f"#m{article_id}"
+
+
+def _revision_hrefs(session, entries, *, cap, current, ordered_rows) -> dict[int, str]:
+    """`article id -> thread page and anchor` for the revisions the page's
+    folds link (the root's and each patch's), so a reader on `/t` stays in
+    thread views. The page is the revision's index in its thread's rows
+    (`index // cap + 1`, the Patches index's rank), in its canonical inbox,
+    like the message page's canonical. One statement for the revisions, two
+    per inbox for `unmaterialised_roots` (batched), and one `thread_rows`
+    per OTHER thread (usually one per version), never one per revision;
+    `current` (`(inbox_id, root_id)`) reuses `ordered_rows`.
+
+    A revision whose thread is not materialised, or not ranked, gets no
+    entry and keeps its message-page link. Another thread's ranks are not
+    in this page's validator: a revision's page there moves only when an
+    earlier-dated message joins ahead of it (the cap is in the ETag), and
+    reading those threads on every 304 is not worth that rare stale link.
+    """
+    ids = {e.article_id for e in entries if not e.is_current} | {
+        r.article_id for e in entries for r in e.reposts if not r.is_current
+    }
+    if not ids:
+        return {}
+    # Each revision's links with their roots, in one statement. The inbox
+    # pick is `fallback_canonical_name`, the rule `_canonical_inbox_name`
+    # applies for the revision's message-page URL.
+    links: dict[int, list] = defaultdict(list)
+    canonical_id: dict[int, int | None] = {}
+    for rev_id, root_id, canon, box in session.execute(
+        select(
+            ArticleList.article_id,
+            ArticleList.thread_root_id,
+            Article.canonical_inbox_id,
+            Inbox,
+        )
+        .join(Article, Article.id == ArticleList.article_id)
+        .join(Inbox, Inbox.id == ArticleList.inbox_id)
+        .where(ArticleList.article_id.in_(ids))
+    ):
+        links[rev_id].append((box, root_id))
+        canonical_id[rev_id] = canon
+    by_thread: dict[tuple, list[int]] = defaultdict(list)
+    inboxes = {}
+    for rev_id, rev_links in links.items():
+        name = fallback_canonical_name(
+            canonical_id[rev_id], [(box.id, box.name) for box, _ in rev_links]
+        )
+        box, root_id = next(
+            (link for link in rev_links if link[0].name == name), (None, None)
+        )
+        if box is None or root_id is None:
+            continue
+        inboxes[box.id] = box
+        by_thread[(box.id, root_id)].append(rev_id)
+    others: dict[int, list[int]] = defaultdict(list)
+    for key in by_thread:
+        if key != current:
+            others[key[0]].append(key[1])
+    unranked = {
+        (inbox_id, root_id)
+        for inbox_id, roots in others.items()
+        for root_id in unmaterialised_roots(session, inbox_id, roots)
+    }
+    hrefs = {}
+    for (inbox_id, root_id), rev_ids in by_thread.items():
+        if (inbox_id, root_id) == current:
+            rows = ordered_rows
+        elif (inbox_id, root_id) in unranked:
+            continue
+        else:
+            rows = thread_rows(session, inboxes[inbox_id], root_id)
+        index = {row.id: i for i, row in enumerate(rows)}
+        root = next((row for row in rows if row.id == root_id), None)
+        if root is None or root.date is None:
+            continue
+        for rev_id in rev_ids:
+            if rev_id in index:
+                hrefs[rev_id] = _message_href(
+                    root, inboxes[inbox_id].name, index[rev_id] // cap + 1, rev_id
+                )
+    return hrefs
 
 
 def _reply_markers(
@@ -791,6 +875,19 @@ def thread_view(
                     [p["id"] for p in patch_index],
                     inbox.name,
                 )
+        revision_hrefs: dict[int, str] = {}
+        if representation == "full":
+            entries = [
+                *(root_patch_state.series if root_patch_state else []),
+                *(e for timeline in patch_revisions.values() for e in timeline),
+            ]
+            revision_hrefs = _revision_hrefs(
+                session,
+                entries,
+                cap=cap,
+                current=(inbox.id, root_node.id) if ordered_rows else None,
+                ordered_rows=ordered_rows,
+            )
 
     author_count = thread_summary_from(authors, thread_max_date, total_count)[
         "author_count"
@@ -823,6 +920,7 @@ def thread_view(
         show_tabs=show_tabs,
         patch_index=patch_index,
         patch_revisions=patch_revisions,
+        revision_hrefs=revision_hrefs,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
         root_url=_msg_url(root_node, inbox.name),
