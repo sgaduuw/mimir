@@ -197,6 +197,18 @@ def test_localised_replies_and_forwards_drop_the_heading(client, tmp_path):
     assert "some other report" in headings["c@x"].group(1)
 
 
+def test_the_anchor_script_loads_on_a_thread_page_without_tabs(client, tmp_path):
+    """#1035: "replied to" links render on any thread page, and the
+    script that follows them in place must load there too, not only
+    where the tabs (and `thread-tabs.js`) do."""
+    seeded = _seed_chat(tmp_path, CHAIN, authors=WHO)
+    html = client.get(seeded["r@x"][1] + "/t").get_data(as_text=True)
+    assert 'class="replied-to"' in html  # the links it exists for
+    assert 'class="thread-tabs"' not in html  # the precondition: no tabs
+    srcs = re.findall(r'<script src="([^"]+)"', html)
+    assert any(s.split("?")[0].endswith("/js/thread-anchors.js") for s in srcs)
+
+
 def test_the_title_comparison_is_linear_on_a_hostile_subject(client, tmp_path):
     import time
 
