@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.39.0] - 2026-11-01
+
 ### Added
 
 - The thread page has an outline for a thread of five or more messages (#989): a "Jump to a message" list of the first 200 messages. The cover is one row, the patches are one row, and each reply is a row with its author and date, indented by how many of the listed messages it answers. A last row says how many are not listed. Each row links to the page and message that hold it. On a phone it is a disclosure above the messages; on a wide screen it is a sidebar where the browser supports it, and the same disclosure elsewhere.
