@@ -212,3 +212,43 @@ def test_keyboard_j_stays_on_messages_in_a_windowed_thread(
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+def test_an_in_page_jump_into_an_appended_page_names_that_page(
+    client, tmp_path, monkeypatch
+):
+    """After "Next" appends page 2, a "replied to" link or an outline row to
+    a message on it scrolls in place (#1035), and the address bar names
+    page 2: setting only the hash kept page 1's path, so a copied address
+    or a reload lost the message (3.39.0 release review)."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    messages = list(build_thread(tmp_path, "alpha", shape="chain", size=6).values())
+    root_path = messages[0][1]
+    page1, page2 = root_path + "/t", root_path + "/t/2"
+    on_page2 = [messages[2][0], messages[3][0]]
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            page.goto(base + page1)
+            # A marker a full load would wipe.
+            page.evaluate("window.stayed = true")
+            page.locator(f'.thread-more a[href="{page2}"]').click()
+            expect(page.locator(f"#m{on_page2[1]}")).to_be_attached()
+            # The chain's 4th message answers the 3rd, both on page 2.
+            page.locator(f"#m{on_page2[1]} .replied-to a").click()
+            expect(page).to_have_url(f"{base}{page2}#m{on_page2[0]}")
+            expect(page.locator(f"#m{on_page2[0]}")).to_be_in_viewport()
+            page.evaluate("document.querySelector('.thread-outline').open = true")
+            page.locator(f'.thread-outline a[href="{page2}#m{on_page2[1]}"]').click()
+            expect(page).to_have_url(f"{base}{page2}#m{on_page2[1]}")
+            assert page.evaluate("window.stayed") is True
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()

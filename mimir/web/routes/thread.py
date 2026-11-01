@@ -90,13 +90,13 @@ OUTLINE_MIN_MESSAGES = 5
 
 
 def _message_href(root, inbox_name, page, article_id) -> str:
-    """The thread page that holds a message, and its anchor: the one builder
-    for the cards' permalink and "replied to", the outline and the Patches
-    index. Always the whole URL, never a bare `#m{id}`: an HTMX slice is
-    appended to page 1's document without a URL change, so a bare fragment
-    in it resolves to page 1, which does not hold the message (a copied
-    permalink or a new-tab click lands on the wrong page). thread-anchors.js
-    compares hashes only, so a plain click still scrolls in place."""
+    """The thread page that holds a message, and its anchor, for the cards'
+    "replied to", the outline and the Patches index. The permalink is
+    `page_url` plus its id in the template: the same `thread_page_url`, for
+    the page being rendered. Always the whole URL, never a bare `#m{id}`: an
+    HTMX slice is appended to page 1's document without a URL change, so a
+    bare fragment in it resolves to page 1, which does not hold the message
+    (a copied permalink or a new-tab click lands on the wrong page)."""
     return thread_page_url(root.id, root.date, inbox_name, page) + f"#m{article_id}"
 
 
