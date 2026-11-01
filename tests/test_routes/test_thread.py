@@ -2431,7 +2431,11 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # reads its rows with its own slice, and one on pages 2 and up, on the 200 and
 # the 304, pinned in test_thread_outline.py. This two-message thread has no
 # outline and one page.
-THREAD_VIEW_STATEMENTS_200 = 35
+# Revision links on `/t` name the thread page holding each revision: one
+# statement for the revisions' links, two for `unmaterialised_roots` per
+# inbox, and one `thread_rows` per other thread; here the v1 cover is one
+# other thread, so four more on the 200 only: 39/17.
+THREAD_VIEW_STATEMENTS_200 = 39
 THREAD_VIEW_STATEMENTS_304 = 17
 
 
