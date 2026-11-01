@@ -18,6 +18,7 @@ from tests.test_routes._helpers import (
     _data_attr_values,
     _ingest_one_article,
     _json_ld_blocks,
+    _metadata_url,
     _seed_mainline_commit,
     _seed_subsystem,
     _seed_three_message_thread,
@@ -375,7 +376,9 @@ def test_message_page_thread_tree_uses_data_depth_not_inline_style(
     ul_end = body.index("</ul>", ul_start)
     list_block = body[ul_start:ul_end]
 
-    lis = re.findall(r"<li[^>]*>", list_block)
+    all_lis = re.findall(r"<li[^>]*>", list_block)
+    assert all("style=" not in li for li in all_lis)
+    lis = [li for li in all_lis if "data-article-id=" in li]
     assert len(lis) == 3, f"expected 3 tree <li>, got {len(lis)}"
     # Each <li> carries data-depth=, none carries an inline style.
     for li in lis:
@@ -483,11 +486,12 @@ def test_message_page_thread_fold_links_carry_htmx_attrs(
     # The active treatment is class-on-<li> + CSS, not anchor suppression:
     # that keeps the JS controller's class-toggle-on-swap path simple
     # (no DOM rewrites between active <span> and inactive <a>).
-    assert len(anchors) == 3, f"expected 3 anchors, got {len(anchors)}: {anchors}"
+    anchors = [a for a in anchors if "hx-get=" in a]
+    assert len(anchors) == 3, f"expected 3 message anchors, got {len(anchors)}"
     for a in anchors:
         assert "hx-get=" in a
         assert 'hx-target="#msg"' in a
-        assert 'hx-swap="outerHTML"' in a
+        assert 'hx-swap="outerHTML show:#msg:top"' in a
         assert 'hx-push-url="true"' in a
 
 
@@ -544,8 +548,8 @@ def test_message_page_htmx_request_returns_body_partial(client, tmp_path):
 
     # Actual content present (not an empty wrapper).
     assert "swap test subject 12345" in body
-    assert "<strong>From:</strong>" in body
-    assert "<strong>Date:</strong>" in body
+    assert "<dt>From</dt>" in body
+    assert "<dt>Date</dt>" in body
     assert 'class="message-body"' in body
 
     # No surrounding chrome -- the chrome must stay on the client.
@@ -750,7 +754,7 @@ def test_message_page_shows_subsystem_header_for_patch(client, tmp_path):
         "subsys-patch@example.com",
         body=patch_body,
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Subsystem info renders inside the article <header> alongside
     # From / Date, it's identity metadata, not a floating aside.
     # Maintainer name shown, no address, no role tag. Detail moved
@@ -790,7 +794,7 @@ def test_message_page_no_subsystem_block_when_no_match(client, tmp_path):
         "no-match@example.com",
         body=patch_body,
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert "<strong>Subsystem:</strong>" not in body
 
 
@@ -805,7 +809,7 @@ def test_message_page_no_subsystem_block_for_prose_only(client, tmp_path):
         "prose@example.com",
         body=b"just a discussion, no diff\n",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert "<strong>Subsystem:</strong>" not in body
     assert "Other recent patches touching" not in body
 
@@ -846,7 +850,7 @@ def test_message_page_shows_related_patches_touching_same_file(
         body=patch_body,
         subject="second touching shared",
     )
-    body = client.get(second_url).data.decode()
+    body = client.get(_metadata_url(second_url)).data.decode()
     assert "Other recent patches touching" in body
     assert "first touching shared" in body
     # Self-exclusion: the current article's subject isn't in the
@@ -915,8 +919,8 @@ def test_message_page_lore_url_unknown_msgid_no_mirror_link(
     assert "local</a>" not in page
 
 
-def test_message_page_thread_tree_stacks_above_body(client, tmp_path):
-    """The thread tree always renders as a box stacked above the message
+def test_message_page_thread_tree_stacks_below_body(client, tmp_path):
+    """The thread tree always renders as a box stacked below the message
     body, at every thread length and viewport width. The earlier
     length-conditional right-rail layout (issue #68 slice 2) was removed,
     so no `message-page-grid` wrapper class is emitted regardless of how
@@ -957,9 +961,9 @@ def test_message_page_thread_tree_stacks_above_body(client, tmp_path):
     body = client.get(root_url).data.decode()
     assert "message-page-grid" not in body
     assert 'class="thread-context"' in body
-    # Stacked-above: the tree section precedes the message body in
+    # The reader reaches the body before the existing thread overview in
     # document order (no grid reordering the two into columns).
-    assert body.index('class="thread-context"') < body.index('id="msg"')
+    assert body.index('id="msg"') < body.index('class="thread-context"')
 
 
 def test_message_page_renders_hunk_quote_with_jump_to_parent(client, tmp_path):
@@ -1123,7 +1127,7 @@ def test_message_page_shows_applied_as_when_mainline_commit_matches(
         message_id="applied-msg@example.com",
         commit_sha="abc1234567890def1234567890abcdef12345678",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Patch-state card became the badges row in the badge redesign.
     assert 'class="msg-badges"' in body
 
@@ -1141,7 +1145,7 @@ def test_message_page_no_applied_as_when_no_commit_matches(
         "unapplied@example.com",
         subject="[PATCH 1/2] foo: in flight",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert "Landed:" not in body
     # Old wording from the pre-#208 standalone aside; must not regress.
     assert "Applied as" not in body
@@ -1179,7 +1183,7 @@ def test_message_page_shows_multiple_landings_across_trees(
         tree_name="linus",
         date=datetime(2024, 7, 1, tzinfo=UTC),
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Patch-state card became the badges row in the badge redesign.
     assert 'class="msg-badges"' in body
 
@@ -1210,7 +1214,7 @@ def test_message_page_renders_patch_series_timeline(client, tmp_path):
         subject="[PATCH v2 0/3] improve foo handling",
         author=common_author,
     )
-    body = client.get(v2_url).data.decode()
+    body = client.get(_metadata_url(v2_url)).data.decode()
     # Series revisions moved into the revisions fold in the badge redesign.
     assert 'class="revisions-fold"' in body
     # The current revision (v2) is marked is-current.
@@ -1240,7 +1244,7 @@ def test_message_page_no_series_timeline_for_individual_patch(
         "patch-1of3@example.com",
         subject="[PATCH v2 1/3] foo: add bar",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert 'class="revisions-fold"' not in body
 
 
@@ -1259,7 +1263,7 @@ def test_message_page_no_series_timeline_for_solo_cover_letter(
         "lonely-v1@example.com",
         subject="[PATCH 0/3] something nobody resent",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert 'class="revisions-fold"' not in body
 
 
@@ -1278,7 +1282,7 @@ def test_patch_state_card_renders_on_patch_subject(client, tmp_path):
         "bare-patch@example.com",
         subject="[PATCH 1/2] foo: add bar",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Badge redesign: the badges row replaces the old card.
     assert 'class="msg-badges"' in body
     assert "badge-activity-" not in body
@@ -1299,7 +1303,7 @@ def test_patch_state_card_absent_on_non_patch_subject(client, tmp_path):
         "prose@example.com",
         subject="thoughts on memory model wording",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert 'class="msg-badges"' not in body
     assert 'class="badge badge-activity-' not in body
 
@@ -1315,7 +1319,7 @@ def test_patch_state_card_absent_on_git_pull(client, tmp_path):
         "pull@example.com",
         subject="[GIT PULL] urgent fixes for 6.13",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert 'class="msg-badges"' not in body
 
 
@@ -1338,7 +1342,7 @@ def test_patch_state_trailers_row_aggregates_by_role(client, tmp_path):
         subject="[PATCH] foo: do bar",
         body=body_bytes,
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Trailers row dropped from message page in badge redesign.
     assert "Trailers:" not in body
     # Badges row still renders for patch articles.
@@ -1372,7 +1376,7 @@ def test_patch_state_trailers_row_marks_maintainer_attestation(
         subject="[PATCH] bcachefs: tweak super",
         body=body_bytes,
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Trailers row dropped from message page in badge redesign.
     assert "Trailers:" not in body
     # Badges row still renders for patch articles.
@@ -1436,7 +1440,7 @@ def test_patch_state_activity_row_shows_days_since_last_reply(
         # shape includes YYYY/MM as part of identity (CONTEXT.md "URL
         # scheme"); a mismatch returns 404, not a redirect.
         url = f"/alpha/{art.date.year}/{art.date.month:02d}/{art_id}"
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Badge redesign: activity chip rendered; heat is warm/cooling.
     assert 'class="badge badge-activity-' in body
     # The chip is not dormant (there are replies).
@@ -1458,7 +1462,7 @@ def test_patch_state_card_skips_empty_rows(client, tmp_path):
         "lone-cover@example.com",
         subject="[PATCH 0/2] new feature",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     # Old aside labels are all gone.
     assert "Trailers:" not in body
     assert "Landed:" not in body
@@ -1490,7 +1494,7 @@ def test_header_activity_chip_waits_for_an_unanswered_post_to_age(client, tmp_pa
         s.commit()
     # The URL carries the article's year and month, so rebuild it.
     url = f"/alpha/{when.year}/{when.month:02d}/{art_id}"
-    body = client.get(url).get_data(as_text=True)
+    body = client.get(_metadata_url(url)).get_data(as_text=True)
     assert 'class="msg-badges"' in body
     assert re.findall(r'class="badge badge-activity-([a-z]*)"', body) == (
         [chip] if chip else []
@@ -1513,9 +1517,7 @@ def test_header_without_badges_has_no_blank_badges_row(client, tmp_path):
     with SessionLocal() as s:
         s.get(Article, art_id).date = when
         s.commit()
-    body = client.get(f"/alpha/{when.year}/{when.month:02d}/{art_id}").get_data(
-        as_text=True
-    )
+    body = client.get(f"/api/alpha/metadata/{art_id}").get_data(as_text=True)
     assert "badge-activity-" not in body
     assert "badge-lifecycle-" not in body
     assert not re.search(r'<div class="msg-badges">\s+</div>', body)
@@ -2069,7 +2071,7 @@ def test_message_page_subsystem_header_is_clickable(client, tmp_path):
         subject="bcachefs link test",
         body=body,
     )
-    text = client.get(url).data.decode()
+    text = client.get(_metadata_url(url)).data.decode()
     # Link present with lowercased URL AND lowercased display
     # (anti-shouty pass, display takes the lowercase form too).
     assert '<a href="/alpha/subsystem/bcachefs/">bcachefs</a>' in text
@@ -2199,7 +2201,7 @@ def test_message_page_patch_series_revisions_does_not_n1_inbox(client, tmp_path)
             inbox_selects.append(statement)
 
     try:
-        resp = client.get(v2_url)
+        resp = client.get(_metadata_url(v2_url))
     finally:
         event.remove(engine, "before_cursor_execute", _grab)
     assert resp.status_code == 200
@@ -2475,7 +2477,7 @@ def test_message_page_etag_changes_when_a_sibling_revision_is_cross_posted(
         epoch, sha, beta_id = v1_link.epoch, v1_link.commit_sha, beta.id
         s.commit()
 
-    first = client.get(v2_url)
+    first = client.get(_metadata_url(v2_url))
     assert first.status_code == 200
     # Precondition: the fold links v1 through alpha, the only inbox it is in.
     assert f'href="{v1_url}"' in first.data.decode()
@@ -2486,8 +2488,9 @@ def test_message_page_etag_changes_when_a_sibling_revision_is_cross_posted(
         )
         s.commit()
 
-    second = client.get(v2_url, headers={"If-None-Match": first.headers["ETag"]})
-    assert second.status_code == 200, "stale revisions-fold link served as 304"
+    second = client.get(_metadata_url(v2_url), headers={"If-None-Match": '"old"'})
+    assert second.status_code == 200
+    assert second.headers["Cache-Control"] == "no-store"
     assert f'href="{v1_url.replace("/alpha/", "/beta/")}"' in second.data.decode()
 
 
@@ -2540,7 +2543,7 @@ def test_message_page_etag_changes_when_a_sibling_revision_canonical_moves(
         beta_id = beta.id
         s.commit()
 
-    first = client.get(v2_url)
+    first = client.get(_metadata_url(v2_url))
     assert first.status_code == 200
     assert f'href="{v1_url}"' in first.data.decode()
 
@@ -2548,8 +2551,9 @@ def test_message_page_etag_changes_when_a_sibling_revision_canonical_moves(
         s.get(Article, v1_id).canonical_inbox_id = beta_id
         s.commit()
 
-    second = client.get(v2_url, headers={"If-None-Match": first.headers["ETag"]})
-    assert second.status_code == 200, "stale revisions-fold link served as 304"
+    second = client.get(_metadata_url(v2_url), headers={"If-None-Match": '"old"'})
+    assert second.status_code == 200
+    assert second.headers["Cache-Control"] == "no-store"
     assert f'href="{v1_url.replace("/alpha/", "/beta/")}"' in second.data.decode()
 
 
@@ -2677,7 +2681,7 @@ def test_message_page_etag_changes_when_cross_post_link_added(client, tmp_path):
 
     first = client.get(alpha_url)
     assert first.status_code == 200
-    assert "Also in:" not in first.data.decode()
+    assert "<dt>Also in</dt>" not in first.data.decode()
 
     with SessionLocal() as s:
         s.add(
@@ -2692,7 +2696,7 @@ def test_message_page_etag_changes_when_cross_post_link_added(client, tmp_path):
 
     second = client.get(alpha_url, headers={"If-None-Match": first.headers["ETag"]})
     assert second.status_code == 200, "stale cross-post hint served as 304"
-    assert "Also in:" in second.data.decode()
+    assert "<dt>Also in</dt>" in second.data.decode()
 
 
 def test_message_page_etag_tracks_thread_render_cap(client, tmp_path, monkeypatch):
@@ -2783,7 +2787,7 @@ def test_message_page_renders_badges_row_under_subject(client, tmp_path):
         "badges@x",
         subject="[PATCH 1/2] foo: bar",
     )
-    body = client.get(url).data.decode()
+    body = client.get(_metadata_url(url)).data.decode()
     assert 'class="msg-badges"' in body
     assert "badge-activity-" not in body  # day old, no replies (#988)
 
@@ -2861,6 +2865,7 @@ def test_message_page_patch_metadata_is_inside_swap_target(
     start = body.index('<article id="msg"')
     end = body.index("</article>", start) + len("</article>")
     article = body[start:end]
+    metadata = client.get(_metadata_url(url)).get_data(as_text=True)
     for marker in (
         'class="msg-badges"',
         'class="badge badge-lifecycle-landed"',
@@ -2869,10 +2874,9 @@ def test_message_page_patch_metadata_is_inside_swap_target(
         'class="revisions-fold"',
         'class="revisions-count">(2)',
     ):
-        assert marker in article, f"{marker} must be inside the HTMX swap target"
-        assert body.count(marker) == 1
-    assert article.index("<h1>") < article.index('class="msg-badges"')
-    assert article.index('class="msg-badges"') < article.index("<strong>From:</strong>")
+        assert marker not in article
+        assert marker in metadata
+    assert 'class="message-context"' in article
     assert "HX-Request" in response.headers["Vary"]
     assert (
         client.get(
@@ -2947,7 +2951,7 @@ def test_message_page_revisions_fold_links_non_current_versions(
         s.commit()
 
     # Viewing v2 (the latest): v1 should be linked, v2 should be plain.
-    body = client.get(v2_url).data.decode()
+    body = client.get(_metadata_url(v2_url)).data.decode()
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
     assert 'class="revisions-fold"' in body
     assert f'<a class="rev-label" href="{v1_url}"' in fold, (
@@ -3068,7 +3072,7 @@ class TestRelatedDiscussionsPanel:
                 60,
             )
             s.commit()
-        resp = client.get(url)
+        resp = client.get(_metadata_url(url))
         assert resp.status_code == 200
         assert b"Related discussions" in resp.data
 
@@ -3103,7 +3107,7 @@ class TestRelatedDiscussionsPanel:
                 60,
             )
             s.commit()
-        resp = client.get(url)
+        resp = client.get(_metadata_url(url))
         assert resp.status_code == 200
         assert b"Related discussions" not in resp.data
 
@@ -3115,7 +3119,7 @@ class TestRelatedDiscussionsPanel:
         def _boom(*a, **kw):
             raise RuntimeError("scoring bug")
 
-        import mimir.web.routes.message as message_route
+        import mimir.web.routes._message_metadata as message_route
 
         monkeypatch.setattr(message_route, "related_discussions", _boom)
         _, url = _ingest_one_article(
@@ -3124,7 +3128,7 @@ class TestRelatedDiscussionsPanel:
             "boom-root@x",
             subject="some discussion",
         )
-        resp = client.get(url)
+        resp = client.get(_metadata_url(url))
         assert resp.status_code == 200
         assert b"Related discussions" not in resp.data
 
@@ -3174,7 +3178,7 @@ class TestRelatedDiscussionsPanel:
             )
             s.commit()
 
-        resp = client.get(url)
+        resp = client.get(_metadata_url(url))
         assert resp.status_code == 200
         # Old "Possibly related" section must be absent: its condition
         # includes `is_patch_thread` which is False for this non-patch thread.
@@ -3216,7 +3220,7 @@ class TestRelatedDiscussionsPanel:
                 30,
             )
             s.commit()
-        resp = client.get(url)
+        resp = client.get(_metadata_url(url))
         assert resp.status_code == 200
         assert b"Related discussions" not in resp.data
 
@@ -3448,6 +3452,6 @@ def test_message_page_names_its_related_list_once(client, tmp_path):
     _, second_url = _ingest_one_article(
         tmp_path / "second", "alpha", "second@example.com", body=patch_body
     )
-    body = client.get(second_url).get_data(as_text=True)
+    body = client.get(_metadata_url(second_url)).get_data(as_text=True)
     assert "related-patch-list" in body  # precondition: the list rendered
     assert body.count("Other recent patches touching these files") == 1

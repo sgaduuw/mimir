@@ -13,7 +13,11 @@ archive statistics. Browse by day or month, or search subjects and authors.
 Search is substring-based rather than full-text body search; broad misses can
 be expensive on a cold archive.
 
-A message page shows headers, its thread tree, body, and attachments. In a
+A message page shows a mail header, body and attachments, followed by its
+thread overview. The context bar links to the whole thread and offers
+Previous and Next controls. These controls and the thread overview keep
+working without JavaScript; with HTMX, navigation replaces the message and
+scrolls back to its header. In a
 thread longer than one thread-view page, the tree shows the part around the
 message (its ancestors, nearest sibling replies and first replies) and links to
 the thread view for the rest. Whole-thread
@@ -35,8 +39,12 @@ text, so it works without JavaScript too). Patch bodies there keep their
 
 ## Follow patch and review activity
 
-Patch pages show review trailers, maintainer attestations, tracked-tree landing
-records, revision history, and links to compare patch revisions. These depend on
+Thread pages show review trailers, maintainer attestations, tracked-tree landing
+records, revision history, and links to compare patch revisions. Each message
+also has a details disclosure for its own status, subsystem attribution and
+related content. Details load when opened, with a link for readers without
+JavaScript. Single-message threads have these paths too. Revision and diff
+links remain in the thread page's HTML. These depend on
 the archived messages and configured [tree tracking](archive.md#track-kernel-trees-and-maintainers).
 
 Subsystem dashboards use MAINTAINERS path rules to group patches and review
@@ -76,6 +84,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
+| `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
 
 Unsupported maintainer addresses remain visible as text without profile links.

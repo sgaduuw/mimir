@@ -20,7 +20,7 @@ from mimir.rendering.linkify import (
     EMAIL_TOKEN_RE,
     plain_line,
 )
-from tests.test_routes._helpers import _ingest_one_article
+from tests.test_routes._helpers import _ingest_one_article, _metadata_url
 
 # Atext characters beyond the old `[A-Za-z0-9._%+-]`, one case per
 # group so a regression names the character class that broke.
@@ -100,7 +100,10 @@ def _surfaces(client, tmp_path, body: bytes) -> dict[str, str]:
         body=body,
     )
     page = client.get(url).get_data(as_text=True)
+    metadata = client.get(_metadata_url(url))
+    assert metadata.status_code == 200
     return {
+        "metadata": metadata.get_data(as_text=True),
         "message": page,
         "message.json-ld": _json_ld(page),
         "thread": client.get(url + "/t").get_data(as_text=True),
@@ -147,7 +150,9 @@ def test_allowlisted_trailer_address_still_shows(
     address = f"{local}@open.example"
     body = _body("Signed-off-by", shape, address)
     surfaces = _surfaces(client, tmp_path, body)
-    assert _leaks(surfaces, address) == [
+    # The metadata fragment has no body; Signed-off-by alone adds no
+    # reviewer tooltip. Keep the body's allowlisted-address contract.
+    assert _leaks({k: v for k, v in surfaces.items() if k != "metadata"}, address) == [
         "message",
         "message.json-ld",
         "thread",
@@ -168,10 +173,11 @@ def test_email_shaped_reviewer_name_is_dropped_from_the_tooltip(
         b"Reviewed-by: Plain Name <plain@example.com>\n"
     )
     surfaces = _surfaces(client, tmp_path, body)
-    tips = " ".join(_tooltips(surfaces["message"]))
-    assert "Plain Name" in tips  # the tooltip rendered its names
-    assert "kept@open.example" in tips
-    assert "gone@example.com" not in tips
+    for surface in ["thread", "metadata"]:
+        tips = " ".join(_tooltips(surfaces[surface]))
+        assert "Plain Name" in tips  # the tooltip rendered its names
+        assert "kept@open.example" in tips
+        assert "gone@example.com" not in tips
 
 
 def test_bare_non_allowlisted_address_in_a_trailer_is_hidden(

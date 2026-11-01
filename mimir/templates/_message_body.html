@@ -1,74 +1,21 @@
-{# Content of <article id="msg">. Lives in its own template so the
-   message route can return just this partial for an HTMX swap
-   when the user clicks within the thread tree, leaving the
-   surrounding navigation + tree intact. Full-page renders include
-   it via {% include %} from message.html. #}
+{# Every per-message control is inside the HTMX replacement target. #}
 <article id="msg" data-article-id="{{ article.id }}">
-  <header>
-    <h1>{{ parsed.subject|clean_subject or '(no subject)' }}</h1>
-    {# Swap this link with the message: replies can belong to different thread pages. #}
-    {% if thread_view_url %}<a href="{{ thread_view_url }}">flat view</a>{% endif %}
-    {# Keep message-specific state inside #msg so thread navigation replaces
-       it with the body. Non-patches must not inherit the previous badges. #}
-    {% if patch_state and patch_state.is_patch and lifecycle_status %}
-    <div class="msg-badges">
-      {%- with status = lifecycle_status %}
-      {%- include "_lifecycle_badges.html" %}
-      {%- endwith -%}
-    </div>
-    {% endif %}
-    <p>
-      <strong>From:</strong> {{ parsed.author|safe_from }}<br>
-      <strong>Date:</strong> {{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}
-      {% if cross_post_inboxes %}
-      <br><strong>Also in:</strong>
-        {% for other in cross_post_inboxes %}
-          <a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}
-        {% endfor %}
-      {% endif %}
-      {# Subsystem ownership: MAINTAINERS-derived for the files this
-         patch touches. Sits inside the article header so it reads as
-         part of the message's identity card alongside From / Date,
-         not as a floating aside above the body. Silently skipped
-         for non-patch articles. #}
-      {% if subsystem_hits %}
-      <br><strong>Subsystem:</strong>
-      {# Linkify each subsystem name to its dashboard so the patch
-         page acts as a launch pad into the broader subsystem
-         context. URL takes the lowercased form (subsystem URL
-         convention since 1.18.x); display keeps the upstream
-         MAINTAINERS casing, lowercased for the anti-shouty pass.
-
-         Via the macro, never `subsystem_url` directly: a name the
-         route cannot serve still has to render as text here, because
-         the chip is what tells the reader which subsystems the patch
-         touches. #}
-      {% from "_subsystem_link.html" import maintainer_links, subsystem_link %}
-      {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
-      {{ maintainer_links(subsystem_hits) }}
-      {% endif %}
-    </p>
+  <nav class="message-context" aria-label="Message navigation">
+    {% if thread_link_url %}<a class="whole-thread" href="{{ thread_link_url }}">Read the whole thread, {{ thread_total }} message{{ '' if thread_total == 1 else 's' }}</a>{% endif %}
+    <span class="message-pager">
+    {% if previous_url %}<a rel="prev" data-message-nav="prev" href="{{ previous_url }}" hx-get="{{ previous_url }}" hx-target="#msg" hx-swap="outerHTML show:#msg:top" hx-push-url="true">Previous</a>{% else %}<a rel="prev" data-message-nav="prev" aria-disabled="true" tabindex="-1">Previous</a>{% endif %}
+    {% if next_url %}<a rel="next" data-message-nav="next" href="{{ next_url }}" hx-get="{{ next_url }}" hx-target="#msg" hx-swap="outerHTML show:#msg:top" hx-push-url="true">Next</a>{% else %}<a rel="next" data-message-nav="next" aria-disabled="true" tabindex="-1">Next</a>{% endif %}
+    </span>
+  </nav>
+  <header class="mail-header">
+    <h1>{{ parsed.subject or '(no subject)' }}</h1>
+    <dl>
+      <dt>From</dt><dd>{{ parsed.author|safe_from }}</dd>
+      <dt>Date</dt><dd>{{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}</dd>
+      {% if cross_post_inboxes %}<dt>Also in</dt><dd>{% for other in cross_post_inboxes %}<a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</dd>{% endif %}
+      {% if parent and parent_url %}<dt>Reply to</dt><dd class="reply-to"><a href="{{ parent_url }}">{{ parent.author|display_name }}{% if parent.date %}, {{ parent.date.strftime('%Y-%m-%d') }}{% endif %}</a></dd>{% endif %}
+    </dl>
   </header>
-
-  {% include "_status_line.html" %}
-  {% set synthesis = patch_state|patch_synthesis %}
-  {% if synthesis %}
-  <p><small>{{ synthesis }}</small></p>
-  {% endif %}
-  {% include "_revisions_fold.html" %}
-
-  {% if related %}
-  <h4>Possibly related <small><em>(same subject, not in this thread)</em></small></h4>
-  <ul>
-    {% for r in related %}
-    <li>
-      <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
-      &middot; <a href="{{ r|msg_url(inbox_name) }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
-      &middot; <small>{{ r.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
 
   <div class="message-body">
     {% if parsed.body %}{{ parsed.body|render_body(msgid_urls, parent_url, lore_mirror_urls) }}{% else %}<em>(no body)</em>{% endif %}

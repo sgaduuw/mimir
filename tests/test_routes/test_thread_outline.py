@@ -418,8 +418,20 @@ def test_the_cte_fallback_lists_every_message_and_its_links_resolve(
         s.commit()
     html = _get(client, seeded["c@x"][1] + "/t").get_data(as_text=True)
     rows = _outline(html)
-    # No kinds on the fallback: every message but the root is a reply row.
-    assert [k for k, *_ in rows] == ["root"] + ["reply"] * 6
+    # #990 loads fallback Article rows too: patches keep their grouped
+    # outline row and individual links in the server-rendered index.
+    assert [k for k, *_ in rows] == ["root", "patches"] + ["reply"] * 4
+    index = html.split('<section class="patch-index"', 1)[1].split("</section>", 1)[0]
+    patch_links = re.findall(r'<li data-patch="(\d+)">\s*<a href="([^"]+)"', index)
+    assert [int(aid) for aid, _ in patch_links] == [
+        seeded["p1@x"][0],
+        seeded["p2@x"][0],
+    ]
+    for aid, href in patch_links:
+        url, _, anchor = href.partition("#")
+        assert anchor == f"m{aid}"
+        target = html if not url else _get(client, url).get_data(as_text=True)
+        assert f'id="{anchor}"' in target, href
     for _k, _d, _h, href, _t in rows:
         url, _, anchor = href.partition("#")
         target = html if not url else _get(client, url).get_data(as_text=True)

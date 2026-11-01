@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The message page leads with its mail header and body, with the windowed thread overview below them (#990). A context bar inside each swapped message links to the whole thread at that message and offers Previous, Next and Reply to navigation. HTMX navigation scrolls back to the message header. Lifecycle, status, subsystem ownership, revisions and related content move to the thread view; each thread message has a details disclosure with a link that works without JavaScript, including standalone patches. Revision and series-diff links remain server-rendered, including nested series.
+
 - On the thread page, a revision link (in the root's Revisions and in each patch's in the Patches index) opens the revision on the thread page that holds it, at that message, instead of on its message page, so switching revisions stays in the thread view. A revision whose thread cannot be ranked yet still links its message page. The message page's revision links are unchanged.
 
 ## [3.39.0] - 2026-11-01
