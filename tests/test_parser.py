@@ -515,6 +515,19 @@ def test_normalize_subject(inp, expected):
     assert normalize_subject(inp) == expected
 
 
+def test_normalize_subject_is_linear_on_a_long_prefix_run():
+    """Hostile input (AGENTS.md test rule 7): stripping one prefix per
+    pass copied the rest of the subject each time, so 300,000 prefixes
+    took seconds. The thread page runs this on every message's subject."""
+    import time
+
+    start = time.perf_counter()
+    assert normalize_subject("re: " * 300_000 + "x") == "x"
+    assert normalize_subject("Re:" + " " * 300_000 + "y") == "y"
+    assert normalize_subject("aw: fwd: " * 150_000 + "z") == "z"
+    assert time.perf_counter() - start < 2
+
+
 # Subject normalization: pathological cases (mixed locale, deep
 # repetition, the locale tokens the basic test doesn't cover)
 
@@ -529,7 +542,7 @@ def test_normalize_subject(inp, expected):
         ("Sv: foo", "foo"),  # Swedish "Svar"
         ("Wg: foo", "foo"),  # German "Weiterleitung" (forward)
         ("Tr: foo", "foo"),  # French "Transféré" (forward)
-        # Deep repetition: the loop strips repeatedly until idempotent.
+        # Deep repetition: every prefix in the run is stripped.
         ("Re: Re: Re: Re: foo", "foo"),
         # Mixed-locale chain (single subject crosses 3 locales).
         ("Aw: Fwd: Re: foo", "foo"),
@@ -557,8 +570,8 @@ def test_normalize_subject_pathological(inp, expected):
       (Antw/Antwort/Sv/Wg/Tr). A regression that dropped one from the
       regex would silently fragment threads on subjects from senders
       using that locale.
-    - Deep repetition: the loop must keep stripping until idempotent,
-      not bail after one pass.
+    - Deep repetition: the whole run of prefixes is stripped, not just
+      the first.
     - Mixed-locale chains (a single subject that picked up 3 different
       reply tokens across forwarding hops).
     - `[PATCH vN x/M]` bracketed tags MUST be kept: they're the
