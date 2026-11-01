@@ -206,7 +206,7 @@ def test_unmaterialised_thread_link_uses_the_thread_pages_order(
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList
-    from tests.test_routes._helpers import _canonical_of
+    from tests.test_routes.test_thread import _canonical_of
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 3)
     # DFS lists root, first, nested, second; /t lists root, first,
