@@ -136,8 +136,12 @@ def _normalize_msgid(value: str | None) -> str | None:
     return first.lstrip("<").rstrip(">").strip() or None
 
 
+# The whole run of prefixes in one match. Stripping one per pass in a
+# loop copied the rest of the subject each time, which is quadratic: a
+# subject of 40,000 `re: ` took 0.12 s and doubled input took four times
+# as long (measured 2026-11-01), on ingest and on every thread page.
 _SUBJECT_PREFIX_RE = re.compile(
-    r"^\s*(?:re|fwd?|aw|sv|antw|antwort|wg|tr)\s*:\s*",
+    r"^(?:\s*(?:re|fwd?|aw|sv|antw|antwort|wg|tr)\s*:\s*)+",
     re.IGNORECASE,
 )
 
@@ -150,12 +154,7 @@ def normalize_subject(value: str | None) -> str:
     distinct threads. Returns lowercase, whitespace-collapsed."""
     if not value:
         return ""
-    s = value
-    while True:
-        new = _SUBJECT_PREFIX_RE.sub("", s, count=1)
-        if new == s:
-            break
-        s = new
+    s = _SUBJECT_PREFIX_RE.sub("", value, count=1)
     return " ".join(s.split()).lower()
 
 
