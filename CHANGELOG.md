@@ -25,7 +25,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- On the thread page, a "replied to" link, an outline row or a Patches-index link whose message is already on screen (because "Next" appended the page that holds it) now scrolls to that message instead of loading its page in full, and the address bar names the page that holds it (#1035). A message's permalink and "replied to" link name that page too, so a copied link or one opened in a new tab lands on it. Without JavaScript the link loads the page as before.
+- On the thread page, a "replied to" link, an outline row, a Patches-index link or a message's `#` permalink whose message is already on screen (because "Next" appended the page that holds it) now scrolls to that message instead of loading its page in full, and the address bar names the page that holds it (#1035). A message's permalink and "replied to" link name that page too, so a copied link or one opened in a new tab lands on it. Without JavaScript the link loads the page as before.
 - Stripping reply prefixes from a subject (ingest's `subject_normalized`, and the thread page's heading check) took time quadratic in the number of prefixes: a subject of 300,000 `re: ` took several seconds (4.8 s on one laptop). It is now one pass. The result is unchanged, so no backfill is needed.
 - The header of a thread whose first message has no author says "Started by unknown sender", as that message's card does, instead of "Started on".
 
