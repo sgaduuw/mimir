@@ -23,6 +23,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- On the thread page, a "replied to" link or an outline row whose message is already on screen (because "Next" appended the page that holds it) now scrolls to that message instead of loading its page in full (#1035). Without JavaScript the link loads the page as before.
 - Stripping reply prefixes from a subject (ingest's `subject_normalized`, and the thread page's heading check) took time quadratic in the number of prefixes: a subject of 300,000 `re: ` took about 10 seconds. It is now one pass. The result is unchanged, so no backfill is needed.
 - The header of a thread whose first message has no author says "Started by unknown sender", as that message's card does, instead of "Started on".
 
