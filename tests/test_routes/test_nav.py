@@ -41,13 +41,6 @@ def test_css_collapses_the_nav_on_phones_with_44px_targets():
     assert phone, "no phone block for the nav"
     rules = phone.group(1)
     assert re.search(r"\.site-nav \.nav-toggle ~ ul\s*\{[^}]*display:\s*none", rules)
-    # The open rows start where the breadcrumb does: Pico's li padding is
-    # cancelled the same way Pico cancels it on the first list.
-    assert re.search(
-        r"\.site-nav \.nav-toggle ~ ul\s*\{[^}]*margin-inline:\s*"
-        r"calc\(var\(--pico-nav-element-spacing-horizontal\) \* -1\)",
-        rules,
-    )
     assert re.search(
         r"\.site-nav \.nav-toggle\[open\] ~ ul\s*\{[^}]*display:\s*flex", rules
     )

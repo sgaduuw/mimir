@@ -2386,6 +2386,29 @@ Two consequences worth knowing:
 
 ## What the page ETags version
 
+**After #990:** the single-message reader no longer renders lifecycle,
+status, revisions or related panels. It keeps `render_state_tag`
+conservatively because subsystem attribution still feeds its navigation,
+HTMX menu refresh and JSON-LD, and address allowlists still feed redaction.
+On `/t`, each message can open `/api/<inbox>/metadata/<id>` for its own
+metadata. That fragment is `noindex`, `no-store`, and does not return
+conditional 304s. Its state-card cache keys carry the current derived
+state, inbox, version and thread summary; related-list helper TTLs retain
+the existing documented approximation. A collapsed thread card performs
+no metadata lookup. This is the same separate-response boundary as the
+per-patch related fragment, rather than an eager computation per message.
+
+Revision and diff links remain server-rendered. Timelines are read once
+per distinct series, including nested postings and standalone patches.
+The full HTML thread ETag additionally digests those series' revisions,
+dates, positions, versions, canonical inboxes, memberships and file
+presence before the 304 check. An HTMX append reads and digests only
+its visible non-root covers' series, preserving their inline timelines
+and diff links; it does not build the Patches index. Markdown reads none
+of those extra groups. This supersedes the root-series-only
+restriction described in the historical rationale below.
+
+
 Both the message page and the thread view are served
 `Cache-Control: public, no-cache`, so their ETag is the only thing
 between a source-data change and an edge (plus every crawler) serving

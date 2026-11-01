@@ -10,6 +10,7 @@ from tests.test_routes._helpers import (
     _ingest_one_article,
     _json_ld_blocks,
     _meta_value,
+    _metadata_url,
     _seed_author_article,
     _seed_subsystem,
     _title_of,
@@ -1277,9 +1278,12 @@ def test_message_page_keeps_a_maintainer_who_has_no_address(client, tmp_path):
         "noaddr@example.com",
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
-    html = client.get(url).get_data(as_text=True)
-    assert "No Address Person" in html
-    assert 'href="/maintainers/"' not in html
+    for destination in [url + "/t", _metadata_url(url)]:
+        response = client.get(destination)
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "No Address Person" in html
+        assert 'href="/maintainers/"' not in html
 
 
 def test_subsystem_index_carries_its_own_meta_description_and_title(client):

@@ -12,7 +12,11 @@ from datetime import UTC, datetime
 import pytest
 
 from mimir.models import Article, ArticleTrailer
-from tests.test_routes._helpers import _seed_mainline_commit, seed_thread_shape
+from tests.test_routes._helpers import (
+    _metadata_url,
+    _seed_mainline_commit,
+    seed_thread_shape,
+)
 
 KEY = "5a" * 20
 LINUS_SHA = "1" * 40
@@ -122,7 +126,11 @@ def test_every_lifecycle_state_is_parametrised():
 @pytest.mark.parametrize("state", list(STATES))
 def test_the_status_line_states_what_the_pill_states(client, tmp_path, state, surface):
     seeded = _make(tmp_path, state)
-    url = seeded["p@x"][1] + ("/t" if surface == "thread" else "")
+    url = (
+        seeded["p@x"][1] + "/t"
+        if surface == "thread"
+        else _metadata_url(seeded["p@x"][1])
+    )
     html = client.get(url).get_data(as_text=True)
     want_pill, want_line = STATES[state]
     assert _pill(html) == want_pill  # precondition: the seed built the state

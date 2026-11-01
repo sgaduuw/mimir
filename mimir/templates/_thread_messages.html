@@ -38,6 +38,13 @@
       <a class="permalink" href="{{ page_url }}#m{{ node.id }}" aria-label="Permalink to this message">#</a>
     </p>
   </header>
+  {% if node.id != root.id and kinds.get(node.id) == 'cover' and node.id in patch_revisions %}
+  {% with patch_state = {"series": patch_revisions[node.id]}, revisions_open = true %}{% include "_revisions_fold.html" %}{% endwith %}
+  {% endif %}
+  <details class="thread-message-details" hx-get="{{ url_for('web.api_message_metadata', inbox_name=inbox_name, article_id=node.id) }}" hx-trigger="toggle once" hx-target="find .message-details-content" hx-swap="innerHTML">
+    <summary>Message details and related content</summary>
+    <div class="message-details-content"><a href="{{ url_for('web.api_message_metadata', inbox_name=inbox_name, article_id=node.id) }}">Open message details and related content</a></div>
+  </details>
   {% if parsed and parsed.body %}
   {# Message-ID linkification and the parent-quote jump link are both
      omitted: they need per-message bulk lookups, and inside a

@@ -7,12 +7,14 @@ row adds a second predicate on `article_lists`, and without
 `ix_article_lists_inbox_id`: every row of the inbox, per page view.
 """
 
+import re
+
 from sqlalchemy import event
 
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import ArticleFile
-from tests.test_routes._helpers import build_thread
+from tests.test_routes._helpers import _metadata_url, build_thread
 
 
 def test_windowed_orphans_query_is_driven_by_the_subject_index(
@@ -26,7 +28,14 @@ def test_windowed_orphans_query_is_driven_by_the_subject_index(
         s.commit()
         engine = s.get_bind()
     url = seeded["m0"][1]
-    assert client.get(url).status_code == 200
+    reader = client.get(url)
+    assert reader.status_code == 200
+    reader_html = reader.get_data(as_text=True)
+    # This chain window can omit grandchildren without a visible gap row.
+    visible = re.findall(r'<li\b[^>]*\bdata-article-id="(\d+)"', reader_html)
+    assert seeded["m0"][0] in {int(aid) for aid in visible}
+    assert 0 < len(visible) < 30
+    assert "View all 30 messages" in reader_html
 
     statements = []
 
@@ -35,10 +44,10 @@ def test_windowed_orphans_query_is_driven_by_the_subject_index(
 
     event.listen(engine, "before_cursor_execute", grab)
     try:
-        html = client.get(url).get_data(as_text=True)
+        response = client.get(_metadata_url(url))
     finally:
         event.remove(engine, "before_cursor_execute", grab)
-    assert 'class="thread-all"' in html  # precondition: windowed
+    assert response.status_code == 200
 
     orphans = [
         (stmt, params)

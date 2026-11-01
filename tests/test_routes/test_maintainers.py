@@ -150,17 +150,18 @@ def test_maintainer_view_emits_profilepage_json_ld(client, session):
     assert payload["url"].endswith("/maintainers/kent@kernel.org")
 
 
-def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
-    client, tmp_path
+@pytest.mark.parametrize("surface", ["thread", "metadata"])
+def test_message_metadata_does_not_link_reviewers_to_maintainer_profiles(
+    client, tmp_path, surface
 ):
     """`/maintainers/<address>` is an M-only surface, and the message
-    page's subsystem header is the second place that linkifies a
-    maintainer.
+    metadata's subsystem header also linkifies a maintainer. The thread
+    summary and per-message fragment must keep the same link predicate.
 
     The sibling guard on the subsystem page
     (`test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles`)
     had no counterpart here, so the `_role == 'M'` filter in
-    `_message_body.html` was the only thing standing between an `R:`
+    `_subsystem_link.html` is what stands between an `R:`
     reviewer and a linked 404, with nothing holding it.
 
     The allowlist gate the template also applies does NOT stand in for
@@ -168,7 +169,11 @@ def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
     every reviewer passes it. It answers "is this address safe to
     display", not "does this profile exist".
     """
-    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _metadata_url,
+        _seed_subsystem,
+    )
 
     _seed_subsystem(
         "BCACHEFS",
@@ -185,7 +190,8 @@ def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
         "msgpage-roles@example.com",
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
-    body = client.get(url).get_data(as_text=True)
+    target = url + "/t" if surface == "thread" else _metadata_url(url)
+    body = client.get(target).get_data(as_text=True)
 
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
     assert 'href="/maintainers/reviewer.only@kernel.org"' not in body
@@ -252,7 +258,7 @@ def test_maintainer_link_url_requires_the_allowlist(monkeypatch):
     assert _maintainer_link_url_filter(address) == "/maintainers/kent@example.com"
 
 
-@pytest.mark.parametrize("surface", ["sitemap", "subsystem", "message"])
+@pytest.mark.parametrize("surface", ["sitemap", "subsystem", "thread", "metadata"])
 def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface):
     """Removing any emitter's validity gate publishes a seeded 404."""
     from urllib.parse import quote, urlsplit
@@ -262,6 +268,7 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
     from tests.test_routes._helpers import (
         _clear_sitemap_cache,
         _ingest_one_article,
+        _metadata_url,
         _seed_subsystem,
     )
 
@@ -295,13 +302,14 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
         ]
     else:
         url = "/alpha/subsystem/shapes/"
-        if surface == "message":
+        if surface in {"thread", "metadata"}:
             _, url = _ingest_one_article(
                 tmp_path,
                 "alpha",
                 "address-shapes@example.com",
                 body=b"diff --git a/fs/shapes/a.c b/fs/shapes/a.c\n@@ -1 +1 @@\n-x\n+y\n",
             )
+            url = url + "/t" if surface == "thread" else _metadata_url(url)
         response = client.get(url)
         assert response.status_code == 200
 

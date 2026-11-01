@@ -12,7 +12,7 @@ from sqlalchemy import select
 from mimir import patch_revisions
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleFile, ArticleList, Inbox
-from tests.test_routes._helpers import _ingest_series_pair, _seed_resends
+from tests.test_routes._helpers import _ingest_series_pair, _metadata_url, _seed_resends
 
 
 def test_series_diff_cover_letter_renders(client, tmp_path):
@@ -233,7 +233,7 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
             _sa_select(Article).where(Article.message_id == "v2-cv@x")
         ).scalar_one()
         v2_url = f"/alpha/{v2_art.date.year}/{v2_art.date.month:02d}/{v2_art.id}"
-    body = client.get(v2_url).data.decode()
+    body = client.get(_metadata_url(v2_url)).data.decode()
     # Badge redesign: series revisions moved from the aside into
     # `_revisions_fold.html`; scope the assertions to that fold.
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
@@ -531,7 +531,7 @@ def test_series_diff_canonical_is_the_panel_link_and_resolves(client, tmp_path):
             select(Article).where(Article.message_id == "v2-cv@x")
         ).scalar_one()
         beta_url = f"/beta/{v2.date.year}/{v2.date.month:02d}/{v2.id}"
-    page = client.get(beta_url)
+    page = client.get(_metadata_url(beta_url))
     assert page.status_code == 200
     fold = page.data.decode().split('class="revisions-fold"')[1].split("</details>")[0]
     (panel_href,) = re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)
@@ -685,7 +685,7 @@ def test_series_diff_panel_link_and_route_agree_on_the_series_head(
             select(Article).where(Article.message_id == "v2-cv@x")
         ).scalar_one()
         page_url = f"/alpha/{v2.date.year}/{v2.date.month:02d}/{v2.id}"
-    fold = client.get(page_url).data.decode()
+    fold = client.get(_metadata_url(page_url)).data.decode()
     fold = fold.split('class="revisions-fold"')[1].split("</details>")[0]
     (panel_href,) = re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)
     panel_href = html_lib.unescape(panel_href)
