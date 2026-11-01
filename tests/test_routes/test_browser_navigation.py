@@ -10,7 +10,7 @@ import pytest
 from werkzeug.serving import make_server
 
 from mimir.config import settings
-from tests.test_routes._helpers import build_thread
+from tests.test_routes._helpers import build_thread, seed_thread_shape
 
 
 def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
@@ -208,6 +208,122 @@ def test_keyboard_j_stays_on_messages_in_a_windowed_thread(
             expect(page.locator("#msg")).to_have_attribute(
                 "data-article-id", str(last_id)
             )
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_an_in_page_jump_into_an_appended_page_names_that_page(
+    client, tmp_path, monkeypatch
+):
+    """After "Next" appends page 2, a "replied to" link or an outline row to
+    a message on it scrolls in place (#1035), and the address bar names
+    page 2: setting only the hash kept page 1's path, so a copied address
+    or a reload lost the message (3.39.0 release review)."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    messages = list(build_thread(tmp_path, "alpha", shape="chain", size=6).values())
+    root_path = messages[0][1]
+    page1, page2 = root_path + "/t", root_path + "/t/2"
+    on_page2 = [messages[2][0], messages[3][0]]
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            page.goto(base + page1)
+            # Precondition: page 1 does not hold the messages of page 2.
+            expect(page.locator(f"#m{on_page2[0]}")).to_have_count(0)
+            # A marker a full load would wipe.
+            page.evaluate("window.stayed = true")
+            page.locator(f'.thread-more a[href="{page2}"]').click()
+            expect(page.locator(f"#m{on_page2[1]}")).to_be_attached()
+            # A clicked permalink scrolls in place, while the address bar
+            # still names page 1 (on page 2 already, the browser's own
+            # fragment navigation would pass without the script).
+            expect(page).to_have_url(base + page1)
+            page.locator(f"#m{on_page2[1]} a.permalink").click()
+            expect(page).to_have_url(f"{base}{page2}#m{on_page2[1]}")
+            assert page.evaluate("window.stayed") is True
+            page.goto(base + page1)
+            page.evaluate("window.stayed = true")
+            page.locator(f'.thread-more a[href="{page2}"]').click()
+            expect(page.locator(f"#m{on_page2[1]}")).to_be_attached()
+            # The chain's 4th message answers the 3rd, both on page 2.
+            page.locator(f"#m{on_page2[1]} .replied-to a").click()
+            expect(page).to_have_url(f"{base}{page2}#m{on_page2[0]}")
+            expect(page.locator(f"#m{on_page2[0]}")).to_be_in_viewport()
+            page.evaluate("document.querySelector('.thread-outline').open = true")
+            page.locator(f'.thread-outline a[href="{page2}#m{on_page2[1]}"]').click()
+            expect(page).to_have_url(f"{base}{page2}#m{on_page2[1]}")
+            assert page.evaluate("window.stayed") is True
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+def test_an_in_page_jump_opens_the_tab_that_holds_the_message(
+    client, tmp_path, monkeypatch
+):
+    """On the Patches tab, an outline row to a reply on an appended page
+    opens Discussion: the jump pushes the URL, which fires no hashchange,
+    so thread-anchors.js sends one for thread-tabs.js. Written by the
+    3.39.0 fix review, red with that dispatch removed."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 3)
+    edges = [
+        ("cov@x", None),
+        ("p1@x", "cov@x"),
+        ("p2@x", "cov@x"),
+        ("p3@x", "cov@x"),
+        ("rev@x", "p1@x"),
+        ("rev2@x", "rev@x"),
+    ]
+    seeded = seed_thread_shape(tmp_path, "alpha", edges)
+    with SessionLocal() as s:
+        for pos, mid in enumerate(["cov@x", "p1@x", "p2@x", "p3@x"]):
+            a = s.get(Article, seeded[mid][0])
+            a.subject = f"[PATCH v2 {pos}/3] foo: part {pos}"
+            a.patch_series_key = "t" * 40
+            a.patch_series_version = "v2"
+            a.patch_series_position = pos
+        s.commit()
+    page1 = seeded["cov@x"][1] + "/t"
+    reply = seeded["rev2@x"][0]
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            page.goto(base + page1)
+            expect(page.locator(".thread-tabs")).to_be_visible()
+            more = page.locator(".thread-more a")
+            page2 = more.get_attribute("href")
+            more.click()
+            expect(page.locator(f"#m{reply}")).to_be_attached()
+            page.locator('[role="tab"][data-tab="patches"]').click()
+            # Precondition: the reply is hidden, and its row names page 2.
+            expect(page.locator(f"#m{reply}")).to_be_hidden()
+            page.evaluate("document.querySelector('.thread-outline').open = true")
+            row = page.locator(f'.thread-outline a[href="{page2}#m{reply}"]')
+            expect(row).to_have_count(1)
+            row.click()
+            expect(page.locator("#thread-messages")).to_have_attribute(
+                "data-tab", "discussion"
+            )
+            expect(page.locator(f"#m{reply}")).to_be_in_viewport()
+            expect(page).to_have_url(f"{base}{page2}#m{reply}")
     finally:
         server.shutdown()
         thread.join()
