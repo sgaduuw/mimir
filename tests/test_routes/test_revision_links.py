@@ -44,16 +44,23 @@ def _check(client, url):
     )
     assert hrefs  # precondition: the page has revision links
     bad = []
+    checked = 0
     for h in hrefs:
         path, _, anchor = h.partition("#")
         aid = int(anchor[1:]) if anchor else int(path.rstrip("/").split("/")[-1])
         canon = _canon_path(client, aid)
         if canon is None:
-            continue
+            # A dateless revision has no message page: its link must be the
+            # thread page that renders it, with no redirect.
+            r = client.get(path)
+            if r.status_code != 200 or f'id="m{aid}"' not in r.get_data(as_text=True):
+                bad.append((h, r.status_code))
         # Anchorless = message-page link: the message page must then be
         # self-canonical, else /t could have named a page and did not.
-        if canon != path:
+        elif canon != path:
             bad.append((h, canon))
+        checked += 1
+    assert checked == len(hrefs)
     return hrefs, bad
 
 
@@ -178,6 +185,48 @@ def test_null_dates(client, tmp_path, cap2):
         s.commit()
     hrefs, bad = _check(client, seeded["c@x"][1] + "/t")
     assert not bad
+    # The two dateless revisions are linked on their thread page, which
+    # `_check` verified by fetching it, not skipped.
+    with SessionLocal() as s:
+        dateless = s.scalars(
+            select(Article.id).where(Article.message_id.in_(["q1@x", "q3@x"]))
+        ).all()
+    anchored = {int(h.rsplit("#m", 1)[1]) for h in hrefs if "#m" in h}
+    assert len(dateless) == 2 and set(dateless) <= anchored, hrefs
+
+
+def test_own_root_revision_in_an_unranked_thread_links_its_message_page(
+    client, tmp_path, cap2
+):
+    """The unranked check runs before the own-root short-cut. With the v1
+    patches unrooted, the v1 cover is alone in its group (the short-cut is
+    eligible) and its thread unranked, so it links its self-canonical
+    message page. Written by the fix review, red with the two arms
+    swapped."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    seeded = _seed_two_versions(tmp_path, 3)
+    with SessionLocal() as s:
+        qs = s.scalars(
+            select(Article.id).where(Article.message_id.in_(["q1@x", "q2@x", "q3@x"]))
+        ).all()
+        c1 = s.scalar(select(Article.id).where(Article.message_id == "c1@x"))
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id.in_(qs))
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    links = re.findall(r'<a class="rev-label" href="([^"]+)"', page)
+    c1_links = [
+        h for h in links if h.endswith(f"#m{c1}") or h.rstrip("/").endswith(f"/{c1}")
+    ]
+    assert len(c1_links) == 1, links  # precondition: the v1 cover's fold renders
+    canon = _canon_path(client, c1)
+    assert canon is not None and not re.search(r"/t(/\d+)?$", canon)
+    assert c1_links[0] == canon, (c1_links, canon)
 
 
 def _seed_with_repost(tmp_path, n=3):
@@ -281,8 +330,11 @@ def _revision_statements(client, tmp_path, versions):
         t._revision_hrefs = orig
         event.remove(engine, "before_cursor_execute", before)
     assert r.status_code == 200
-    # Precondition: every older revision got a thread-page link.
-    assert r.get_data(as_text=True).count("/t#m") >= (versions - 1) * n
+    # Precondition: every older revision (cover and each patch, per older
+    # version) got a thread-page link, parsed rather than counted as text.
+    links = re.findall(r'<a class="rev-label" href="([^"]+)"', r.get_data(as_text=True))
+    linked = [h for h in links if re.fullmatch(r"/\S+/t(/\d+)?#m\d+", h)]
+    assert len(linked) == len(links) == (versions - 1) * (n + 1), links
     return counts["n"]
 
 
