@@ -103,6 +103,7 @@ All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.s
 {% if show_tabs %}
 <script src="{{ url_for('static', filename='js/thread-tabs.js') }}" defer></script>
 {% endif %}
+<script src="{{ url_for('static', filename='js/thread-anchors.js') }}" defer></script>
 {% if outline %}
 </div>
 </div>
