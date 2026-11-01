@@ -146,11 +146,13 @@ def test_every_outline_link_names_the_page_that_holds_its_message(
     html = _get(client, seeded["c@x"][1] + "/t").get_data(as_text=True)
     rows = _outline(html)
     assert len(rows) >= 5  # precondition: links on and off this page
+    # Every href is a whole URL; the root's row names page 1.
+    page1 = rows[0][3].partition("#")[0]
     off_page = 0
     for kind, _depth, _here, href, _text in rows:
         url, _, anchor = href.partition("#")
-        target = html if not url else _get(client, url).get_data(as_text=True)
-        off_page += bool(url)
+        target = _get(client, url).get_data(as_text=True)
+        off_page += url != page1
         assert f'id="{anchor}"' in target, href
     assert off_page, "no link left the page"
 
