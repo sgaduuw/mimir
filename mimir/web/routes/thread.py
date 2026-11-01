@@ -44,6 +44,7 @@ from mimir.models import (
     Article,
     ArticleList,
 )
+from mimir.parser import normalize_subject
 from mimir.patch_revisions import subject_tags
 from mimir.patch_series import slot_rank
 from mimir.patch_state import message_kind, patch_state_for_article, patch_timelines
@@ -55,10 +56,12 @@ from mimir.threading import (
     dedupe_thread,
     find_thread_root,
     get_thread,
+    outline_depths,
     thread_aggregates,
     thread_by_root_id,
     thread_is_materialised,
     thread_page_of,
+    thread_parents,
     thread_rows,
     thread_series_rows,
     thread_sort_key,
@@ -78,6 +81,104 @@ from mimir.web.urls import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# The outline lists this many messages of the thread (the first, in the
+# page's order), and only for a thread of at least this many (#989).
+OUTLINE_ROWS = 200
+OUTLINE_MIN_MESSAGES = 5
+
+
+def _message_href(root, inbox_name, page, article_id) -> str:
+    """The thread page that holds a message, and its anchor, for the cards'
+    "replied to", the outline and the Patches index. The permalink is
+    `page_url` plus its id in the template: the same `thread_page_url`, for
+    the page being rendered. Always the whole URL, never a bare `#m{id}`: an
+    HTMX slice is appended to page 1's document without a URL change, so a
+    bare fragment in it resolves to page 1, which does not hold the message
+    (a copied permalink or a new-tab click lands on the wrong page)."""
+    return thread_page_url(root.id, root.date, inbox_name, page) + f"#m{article_id}"
+
+
+def _reply_markers(
+    session, inbox, root, nodes, *, page, cap, ordered_rows, all_nodes
+) -> dict:
+    """`node id -> (parent's author, href)` for each message on this page
+    whose parent is a message of the thread, for the cards' "replied to"
+    (#989). The href is the thread page that holds the parent plus its
+    anchor (`_message_href`, by the Patches index's rank, `index // cap + 1`).
+    Nothing for a root, a self-parent or a parent outside the archive.
+
+    No traversal, so a `thread_parent` cycle is just two markers. The
+    parents on other pages cost one statement on the indexed path, none
+    when they are all here, and none on the CTE fallback, which holds the
+    whole thread."""
+    on_page = {n.message_id: (n.id, n.author) for n in nodes}
+    wanted = {n.thread_parent for n in nodes if n.thread_parent}
+    known = dict(on_page)
+    missing = [m for m in wanted if m not in known]
+    if missing and all_nodes is not None:
+        known.update({n.message_id: (n.id, n.author) for n in all_nodes})
+    elif missing:
+        for pid, mid, author in thread_parents(session, inbox, root.id, missing):
+            known[mid] = (pid, author)
+    page_of = {
+        row.id: i // cap + 1
+        for i, row in enumerate(ordered_rows if all_nodes is None else all_nodes)
+    }
+    markers = {}
+    for n in nodes:
+        parent = known.get(n.thread_parent)
+        if parent is None or n.thread_parent == n.message_id:
+            continue
+        pid, author = parent
+        parent_page = page if n.thread_parent in on_page else page_of.get(pid)
+        if parent_page is None:
+            continue
+        markers[n.id] = (author, _message_href(root, inbox.name, parent_page, pid))
+    return markers
+
+
+def _outline_rows(nodes, *, root, kinds, ordered, cap, page, inbox_name, total_count):
+    """The outline's rows (#989), from the thread's first messages: the root,
+    the patches as one row, each reply indented by its depth among the rows
+    listed, and a last row for what is not listed. Each links the page and
+    anchor that hold its message (`_message_href`, by the Patches index's
+    rank, `index // cap + 1`). `ordered` is
+    the whole thread in page order; `kinds` is empty on the CTE fallback, which
+    then lists every message but the root as a reply."""
+    page_of = {row.id: i // cap + 1 for i, row in enumerate(ordered)}
+    here = {n.id for n in nodes if page_of.get(n.id, 1) == page}
+
+    def href(article_id):
+        return _message_href(root, inbox_name, page_of.get(article_id, 1), article_id)
+
+    patches = [n for n in nodes if n.id != root.id and kinds.get(n.id) == "patch"]
+    replies = [n for n in nodes if n.id != root.id and kinds.get(n.id) != "patch"]
+    depth = outline_depths(replies)
+    rows = [{"kind": "root", "depth": 0, "node": nodes[0]}]
+    if patches:
+        rows.append({"kind": "patches", "depth": 0, "node": patches[0]})
+    rows += [{"kind": "reply", "depth": depth[n.id], "node": n} for n in replies]
+    for row in rows:
+        row["href"] = href(row["node"].id)
+        row["here"] = row["node"].id in here
+    # Guarded on the rows read, not on `total_count`: that is read before
+    # the validator and `ordered` after it, with no snapshot between, so a
+    # reindex can leave fewer rows than the count says, and an ingest more,
+    # which would make a "0 more" row. Both must hold.
+    if total_count > len(nodes) and len(ordered) > len(nodes):
+        rows.append(
+            {
+                "kind": "more",
+                "depth": 0,
+                "node": ordered[len(nodes)],
+                "href": href(ordered[len(nodes)].id),
+                "here": False,
+                "remaining": total_count - len(nodes),
+            }
+        )
+    return rows
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/<int:article_id>/t" + MD_SUFFIX)
@@ -259,7 +360,13 @@ def thread_view(
         # read only on a 200, below: on the largest thread they cost
         # 22.8 ms against 2.5 ms for these. Indexed path only, like
         # everything that names a page.
+        hx_request = request.headers.get("HX-Request") == "true"
         series_rows: list = []
+        all_nodes = None  # set on the CTE fallback only
+        # The outline's source rows: the thread's first `OUTLINE_ROWS`, for
+        # the full page of a thread of `OUTLINE_MIN_MESSAGES` or more. Read
+        # before the validator, which digests them.
+        outline_nodes: list = []
         if thread_rooted:
             # Paged: the slice of MESSAGES is fetched, the totals are
             # asked for separately, and no message body or ThreadNode is
@@ -278,9 +385,28 @@ def thread_view(
             total_count = agg.total
             thread_max_date = agg.last_activity or article.date
             authors = agg.authors
-            rendered_nodes = thread_by_root_id(
-                session, inbox, article.id, offset=offset, limit=cap
+            want_outline = (
+                not (markdown or hx_request) and total_count >= OUTLINE_MIN_MESSAGES
             )
+            # Page 1 reads the outline's rows and slices its own out of
+            # them, so the outline costs no statement there; later pages
+            # read the outline's rows on their own.
+            nodes = thread_by_root_id(
+                session,
+                inbox,
+                article.id,
+                offset=offset,
+                limit=max(cap, OUTLINE_ROWS) if want_outline and page == 1 else cap,
+            )
+            rendered_nodes = nodes[:cap]
+            if want_outline:
+                outline_nodes = (
+                    nodes[:OUTLINE_ROWS]
+                    if page == 1
+                    else thread_by_root_id(
+                        session, inbox, article.id, limit=OUTLINE_ROWS
+                    )
+                )
         else:
             # `dedupe_thread` is only needed on the walk: a cyclic
             # `thread_parent` makes the CTE re-emit an article once per
@@ -315,6 +441,8 @@ def thread_view(
             )
             all_nodes.sort(key=thread_sort_key(article.id))
             rendered_nodes = all_nodes[offset : offset + cap]
+            if not (markdown or hx_request) and total_count >= OUTLINE_MIN_MESSAGES:
+                outline_nodes = all_nodes[:OUTLINE_ROWS]
 
         if total_count == 0:
             abort(404)
@@ -352,7 +480,6 @@ def thread_view(
         # a review caught these comments asserting it. The ETags
         # differ per representation, so revalidating caches were safe,
         # but bfcache and prerender do not revalidate.
-        hx_request = request.headers.get("HX-Request") == "true"
         # Everything the page renders ABOUT the root that no message
         # carries: landing state, review roll-up, subsystem
         # attribution. None of them moves `total_count` or
@@ -384,7 +511,27 @@ def thread_view(
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"
-        etag_input = f"{content_input}|{page}|{representation}"
+        # What the cards say about each reply's parent, for the messages
+        # of THIS page only, so it is page-local and costs no statement:
+        # the slice is read above. Not in `content_input`, which keys the
+        # pill caches shared by every page of the thread.
+        parents_tag = hashlib.blake2s(
+            "|".join(
+                f"{n.id}:{n.thread_parent or ''}" for n in rendered_nodes
+            ).encode(),
+            digest_size=8,
+        ).hexdigest()
+        # The outline's rows are the thread's first `OUTLINE_ROWS`, on every
+        # page, and their parents set the depths it shows. Page 1 reads
+        # them with its own slice; the digest is empty for the slice and
+        # the Markdown page, which render no outline.
+        outline_tag = hashlib.blake2s(
+            "|".join(f"{n.id}:{n.thread_parent or ''}" for n in outline_nodes).encode(),
+            digest_size=8,
+        ).hexdigest()
+        etag_input = (
+            f"{content_input}|{page}|{representation}|{parents_tag}|{outline_tag}"
+        )
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -422,6 +569,29 @@ def thread_view(
                     inbox.name,
                 )
             messages.append((node, parsed, _msg_url(node, inbox.name)))
+
+        # The cards' parent markers, and which cards keep their subject
+        # heading (only where it differs from the thread's, #989). Compared
+        # as `subject_normalized` is, so `AW:`, `SV:` and forwards count as
+        # replies here too (#1034). Not for the Markdown page, which renders
+        # neither.
+        reply_to: dict = {}
+        heading_ids: set = set()
+        if not markdown:
+            root_key = normalize_subject(article.subject)
+            heading_ids = {
+                n.id for n in rendered_nodes if normalize_subject(n.subject) != root_key
+            }
+            reply_to = _reply_markers(
+                session,
+                inbox,
+                article,
+                rendered_nodes,
+                page=page,
+                cap=cap,
+                ordered_rows=ordered_rows,
+                all_nodes=all_nodes,
+            )
 
         # One read for both the subsystem line and the series totals.
         # A cover's files are its patches' (#844), so for a series this
@@ -575,6 +745,20 @@ def thread_view(
         kinds = {row.id: message_kind(row) for row in ordered_rows}
         kind_counts = Counter(kinds.values())
         show_tabs = total_count > 1 and kind_counts["patch"] > 0
+        outline = (
+            _outline_rows(
+                outline_nodes,
+                root=article,
+                kinds=kinds,
+                ordered=ordered_rows if all_nodes is None else all_nodes,
+                cap=cap,
+                page=page,
+                inbox_name=inbox.name,
+                total_count=total_count,
+            )
+            if outline_nodes
+            else []
+        )
         # The Patches index covers the whole thread. Each row links the
         # page holding the patch: its index in the page-ordered rows,
         # which `thread_page_of` agrees with (pinned by a test), through
@@ -588,10 +772,7 @@ def thread_view(
                 {
                     "id": row.id,
                     "subject": row.subject,
-                    "href": thread_page_url(
-                        root_node.id, root_node.date, inbox.name, i // cap + 1
-                    )
-                    + f"#m{row.id}",
+                    "href": _message_href(root_node, inbox.name, i // cap + 1, row.id),
                 }
                 for i, row in enumerate(ordered_rows)
                 if kinds[row.id] == "patch"
@@ -611,7 +792,9 @@ def thread_view(
                     inbox.name,
                 )
 
-    thread_summary = thread_summary_from(authors, thread_max_date, total_count)
+    author_count = thread_summary_from(authors, thread_max_date, total_count)[
+        "author_count"
+    ]
     # The header's prefix tags and stripped title, from the parsers' own
     # bracket (`patch_bracket`); the <title> and structured data keep the
     # whole subject.
@@ -628,11 +811,14 @@ def thread_view(
         prev_page_url=prev_page_url,
         remaining=remaining,
         page_size=cap,
-        thread_summary=thread_summary,
+        author_count=author_count,
         last_activity=thread_max_date,
         title_tags=title_tags,
         title_text=title_text,
         kinds=kinds,
+        outline=outline,
+        reply_to=reply_to,
+        heading_ids=heading_ids,
         kind_counts=kind_counts,
         show_tabs=show_tabs,
         patch_index=patch_index,
@@ -644,6 +830,7 @@ def thread_view(
         series_totals=series_totals,
         patch_state=root_patch_state,
         lifecycle_status=root_lifecycle,
+        page_url=thread_page_url(root_node.id, root_node.date, inbox.name, page),
         markdown_url=markdown_path(
             thread_page_url(root_node.id, root_node.date, inbox.name, page)
         ),

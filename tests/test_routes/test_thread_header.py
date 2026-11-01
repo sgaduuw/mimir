@@ -68,7 +68,8 @@ def test_the_title_loses_its_prefixes_to_tags(client, tmp_path):
     h1 = re.findall(r"<h1[^>]*>(.*?)</h1>", html, re.DOTALL)
     assert h1 == ["Private Memory Nodes (w/ Compressed RAM)"]
     tags = re.findall(r'<li class="thread-tag[^"]*">([^<]*)</li>', html)
-    assert tags == ["LSF/MM/BPF TOPIC", "RFC", "v4", "2 patches"]
+    # The patch count is the Series card's, not a tag.
+    assert tags == ["LSF/MM/BPF TOPIC", "RFC", "v4"]
     # The version tag is the accented one.
     assert re.search(r'<li class="thread-tag thread-tag-version">v4</li>', html)
     # The head is the page's identity for search and sharing: unchanged.
