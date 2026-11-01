@@ -1,0 +1,81 @@
+<section class="message-metadata">
+<h2>{{ article.subject or '(no subject)' }}</h2>
+    {% if patch_state and patch_state.is_patch and lifecycle_status %}
+    <div class="msg-badges">
+      {%- with status = lifecycle_status %}
+      {%- include "_lifecycle_badges.html" %}
+      {%- endwith -%}
+    </div>
+    {% endif %}
+<p>
+      {% if subsystem_hits %}
+      <br><strong>Subsystem:</strong>
+      {# Linkify each subsystem name to its dashboard so the patch
+         page acts as a launch pad into the broader subsystem
+         context. URL takes the lowercased form (subsystem URL
+         convention since 1.18.x); display keeps the upstream
+         MAINTAINERS casing, lowercased for the anti-shouty pass.
+
+         Via the macro, never `subsystem_url` directly: a name the
+         route cannot serve still has to render as text here, because
+         the chip is what tells the reader which subsystems the patch
+         touches. #}
+      {% from "_subsystem_link.html" import maintainer_links, subsystem_link %}
+      {% for hit in subsystem_hits %}{{ subsystem_link(hit.name, current_inbox) }}{% if not loop.last %}, {% endif %}{% endfor %}
+      {{ maintainer_links(subsystem_hits) }}
+      {% endif %}
+
+</p>
+  {% include "_status_line.html" %}
+  {% set synthesis = patch_state|patch_synthesis %}
+  {% if synthesis %}
+  <p><small>{{ synthesis }}</small></p>
+  {% endif %}
+  {% include "_revisions_fold.html" %}
+
+  {% if related %}
+  <h4>Possibly related <small><em>(same subject, not in this thread)</em></small></h4>
+  <ul>
+    {% for r in related %}
+    <li>
+      <small>{{ r.date.strftime('%Y-%m-%d') if r.date else '?' }}</small>
+      &middot; <a href="{{ r|msg_url(inbox_name) }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
+      &middot; <small>{{ r.author|safe_from }}</small>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
+{# Related patches: other recent articles touching at least one
+   file this patch touches. The reverse-lookup side of the
+   subsystem header, useful when reviewing one patch in a larger
+   recent flurry. Skipped silently when the article isn't a patch. #}
+{% if related_patches %}
+<section class="related-patches">
+  <details>
+    <summary><strong>Other recent patches touching these files</strong></summary>
+    {% include "_related_patch_list.html" %}
+  </details>
+</section>
+{% endif %}
+{# Related discussions (#71): non-patch threads only; the route
+   gate guarantees related_threads is empty on patch threads. Open
+   by default: on non-patch pages this panel is the only related
+   surface. Signals tooltip mirrors the badge tooltip idiom. #}
+{% if related_threads %}
+<section class="related-discussions">
+  <details open>
+    <summary><strong>Related discussions</strong></summary>
+    <ul>
+      {% for r in related_threads %}
+      <li>
+        <a href="{{ r.url }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
+        <small data-tooltip="matched: {{ r.signals|join(', ') }}" data-placement="bottom">&middot; {{ r.last_activity.strftime('%Y-%m-%d') if r.last_activity else '' }}</small>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+</section>
+{% endif %}
+
+</section>

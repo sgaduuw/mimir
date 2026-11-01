@@ -226,7 +226,7 @@ def test_the_tabs_script_loads_only_where_there_are_tabs(client, tmp_path):
     )
 
 
-def _seed_two_versions(tmp_path, n: int):
+def _seed_two_versions(tmp_path, n: int, *, secondary_covers=False):
     """v1 of an n-patch series in its own thread, then v2 in a thread of
     its own with one reply, so each v2 patch has a revisions timeline (v1,
     v2) with a diff link. One repository, so every body (and so every
@@ -245,9 +245,20 @@ def _seed_two_versions(tmp_path, n: int):
         + [(f"p{i}@x", "c@x") for i in patches]
         + [("r@x", "p1@x")]
     )
+    if secondary_covers:
+        edges.insert(1, ("secondary-v1@x", None))
+        edges.insert(edges.index(("c@x", None)) + 1, ("secondary-v2@x", None))
     seeded = seed_thread_shape(tmp_path, "alpha", edges)
     with SessionLocal() as s:
         for mid, (aid, _url) in seeded.items():
+            if mid.startswith("secondary-"):
+                version = mid.split("-")[1].split("@")[0]
+                a = s.get(Article, aid)
+                a.subject = f"[PATCH {version} 0/{n}] another series"
+                a.patch_series_key = "o" * 40
+                a.patch_series_version = version
+                a.patch_series_position = 0
+                continue
             if mid == "r@x":
                 continue
             version = "v1" if mid in {"c1@x"} | {f"q{i}@x" for i in patches} else "v2"
@@ -313,7 +324,9 @@ def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_p
         start = page.find(f'<details class="patch-detail" id="patch-{aid}"')
         assert start != -1, f"no disclosure for p{i}"
         on_t = _timeline(page, start)
-        msg = client.get(url).get_data(as_text=True)
+        from tests.test_routes._helpers import _metadata_url
+
+        msg = client.get(_metadata_url(url)).get_data(as_text=True)
         on_msg = _timeline(msg, msg.index('class="revisions-fold"'))
         rev_href = re.compile(r'(class="rev-label" href=")[^"]*')
         assert rev_href.search(on_t), "no revision link"  # precondition
@@ -504,15 +517,16 @@ def test_a_patch_disclosure_s_summary_holds_no_link(client, tmp_path):
         assert "<a " not in s, s
 
 
-def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
-    """D5: inline revisions only for the root's own series, the rows the
-    validator digests. A patch of another series in the same thread keeps
-    its index row and related list, but not its timeline, even when that
-    series has two versions of it."""
+def test_a_patch_of_another_series_keeps_its_inline_revisions(client, tmp_path):
+    """#990: each series has a validator-covered, server-rendered timeline,
+    including a patch from another series inside the root's thread."""
+    import html as htmllib
+    import re
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
-    seeded = _seed_two_versions(tmp_path, 2)
+    seeded = _seed_two_versions(tmp_path, 2, secondary_covers=True)
     p2 = seeded["p2@x"][0]
     with SessionLocal() as s:
         older = (
@@ -523,15 +537,35 @@ def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
             )
             .one()
         )
-        # p2 and its v1 move to a series of their own.
+        covers = s.query(Article).filter(Article.patch_series_key == "o" * 40).all()
+        assert {(a.patch_series_version, a.patch_series_position) for a in covers} == {
+            ("v1", 0),
+            ("v2", 0),
+        }
+        by_version = {a.patch_series_version: a for a in covers}
+        for patch in (older, s.get(Article, p2)):
+            cover = by_version[patch.patch_series_version]
+            assert cover.patch_series_head_id == patch.patch_series_head_id
+            assert cover.date <= patch.date
+            assert {row.inbox_id for row in cover.lists} == {
+                row.inbox_id for row in patch.lists
+            }
+        # p2 and its v1 join the other series' real, readable covers.
+        # Keep p2 nested in the original thread and p1 in its original series.
         for a in (older, s.get(Article, p2)):
             a.patch_series_key = "o" * 40
         s.commit()
     html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
     start = html.index(f'<details class="patch-detail" id="patch-{p2}"')
     disclosure = html[start : html.index("</details>", start)]
-    assert "<summary>Related patches</summary>" in disclosure
-    assert "revisions-fold" not in disclosure
+    assert "<summary>Revisions and related patches</summary>" in disclosure
+    assert "revisions-fold" in disclosure
+    links = re.findall(r'href="([^"]*/series/[^"]*/diff\?[^"]*)"', disclosure)
+    assert len(links) == 1, links
+    link = htmllib.unescape(links[0])
+    assert "/series/" + "o" * 40 + "/diff?" in link
+    assert "from=v1&to=v2&pos=2" in link
+    assert client.get(link).status_code == 200
     # Precondition: p1, in the root's series, does get its timeline.
     p1 = seeded["p1@x"][0]
     assert "Revisions and related patches" in html.split(f'id="patch-{p1}"')[1][:400]

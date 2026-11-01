@@ -1043,3 +1043,20 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
     .thread-outline > summary { display: none; }
   }
 }
+
+/* The single-message reader (#990): controls stay with #msg on a swap. */
+.message-context { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 1rem; }
+.message-context a, .message-pager > span { display: inline-flex; align-items: center; min-height: 2.75rem; }
+.message-context .whole-thread { margin-right: auto; }
+.message-pager { display: flex; gap: 1rem; }
+.message-pager [aria-disabled] { color: var(--pico-muted-color); pointer-events: none; }
+.mail-header dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.75rem; }
+.mail-header dt { color: var(--pico-muted-color); }
+.mail-header dd { margin: 0; overflow-wrap: anywhere; }
+#msg h1 { overflow-wrap: anywhere; }
+.thread-message-details { margin-block: 0.5rem; font-size: 0.875rem; }
+@media (width < 768px) {
+  .message-context .whole-thread { width: 100%; }
+  .message-context .message-pager { width: 100%; justify-content: space-between; }
+  .thread-context .thread-list li > a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+}

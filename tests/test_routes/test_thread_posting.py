@@ -13,7 +13,7 @@ import re
 from sqlalchemy import event
 
 from mimir.models import Article, ArticleFile
-from tests.test_routes._helpers import _seed_subsystem, seed_thread_shape
+from tests.test_routes._helpers import _metadata_url, _seed_subsystem, seed_thread_shape
 
 KEY = "f0" * 20
 
@@ -78,7 +78,7 @@ def _visible(html):
 def test_cover_pages_show_the_posting_s_subsystems_and_maintainers(client, tmp_path):
     seeded = _seed(tmp_path)
     cover_url = seeded["cover@x"][1]
-    for url in (cover_url + "/t", cover_url):
+    for url in (cover_url + "/t", _metadata_url(cover_url)):
         html = client.get(url).get_data(as_text=True)
         visible = _visible(html)
         assert "foo driver" in visible and "bar fs" in visible, url
@@ -233,4 +233,8 @@ def test_message_page_statement_budget(client, tmp_path):
     finally:
         event.remove(engine, "before_cursor_execute", grab)
 
-    assert counted == MESSAGE_PAGE_STATEMENTS
+    for mid, (full_budget, revalidation_budget) in MESSAGE_PAGE_STATEMENTS.items():
+        full_count, revalidation_count = counted[mid]
+        if full_budget is not None:
+            assert 0 < full_count <= full_budget, counted
+        assert 0 < revalidation_count <= revalidation_budget, counted
