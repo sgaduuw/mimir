@@ -183,9 +183,11 @@ def _graph_with_breadcrumbs(
     inbox_name: str,
     subject: str,
     canonical_url: str,
+    crumbs: Sequence[tuple[str, str]] | None = None,
 ) -> dict:
     """Wrap a page entity in the `@graph` envelope plus the
-    Site -> Inbox -> Subject BreadcrumbList every content page emits.
+    Site -> Inbox -> Subject BreadcrumbList every content page emits, or
+    `crumbs` (`(name, url)` pairs) where a page shows a trail of its own.
 
     One home for the SERP truncation rule, which was previously
     spelled once per builder; two copies of an 80/77 constant in one
@@ -196,6 +198,12 @@ def _graph_with_breadcrumbs(
         if len(subject) <= BREADCRUMB_NAME_MAX
         else subject[: BREADCRUMB_NAME_MAX - 3] + "..."
     )
+    if crumbs is None:
+        crumbs = [
+            (settings.site_name, base + "/"),
+            (inbox_name, base + inbox_path(inbox_name)),
+            (name, canonical_url),
+        ]
     return {
         "@context": "https://schema.org",
         "@graph": [
@@ -203,24 +211,8 @@ def _graph_with_breadcrumbs(
             {
                 "@type": "BreadcrumbList",
                 "itemListElement": [
-                    {
-                        "@type": "ListItem",
-                        "position": 1,
-                        "name": settings.site_name,
-                        "item": base + "/",
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 2,
-                        "name": inbox_name,
-                        "item": base + inbox_path(inbox_name),
-                    },
-                    {
-                        "@type": "ListItem",
-                        "position": 3,
-                        "name": name,
-                        "item": canonical_url,
-                    },
+                    {"@type": "ListItem", "position": i, "name": n, "item": url}
+                    for i, (n, url) in enumerate(crumbs, 1)
                 ],
             },
         ],
@@ -543,10 +535,21 @@ def _json_ld_thread(
     if comments:
         payload["comment"] = comments
 
+    # The trail the page shows (`_thread_header.html`): inbox, year, month,
+    # thread. The message page keeps Site -> Inbox -> Subject.
+    crumbs = [(inbox_name, base + inbox_path(inbox_name))]
+    if root.date:
+        year_url = f"{base}{inbox_path(inbox_name)}{root.date.year}/"
+        crumbs += [
+            (str(root.date.year), year_url),
+            (root.date.strftime("%B"), f"{year_url}{root.date.month:02d}/"),
+        ]
+    crumbs.append(("thread", canonical_url))
     return _graph_with_breadcrumbs(
         payload,
         base=base,
         inbox_name=inbox_name,
         subject=root_subject,
         canonical_url=canonical_url,
+        crumbs=crumbs,
     )

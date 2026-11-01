@@ -583,7 +583,7 @@ pre.body-text-block {
   align-items: center;
   gap: 0.4em;
   padding: 0.2em 0.55em;
-  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--pico-font-family-monospace);
   font-size: 0.75em;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -935,7 +935,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
    have, and zeroed the timeline's own padding. */
 .patch-index > ol { padding-left: 0; list-style: none; }
 .patch-index > ol > li { padding: 0.25rem 0; border-bottom: var(--pico-border-width) solid var(--pico-muted-border-color); }
-.patch-index > ol > li > a { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+.patch-index > ol > li > a { font-family: var(--pico-font-family-monospace); }
 .patch-detail { margin: 0; }
 .patch-detail > summary { display: flex; align-items: center; min-height: 2.75rem; }
 
@@ -950,13 +950,13 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 /* Thread header (#989): tags over the title, a byline, three cards. The
    cards share a row on a desktop and stack on a phone, with no media
    query: each wants about 14rem. */
-.thread-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 0.25rem; padding: 0; list-style: none; }
+.thread-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0 0 0.25rem; padding: 0; }
 .thread-tag {
   list-style: none; /* Pico marks every `ul li` */
   padding: 0 0.5rem;
   border: var(--pico-border-width) solid var(--pico-muted-border-color);
   border-radius: var(--pico-border-radius);
-  font: 0.75rem/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font: 0.75rem/1.6 var(--pico-font-family-monospace);
 }
 .thread-tag-version { border-color: var(--mimir-accent); font-weight: 700; }
 .thread-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
@@ -968,9 +968,78 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 }
 .thread-card p { margin: 0 0 0.25rem; }
 .card-label { margin: 0 0 0.25rem; font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
-.chips { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; margin: 0; padding: 0; list-style: none; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.25rem 0.5rem; margin: 0; padding: 0; }
 .chip { margin: 0; padding: 0; list-style: none; font-size: 0.85rem; }
 .thread-card details { margin: 0.25rem 0 0; }
 .thread-card summary { font-size: 0.85rem; color: inherit; }
 .bar-meter .bar-added { fill: var(--mimir-accent); }
 .bar-meter .bar-removed { fill: var(--pico-muted-color); }
+
+/* Message cards (#989): the author leads, then who it answers, the date
+   and the permalink. */
+.card-byline { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25rem 0.6rem; margin: 0 0 0.5rem; }
+.avatar {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 1.75rem; height: 1.75rem; border-radius: 50%;
+  border: var(--pico-border-width) solid var(--mimir-accent);
+  font-size: 0.8rem; font-weight: 700;
+}
+.card-date, .permalink { font-size: 0.85rem; }
+.card-date { margin-left: auto; }
+
+/* Message body (#1033), on the thread and message pages: mail text on the
+   page, not on Pico's grey code slab, with quotes in muted text behind a
+   rule. Pico colours a <pre> with its code colour, which is the muted
+   one, so body text takes the page colour back or quotes would not stand
+   out. Pico's muted colour clears 4.5:1 on both schemes: 5.4:1 on the
+   light background and 4.8:1 on the dark one (pico 2.1.1 amber, measured
+   2026-11-01). 0.84375rem is 13.5px at Pico's base size, and scales with
+   its breakpoints like everything else. */
+.message-body pre.body-text-block {
+  max-width: 80ch;
+  background: none;
+  color: var(--pico-color);
+  font-size: 0.84375rem;
+  line-height: 1.6;
+}
+.message-body blockquote {
+  margin: 0.5rem 0;
+  padding: 0 0 0 0.75rem;
+  border-inline-start: 3px solid var(--pico-muted-color);
+  color: var(--pico-muted-color);
+}
+.message-body blockquote pre.body-text-block { color: inherit; }
+/* The cut's link (`_more_link` in mimir/rendering/body.py): a quiet line
+   under the cut text, still a real link for crawlers and no-JS. */
+.text-more { margin: 0.25rem 0 0.75rem; font-size: 0.85rem; }
+
+/* Thread outline (#989): a closed disclosure everywhere, and on a wide
+   screen a sidebar where `::details-content` lets CSS show a closed
+   <details>. Browsers without it keep the disclosure. */
+.thread-outline ol { margin: 0.5rem 0 1rem; padding: 0; list-style: none; }
+.thread-outline li { margin: 0; padding: 0.15rem 0; list-style: none; font-size: 0.85rem; }
+.thread-outline a { display: flex; align-items: center; min-height: 2.75rem; }
+.thread-outline small { margin-left: 0.4rem; }
+.thread-outline li.here { box-shadow: inset 3px 0 0 var(--mimir-accent); }
+.thread-outline li.here > a { padding-left: 0.5rem; }
+.thread-outline li[data-depth="1"] { padding-left: 0.75rem; }
+.thread-outline li[data-depth="2"] { padding-left: 1.5rem; }
+.thread-outline li[data-depth="3"] { padding-left: 2.25rem; }
+.thread-outline li[data-depth="4"] { padding-left: 3rem; }
+.thread-outline li[data-depth="5"] { padding-left: 3.75rem; }
+.thread-outline li[data-depth="6"] { padding-left: 4.5rem; }
+.thread-outline li[data-depth="7"] { padding-left: 5.25rem; }
+.thread-outline li[data-depth="8"] { padding-left: 6rem; }
+.thread-outline li[data-depth="9"] { padding-left: 6.75rem; }
+.thread-outline li[data-depth="10"] { padding-left: 7.5rem; }
+.thread-outline li[data-depth="11"] { padding-left: 8.25rem; }
+.thread-outline li[data-depth="12"] { padding-left: 9rem; }
+@media (width >= 80rem) {
+  @supports selector(::details-content) {
+    .thread-outline a { min-height: 2rem; }
+    .thread-layout { display: grid; grid-template-columns: 16rem minmax(0, 1fr); gap: 1.5rem; align-items: start; }
+    .thread-aside { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
+    .thread-outline::details-content { content-visibility: visible; }
+    .thread-outline > summary { display: none; }
+  }
+}

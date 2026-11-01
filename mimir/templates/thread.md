@@ -27,7 +27,7 @@
 - {{ synthesis|md_escape }}
 {% endif %}
 - List: {{ inbox_name|md_escape }}
-- {{ total_count }} message{{ '' if total_count == 1 else 's' }}, {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }}
+- {{ total_count }} message{{ '' if total_count == 1 else 's' }}, {{ author_count }} author{{ '' if author_count == 1 else 's' }}
 - Page: {{ canonical_url }}
 {% if prev_page_url %}
 - Previous page: {{ site_base ~ prev_page_url|markdown_path }}

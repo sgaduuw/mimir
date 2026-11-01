@@ -648,3 +648,9 @@ def test_the_patch_index_rules_reach_its_rows_and_not_the_timeline_inside_one():
     for rest in selectors:
         assert rest.startswith(">"), f".patch-index {rest.strip()}"
     assert re.search(r"^\.patch-index > ol > li > a\s*\{", _css(), re.MULTILINE)
+
+
+def test_monospace_text_uses_picos_stack_not_a_typed_out_one():
+    """One monospace stack for the page (`--pico-font-family-monospace`),
+    not three copies of a list of fonts."""
+    assert '"SF Mono"' not in _css()

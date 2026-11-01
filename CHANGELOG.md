@@ -11,6 +11,24 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.39.0] - 2026-11-01
+
+### Added
+
+- The thread page has an outline for a thread of five or more messages (#989): a "Jump to a message" list of the first 200 messages. The cover is one row, the patches are one row, and each reply is a row with its author and date, indented by how deep it sits among the listed replies. A last row says how many are not listed. Each row links to the page and message that hold it. On a phone it is a disclosure above the messages; on a wide screen it is a sidebar where the browser supports it, and the same disclosure elsewhere.
+
+### Changed
+
+- Each message on the thread page leads with its author (#989): an initials avatar, the name, "replied to" the author of the message it answers (a link to that message, on this page or the page that holds it), the date (a link to the message's own page, with the year when it is not the year the thread started) and a `#` permalink. The subject heading shows only where it differs from the thread's after stripping `Re:`. The "N patches" tag is gone; the Series card has the count. The structured-data breadcrumb now follows the visible one: inbox, year, month, thread.
+- On the thread page, a reply whose subject starts with `AW:`, `SV:`, `Antw:` or another localised reply prefix, or a forward of the thread's subject, no longer repeats the thread's title as a heading (#1034). Subjects are compared the way related threads are matched. A forward of something else keeps its heading.
+- Message bodies on the thread and message pages sit on the page instead of a grey box (#1033): monospace text at about 13.5 px with a line height of 1.6, no wider than 80 characters. Quoted text is muted behind a 3 px rule, and the "N more lines" link under a cut block is smaller.
+
+### Fixed
+
+- On the thread page, a "replied to" link, an outline row, a Patches-index link or a message's `#` permalink whose message is already on screen (because "Next" appended the page that holds it) now scrolls to that message instead of loading its page in full, and the address bar names the page that holds it (#1035). A message's permalink and "replied to" link name that page too, so a copied link or one opened in a new tab lands on it. Without JavaScript the link loads the page as before.
+- Stripping reply prefixes from a subject (ingest's `subject_normalized`, and the thread page's heading check) took time quadratic in the number of prefixes: a subject of 300,000 `re: ` took several seconds (4.8 s on one laptop). It is now one pass. The result is unchanged, so no backfill is needed.
+- The header of a thread whose first message has no author says "Started by unknown sender", as that message's card does, instead of "Started on".
+
 ## [3.38.0] - 2026-10-31
 
 ### Changed
