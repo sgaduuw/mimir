@@ -59,11 +59,13 @@ WHO = {
 
 def test_a_reply_names_who_it_answers_and_links_the_card(client, tmp_path):
     seeded = _seed_chat(tmp_path, CHAIN, authors=WHO)
-    html = client.get(seeded["r@x"][1] + "/t").get_data(as_text=True)
+    page1 = seeded["r@x"][1] + "/t"
+    html = client.get(page1).get_data(as_text=True)
     assert _replied_to(_card(html, seeded["r@x"][0])) is None
     for mid, parent in [("a@x", "r@x"), ("b@x", "a@x"), ("c@x", "b@x")]:
         href, name = _replied_to(_card(html, seeded[mid][0]))
-        assert href == f"#m{seeded[parent][0]}", mid
+        # The whole URL even on its own page: see the HTMX slice test.
+        assert href == f"{page1}#m{seeded[parent][0]}", mid
         assert name == WHO[parent].split(" <")[0], mid
 
 
@@ -72,14 +74,15 @@ def test_a_card_leads_with_the_author_a_decorative_avatar_and_two_links(
 ):
     seeded = _seed_chat(tmp_path, CHAIN, authors=WHO)
     aid, url = seeded["a@x"]
-    card = _card(client.get(seeded["r@x"][1] + "/t").get_data(as_text=True), aid)
+    page1 = seeded["r@x"][1] + "/t"
+    card = _card(client.get(page1).get_data(as_text=True), aid)
     head = re.search(r"<header>(.*?)</header>", card, re.DOTALL).group(1)
     assert re.search(r'<span class="avatar" aria-hidden="true">B</span>', head)
     assert re.search(r"<strong>Bob Barker</strong>", head)
     # The date links the message's own page (the crawl path); `#` is the
     # permalink to this card.
     assert re.search(rf'<a class="card-date" href="{re.escape(url)}"><time', head)
-    assert f'<a class="permalink" href="#m{aid}"' in head
+    assert f'<a class="permalink" href="{page1}#m{aid}"' in head
     assert head.index("avatar") < head.index("Bob Barker") < head.index("<time")
 
 
@@ -101,7 +104,7 @@ def test_a_parent_on_another_page_links_to_that_page(client, tmp_path, monkeypat
         "Bob Barker",
     )
     assert _replied_to(_card(html, seeded["c@x"][0])) == (
-        f"#m{seeded['b@x'][0]}",
+        f"{page2}#m{seeded['b@x'][0]}",
         "Cy Young",
     )
     # The HTMX slice carries the same markers for its own articles.
@@ -109,6 +112,40 @@ def test_a_parent_on_another_page_links_to_that_page(client, tmp_path, monkeypat
     assert _replied_to(_card(sliced, seeded["b@x"][0])) == _replied_to(
         _card(html, seeded["b@x"][0])
     )
+
+
+def test_hx_slice_links_name_the_page_that_holds_the_message(
+    client, tmp_path, monkeypatch
+):
+    """An HTMX slice is appended to page 1's document with no URL change,
+    so a bare `#m<id>` in it resolves to page 1. The permalink and a
+    same-page "replied to" must name the page that holds the message (a
+    copied link, or a new-tab click past thread-anchors.js). Written by
+    the 3.39.0 release review, red against the bare fragments."""
+    from urllib.parse import urljoin
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_chat(tmp_path, CHAIN, authors=WHO)
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        root = s.get(Article, seeded["r@x"][0])
+        page1 = "http://localhost" + thread_page_url(root.id, root.date, "alpha", 1)
+        page2 = thread_page_url(root.id, root.date, "alpha", 2)
+    # Precondition: page 1 holds r and a, page 2 holds b and c.
+    assert f'id="m{seeded["b@x"][0]}"' not in client.get(page1).get_data(as_text=True)
+    sliced = client.get(page2, headers={"HX-Request": "true"}).get_data(as_text=True)
+    on_page2 = {str(seeded["b@x"][0]), str(seeded["c@x"][0])}
+    checked = 0
+    for mid in ("b@x", "c@x"):
+        for href in re.findall(r'href="([^"]*#m\d+)"', _card(sliced, seeded[mid][0])):
+            target = href.rsplit("#m", 1)[1]
+            holder = "http://localhost" + page2 if target in on_page2 else page1
+            assert urljoin(page1, href) == f"{holder}#m{target}", (mid, href)
+            checked += 1
+    # b: permalink + replied-to a (page 1); c: permalink + replied-to b (page 2).
+    assert checked == 4
 
 
 def test_no_marker_for_an_unknown_parent_or_a_self_parent(client, tmp_path):
@@ -299,7 +336,7 @@ def test_a_message_landing_earlier_moves_an_off_page_parent_s_link_and_the_etag(
         s.commit()
     after = client.get(page2)
     link_after = _replied_to(_card(after.get_data(as_text=True), seeded["b@x"][0]))
-    assert link_after[0] == parent_a  # a moved onto this page
+    assert link_after[0] == page2 + parent_a  # a moved onto this page
     assert after.headers["ETag"] != before.headers["ETag"]
 
 
