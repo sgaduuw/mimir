@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- On the thread page, a revision link (in the root's Revisions and in each patch's in the Patches index) opens the revision on the thread page that holds it, at that message, instead of on its message page, so switching revisions stays in the thread view. A revision whose thread cannot be ranked yet still links its message page. The message page's revision links are unchanged.
+
 ## [3.39.0] - 2026-11-01
 
 ### Added
