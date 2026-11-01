@@ -110,14 +110,18 @@ def _revision_hrefs(session, entries, *, cap, current, ordered_rows) -> dict[int
     (`index // cap + 1`, the Patches index's rank), in its canonical inbox,
     like the message page's canonical. One statement for the revisions, two
     per inbox for `unmaterialised_roots` (batched), and one `thread_rows`
-    per OTHER thread (usually one per version), never one per revision;
-    `current` (`(inbox_id, root_id)`) reuses `ordered_rows`.
+    per other thread that holds a revision below its root (usually one per
+    version). A revision that is its own root, which is every revision of a
+    version posted unthreaded, is on page 1 (`thread_page_of`) and reads
+    nothing more. `current` (`(inbox_id, root_id)`) reuses `ordered_rows`.
 
     A revision whose thread is not materialised, or not ranked, gets no
-    entry and keeps its message-page link. Another thread's ranks are not
-    in this page's validator: a revision's page there moves only when an
-    earlier-dated message joins ahead of it (the cap is in the ETag), and
-    reading those threads on every 304 is not worth that rare stale link.
+    entry and keeps its message-page link. Another thread's state is not in
+    this page's validator, so a cached link there goes stale when an
+    earlier-dated message joins ahead of the revision, or when that thread
+    is re-rooted (a late parent arrives); the cap is in the ETag. Reading
+    those threads on every 304 is not worth that rare stale link, which
+    lands on a page of the right thread (a re-rooted `/t` redirects).
     """
     ids = {e.article_id for e in entries if not e.is_current} | {
         r.article_id for e in entries for r in e.reposts if not r.is_current
@@ -129,9 +133,11 @@ def _revision_hrefs(session, entries, *, cap, current, ordered_rows) -> dict[int
     # applies for the revision's message-page URL.
     links: dict[int, list] = defaultdict(list)
     canonical_id: dict[int, int | None] = {}
-    for rev_id, root_id, canon, box in session.execute(
+    rev_rows = {}
+    for row in session.execute(
         select(
-            ArticleList.article_id,
+            Article.id,
+            Article.date,
             ArticleList.thread_root_id,
             Article.canonical_inbox_id,
             Inbox,
@@ -140,8 +146,10 @@ def _revision_hrefs(session, entries, *, cap, current, ordered_rows) -> dict[int
         .join(Inbox, Inbox.id == ArticleList.inbox_id)
         .where(ArticleList.article_id.in_(ids))
     ):
-        links[rev_id].append((box, root_id))
-        canonical_id[rev_id] = canon
+        rev_id, box = row.id, row.Inbox
+        links[rev_id].append((box, row.thread_root_id))
+        canonical_id[rev_id] = row.canonical_inbox_id
+        rev_rows[rev_id] = row
     by_thread: dict[tuple, list[int]] = defaultdict(list)
     inboxes = {}
     for rev_id, rev_links in links.items():
@@ -170,6 +178,9 @@ def _revision_hrefs(session, entries, *, cap, current, ordered_rows) -> dict[int
             rows = ordered_rows
         elif (inbox_id, root_id) in unranked:
             continue
+        elif rev_ids == [root_id]:
+            # A root sorts first (`_thread_order`): page 1, no read.
+            rows = [rev_rows[root_id]]
         else:
             rows = thread_rows(session, inboxes[inbox_id], root_id)
         index = {row.id: i for i, row in enumerate(rows)}
