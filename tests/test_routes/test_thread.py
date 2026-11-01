@@ -2433,9 +2433,10 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # outline and one page.
 # Revision links on `/t` name the thread page holding each revision: one
 # statement for the revisions' links, two for `unmaterialised_roots` per
-# inbox, and one `thread_rows` per other thread; here the v1 cover is one
-# other thread, so four more on the 200 only: 39/17.
-THREAD_VIEW_STATEMENTS_200 = 39
+# inbox, and one `thread_rows` per other thread holding a revision below
+# its root. Here the v1 cover is its own root (page 1, no read), so three
+# more on the 200 only: 38/17.
+THREAD_VIEW_STATEMENTS_200 = 38
 THREAD_VIEW_STATEMENTS_304 = 17
 
 

@@ -685,7 +685,7 @@ def test_revision_links_on_t_open_the_thread_page_that_holds_the_revision(
         assert re.fullmatch(r"m\d+", anchor), link
         r = client.get(path)
         assert r.status_code == 200, (link, r.status_code)
-        assert "/t" in path, link
+        assert re.search(r"/t(/\d+)?$", path), link
         assert f'id="{anchor}"' in r.get_data(as_text=True), link
         pages.add(path)
     # Precondition: the v1 thread spans pages, and the links follow.
@@ -715,6 +715,8 @@ def test_a_revision_in_an_unranked_thread_keeps_its_message_page_link(client, tm
     page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
     links = re.findall(r'<a class="rev-label" href="([^"]+)"', page)
     assert len(links) == 4, links  # precondition: every fold still renders
-    assert all("/t" not in link and "#" not in link for link in links), links
+    assert not any("#" in link or re.search(r"/t(/\d+)?$", link) for link in links), (
+        links
+    )
     for link in links:
         assert client.get(link).status_code == 200, link
