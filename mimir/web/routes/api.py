@@ -21,6 +21,7 @@ from mimir.store import MessageNotFound, read_message
 from mimir.subsystems import related_patches
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _redact_trailer_address
+from mimir.web.routes._message_metadata import message_metadata
 from mimir.web.routes._validators import allowlist_tag
 from mimir.web.routes.dashboards import RECENT_PAGE_SIZE, _fetch_recent
 from mimir.web.urls import _get_inbox_or_404
@@ -151,4 +152,34 @@ def api_message_body(inbox_name: str, article_id: int):
     # A fragment is not a page: nothing to index, and /api/ is
     # robots-disallowed already.
     response.headers["X-Robots-Tag"] = "noindex"
+    return response
+
+
+@bp_web.route("/api/<inbox_name>/metadata/<int:article_id>")
+def api_message_metadata(inbox_name: str, article_id: int):
+    """Per-message status and related content, requested from `/t`.
+
+    HTTP caching is disabled: related threads and wall-clock activity are
+    deliberately outside the parent page's validator. Real links keep this
+    available without JavaScript and for single-message threads too.
+    """
+    with SessionLocal() as session:
+        inbox = _get_inbox_or_404(session, inbox_name)
+        article = session.scalar(
+            select(Article)
+            .join(ArticleList, ArticleList.article_id == Article.id)
+            .where(
+                Article.id == article_id,
+                ArticleList.inbox_id == inbox.id,
+            )
+        )
+        if article is None:
+            abort(404)
+        response = Response(
+            render_template(
+                "_message_metadata.html", **message_metadata(session, inbox, article)
+            )
+        )
+    response.headers["X-Robots-Tag"] = "noindex"
+    response.headers["Cache-Control"] = "no-store"
     return response

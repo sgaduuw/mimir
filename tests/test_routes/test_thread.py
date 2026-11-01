@@ -1,6 +1,7 @@
 """Tests for mimir/web/routes/thread.py: the whole-thread view, plus
 the message page's canonical consolidation onto it."""
 
+import html as html_lib
 import json
 import re
 from datetime import UTC
@@ -13,6 +14,7 @@ from tests.test_routes._helpers import (
     _clear_sitemap_cache,
     _ingest_one_article,
     _json_ld_blocks,
+    _metadata_url,
     _seed_three_message_thread,
     seed_thread_shape,
 )
@@ -199,7 +201,7 @@ def test_message_pages_canonicalise_to_the_thread_view(client, tmp_path):
 
 
 @pytest.mark.parametrize("inbox_name", ["alpha", "beta"])
-def test_flat_view_link_reaches_the_message_page(
+def test_whole_thread_link_reaches_the_page_holding_the_message(
     client, tmp_path, monkeypatch, inbox_name
 ):
     """The real link follows canonical inbox and page selection, including replies."""
@@ -217,10 +219,11 @@ def test_flat_view_link_reaches_the_message_page(
         response = client.get(url.replace("/alpha/", f"/{inbox_name}/"))
         assert response.status_code == 200
         link = re.search(
-            r'<a href="([^"]+)">flat view</a>', response.get_data(as_text=True)
+            r'<a class="whole-thread" href="([^"]+)">Read the whole thread, [^<]*</a>',
+            response.get_data(as_text=True),
         )
-        assert link, "message page lost its flat-view link"
-        assert link.group(1) == destination
+        assert link, "message page lost its whole-thread link"
+        assert html_lib.unescape(link.group(1)) == destination + f"#m{article_id}"
         thread = client.get(destination)
         assert thread.status_code == 200
         assert f'id="m{article_id}"' in thread.get_data(as_text=True)
@@ -1135,9 +1138,13 @@ def test_newer_revision_renders_the_superseded_pill(client, tmp_path):
         s.commit()
     _prepare_series(seeded)
     _mutate_series(seeded)
-    html = client.get(seeded["root@x"][1]).get_data(as_text=True)
-    assert "Superseded by v2 posted" in html
-    assert re.search(r"\bSUPERSEDED\b", html)
+    root_url = seeded["root@x"][1]
+    for destination in [root_url + "/t", _metadata_url(root_url)]:
+        response = client.get(destination)
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "Superseded by v2 posted" in html
+        assert re.search(r"\bSUPERSEDED\b", html)
 
 
 # Each case is (label, prepare | None, mutate). Every mutation changes
@@ -1227,7 +1234,7 @@ def test_render_state_moves_the_etag_on_both_surfaces(client, tmp_path, surface,
     )
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
     """The body must show the state the validator was minted from.
 
@@ -1252,7 +1259,7 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         # Pills render only on patches, keyed off a `[PATCH ...]` subject.
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
@@ -1288,7 +1295,7 @@ def test_etag_page_does_not_render_a_cached_pill(client, tmp_path, surface):
     assert "LANDED" in html
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_tree_display_name_moves_the_etag(client, tmp_path, monkeypatch, surface):
     """`TREES__<name>__DISPLAY_NAME` feeds "Queued in <label>". A
     restart with a new label keeps the version, so only the validator
@@ -1301,7 +1308,7 @@ def test_tree_display_name_moves_the_etag(client, tmp_path, monkeypatch, surface
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -1309,11 +1316,12 @@ def test_tree_display_name_moves_the_etag(client, tmp_path, monkeypatch, surface
     before = client.get(url)
     monkeypatch.setattr(settings.trees["linux-next"], "display_name", "next tree")
     after = client.get(url)
-    assert before.headers["ETag"] != after.headers["ETag"]
+    if surface != "metadata":
+        assert before.headers["ETag"] != after.headers["ETag"]
     assert "Queued in next tree" in after.get_data(as_text=True)
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_repeat_request_reuses_the_cached_pill(client, tmp_path, monkeypatch, surface):
     """The pill is cached because computing it walks the whole thread
     (about 120 ms on the largest one). A second request under the same
@@ -1326,7 +1334,7 @@ def test_repeat_request_reuses_the_cached_pill(client, tmp_path, monkeypatch, su
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -1343,7 +1351,8 @@ def test_repeat_request_reuses_the_cached_pill(client, tmp_path, monkeypatch, su
     assert computed, "precondition: the first request computes the pill"
     computed.clear()
     second = client.get(url)
-    assert second.headers["ETag"] == first.headers["ETag"]  # precondition
+    if surface != "metadata":
+        assert second.headers["ETag"] == first.headers["ETag"]  # precondition
     assert computed == [], f"{surface} recomputed the pill under an unchanged ETag"
 
 
@@ -1353,7 +1362,7 @@ def _synthesis(html: str) -> str:
     return m.group(1) if m else ""
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, surface):
     """The patch-state card was cached by article id, out of the
     validator's sight: after a landing the page carried a new ETag and a
@@ -1370,7 +1379,7 @@ def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, s
         tmp_path, "alpha", [("root@x", None), ("reply@x", "root@x")]
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.add(
@@ -1400,7 +1409,8 @@ def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, s
         )
         s.commit()
     second = client.get(url)
-    assert second.headers["ETag"] != first.headers["ETag"]  # precondition
+    if surface != "metadata":
+        assert second.headers["ETag"] != first.headers["ETag"]  # precondition
     html = second.get_data(as_text=True)
     assert re.search(r"\bLANDED\b", html)  # precondition: pill is current
     assert re.match(r"Landed in mainline as c{12}\b", _synthesis(html)), _synthesis(
@@ -1408,7 +1418,7 @@ def test_etag_page_does_not_render_a_cached_landing_sentence(client, tmp_path, s
     )
 
 
-@pytest.mark.parametrize("surface", ["message", "thread", "thread_md"])
+@pytest.mark.parametrize("surface", ["metadata", "thread", "thread_md"])
 @pytest.mark.parametrize(
     "case", _RENDER_STATE_CASES, ids=[c[0] for c in _RENDER_STATE_CASES]
 )
@@ -1435,7 +1445,7 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
     )
     root_id, root_url = seeded["root@x"]
     url = {
-        "message": root_url,
+        "metadata": _metadata_url(root_url),
         "thread": root_url + "/t",
         "thread_md": root_url + "/t.md",
     }[surface]
@@ -1452,7 +1462,8 @@ def test_body_under_new_etag_matches_a_cold_render(client, tmp_path, surface, ca
         s.execute(delete(CacheEntry))
         s.commit()
     cold = client.get(url)
-    assert warm.headers["ETag"] == cold.headers["ETag"]  # precondition
+    if surface != "metadata":
+        assert warm.headers["ETag"] == cold.headers["ETag"]  # precondition
 
     def norm(h: str) -> str:
         return re.sub(r'nonce="[^"]*"', 'nonce=""', h)
@@ -1472,7 +1483,7 @@ def _activity(html: str) -> str:
     return m.group(1) if m else ""
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
     client, tmp_path, surface
 ):
@@ -1493,7 +1504,7 @@ def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
     )
     root_id, root_url = seeded["root@x"]
     reply_id, _ = seeded["reply@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -1505,12 +1516,14 @@ def test_reply_does_not_leave_a_cached_activity_chip_under_the_new_etag(
         s.commit()
 
     warm = client.get(url)
-    assert warm.headers["ETag"] != first.headers["ETag"]  # precondition
+    if surface != "metadata":
+        assert warm.headers["ETag"] != first.headers["ETag"]  # precondition
     with SessionLocal() as s:
         s.execute(delete(CacheEntry))
         s.commit()
     cold = client.get(url)
-    assert cold.headers["ETag"] == warm.headers["ETag"]  # precondition
+    if surface != "metadata":
+        assert cold.headers["ETag"] == warm.headers["ETag"]  # precondition
     assert _activity(cold.get_data(as_text=True)) == "hot"  # precondition
     assert _activity(warm.get_data(as_text=True)) == "hot", (
         f"{surface}: cached pre-reply chip served under the post-reply ETag"
@@ -1546,7 +1559,7 @@ def _add_reply(inbox_name, message_id, parent, date=None):
         s.commit()
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
     """The chip reads this inbox's thread, as the ETag does (#676). A
     reply in ANOTHER inbox moves neither; a reply in this one moves both,
@@ -1557,7 +1570,7 @@ def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -1567,15 +1580,17 @@ def test_chip_and_etag_move_together_on_replies(client, tmp_path, surface):
     _add_reply("beta", "offlist-reply@x", "root@x")
     off = client.get(url)
     assert _activity(off.get_data(as_text=True)) == "dormant"
-    assert off.headers["ETag"] == first.headers["ETag"]
+    if surface != "metadata":
+        assert off.headers["ETag"] == first.headers["ETag"]
 
     _add_reply("alpha", "inlist-reply@x", "root@x")
     on = client.get(url)
     assert _activity(on.get_data(as_text=True)) == "hot"
-    assert on.headers["ETag"] != first.headers["ETag"]
+    if surface != "metadata":
+        assert on.headers["ETag"] != first.headers["ETag"]
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_sibling_thread_does_not_move_the_chip_under_the_etag(
     client, tmp_path, surface
 ):
@@ -1592,7 +1607,7 @@ def test_sibling_thread_does_not_move_the_chip_under_the_etag(
         tmp_path, "alpha", [("p1@x", "cover@x"), ("p2@x", "cover@x")]
     )
     p1_id, p1_url = seeded["p1@x"]
-    url = p1_url if surface == "message" else p1_url + "/t"
+    url = _metadata_url(p1_url) if surface == "metadata" else p1_url + "/t"
     with SessionLocal() as s:
         s.get(Article, p1_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -1603,11 +1618,12 @@ def test_sibling_thread_does_not_move_the_chip_under_the_etag(
     _add_reply("alpha", "p2-reply@x", "p2@x")
 
     after = client.get(url)
-    assert after.headers["ETag"] == first.headers["ETag"]  # precondition
+    if surface != "metadata":
+        assert after.headers["ETag"] == first.headers["ETag"]  # precondition
     assert _activity(after.get_data(as_text=True)) == "dormant"
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_chip_counts_own_replies_below_an_off_inbox_parent(client, tmp_path, surface):
     """top (alpha) <- mid (beta only) <- leaf (alpha). In alpha, leaf is
     its own thread and its page shows the fresh reply, so the chip is hot.
@@ -1622,7 +1638,7 @@ def test_chip_counts_own_replies_below_an_off_inbox_parent(client, tmp_path, sur
         tmp_path, "alpha", [("top@x", None), ("leaf@x", "mid@x")]
     )
     leaf_id, leaf_url = seeded["leaf@x"]
-    url = leaf_url if surface == "message" else leaf_url + "/t"
+    url = _metadata_url(leaf_url) if surface == "metadata" else leaf_url + "/t"
     with SessionLocal() as s:
         s.get(Article, leaf_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -1632,7 +1648,7 @@ def test_chip_counts_own_replies_below_an_off_inbox_parent(client, tmp_path, sur
     assert _activity(client.get(url).get_data(as_text=True)) == "hot"
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_rebased_subsystem_row_below_the_max_moves_the_etag(client, tmp_path, surface):
     """Queued in mm (older) and linux-next (newer); mm rebases to a new
     sha still older than linux-next's row. The tree list and the newest
@@ -1648,7 +1664,7 @@ def test_rebased_subsystem_row_below_the_max_moves_the_etag(client, tmp_path, su
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("root@x", None)])
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.add(
@@ -1684,9 +1700,10 @@ def test_rebased_subsystem_row_below_the_max_moves_the_etag(client, tmp_path, su
         s.commit()
     second = client.get(url)
     assert "333333333333" in second.get_data(as_text=True)  # precondition
-    assert second.headers["ETag"] != first.headers["ETag"], (
-        f"{surface}: body moved, ETag did not"
-    )
+    if surface != "metadata":
+        assert second.headers["ETag"] != first.headers["ETag"], (
+            f"{surface}: body moved, ETag did not"
+        )
 
 
 def test_a_self_parented_message_names_a_thread_view_that_holds_it_once(
@@ -2180,7 +2197,7 @@ def _get(client, url):
     return r
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_newest_revision_renumbered_in_place_moves_the_etag(client, tmp_path, surface):
     """Root v1 is superseded by v9 and v10; a reprocess renumbers v10 to
     v11. Count stays 3 and text max stays "v9"; the tooltip changes."""
@@ -2193,7 +2210,7 @@ def test_newest_revision_renumbered_in_place_moves_the_etag(client, tmp_path, su
         [("root@x", None), ("nine@x", "root@x"), ("ten@x", "root@x")],
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -2205,12 +2222,13 @@ def test_newest_revision_renumbered_in_place_moves_the_etag(client, tmp_path, su
     after = _get(client, url)
     # Precondition: the change is visible in the body.
     assert re.search(r"Superseded by v11 posted", after.get_data(as_text=True))
-    assert before.headers["ETag"] != after.headers["ETag"], (
-        f"{surface}: tooltip moved v10 -> v11 under an unchanged ETag"
-    )
+    if surface != "metadata":
+        assert before.headers["ETag"] != after.headers["ETag"], (
+            f"{surface}: tooltip moved v10 -> v11 under an unchanged ETag"
+        )
 
 
-@pytest.mark.parametrize("surface", ["message", "thread"])
+@pytest.mark.parametrize("surface", ["metadata", "thread"])
 def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
     """Root v10 with a sibling v2 is current. A reprocess renumbers the
     root to v1, so v2 now supersedes it. Count stays 2 and text max of
@@ -2222,7 +2240,7 @@ def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
         tmp_path, "alpha", [("root@x", None), ("other@x", "root@x")]
     )
     root_id, root_url = seeded["root@x"]
-    url = root_url if surface == "message" else root_url + "/t"
+    url = _metadata_url(root_url) if surface == "metadata" else root_url + "/t"
     with SessionLocal() as s:
         s.get(Article, root_id).subject = "[PATCH] foo: bar"
         s.commit()
@@ -2233,9 +2251,10 @@ def test_superseded_flip_in_place_moves_the_etag(client, tmp_path, surface):
     _set_versions(seeded, {"root@x": "v1"})
     after = _get(client, url)
     assert re.search(r"\bSUPERSEDED\b", after.get_data(as_text=True))
-    assert before.headers["ETag"] != after.headers["ETag"], (
-        f"{surface}: pill flipped to SUPERSEDED under an unchanged ETag"
-    )
+    if surface != "metadata":
+        assert before.headers["ETag"] != after.headers["ETag"], (
+            f"{surface}: pill flipped to SUPERSEDED under an unchanged ETag"
+        )
 
 
 @pytest.mark.parametrize("v1_position", [None, 0])
@@ -2259,10 +2278,16 @@ def test_fold_diff_link_resolves_for_a_null_position_cover(
             a.patch_series_version = version
             a.patch_series_position = position
         s.commit()
-    page = client.get(seeded["v1@x"][1]).get_data(as_text=True)
-    links = re.findall(r'href="([^"]*/series/[^"]*)"', page)
-    assert len(links) == 1, links  # precondition: the fold links v2
-    assert client.get(htmllib.unescape(links[0])).status_code == 200
+    root_url = seeded["v1@x"][1]
+    for destination in [root_url + "/t", _metadata_url(root_url)]:
+        response = client.get(destination)
+        assert response.status_code == 200
+        page = response.get_data(as_text=True)
+        links = re.findall(r'href="([^"]*/series/[^"]*)"', page)
+        assert len(links) == 1, links  # precondition: the fold links v2
+        link = htmllib.unescape(links[0])
+        assert "from=v1&to=v2&pos=cover" in link
+        assert client.get(link).status_code == 200
 
 
 def test_thread_view_links_the_series_diff_through_the_revisions_fold(client, tmp_path):
@@ -2395,12 +2420,12 @@ def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(
     assert pairs == [None, None, None, ("v1", "v2"), ("v2", "v3")]
 
 
-def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
+def test_thread_revisions_are_open_and_per_message_details_keep_their_fold(
     client, tmp_path
 ):
     """#844: on `/t` the revisions are visible without a click, since the
-    series diff is the most original page mimir serves. The message page
-    keeps its fold closed."""
+    series diff is the most original page mimir serves. Per-message
+    metadata keeps its fold closed; the lean reader has no revisions."""
     seeded = _seed_cover_series(tmp_path, "d" * 40, ["v1", "v2"])
     url = seeded["c1@x"][1]
 
@@ -2412,7 +2437,9 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
     assert re.search(
         r"\sopen\b", fold_tag(client.get(url + "/t").get_data(as_text=True))
     )
-    assert not re.search(r"\sopen\b", fold_tag(client.get(url).get_data(as_text=True)))
+    assert 'class="revisions-fold"' not in client.get(url).get_data(as_text=True)
+    details = client.get(_metadata_url(url)).get_data(as_text=True)
+    assert not re.search(r"\sopen\b", fold_tag(details))
 
 
 # Statements one `/t` request runs for a two-revision cover with one
@@ -2436,14 +2463,17 @@ def test_the_thread_view_shows_the_revisions_open_and_the_message_page_folded(
 # inbox, and one `thread_rows` per other thread holding a revision below
 # its root. Here the v1 cover is its own root (page 1, no read), so three
 # more on the 200 only: 38/17.
-THREAD_VIEW_STATEMENTS_200 = 38
-THREAD_VIEW_STATEMENTS_304 = 17
+# #990 adds one indexed revision_groups_tag batch read before the validator
+# on both responses, covering nested-series timelines too: 39/18.
+THREAD_VIEW_STATEMENTS_200 = 39
+THREAD_VIEW_STATEMENTS_304 = 18
 
 
-def test_thread_view_statement_budget(client, tmp_path):
+def test_thread_view_statement_budget(client, tmp_path, monkeypatch):
     from sqlalchemy import event
 
     from mimir.extensions import engine
+    from mimir.web.routes import thread as thread_route
 
     seeded = _seed_cover_series(tmp_path, "e" * 40, ["v1", "v2"])
     url = seeded["c1@x"][1] + "/t"
@@ -2452,6 +2482,16 @@ def test_thread_view_statement_budget(client, tmp_path):
     def grab(conn, cursor, statement, parameters, context, executemany):
         statements.append(statement)
 
+    revision_reads = []
+    real_revision_groups_tag = thread_route.revision_groups_tag
+
+    def record_revision_reads(session, groups):
+        start = len(statements)
+        result = real_revision_groups_tag(session, groups)
+        revision_reads.append(statements[start:])
+        return result
+
+    monkeypatch.setattr(thread_route, "revision_groups_tag", record_revision_reads)
     event.listen(engine, "before_cursor_execute", grab)
     try:
         full = _get(client, url)
@@ -2468,6 +2508,13 @@ def test_thread_view_statement_budget(client, tmp_path):
         THREAD_VIEW_STATEMENTS_200,
         THREAD_VIEW_STATEMENTS_304,
     )
+
+    assert len(revision_reads) == 2
+    for reads in revision_reads:
+        assert len(reads) == 1, reads
+        assert "LEFT OUTER JOIN article_lists" in reads[0]
+        assert "articles.patch_series_key = ?" in reads[0]
+        assert "articles.canonical_inbox_id" in reads[0]
 
 
 def test_thread_view_renders_a_genuine_single_message_thread(client, tmp_path):

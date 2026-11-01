@@ -900,3 +900,9 @@ def _seed_resends(inbox_names_per_article):
             articles.append(art)
         s.commit()
     return articles
+
+
+def _metadata_url(message_url: str) -> str:
+    """The independently requested metadata reached from a thread card."""
+    inbox, _year, _month, article_id = message_url.strip("/").split("/")
+    return f"/api/{inbox}/metadata/{article_id}"

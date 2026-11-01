@@ -1,6 +1,4 @@
-"""The message detail page: thread tree + body + headers + attachments +
-subsystem header + related patches + mainline applications + patch-
-series timeline.
+"""The lean message reader: headers, body, attachments and reply tree.
 
 This is the densest read path in the app; everything happens inside
 one SessionLocal so the render hits a single DB connection. The
@@ -13,27 +11,22 @@ import hashlib
 import logging
 
 from flask import Response, abort, make_response, redirect, render_template, request
-from sqlalchemy import exists, select
-from sqlalchemy.orm import aliased
+from sqlalchemy import select
 
 import mimir
 from mimir.canonical import extract_list_addresses
 from mimir.config import settings
 from mimir.extensions import SessionLocal
-from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import (
     Article,
-    ArticleFile,
     ArticleList,
     Inbox,
 )
 from mimir.msgid_url import msgid_from_url
-from mimir.patch_state import patch_state_for_article
-from mimir.related import is_bot_sender, related_discussions
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
-from mimir.subsystems import related_patches, subsystems_for_article
+from mimir.subsystems import subsystems_for_article
 from mimir.threading import (
     ThreadNode,
     dedupe_thread,
@@ -323,6 +316,9 @@ def message(
                 else thread_page_of(session, inbox.id, root.id, article, cap),
             )
 
+        if thread_more_url is None and root.date is not None:
+            thread_more_url = thread_page_url(root.id, root.date, inbox.name)
+
         # Conditional-GET (ETag) for the message page. Inputs:
         # - article.id: invariant for the resource itself.
         # - mimir.__version__: invalidates every cached page on deploy so
@@ -336,15 +332,11 @@ def message(
         # - membership source and window flag: whether the column may
         #   answer for this thread, and so whether it renders whole or
         #   windowed (#798). The cap below is the window's threshold too.
-        # - render state tag: everything this page renders ABOUT the
-        #   article that neither its id nor the thread's shape covers,
-        #   i.e. the subsystem line, lifecycle badge, review roll-up
-        #   and revisions fold. All four move on their own schedules
-        #   (a landing, a MAINTAINERS reparse every 10 minutes, a new
-        #   trailer, a v2 posting) without adding a message to the
-        #   thread, so without this input the whole derived half of
-        #   the page is pinned at the edge and in every crawler until
-        #   an unrelated reply happens to land.
+        # - render state tag: retained conservatively after #990. The
+        #   visible status panels moved to /t, but subsystem attribution
+        #   still feeds JSON-LD and the HTMX OOB nav, and the allowlist
+        #   still controls redaction. Removing the whole tag would pin
+        #   those remaining outputs behind stale 304s.
         # - HX-Request flag: the partial response (`_message_body.html`)
         #   is a strict subset of the full response, so the two variants
         #   need distinct ETags. Companion `Vary: HX-Request` header is
@@ -377,10 +369,8 @@ def message(
         # revalidate; the 304 path skips the body fetch + render entirely.
         hx_request = request.headers.get("HX-Request") == "true"
         state_tag = render_state_tag(session, article.id, article.message_id)
-        # Split so the ETag is the content part plus the representation
-        # (full, htmx or markdown); the pill and card caches key by the
-        # content part, so all representations share one entry. Same
-        # shape as the thread view.
+        # Full HTML, HTMX and Markdown remain distinct representations.
+        # Derived cards no longer render here (#990).
         content_input = (
             f"{article.id}|{mimir.__version__}|"
             f"{settings.thread_view_render_cap}|"
@@ -391,7 +381,6 @@ def message(
             f"{canonical_url or ''}|"
             f"{','.join(name for _, name in all_links)}"
         )
-        content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         representation = "md" if markdown else "hx" if hx_request else "full"
         etag_input = f"{content_input}|{representation}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
@@ -459,95 +448,6 @@ def message(
         # The window's rows include gap rows; everything below that
         # asks about messages asks about these.
         thread_nodes = [n for n in thread if isinstance(n, ThreadNode)]
-        thread_ids = {n.id for n in thread_nodes}
-
-        # Non-patch gate for the related-discussions panel (#71):
-        # a thread counts as a patch thread when ANY of its articles
-        # touches files. Rides the (article_id, path) PK. A window shows
-        # part of the thread, so it asks the column about all of it.
-        if window is not None:
-            patch_probe = (
-                select(ArticleFile.article_id)
-                .join(ArticleList, ArticleList.article_id == ArticleFile.article_id)
-                .where(
-                    ArticleList.inbox_id == inbox.id,
-                    ArticleList.thread_root_id == root.id,
-                )
-            )
-        else:
-            patch_probe = select(ArticleFile.article_id).where(
-                ArticleFile.article_id.in_(list(thread_ids))
-            )
-        is_patch_thread = session.execute(patch_probe.limit(1)).first() is not None
-
-        # A bot-authored root (syzbot, kernel test robot, tip-bot)
-        # shows no panel: the non-patch population is dominated by
-        # bot reports whose related matches are low-value (#71).
-        # Gated before compute like is_patch_thread so suppressed
-        # roots don't enter the empty-rate metric.
-        is_bot_root = is_bot_sender(root.author)
-
-        related_threads: list = []
-        if not is_patch_thread and not is_bot_root:
-            # Best-effort: a panel bug must never 500 a message view.
-            # ERROR (not warning) so a broken scorer stays loud.
-            try:
-                related_threads = related_discussions(
-                    session,
-                    inbox,
-                    root_id=root.id,
-                    # A window's ids are enough: candidates are filtered
-                    # by these only after the SQL limit, and any from the
-                    # rest of the thread collapse onto `root_id`, which
-                    # the panel drops.
-                    thread_article_ids=thread_ids,
-                    thread_authors=(
-                        set(agg.authors)
-                        if window is not None
-                        else {n.author for n in thread_nodes if n.author}
-                    ),
-                )
-            except Exception:
-                logger.exception(
-                    "related-discussions failed for %s/%s",
-                    inbox.name,
-                    article.id,
-                )
-
-        # Same-subject orphans within this inbox.
-        related: list[Article] = []
-        if parent_off_list and article.subject_normalized and is_patch_thread:
-            # Excluded through the column for a window, which shows only
-            # part of the thread; an IN list of every member's
-            # Message-ID was also one bound parameter per message.
-            # NOT EXISTS on its own alias, not a second predicate on the
-            # joined row: that one drives the plan from
-            # `ix_article_lists_inbox_id`, the whole inbox, instead of
-            # the subject index. The alias also stops `exists()`
-            # correlating to the outer `article_lists`.
-            member = aliased(ArticleList)
-            not_in_thread = (
-                ~exists().where(
-                    member.article_id == Article.id,
-                    member.inbox_id == inbox.id,
-                    member.thread_root_id == root.id,
-                )
-                if window is not None
-                else Article.message_id.not_in({n.message_id for n in thread_nodes})
-            )
-            related = list(
-                session.execute(
-                    select(Article)
-                    .join(ArticleList, ArticleList.article_id == Article.id)
-                    .where(
-                        ArticleList.inbox_id == inbox.id,
-                        Article.subject_normalized == article.subject_normalized,
-                        not_in_thread,
-                    )
-                    .order_by(Article.date.desc().nulls_last())
-                    .limit(5)
-                ).scalars()
-            )
 
         # Build URLs for thread nodes (avoids per-node template logic).
         thread_urls = {
@@ -685,38 +585,38 @@ def message(
             else None
         )
 
-        # Subsystem header + related patches + mainline applications +
-        # patch-series timeline. Inlined into the route's main session
-        # so a single connection covers the whole render, opening a
-        # second SessionLocal here previously cost an extra connect /
-        # WAL-snapshot acquire per message page.
-        # Cached by id for 5 minutes; shared with the thread page's
-        # per-patch fragment (#989).
-        patches_touching = related_patches(session, article.id)
-        # Per-patch state card (#208): consolidates trailer roll-up,
-        # mainline-landing record, patch-series timeline + per-revision
-        # diff links, and thread-activity summary into one card. The
-        # helper subsumes the prior `mainline_applications` query and
-        # the `patch_series_revisions` block; both `mainline_commits`
-        # and the chained-selectinload `patch_series_key` query now
-        # live in `mimir.patch_state` for one-place ownership.
-        patch_state = patch_state_for_article(
-            session,
-            article,
-            # `_days_since_last_reply` reduces this to the newest date
-            # later than the article's, which is the thread's maximum.
-            thread_dates=[thread_max_date],
-            subsystem_ids=[s.id for s in subsystem_hits],
-            inbox_name=inbox.name,
-            state_key=content_key,
+        position = next(
+            (i for i, node in enumerate(thread_nodes) if node.id == article.id),
+            None,
         )
-
-        # Keyed by the ETag's content part, like the card above: a cached
-        # pill is reused only while that part is unchanged.
-        lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [article.id], inbox.id, state_key=content_key
+        previous_url = (
+            thread_urls[thread_nodes[position - 1].message_id]
+            if position is not None and position > 0 and article.id != root.id
+            else None
         )
-        lifecycle_status = lifecycle_status_by_id.get(article.id)
+        next_url = (
+            thread_urls[thread_nodes[position + 1].message_id]
+            if position is not None and position + 1 < len(thread_nodes)
+            else None
+        )
+        parent = next(
+            (node for node in thread_nodes if node.message_id == article.thread_parent),
+            None,
+        )
+        thread_link_url = thread_view_url
+        if thread_link_url is None and root.date is not None:
+            # A repair fallback still has a thread view; only its canonical
+            # claim is withheld. Keep the reading path available.
+            thread_link_url = thread_page_url(
+                root.id,
+                root.date,
+                inbox.name,
+                thread_page_of(session, inbox.id, root.id, article, cap)
+                if thread_rooted
+                else 1,
+            )
+        if thread_link_url:
+            thread_link_url += f"#m{article.id}"
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = (
@@ -753,21 +653,20 @@ def message(
             hidden_replies=window.hidden_replies if window is not None else {},
             thread_urls=thread_urls,
             parent_url=parent_url,
+            parent=parent,
+            previous_url=previous_url,
+            next_url=next_url,
+            thread_link_url=thread_link_url,
             thread_summary=thread_summary,
             msgid_urls=msgid_urls,
             lore_mirror_urls=lore_mirror_urls,
             parent_off_list=parent_off_list,
             parent_off_list_hints=parent_off_list_hints,
-            related=related,
-            related_threads=related_threads,
             cross_post_inboxes=cross_post_inboxes,
             canonical_url=canonical_url,
             thread_view_url=thread_view_url,
             page_json_ld=page_json_ld,
             subsystem_hits=subsystem_hits,
-            related_patches=patches_touching,
-            patch_state=patch_state,
-            lifecycle_status=lifecycle_status,
             markdown_url=markdown_path(_msg_url(article, inbox.name)),
         )
     )
