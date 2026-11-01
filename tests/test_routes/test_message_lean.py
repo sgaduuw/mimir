@@ -194,3 +194,200 @@ def test_a_nested_cover_without_patches_keeps_its_server_rendered_diff(
     assert 'class="thread-tabs"' not in html
     assert 'class="patch-index"' not in html
     assert "from=v1&amp;to=v2" in html
+
+
+@pytest.mark.parametrize("headers", [{}, {"HX-Request": "true"}])
+def test_unmaterialised_thread_link_uses_the_thread_pages_order(
+    client, tmp_path, monkeypatch, headers
+):
+    import html as htmllib
+
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import ArticleList
+    from tests.test_routes._helpers import _canonical_of
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 3)
+    # DFS lists root, first, nested, second; /t lists root, first,
+    # second, nested. The selected node belongs on /t/2, not DFS page1.
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("root@x", None),
+            ("first@x", "root@x"),
+            ("second@x", "root@x"),
+            ("nested@x", "first@x"),
+        ],
+    )
+    with SessionLocal() as session:
+        session.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id.in_([aid for aid, _ in seeded.values()]))
+            .values(thread_root_id=None)
+        )
+        session.commit()
+    aid, url = seeded["nested@x"]
+    response = client.get(url, headers=headers)
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    match = re.search(r'class="whole-thread" href="([^"]+)"', html)
+    assert match
+    target, anchor = htmllib.unescape(match.group(1)).split("#")
+    assert target == seeded["root@x"][1] + "/t/2"
+    assert anchor == f"m{aid}"
+    destination = client.get(target)
+    assert destination.status_code == 200
+    assert f'id="{anchor}"' in destination.get_data(as_text=True)
+    if not headers:
+        assert _canonical_of(html) == "http://localhost" + url
+
+
+def test_unmaterialised_thread_append_keeps_and_versions_message_kinds(
+    client, tmp_path, monkeypatch
+):
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("root@x", None), ("reply@x", "root@x"), ("patch@x", "reply@x")],
+    )
+    aid = seeded["patch@x"][0]
+    with SessionLocal() as session:
+        session.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id.in_([a for a, _ in seeded.values()]))
+            .values(thread_root_id=None)
+        )
+        patch = session.get(Article, aid)
+        patch.subject = "[PATCH v1 1/1] change"
+        patch.patch_series_key = "a" * 40
+        patch.patch_series_version = "v1"
+        patch.patch_series_position = 1
+        session.commit()
+    url = seeded["root@x"][1] + "/t"
+    first = client.get(url)
+    assert first.status_code == 200
+    assert 'class="thread-tabs"' in first.get_data(as_text=True)
+    full = client.get(url + "/2")
+    headers = {"HX-Request": "true"}
+    partial = client.get(url + "/2", headers=headers)
+    for response in [full, partial]:
+        assert response.status_code == 200
+        tag = re.search(
+            rf'<article\b[^>]*id="m{aid}"[^>]*>', response.get_data(as_text=True)
+        )
+        assert tag and 'data-kind="patch"' in tag.group(0)
+    assert 'class="revisions-fold"' not in partial.get_data(as_text=True)
+    with SessionLocal() as session:
+        session.get(Article, aid).patch_series_position = 0
+        session.commit()
+    changed = client.get(
+        url + "/2", headers={**headers, "If-None-Match": partial.headers["ETag"]}
+    )
+    assert changed.status_code == 200
+    tag = re.search(
+        rf'<article\b[^>]*id="m{aid}"[^>]*>', changed.get_data(as_text=True)
+    )
+    assert tag and 'data-kind="cover"' in tag.group(0)
+
+
+@pytest.mark.parametrize("materialised", [True, False])
+def test_appended_nested_cover_keeps_its_timeline_and_validator(
+    client, tmp_path, monkeypatch, materialised
+):
+    from sqlalchemy import update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+    from mimir.web.routes import thread as thread_route
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("root@x", None),
+            ("old@x", None),
+            ("reply@x", "root@x"),
+            ("cover@x", "root@x"),
+        ],
+    )
+    key = "b" * 40
+    with SessionLocal() as session:
+        for mid, version in [("old@x", "v1"), ("cover@x", "v2")]:
+            cover = session.get(Article, seeded[mid][0])
+            cover.subject = f"[PATCH {version} 0/1] nested"
+            cover.patch_series_key = key
+            cover.patch_series_version = version
+            cover.patch_series_position = 0
+        if not materialised:
+            session.execute(
+                update(ArticleList)
+                .where(ArticleList.article_id.in_([aid for aid, _ in seeded.values()]))
+                .values(thread_root_id=None)
+            )
+        session.commit()
+    calls = []
+    real = thread_route.patch_timelines
+
+    def timelines(session, series_key, head, ids, inbox):
+        calls.append((series_key, tuple(ids)))
+        return real(session, series_key, head, ids, inbox)
+
+    monkeypatch.setattr(thread_route, "patch_timelines", timelines)
+    url = seeded["root@x"][1] + "/t"
+    headers = {"HX-Request": "true"}
+    first = client.get(url, headers=headers)
+    assert first.status_code == 200
+    assert calls == []  # no visible non-root cover, no timeline read
+    full = client.get(url + "/2")
+    assert full.status_code == 200
+    calls.clear()
+    partial = client.get(url + "/2", headers=headers)
+    assert partial.status_code == 200
+    assert calls == [(key, (seeded["cover@x"][0],))]
+    for response in [full, partial]:
+        html = response.get_data(as_text=True)
+        assert 'class="revisions-fold"' in html
+        assert "from=v1&amp;to=v2" in html
+    # The same revision links and diff targets survive the append.
+    full_fold = (
+        full.get_data(as_text=True)
+        .split('class="revisions-fold"', 1)[1]
+        .split("</details>", 1)[0]
+    )
+    partial_fold = (
+        partial.get_data(as_text=True)
+        .split('class="revisions-fold"', 1)[1]
+        .split("</details>", 1)[0]
+    )
+    assert full_fold == partial_fold
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    # Capture the bounded Article lookup on a real revalidation, before
+    # timeline rendering adds other reads. Both paths must seek by id.
+    with planner_stats(SessionLocal, PRODUCTION_STATS), SessionLocal() as session:
+        plan = plan_of(
+            session,
+            lambda: client.get(
+                url + "/2",
+                headers={**headers, "If-None-Match": partial.headers["ETag"]},
+            ),
+            "WHERE articles.id IN (",
+        )
+    assert "SEARCH articles USING INTEGER PRIMARY KEY" in plan, plan
+    with SessionLocal() as session:
+        session.get(Article, seeded["old@x"][0]).patch_series_version = "v0"
+        session.commit()
+    after = client.get(
+        url + "/2", headers={**headers, "If-None-Match": partial.headers["ETag"]}
+    )
+    assert after.status_code == 200
+    assert "from=v0&amp;to=v2" in after.get_data(as_text=True)
