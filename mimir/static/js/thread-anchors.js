@@ -1,7 +1,7 @@
 /* In-page links on the thread page (#1035).
  *
- * A "replied to" link or an outline row names the thread page that holds
- * its message, plus the message's #m<id> anchor. When that message is
+ * A "replied to" link, an outline row or a Patches-index link names the
+ * thread page that holds its message, plus the message's #m<id> anchor. When that message is
  * already in this document (HTMX appended the page that holds it), follow
  * the anchor instead of loading the page again. Otherwise the link works
  * as a plain link, which is also all it does without JS.
@@ -15,7 +15,7 @@
 (function () {
   document.addEventListener("click", function (e) {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    var a = e.target.closest(".replied-to a, .thread-outline a");
+    var a = e.target.closest(".replied-to a, .thread-outline a, .patch-index a");
     if (!a) return;
     var hash = new URL(a.href, location.href).hash;
     var el = /^#m\d+$/.test(hash) && document.getElementById(hash.slice(1));

@@ -15,7 +15,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- The thread page has an outline for a thread of five or more messages (#989): a "Jump to a message" list of the first 200 messages. The cover is one row, the patches are one row, and each reply is a row with its author and date, indented by how many of the listed messages it answers. A last row says how many are not listed. Each row links to the page and message that hold it. On a phone it is a disclosure above the messages; on a wide screen it is a sidebar where the browser supports it, and the same disclosure elsewhere.
+- The thread page has an outline for a thread of five or more messages (#989): a "Jump to a message" list of the first 200 messages. The cover is one row, the patches are one row, and each reply is a row with its author and date, indented by how deep it sits among the listed replies. A last row says how many are not listed. Each row links to the page and message that hold it. On a phone it is a disclosure above the messages; on a wide screen it is a sidebar where the browser supports it, and the same disclosure elsewhere.
 
 ### Changed
 
@@ -25,8 +25,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- On the thread page, a "replied to" link or an outline row whose message is already on screen (because "Next" appended the page that holds it) now scrolls to that message instead of loading its page in full (#1035). Without JavaScript the link loads the page as before.
-- Stripping reply prefixes from a subject (ingest's `subject_normalized`, and the thread page's heading check) took time quadratic in the number of prefixes: a subject of 300,000 `re: ` took about 10 seconds. It is now one pass. The result is unchanged, so no backfill is needed.
+- On the thread page, a "replied to" link, an outline row or a Patches-index link whose message is already on screen (because "Next" appended the page that holds it) now scrolls to that message instead of loading its page in full (#1035). Without JavaScript the link loads the page as before.
+- Stripping reply prefixes from a subject (ingest's `subject_normalized`, and the thread page's heading check) took time quadratic in the number of prefixes: a subject of 300,000 `re: ` took several seconds (4.8 s on one laptop). It is now one pass. The result is unchanged, so no backfill is needed.
 - The header of a thread whose first message has no author says "Started by unknown sender", as that message's card does, instead of "Started on".
 
 ## [3.38.0] - 2026-10-31
