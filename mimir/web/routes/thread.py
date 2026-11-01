@@ -24,7 +24,6 @@ the single predicate every one of those surfaces consults.
 
 import hashlib
 import logging
-import re
 from collections import Counter
 
 from flask import (
@@ -45,6 +44,7 @@ from mimir.models import (
     Article,
     ArticleList,
 )
+from mimir.parser import normalize_subject
 from mimir.patch_revisions import subject_tags
 from mimir.patch_series import slot_rank
 from mimir.patch_state import message_kind, patch_state_for_article, patch_timelines
@@ -87,14 +87,6 @@ logger = logging.getLogger(__name__)
 # page's order), and only for a thread of at least this many (#989).
 OUTLINE_ROWS = 200
 OUTLINE_MIN_MESSAGES = 5
-
-_RE_PREFIX = re.compile(r"^(?:re:\s*)+", re.IGNORECASE)
-
-
-def _title_key(subject: str | None) -> str:
-    """A subject as the cards compare it with the thread's: header folds
-    collapsed, `Re:` prefixes stripped, case folded."""
-    return _RE_PREFIX.sub("", _clean_subject_filter(subject)).strip().casefold()
 
 
 def _reply_markers(
@@ -575,14 +567,16 @@ def thread_view(
             messages.append((node, parsed, _msg_url(node, inbox.name)))
 
         # The cards' parent markers, and which cards keep their subject
-        # heading (only where it differs from the thread's, #989). Not for
-        # the Markdown page, which renders neither.
+        # heading (only where it differs from the thread's, #989). Compared
+        # as `subject_normalized` is, so `AW:`, `SV:` and forwards count as
+        # replies here too (#1034). Not for the Markdown page, which renders
+        # neither.
         reply_to: dict = {}
         heading_ids: set = set()
         if not markdown:
-            root_key = _title_key(article.subject)
+            root_key = normalize_subject(article.subject)
             heading_ids = {
-                n.id for n in rendered_nodes if _title_key(n.subject) != root_key
+                n.id for n in rendered_nodes if normalize_subject(n.subject) != root_key
             }
             reply_to = _reply_markers(
                 session,

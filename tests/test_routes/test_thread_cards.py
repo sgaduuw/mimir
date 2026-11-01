@@ -173,6 +173,30 @@ def test_the_subject_heading_shows_only_where_it_differs(client, tmp_path):
         assert f'href="{url}"' in html, url
 
 
+def test_localised_replies_and_forwards_drop_the_heading(client, tmp_path):
+    """#1034: the cards compare subjects as `subject_normalized` does, so
+    `AW:`, `SV:` and forwards of the thread's subject read as replies. A
+    forward of something else still differs, so it keeps its heading."""
+    seeded = _seed_chat(
+        tmp_path,
+        CHAIN,
+        subjects={
+            "a@x": f"AW: Re: {ROOT_SUBJECT}",
+            "b@x": f"SV: Fwd: {ROOT_SUBJECT}",
+            "c@x": "Fwd: some other report",
+        },
+    )
+    html = client.get(seeded["r@x"][1] + "/t").get_data(as_text=True)
+    headings = {
+        mid: re.search(r"<h2[^>]*>(.*?)</h2>", _card(html, seeded[mid][0]), re.DOTALL)
+        for mid in ("a@x", "b@x", "c@x")
+    }
+    assert headings["a@x"] is None
+    assert headings["b@x"] is None
+    assert headings["c@x"] is not None
+    assert "some other report" in headings["c@x"].group(1)
+
+
 def test_the_title_comparison_is_linear_on_a_hostile_subject(client, tmp_path):
     import time
 
