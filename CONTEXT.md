@@ -2402,8 +2402,10 @@ Revision and diff links remain server-rendered. Timelines are read once
 per distinct series, including nested postings and standalone patches.
 The full HTML thread ETag additionally digests those series' revisions,
 dates, positions, versions, canonical inboxes, memberships and file
-presence before the 304 check. The HTMX slice and Markdown response do
-not read those extra groups. This supersedes the root-series-only
+presence before the 304 check. An HTMX append reads and digests only
+its visible non-root covers' series, preserving their inline timelines
+and diff links; it does not build the Patches index. Markdown reads none
+of those extra groups. This supersedes the root-series-only
 restriction described in the historical rationale below.
 
 

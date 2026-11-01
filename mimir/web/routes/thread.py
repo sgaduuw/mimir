@@ -599,7 +599,9 @@ def thread_view(
         own_subsystem_id = busiest[0].id if busiest else None
         representation = "md" if markdown else "hx" if hx_request else "full"
         fallback_rows = []
-        if all_nodes is not None and representation == "full":
+        if all_nodes is not None and not markdown:
+            # Both HTML representations classify fallback nodes. Keep their
+            # series columns in the validator before an HTMX append can 304.
             ids = [node.id for node in all_nodes]
             by_id = {}
             for start in range(0, len(ids), 500):
@@ -620,6 +622,33 @@ def thread_view(
                 )
                 for row in fallback_rows
             ]
+        visible_covers = []
+        if hx_request and not markdown:
+            visible_ids = {
+                node.id for node in rendered_nodes if node.id != root_node.id
+            }
+            cover_ids = {
+                row.id
+                for row in (fallback_rows if all_nodes is not None else series_rows)
+                if row.id in visible_ids
+                and row.patch_series_key
+                and row.patch_series_position in (None, 0)
+            }
+            if all_nodes is not None:
+                cover_candidates = fallback_rows
+            else:
+                cover_candidates = (
+                    session.scalars(
+                        select(Article).where(Article.id.in_(cover_ids))
+                    ).all()
+                    if cover_ids
+                    else []
+                )
+            visible_covers = [
+                row
+                for row in cover_candidates
+                if row.id in cover_ids and message_kind(row) == "cover"
+            ]
         revision_groups = (
             {
                 (row.patch_series_key, row.patch_series_head_id)
@@ -627,7 +656,10 @@ def thread_view(
                 if row.patch_series_key
             }
             if representation == "full"
-            else set()
+            else {
+                (row.patch_series_key, row.patch_series_head_id)
+                for row in visible_covers
+            }
         )
         revisions_tag = revision_groups_tag(session, revision_groups)
         # Split so the ETag is the content part plus the representation
@@ -906,10 +938,11 @@ def thread_view(
                 for i, row in enumerate(ordered_rows)
                 if kinds[row.id] == "patch"
             ]
+        if representation == "full" or visible_covers:
             # One timeline read per series, including standalone and nested
             # postings. The pre-304 group digest covers all these inputs.
             by_series = defaultdict(list)
-            for row in ordered_rows:
+            for row in ordered_rows if representation == "full" else visible_covers:
                 if (
                     row.id != root_node.id
                     and row.patch_series_key
@@ -929,9 +962,13 @@ def thread_view(
                     )
                 )
         revision_hrefs: dict[int, str] = {}
-        if representation == "full":
+        if representation == "full" or visible_covers:
             entries = [
-                *(root_patch_state.series if root_patch_state else []),
+                *(
+                    root_patch_state.series
+                    if root_patch_state and representation == "full"
+                    else []
+                ),
                 *(e for timeline in patch_revisions.values() for e in timeline),
             ]
             revision_hrefs = _revision_hrefs(

@@ -35,6 +35,7 @@ from mimir.threading import (
     thread_aggregates,
     thread_is_materialised,
     thread_page_of,
+    thread_sort_key,
     thread_window,
 )
 from mimir.web._blueprint import bp_web
@@ -604,19 +605,30 @@ def message(
             None,
         )
         thread_link_url = thread_view_url
+        thread_link_anchor = f"#m{article.id}"
         if thread_link_url is None and root.date is not None:
             # A repair fallback still has a thread view; only its canonical
-            # claim is withheld. Keep the reading path available.
-            thread_link_url = thread_page_url(
-                root.id,
-                root.date,
-                inbox.name,
-                thread_page_of(session, inbox.id, root.id, article, cap)
-                if thread_rooted
-                else 1,
-            )
+            # claim is withheld. Rank its already-loaded nodes in the same
+            # order as /t's recursive fallback, separately from the DFS tree.
+            if thread_rooted:
+                page_no = thread_page_of(session, inbox.id, root.id, article, cap)
+            else:
+                rank = next(
+                    (
+                        i
+                        for i, node in enumerate(
+                            sorted(thread_nodes, key=thread_sort_key(root.id))
+                        )
+                        if node.id == article.id
+                    ),
+                    None,
+                )
+                page_no = rank // cap + 1 if rank is not None else 1
+                if rank is None:
+                    thread_link_anchor = ""
+            thread_link_url = thread_page_url(root.id, root.date, inbox.name, page_no)
         if thread_link_url:
-            thread_link_url += f"#m{article.id}"
+            thread_link_url += thread_link_anchor
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
     thread_summary = (
