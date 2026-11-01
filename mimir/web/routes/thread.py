@@ -89,13 +89,24 @@ OUTLINE_ROWS = 200
 OUTLINE_MIN_MESSAGES = 5
 
 
+def _message_href(root, inbox_name, page, article_id) -> str:
+    """The thread page that holds a message, and its anchor: the one builder
+    for the cards' permalink and "replied to", the outline and the Patches
+    index. Always the whole URL, never a bare `#m{id}`: an HTMX slice is
+    appended to page 1's document without a URL change, so a bare fragment
+    in it resolves to page 1, which does not hold the message (a copied
+    permalink or a new-tab click lands on the wrong page). thread-anchors.js
+    compares hashes only, so a plain click still scrolls in place."""
+    return thread_page_url(root.id, root.date, inbox_name, page) + f"#m{article_id}"
+
+
 def _reply_markers(
     session, inbox, root, nodes, *, page, cap, ordered_rows, all_nodes
 ) -> dict:
     """`node id -> (parent's author, href)` for each message on this page
     whose parent is a message of the thread, for the cards' "replied to"
-    (#989). The href is `#m{id}` on this page and the thread page that holds
-    the parent otherwise (the Patches index's rank, `index // cap + 1`).
+    (#989). The href is the thread page that holds the parent plus its
+    anchor (`_message_href`, by the Patches index's rank, `index // cap + 1`).
     Nothing for a root, a self-parent or a parent outside the archive.
 
     No traversal, so a `thread_parent` cycle is just two markers. The
@@ -124,12 +135,7 @@ def _reply_markers(
         parent_page = page if n.thread_parent in on_page else page_of.get(pid)
         if parent_page is None:
             continue
-        base = (
-            ""
-            if parent_page == page
-            else thread_page_url(root.id, root.date, inbox.name, parent_page)
-        )
-        markers[n.id] = (author, f"{base}#m{pid}")
+        markers[n.id] = (author, _message_href(root, inbox.name, parent_page, pid))
     return markers
 
 
@@ -137,17 +143,15 @@ def _outline_rows(nodes, *, root, kinds, ordered, cap, page, inbox_name, total_c
     """The outline's rows (#989), from the thread's first messages: the root,
     the patches as one row, each reply indented by its depth among the rows
     listed, and a last row for what is not listed. Each links the page and
-    anchor that hold its message: `#m{id}` on this page, the thread page
-    otherwise, by the Patches index's rank (`index // cap + 1`). `ordered` is
+    anchor that hold its message (`_message_href`, by the Patches index's
+    rank, `index // cap + 1`). `ordered` is
     the whole thread in page order; `kinds` is empty on the CTE fallback, which
     then lists every message but the root as a reply."""
     page_of = {row.id: i // cap + 1 for i, row in enumerate(ordered)}
     here = {n.id for n in nodes if page_of.get(n.id, 1) == page}
 
     def href(article_id):
-        n = page_of.get(article_id, 1)
-        base = "" if n == page else thread_page_url(root.id, root.date, inbox_name, n)
-        return f"{base}#m{article_id}"
+        return _message_href(root, inbox_name, page_of.get(article_id, 1), article_id)
 
     patches = [n for n in nodes if n.id != root.id and kinds.get(n.id) == "patch"]
     replies = [n for n in nodes if n.id != root.id and kinds.get(n.id) != "patch"]
@@ -768,10 +772,7 @@ def thread_view(
                 {
                     "id": row.id,
                     "subject": row.subject,
-                    "href": thread_page_url(
-                        root_node.id, root_node.date, inbox.name, i // cap + 1
-                    )
-                    + f"#m{row.id}",
+                    "href": _message_href(root_node, inbox.name, i // cap + 1, row.id),
                 }
                 for i, row in enumerate(ordered_rows)
                 if kinds[row.id] == "patch"
@@ -829,6 +830,7 @@ def thread_view(
         series_totals=series_totals,
         patch_state=root_patch_state,
         lifecycle_status=root_lifecycle,
+        page_url=thread_page_url(root_node.id, root_node.date, inbox.name, page),
         markdown_url=markdown_path(
             thread_page_url(root_node.id, root_node.date, inbox.name, page)
         ),

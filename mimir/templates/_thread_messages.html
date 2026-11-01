@@ -35,7 +35,7 @@
       <a class="card-date" href="{{ url }}">
         {%- if node.date %}<time datetime="{{ node.date.isoformat() }}" title="{{ node.date.strftime('%Y-%m-%d %H:%M:%S %z') }}">{{ node.date.strftime('%b') }} {{ node.date.day }}, {% if node.date.year != root.date.year %}{{ node.date.year }}, {% endif %}{{ node.date.strftime('%H:%M') }}</time>{% else %}?{% endif -%}
       </a>
-      <a class="permalink" href="#m{{ node.id }}" aria-label="Permalink to this message">#</a>
+      <a class="permalink" href="{{ page_url }}#m{{ node.id }}" aria-label="Permalink to this message">#</a>
     </p>
   </header>
   {% if parsed and parsed.body %}
