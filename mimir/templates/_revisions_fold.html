@@ -7,7 +7,10 @@
    again is listed under its entry as a re-post. The links are the
    URLs the series diff sitemap lists (#844,
    `patch_series.adjacent_versions`).
-   A caller sets `revisions_open` to render it unfolded.
+   A caller sets `revisions_open` to render it unfolded, and
+   `revision_hrefs` (article id -> link) to send a revision somewhere
+   other than its message page: the thread page links each to the thread
+   page that holds it.
 #}
 {%- if patch_state and patch_state.series and patch_state.series|length >= 2 -%}
 <details class="revisions-fold"{% if revisions_open %} open{% endif %}>
@@ -21,7 +24,7 @@
         <span class="rev-label">{{ entry.version }}</span>
         <span class="rev-current-marker">current</span>
         {%- else %}
-        <a class="rev-label" href="{{ entry.url }}" title="go to {{ entry.version }}">{{ entry.version }}</a>
+        <a class="rev-label" href="{{ (revision_hrefs or {}).get(entry.article_id, entry.url) }}" title="go to {{ entry.version }}">{{ entry.version }}</a>
         {%- endif %}
         {%- if entry.diff_url %}
         <a href="{{ entry.diff_url }}" title="show what changed in {{ entry.version }} since the previous revision">[diff against previous]</a>
@@ -29,7 +32,7 @@
         {%- for repost in entry.reposts %}
         <span class="rev-repost">re-posted <time datetime="{{ repost.date.isoformat() if repost.date else '' }}">{{ repost.date.strftime('%Y-%m-%d') if repost.date else '?' }}</time>
           {%- if repost.is_current %} <span class="rev-current-marker">current</span>
-          {%- else %} <a href="{{ repost.url }}">go to this post</a>{% endif %}</span>
+          {%- else %} <a href="{{ (revision_hrefs or {}).get(repost.article_id, repost.url) }}">go to this post</a>{% endif %}</span>
         {%- endfor %}
       </li>
       {%- endfor %}

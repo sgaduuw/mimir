@@ -297,10 +297,11 @@ def _timeline(html: str, start: int) -> str:
 
 
 def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_path):
-    """Each in-series patch's revisions on `/t` are byte-identical to the
-    ones its own message page renders (one builder, `_series_timeline`),
-    and every diff link resolves. Per-position diffs are not in the series
-    diff sitemap (covers only), so the message page is the reference."""
+    """Each in-series patch's revisions on `/t` are the ones its own message
+    page renders (one builder, `_series_timeline`), and every diff link
+    resolves. Per-position diffs are not in the series diff sitemap (covers
+    only), so the message page is the reference. Only the revision links
+    differ: on `/t` they name thread pages (pinned below)."""
     import html as htmllib
     import re
 
@@ -313,7 +314,10 @@ def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_p
         assert start != -1, f"no disclosure for p{i}"
         on_t = _timeline(page, start)
         msg = client.get(url).get_data(as_text=True)
-        assert on_t == _timeline(msg, msg.index('class="revisions-fold"'))
+        on_msg = _timeline(msg, msg.index('class="revisions-fold"'))
+        rev_href = re.compile(r'(class="rev-label" href=")[^"]*')
+        assert rev_href.search(on_t), "no revision link"  # precondition
+        assert rev_href.sub(r"\1", on_t) == rev_href.sub(r"\1", on_msg)
         diffs = re.findall(r'href="([^"]*/series/[^"]*)"', on_t)
         assert len(diffs) == 1, diffs  # precondition: v1 to v2
         assert client.get(htmllib.unescape(diffs[0])).status_code == 200
@@ -454,11 +458,13 @@ def test_the_htmx_slice_and_markdown_do_not_read_what_only_the_full_page_renders
     url = seeded["c@x"][1] + "/t"
 
     assert client.get(url).status_code == 200
-    assert calls == ["thread_rows", "patch_timelines"]  # precondition
+    # This thread's rows, the revisions, then the v1 thread's rows for the
+    # revision links.
+    assert calls == ["thread_rows", "patch_timelines", "thread_rows"]
 
     calls.clear()
     assert client.get(url, headers={"HX-Request": "true"}).status_code == 200
-    assert "patch_timelines" not in calls, calls
+    assert calls == ["thread_rows"], calls
 
     calls.clear()
     assert client.get(url + ".md").status_code == 200
@@ -654,3 +660,63 @@ def test_monospace_text_uses_picos_stack_not_a_typed_out_one():
     """One monospace stack for the page (`--pico-font-family-monospace`),
     not three copies of a list of fonts."""
     assert '"SF Mono"' not in _css()
+
+
+def test_revision_links_on_t_open_the_thread_page_that_holds_the_revision(
+    client, tmp_path, monkeypatch
+):
+    """On `/t`, every revision link (the root's fold and each patch's in the
+    Patches index) names the thread page holding that revision, with its
+    anchor: a 200 with no redirect. The v1 thread spans two pages here, so
+    the later v1 patches must link page 2, not the thread's first page."""
+    import re
+
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_two_versions(tmp_path, 3)
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    links = re.findall(r'<a class="rev-label" href="([^"]+)"', page)
+    # The root's fold (v1 cover) plus one per patch (v1 patch).
+    assert len(links) == 4, links
+    pages = set()
+    for link in links:
+        path, _, anchor = link.partition("#")
+        assert re.fullmatch(r"m\d+", anchor), link
+        r = client.get(path)
+        assert r.status_code == 200, (link, r.status_code)
+        assert re.search(r"/t(/\d+)?$", path), link
+        assert f'id="{anchor}"' in r.get_data(as_text=True), link
+        pages.add(path)
+    # Precondition: the v1 thread spans pages, and the links follow.
+    assert any(p.endswith("/t/2") for p in pages), pages
+
+
+def test_a_revision_in_an_unranked_thread_keeps_its_message_page_link(client, tmp_path):
+    """A NULL `thread_root_id` in the v1 thread makes it unrankable
+    (`unmaterialised_roots`), so its revisions make no page claim and link
+    their message pages, as before #989's follow-up."""
+    import re
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    seeded = _seed_two_versions(tmp_path, 3)
+    with SessionLocal() as s:
+        q2 = s.scalar(select(Article.id).where(Article.message_id == "q2@x"))
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == q2)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    links = re.findall(r'<a class="rev-label" href="([^"]+)"', page)
+    assert len(links) == 4, links  # precondition: every fold still renders
+    assert not any("#" in link or re.search(r"/t(/\d+)?$", link) for link in links), (
+        links
+    )
+    for link in links:
+        assert client.get(link).status_code == 200, link
