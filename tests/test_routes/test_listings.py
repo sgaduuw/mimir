@@ -13,6 +13,7 @@ include partial that every other listing template uses.
 """
 
 from datetime import UTC
+from html.parser import HTMLParser
 
 
 def test_recent_listing_renders_landed_pill_for_landed_article(client):
@@ -107,10 +108,24 @@ def test_listings_ordered_by_activity_carry_no_activity_chip(client, frozen_cloc
     threads), today, since, month and search is HOT or the same heat:
     the chip says nothing there (#988). The lifecycle chip still
     distinguishes the rows."""
+
+    class Text(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
     for surface, url in _surfaces(client).items():
         body = client.get(url).get_data(as_text=True)
-        assert "hello alpha" in body, surface
-        assert 'class="badge badge-lifecycle-landed"' in body, surface
+        text = Text()
+        text.feed(body)
+        assert "hello alpha" in "".join(text.parts), surface
+        # Search represents the newer pending reply, not the landed root.
+        assert ('class="badge badge-lifecycle-landed"' in body) == (
+            surface != "search"
+        ), surface
         assert "badge-activity-" not in body, surface
 
 
