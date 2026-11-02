@@ -1098,6 +1098,41 @@ order).
   a key that no write touches: a change to the rule itself, such as
   `SPLIT_BELOW_MATCHED_SHARE`, must ship its own pass over the archive.
 
+### Series diff navigation (#999)
+
+`web/series_diff_navigation.py` resolves the selected comparison and its links
+from one batch of indexed slots for the exact series key/head. `slot_winner`
+still chooses each slot before the existing subject/file fallback is tried.
+The two current postings' fallback lists are loaded once per request to discover
+unindexed children as well as fill missing slots. Only observed positions are
+visited, never a range through an untrusted maximum. Other adjacent version
+pairs resolve only the current position, or their cover when that is missing.
+No navigation step reads a mail body or compares every patch.
+
+Canonical inbox names are fetched in bulk for indexed destination winners.
+Heuristic destinations stay in the requesting inbox, because that is the
+inbox whose children were matched. The shared URL spelling supplies links,
+canonicals and the native form's path; the sitemap remains cover-only.
+
+Metadata stays outside the 24-hour rendered-diff cache, so a new patch or a
+canonical reassignment is visible on a warm page. `revision_diff:render2`
+separates line-classed markup from older Pygments markup without changing the
+registered `RevisionDiff` fields or global cache protocol. Identity still
+carries the inbox, exact versions, position and winning article IDs; fallback
+keys include their cover IDs and matched article IDs, since a child match can
+change while its covers stay the same. Only the selected two bodies are read
+on a cold diff; a warm diff reads neither. Counts and escaped line markup come
+from the same unified-diff records, skipping only the two generated headers.
+
+Diff navigation boosts native links/forms with HTMX and selects `main` from the
+same full HTML response used without JavaScript. There is no fragment variant
+or extra render cache key. Replacing `main` includes the inbox-dependent chrome
+when a canonical position link changes inbox. Page metadata travels on the
+article so `series-diff.js` can restore the document head and upward navigation
+after a swap or a history restore. The keyboard controller clicks live pager
+anchors, and the theme controller reinitializes the replaced control. Failed
+selection requests keep the selected position naming the body still on screen.
+
 ### Materialised thread roots (2026-07-28)
 
 The materialised-column approach was considered and rejected for
