@@ -398,9 +398,17 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
             playwright.expect(page.locator("#msg")).to_have_attribute(
                 "data-article-id", str(reply_id)
             )
-            page.wait_for_function(
-                "document.getElementById('msg').getBoundingClientRect().top >= -1 && document.getElementById('msg').getBoundingClientRect().top < 300"
-            )
+            # Polled from Python: `wait_for_function(<string>)` evals in the
+            # page, which the CSP (no 'unsafe-eval') refuses.
+            for _ in range(50):
+                top = page.evaluate(
+                    "document.getElementById('msg').getBoundingClientRect().top"
+                )
+                if -1 <= top < 300:
+                    break
+                page.wait_for_timeout(100)
+            else:
+                raise AssertionError(f"#msg not scrolled into view, top={top}")
             playwright.expect(page).to_have_url(base + reply_url)
             assert page.locator('#msg [rel="prev"]').get_attribute("href") == root_url
             assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
