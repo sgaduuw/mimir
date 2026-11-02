@@ -15,6 +15,7 @@ from mimir.dashboard import author_recent, search_articles
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article
+from mimir.search_results import group_search_results
 from mimir.seo import _json_ld_author, _json_ld_search
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -55,8 +56,9 @@ def search(inbox_name: str):
         if len(q) >= SEARCH_QUERY_MIN_LEN:
             results = search_articles(session, inbox, q, limit=SEARCH_RESULT_CAP)
             truncated = len(results) >= SEARCH_RESULT_CAP
+        groups = group_search_results(session, inbox, results)
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [a.id for a in results], inbox.id
+            session, [g.representative.id for g in groups], inbox.id
         )
 
     # SearchResultsPage only when we're actually rendering results.
@@ -66,7 +68,7 @@ def search(inbox_name: str):
     # query), matching the <link rel="canonical"> the context
     # processor emits, keeps individual ?q= URLs out of the index.
     page_json_ld = None
-    if results:
+    if groups:
         canonical_url = _site_base() + f"/{inbox.name}/search"
         page_json_ld = _json_ld_search(
             _site_base(),
@@ -80,7 +82,8 @@ def search(inbox_name: str):
         inbox_name=inbox.name,
         current_inbox=inbox.name,
         query=q,
-        results=results,
+        results=groups,
+        matching_count=sum(g.count for g in groups),
         truncated=truncated,
         result_cap=SEARCH_RESULT_CAP,
         too_short=too_short,

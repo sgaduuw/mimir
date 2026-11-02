@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from email.utils import parseaddr
 
 from flask import g
+from markupsafe import Markup, escape
 from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
@@ -626,3 +627,24 @@ def _listing_sender_filter(author: str | None) -> str:
     """A listing displays a safe name, never an address fallback."""
     name = _usable_display_name(author)
     return name if name and not _EMAIL_TOKEN_RE.search(name) else "unknown sender"
+
+
+@bp_web.app_template_filter("highlight_match")
+def _highlight_match_filter(subject: str | None, query: str | None) -> Markup:
+    """Mark only the first literal ASCII-case match, escaping all mail text."""
+    subject = subject or ""
+    match = (
+        re.search(re.escape(query), subject, re.IGNORECASE | re.ASCII)
+        if query
+        else None
+    )
+    if match is None:
+        return escape(subject)
+    start, end = match.span()
+    return (
+        escape(subject[:start])
+        + Markup("<mark>")
+        + escape(subject[start:end])
+        + Markup("</mark>")
+        + escape(subject[end:])
+    )
