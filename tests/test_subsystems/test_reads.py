@@ -1,6 +1,6 @@
 """Tests for mimir/subsystems_dashboard/reads.py: per-
 subsystem read fan-outs that power the subsystem
-dashboard (`recent_articles_in_subsystem`,
+dashboard (`recent_postings_in_subsystem`,
 `active_threads_in_subsystem`, `daily_volume_in_subsystem`)."""
 
 from datetime import UTC, datetime
@@ -16,16 +16,24 @@ from mimir.models import (
 from mimir.subsystems_dashboard import (
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
-    recent_articles_in_subsystem,
+    recent_postings_in_subsystem,
 )
 from tests.test_subsystems._helpers import (
-    _add_patch_article,
+    _add_patch_article as _add_article,
+)
+from tests.test_subsystems._helpers import (
     _add_recent_thread_root,
     _add_subsystem,
 )
 
 
-def test_recent_articles_in_subsystem_basic_match(seeded_db):
+def _add_patch_article(session, *args, **kwargs):
+    aid = _add_article(session, *args, **kwargs)
+    session.get(Article, aid).subject = "[PATCH] Test patch"
+    return aid
+
+
+def test_recent_postings_in_subsystem_basic_match(seeded_db):
     """Articles whose paths match the subsystem's F: globs surface
     in the dashboard list; non-matching articles don't."""
     with seeded_db() as s:
@@ -35,12 +43,12 @@ def test_recent_articles_in_subsystem_basic_match(seeded_db):
         _add_patch_article(s, "out@x", ["fs/btrfs/extent.c"])
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = recent_articles_in_subsystem(s, alpha, sub)
-    msgids = {p.message_id for p in out}
+        out = recent_postings_in_subsystem(s, alpha, sub)
+    msgids = {p.representative.message_id for p in out}
     assert msgids == {"in1@x", "in2@x"}
 
 
-def test_recent_articles_in_subsystem_fallback_skips_demoted_inbox(
+def test_recent_postings_in_subsystem_fallback_skips_demoted_inbox(
     seeded_db, monkeypatch
 ):
     """#646: with no valid canonical, the entry's inbox must be the one
@@ -56,7 +64,7 @@ def test_recent_articles_in_subsystem_fallback_skips_demoted_inbox(
         s.add(
             Article(
                 message_id="demoted@x",
-                subject="s",
+                subject="[PATCH] s",
                 author="a@example",
                 date=datetime.now(UTC),
                 thread_parent=None,
@@ -70,11 +78,13 @@ def test_recent_articles_in_subsystem_fallback_skips_demoted_inbox(
             )
         )
         s.commit()
-        out = recent_articles_in_subsystem(s, alpha, sub, force=True)
-    assert [(p.message_id, p.inbox_name) for p in out] == [("demoted@x", "beta")]
+        out = recent_postings_in_subsystem(s, alpha, sub, force=True)
+    assert [
+        (p.representative.message_id, p.representative.inbox_name) for p in out
+    ] == [("demoted@x", "beta")]
 
 
-def test_recent_articles_in_subsystem_is_cached(seeded_db):
+def test_recent_postings_in_subsystem_is_cached(seeded_db):
     """The helper is the dominant cold-load cost of the per-subsystem
     dashboard (joins article_files × article_lists × articles with one
     OR clause per F: glob, then a Python X: pass). A repeated call
@@ -93,32 +103,35 @@ def test_recent_articles_in_subsystem_is_cached(seeded_db):
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
 
         # Clean any prior cache row for this (inbox, subsystem, limit).
-        nskey = _ns(f"recent_articles_in_subsystem:alpha:{sub.id}:20")
+        nskey = _ns(f"recent_postings_v1:alpha:{sub.id}:30:30")
         s.execute(sql_delete(CacheEntry).where(CacheEntry.key == nskey))
         s.commit()
 
         # First call computes + caches.
-        first = recent_articles_in_subsystem(s, alpha, sub)
-        assert {p.message_id for p in first} == {"cache-hit@x"}
+        first = recent_postings_in_subsystem(s, alpha, sub)
+        assert {p.representative.message_id for p in first} == {"cache-hit@x"}
 
         # Cache row landed.
-        assert cache.get(f"recent_articles_in_subsystem:alpha:{sub.id}:20") is not None
+        assert cache.get(f"recent_postings_v1:alpha:{sub.id}:30:30") is not None
 
         # Add a NEW matching article that would surface if the helper
         # recomputed. Without force the cache hides it.
         _add_patch_article(s, "added-after@x", ["fs/bcachefs/io.c"])
         s.commit()
-        second = recent_articles_in_subsystem(s, alpha, sub)
-        assert {p.message_id for p in second} == {"cache-hit@x"}, (
+        second = recent_postings_in_subsystem(s, alpha, sub)
+        assert {p.representative.message_id for p in second} == {"cache-hit@x"}, (
             f"expected cache hit returning stale row; got recompute: {second}"
         )
 
         # force=True bypasses and picks up the new article.
-        third = recent_articles_in_subsystem(s, alpha, sub, force=True)
-        assert {p.message_id for p in third} == {"cache-hit@x", "added-after@x"}
+        third = recent_postings_in_subsystem(s, alpha, sub, force=True)
+        assert {p.representative.message_id for p in third} == {
+            "cache-hit@x",
+            "added-after@x",
+        }
 
 
-def test_recent_articles_in_subsystem_respects_exclude_globs(seeded_db):
+def test_recent_postings_in_subsystem_respects_exclude_globs(seeded_db):
     """A subsystem's X: globs veto articles whose only matched
     paths are excluded. The dashboard mirrors the patch-page
     header semantics."""
@@ -134,11 +147,11 @@ def test_recent_articles_in_subsystem_respects_exclude_globs(seeded_db):
         _add_patch_article(s, "tests@x", ["fs/btrfs/tests/runner.c"])
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = recent_articles_in_subsystem(s, alpha, sub)
-    assert {p.message_id for p in out} == {"main@x"}
+        out = recent_postings_in_subsystem(s, alpha, sub)
+    assert {p.representative.message_id for p in out} == {"main@x"}
 
 
-def test_recent_articles_in_subsystem_keeps_article_with_one_in_scope_path(
+def test_recent_postings_in_subsystem_keeps_article_with_one_in_scope_path(
     seeded_db,
 ):
     """An article touching both an included and an excluded path
@@ -162,11 +175,11 @@ def test_recent_articles_in_subsystem_keeps_article_with_one_in_scope_path(
         )
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = recent_articles_in_subsystem(s, alpha, sub)
-    assert {p.message_id for p in out} == {"mixed@x"}
+        out = recent_postings_in_subsystem(s, alpha, sub)
+    assert {p.representative.message_id for p in out} == {"mixed@x"}
 
 
-def test_recent_articles_in_subsystem_scoped_to_inbox(seeded_db):
+def test_recent_postings_in_subsystem_scoped_to_inbox(seeded_db):
     """Articles linked only to the other inbox don't appear."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
@@ -175,13 +188,13 @@ def test_recent_articles_in_subsystem_scoped_to_inbox(seeded_db):
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
-        out_alpha = recent_articles_in_subsystem(s, alpha, sub)
-        out_beta = recent_articles_in_subsystem(s, beta, sub)
-    assert {p.message_id for p in out_alpha} == {"in-alpha@x"}
-    assert {p.message_id for p in out_beta} == {"in-beta@x"}
+        out_alpha = recent_postings_in_subsystem(s, alpha, sub)
+        out_beta = recent_postings_in_subsystem(s, beta, sub)
+    assert {p.representative.message_id for p in out_alpha} == {"in-alpha@x"}
+    assert {p.representative.message_id for p in out_beta} == {"in-beta@x"}
 
 
-def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
+def test_recent_postings_in_subsystem_orders_by_date_desc(seeded_db):
     """Newest articles first, operator wants "what's been happening
     in this subsystem lately" at the top."""
     with seeded_db() as s:
@@ -192,7 +205,7 @@ def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
         for i, day in enumerate([10, 5, 15]):
             art = Article(
                 message_id=f"d{i}@x",
-                subject=f"patch {i}",
+                subject=f"[PATCH] patch {i}",
                 author="a@x",
                 date=datetime(2024, 6, day, tzinfo=UTC),
                 thread_parent=None,
@@ -205,11 +218,11 @@ def test_recent_articles_in_subsystem_orders_by_date_desc(seeded_db):
             )
             s.add(art)
         s.commit()
-        out = recent_articles_in_subsystem(s, alpha, sub)
-    assert [p.date.day for p in out] == [15, 10, 5]
+        out = recent_postings_in_subsystem(s, alpha, sub)
+    assert [p.representative.date.day for p in out] == [15, 10, 5]
 
 
-def test_recent_articles_in_subsystem_exact_path_glob(seeded_db):
+def test_recent_postings_in_subsystem_exact_path_glob(seeded_db):
     """A non-directory F: rule (e.g. `Documentation/foo.rst`) still
     matches articles touching that exact path. Wildcard globs are
     deliberately skipped in slice 1; this test pins the exact-path
@@ -220,20 +233,20 @@ def test_recent_articles_in_subsystem_exact_path_glob(seeded_db):
         _add_patch_article(s, "elsewhere@x", ["Documentation/bar.rst"])
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = recent_articles_in_subsystem(s, alpha, sub)
-    assert {p.message_id for p in out} == {"doc@x"}
+        out = recent_postings_in_subsystem(s, alpha, sub)
+    assert {p.representative.message_id for p in out} == {"doc@x"}
 
 
-def test_recent_articles_in_subsystem_empty_when_no_matches(seeded_db):
+def test_recent_postings_in_subsystem_empty_when_no_matches(seeded_db):
     with seeded_db() as s:
         sub = _add_subsystem(s, "DORMANT", None, files=["drivers/dormant/"])
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = recent_articles_in_subsystem(s, alpha, sub)
+        out = recent_postings_in_subsystem(s, alpha, sub)
     assert out == []
 
 
-def test_recent_articles_in_subsystem_wildcard_globs_skipped_silently(
+def test_recent_postings_in_subsystem_wildcard_globs_skipped_silently(
     seeded_db,
 ):
     """Slice 1 doesn't index wildcard globs. A subsystem with ONLY
@@ -244,7 +257,7 @@ def test_recent_articles_in_subsystem_wildcard_globs_skipped_silently(
         _add_patch_article(s, "match@x", ["arch/x86/cstar/init.c"])
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = recent_articles_in_subsystem(s, alpha, sub)
+        out = recent_postings_in_subsystem(s, alpha, sub)
     assert out == []
 
 
@@ -317,7 +330,7 @@ def test_active_threads_in_subsystem_scoped_to_inbox(seeded_db):
 def test_active_threads_in_subsystem_empty_when_wildcard_only(seeded_db):
     """A subsystem with only wildcard F: rules has no supported
     globs in slice 2 and returns no active threads, same
-    documented behaviour as `recent_articles_in_subsystem`."""
+    documented behaviour as `recent_postings_in_subsystem`."""
     with seeded_db() as s:
         sub = _add_subsystem(s, "ARCH-CSTAR", None, files=["arch/*/cstar/"])
         _add_recent_thread_root(s, "match@x", ["arch/x86/cstar/init.c"])
@@ -381,7 +394,7 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
     that here: a regression that ran the query unfiltered would either
     return non-zero counts (any article would match) or crash on an
     empty WHERE clause."""
-    from mimir.subsystems_dashboard import recent_articles_in_subsystem
+    from mimir.subsystems_dashboard import recent_postings_in_subsystem
 
     with seeded_db() as s:
         sub = _add_subsystem(s, "NOPATHS", "Supported", files=[])
@@ -391,7 +404,7 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
         s.commit()
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         spark = daily_volume_in_subsystem(s, alpha, sub, days=5, force=True)
-        recents = recent_articles_in_subsystem(s, alpha, sub, limit=10, force=True)
+        recents = recent_postings_in_subsystem(s, alpha, sub, limit=10, force=True)
     assert len(spark.days) == 5
     assert all(c == 0 for _, c in spark.days)
     assert recents == []
@@ -404,11 +417,11 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
 
 
 # ---------------------------------------------------------------------------
-# Plan-pinning: recent_articles_in_subsystem uses the IN-list shape, no SCAN
+# Plan-pinning: recent_postings_in_subsystem uses the IN-list shape, no SCAN
 # ---------------------------------------------------------------------------
 #
 # CONTEXT.md 2026-05-29: PR #392 / v2.8.0 rewrote
-# recent_articles_in_subsystem (and two siblings) from the IN-list shape
+# recent_postings_in_subsystem (and two siblings) from the IN-list shape
 # `WHERE a.id IN (UNION-of-seeks)` to an EXISTS shape; the EXISTS
 # regression killed lkml from 24 s to 351 s on production and was
 # reverted in v2.8.1. MEMORY.md "measure perf PRs against the WORST
@@ -420,68 +433,28 @@ def test_daily_volume_in_subsystem_returns_zero_series_for_zero_paths(
 # SCAN would surface here.
 
 
-def test_recent_articles_in_subsystem_uses_indexed_seeks_no_full_scan(seeded_db):
-    """`recent_articles_in_subsystem`'s production SQL is:
-    `SELECT ... FROM articles a JOIN article_lists al WHERE al.inbox_id=?
-    AND a.id IN ({path_sql}) ORDER BY a.date DESC LIMIT ?`. The
-    `path_sql` IN-list is the UNION-of-seeks shape from
-    `_subsystem_path_filter_sql` (already plan-pinned in
-    `tests/test_subsystems/test_path_filter.py`).
+def test_recent_postings_in_subsystem_uses_indexed_seeks_no_full_scan(seeded_db):
+    from mimir.subsystems_dashboard.recent import recent_postings_query
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
 
-    Pin: no full SCAN of articles or article_lists; the path filter's
-    `ix_article_files_path` index appears in the plan.
-    """
-    from sqlalchemy import text
-
-    from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
-
-    with seeded_db() as s:
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+    with seeded_db() as session:
         sub = _add_subsystem(
-            s,
-            "PLAN-PIN-TEST",
-            "Maintained",
-            files=["net/", "fs/foo.c"],
-            excludes=["net/bluetooth/"],
+            session, "PLAN", "Maintained", ["net/", "fs/foo.c"], ["net/bluetooth/"]
         )
-        s.commit()
-        path_filter = _subsystem_path_filter_sql(sub, prefix="planpin")
-        assert path_filter is not None, (
-            "test wiring: subsystem has includes, _subsystem_path_filter_sql "
-            "should return a non-None (sql, params) tuple"
+        _add_patch_article(session, "plan@x", ["net/a.c"])
+        session.commit()
+        sid = sub.id
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        from mimir.models import Subsystem
+
+        sub = session.get(Subsystem, sid)
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        plan = plan_of(
+            session,
+            lambda: recent_postings_query(session, inbox, sub),
+            "WITH candidates",
         )
-        path_sql, path_params = path_filter
-
-        full_sql = f"""
-            EXPLAIN QUERY PLAN
-            SELECT a.id, a.message_id, a.subject, a.author, a.date,
-                   a.canonical_inbox_id
-            FROM articles a
-            JOIN article_lists al ON al.article_id = a.id
-            WHERE al.inbox_id = :inbox_id
-              AND a.id IN ({path_sql})
-            ORDER BY a.date DESC
-            LIMIT :limit
-        """
-        plan_rows = s.execute(
-            text(full_sql),
-            {"inbox_id": alpha.id, "limit": 20, **path_params},
-        ).all()
-    plan = "\n".join(r[-1] for r in plan_rows)
-
-    assert "SCAN articles" not in plan, (
-        f"recent_articles_in_subsystem must not full-scan articles; plan:\n{plan}"
-    )
-    assert "SCAN article_lists" not in plan, (
-        f"recent_articles_in_subsystem must not full-scan article_lists; plan:\n{plan}"
-    )
-    assert "SCAN article_files" not in plan, (
-        f"recent_articles_in_subsystem's path-filter IN-list must drive "
-        f"through ix_article_files_path (the UNION-of-seeks shape), NOT "
-        f"a full scan of article_files; the LIKE-with-ESCAPE shape that "
-        f"disabled the index would surface here. plan:\n{plan}"
-    )
-    assert "ix_article_files_path" in plan, (
-        f"recent_articles_in_subsystem must drive via "
-        f"ix_article_files_path on the path-filter join; plan:\n{plan}"
-    )
+    assert "ix_article_files_path" in plan
+    assert "SCAN article_files" not in plan
+    assert "SCAN a" not in plan
+    assert "SCAN al" not in plan

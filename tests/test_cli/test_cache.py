@@ -207,7 +207,7 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
     # All four per-subsystem dashboard helpers must have cached a row
     # for this subsystem.
     expected_keys = [
-        f"recent_articles_in_subsystem:alpha:{sub_id}:30",
+        f"recent_postings_v1:alpha:{sub_id}:30:30",
         f"active_threads_in_subsystem:alpha:{sub_id}:7:10",
         f"daily_volume_in_subsystem:alpha:{sub_id}:30",
         f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10",

@@ -1373,6 +1373,43 @@ its lifetime. The generic cache size and broker request limits still apply.
 Oversized compressed web results render correctly but are not cached; an
 oversized warm reports an error. No truncation is hidden inside a cached result.
 
+### Subsystem posting dashboard (#995)
+
+`subsystems_dashboard/recent.py` groups path/inbox-qualified canonical patches
+by series key, the shared normalized head, and exact stored version before
+selecting the newest 30 postings. Incomplete series metadata is a singleton
+by article ID. The existing UNION of path-index seeks keeps F/X semantics;
+a deterministic connection-local SQLite function calls the existing subject
+predicates so replies and non-patches cannot consume grouped slots. A CASE
+expression gates that callback on indexed inbox membership, since a plain join
+lets SQLite parse a path-matched subject before rejecting its inbox. Registering
+on the executing session also covers the broker's independent read pool.
+
+Only selected postings enter the SQL slot-count and preview windows. All
+matching candidates necessarily have a diff, so the shared diff-first,
+lowest-ID slot rule reduces to lowest ID there. The preview has at most 30
+matching positions per posting, with its complete matching count retained.
+Cover selection uses the full slot rule across paths and inboxes. Cover links
+are message links, since one posting need not be a single thread; dates and
+canonical inbox membership must be usable before rendering a link.
+
+The dedicated primitive `recent_postings_v1:<inbox>:<subsystem>:30:30` cache
+stores posting/article fields only. Route and existing slow warmer use the
+same limits, the existing one-hour TTL/refresh approximation and existing
+fan-out. The global cache namespace, shared DTOs and opaque JSON broker
+transport are unchanged. Oversized web results remain best-effort; the slow
+warm reports an error rather than calling a skipped entry warmed.
+
+Lifecycle state is fetched independently for covers and standalone rows,
+plus active and triage rows. A cover's progress still covers its full posting,
+including other paths/inboxes and missing declared positions as pending.
+Matching preview counts never stand in for that denominator. No-cover postings
+have no inferred whole-series state. Triage prose reads trailer-event counts
+and the lifecycle helper's existing global M/R classification, so multiple
+trailers from one person are not described as distinct reviewers. Ownership
+and reviewer links retain their separate addressability/redaction predicates;
+reviewer rows remain per address pending #986.
+
 ### Active-threads ranking with recency decay
 
 `active_threads` orders by a half-life-weighted score, not raw
@@ -2110,7 +2147,7 @@ The shared `_subsystem_path_filter_sql` builder
 (`mimir/subsystems_dashboard/_path_filter.py`) emits the
 "article IDs matching this subsystem's F: globs and not vetoed by
 its X: globs" SELECT used by every per-subsystem dashboard helper
-(`recent_articles_in_subsystem`, `daily_volume_in_subsystem`,
+(`recent_postings_in_subsystem`, `daily_volume_in_subsystem`,
 `active_threads_in_subsystem`, `active_reviewers_in_subsystem`).
 Its shape is load-bearing for cold-miss latency on busy
 subsystems.
