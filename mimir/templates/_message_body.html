@@ -8,7 +8,7 @@
     </span>
   </nav>
   <header class="mail-header">
-    <h1>{{ parsed.subject or '(no subject)' }}</h1>
+    <h1>{{ parsed.subject|clean_subject or '(no subject)' }}</h1>
     <dl>
       <dt>From</dt><dd>{{ parsed.author|safe_from }}</dd>
       <dt>Date</dt><dd>{{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}</dd>
