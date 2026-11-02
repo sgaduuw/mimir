@@ -1,8 +1,8 @@
 {% from "_lifecycle_badges.html" import badges %}
 <tr class="listing-row">
   <td class="listing-time"><time{% if row_time %} datetime="{{ row_time.isoformat() }}"{% endif %}>{% if row_time %}{% if message_row|default(false) %}<span class="listing-date">{{ row_time.strftime('%Y-%m-%d') }}</span> {% endif %}{{ row_time.strftime('%H:%M') }}{% else %}?{% endif %}</time></td>
-  <td class="listing-main"><a href="{{ row_url }}" class="listing-subject">{{ row_subject|clean_subject or '(no subject)' }}</a>
-    <div class="listing-detail">{% if row_author is defined %}{{ row_author|listing_sender }}{% endif %} {{ badges(lifecycle_status_by_id, row_id) }}</div>
+  <td class="listing-main"><a href="{{ row_url }}" class="listing-subject">{% if row_query is defined %}{{ (row_subject|clean_subject or '(no subject)')|highlight_match(row_query) }}{% else %}{{ row_subject|clean_subject or '(no subject)' }}{% endif %}</a>
+    <div class="listing-detail">{% if row_senders is defined %}{{ row_senders|join(', ') }}{% elif row_author is defined %}{{ row_author|listing_sender }}{% endif %} {{ badges(lifecycle_status_by_id, row_id) }}{% if row_positions|default([]) %}<span class="listing-series">Also matching {{ row_version }} patch{{ 'es' if row_positions|length != 1 else '' }} {{ row_positions|join(', ') }}</span>{% endif %}</div>
   </td>
-  <td class="listing-count">{% if row_role is defined %}<span class="badge">{{ row_role }}</span>{% elif row_replies is defined %}{{ row_replies if row_replies else 'none' }}{% endif %}</td>
+  <td class="listing-count">{% if row_matches is defined %}<a href="{{ row_url }}">{{ row_matches }} matching message{{ 's' if row_matches != 1 else '' }}</a>{% elif row_role is defined %}<span class="badge">{{ row_role }}</span>{% elif row_replies is defined %}{{ row_replies if row_replies else 'none' }}{% endif %}</td>
 </tr>
