@@ -34,6 +34,8 @@ changes, not internal refactors. Categories: **Added**,
 
 - Daily, catch-up and month listings say "1 thread" and "1 message" instead of "1 threads" and "1 messages", and an empty daily page no longer says "Showing 0–0". The message page heading collapses a folded subject onto one line again, as the page title does.
 
+- On the thread page, the revision links in a message's details disclosure open the revision on the thread page that holds it, like the root's Revisions fold and the Patches index. All three scroll in place when that page is already loaded.
+
 ## [3.39.0] - 2026-11-01
 
 ### Added
