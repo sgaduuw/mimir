@@ -29,6 +29,7 @@ from mimir.extensions import SessionLocal
 from mimir.inboxes import list_inboxes, pinned_first
 from mimir.listings import listing_for_day as threads_for_day
 from mimir.listings import listing_for_month, listing_since, warm_listing
+from mimir.maintainer_directory import warm_maintainer_review_counts
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -281,7 +282,8 @@ def _build_slow_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
     """Slow tier global warm targets: `sitemap:meta`,
-    `sitemap:maintainers` and `most_active_subsystems_global (7d)`.
+    `sitemap:maintainers`, `most_active_subsystems_global (7d)` and
+    per-maintainer review counts.
 
     The aggregator reads per-inbox cache rows, so it MUST run after
     the per-inbox slow tier has populated those rows (the broker
@@ -307,6 +309,7 @@ def _build_slow_global_targets(
             lambda s: most_active_subsystems_global(s, days=7),
         )
     )
+    targets.append(("maintainer_review_counts", warm_maintainer_review_counts))
     return targets
 
 
@@ -319,10 +322,8 @@ def _build_global_targets(
     list. New scheduler-side callers use _build_fast_global_targets /
     _build_slow_global_targets directly.
 
-    Order is sitemap:index, sitemap:meta, sitemap:maintainers,
-    most_active_subsystems_global when sitemap_base is set, matching
-    the pre-split shape (which inserted the sitemap targets at the
-    front)."""
+    Sitemap targets come first when sitemap_base is set, followed by
+    the cross-inbox activity aggregator and maintainer review counts."""
     return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets(
         sitemap_base
     )

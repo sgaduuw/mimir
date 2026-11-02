@@ -168,6 +168,30 @@ adds overhead. Disable the setting and restart when finished, then remove the
 snapshots you no longer need. Only load snapshots from a trusted source.
 
 
+### Maintainer review counts
+
+The slow global warm target `maintainer_review_counts` refreshes one primitive
+inbox/count map per supported, normalized `M:` address under
+`maintainer:review_counts_v1:<address>`. It uses the existing broker cache-write
+path, directory TTL of 3600 seconds, refresh window and slow-tier extension
+(7200 seconds by default). This is approximate freshness, not an hourly-update
+guarantee. New owners enter when the cached directory refreshes. The profile
+route checks current `M:` existence before reading either cache, so removed
+owners return 404 even while old entries survive.
+
+Requests only read these count entries. A missing or expired entry uses the
+profile's alphabetical inbox list without counts. A present map, including an
+empty one, supplies both the displayed inboxes and the header total because
+profile and count entries can refresh independently. The existing registered
+profile payload remains unchanged for rolling versions. Profile responses keep
+their existing `public, max-age=600` policy without ETag or Last-Modified.
+
+The read-only production measurement on 2026-11-02 covered all 2070 eligible
+addresses: 3.950 seconds of summed query time, 4.067 seconds wall time for reads
+and encoding, 113 ms maximum single query, and at most 2547 encoded JSON bytes
+per address. Sample plans used the trailer role/address index. These figures
+exclude cache writes and do not predict the complete warm-cycle duration.
+
 ### Window listing caches
 
 Daily, month and catch-up listings share compact, level-1 zlib-compressed

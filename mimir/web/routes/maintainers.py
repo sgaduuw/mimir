@@ -13,6 +13,7 @@ from flask import abort, render_template
 from mimir.extensions import SessionLocal
 from mimir.maintainer_directory import (
     MaintainerProfile,
+    cached_maintainer_review_counts,
     is_addressable_maintainer_address,
     maintainer_path,
     maintainer_profile,
@@ -60,11 +61,21 @@ def maintainer_view(address: str):
         if profile is None:
             abort(404)
 
+    review_counts = cached_maintainer_review_counts(address_normalized)
+    # Counts and profile refresh independently. Use one snapshot for both
+    # chips and the header total, including an intentionally empty snapshot.
+    review_inboxes = (
+        profile.review_inboxes
+        if review_counts is None
+        else sorted(review_counts, key=lambda name: (-review_counts[name], name))
+    )
     base = _site_base()
     canonical_url = base + maintainer_path(address_normalized)
     return render_template(
         "maintainer.html",
         profile=profile,
+        review_counts=review_counts,
+        review_inboxes=review_inboxes,
         canonical_url=canonical_url,
         page_json_ld=_json_ld_maintainer(profile, canonical_url),
         current_inbox=None,

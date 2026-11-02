@@ -1089,3 +1089,30 @@ def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, clien
     cards = re.findall(r'<a class="inbox-card"[^>]*href="/([^/"]+)/"', page)
     assert cards[:2] == ["zz-pin", "yy-pin"]
     assert cards == _warm_order(monkeypatch)
+
+
+def test_maintainer_counts_warm_only_on_slow_and_all_global_targets(session):
+    from mimir import cache
+    from mimir.cli.cache import (
+        _build_fast_global_targets,
+        _build_global_targets,
+        _build_slow_global_targets,
+    )
+    from mimir.maintainer_directory import cached_maintainer_review_counts
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    sub = Subsystem(name="OWNER", status="Maintained")
+    sub.maintainers.append(
+        SubsystemMaintainer(role="M", name="Owner", address="owner@kernel.org")
+    )
+    session.add(sub)
+    session.commit()
+    for base in ("", "https://example.test"):
+        assert "maintainer_review_counts" not in dict(_build_fast_global_targets(base))
+        slow = dict(_build_slow_global_targets(base))
+        combined = [label for label, _ in _build_global_targets(base)]
+        assert combined.count("maintainer_review_counts") == 1
+        # Exercise the actual target and the ordinary cache writer path.
+        with cache.ttl_extension(7200):
+            slow["maintainer_review_counts"](session)
+        assert cached_maintainer_review_counts("owner@kernel.org") == {}

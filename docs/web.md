@@ -75,7 +75,15 @@ The subsystem index lists addressable active subsystems in activity order,
 with seven-day message counts, proportional bars, maintainer summaries and
 last-activity dates. Its columns stack on phones. It can be empty before a
 slow cache-warming pass; a request never runs the activity aggregation.
-Maintainer profiles collect activity across inboxes.
+Maintainer profiles collect activity across inboxes for each MAINTAINERS `M:`
+address. Their header shows initials and subsystem/inbox totals; lowercase
+subsystem cards carry status pills and stack on phones. Cards have no links
+because this page has no selected inbox. Review chips link to each inbox's
+reviewer listing. When cached counts are available, chips sort by descending
+count with alphabetical ties; otherwise they stay alphabetical without counts.
+Counts cover all indexed review-trailer events: multiple roles on one message
+count separately, and cross-posts contribute to each inbox. They are not counts
+of unique patches or people.
 
 ## Page and feed reference
 
