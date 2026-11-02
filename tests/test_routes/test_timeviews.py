@@ -347,7 +347,7 @@ def test_since_lists_only_the_cap_newest_first_with_notice(
     # A later date only drops older threads, so the notice must not
     # suggest one would show the rest (#799 review).
     assert "later date" not in body
-    assert "5 messages in this window" in body
+    assert "5 messages across 5 threads" in body
 
 
 def test_since_exactly_the_cap_has_no_notice(
@@ -370,16 +370,16 @@ def test_since_pre_floor_dates_share_one_compute(
     window: one cache key, one compute."""
     from datetime import datetime, timedelta
 
-    from mimir import threading as mimir_threading
+    from mimir import listings
 
     calls = []
-    real = mimir_threading._active_threads_query
+    real = listings.listing_query
 
     def counting(*args, **kwargs):
         calls.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(mimir_threading, "_active_threads_query", counting)
+    monkeypatch.setattr(listings, "listing_query", counting)
     now = datetime.now(UTC)
     for days in (200, 365):
         old = (now - timedelta(days=days)).strftime("%Y-%m-%d")
@@ -568,4 +568,5 @@ def test_daily_reply_count_links_to_the_thread_view(client, tmp_path, frozen_clo
     body = client.get("/alpha/today").get_data(as_text=True)
     canonical = client.get(msg_path + "/t").get_data(as_text=True)
     assert f'<link rel="canonical" href="http://localhost{msg_path}/t">' in canonical
-    assert f'<a href="{msg_path}/t">1 reply today</a>' in body
+    assert f'href="{msg_path}/t" class="listing-subject"' in body
+    assert '<td class="listing-count">1</td>' in body

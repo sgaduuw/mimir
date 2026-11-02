@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import coerce_dt
 from mimir.models import Article, ArticleList, Inbox
+from mimir.pull_requests import PULL_LIKE
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
@@ -216,7 +217,7 @@ def latest_pull_requests(
         session,
         inbox,
         "latest_pull_requests",
-        "a.subject LIKE '[GIT PULL]%'",
+        f"a.subject LIKE '{PULL_LIKE}'",
         limit,
         force,
     )

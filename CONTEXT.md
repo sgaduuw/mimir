@@ -1335,6 +1335,44 @@ Indexed and computed at ingest in `_to_article_insert`. Existing rows are
 backfilled by a one-shot Python loop because SQL doesn't easily express
 the regex-based prefix stripping.
 
+### Compact window listings (#991)
+
+Daily, month and catch-up views cache one uncapped, unfiltered root set in
+`listing_threads_v1:<inbox>:<window>`. A listing-owned representation holds
+inbox identity once and primitive row arrays in the documented column order
+in listings.py. Dates are plain ISO strings. Every listing key stores the
+same `zlib-json-v1` envelope: level-1 zlib-compressed JSON encoded as base64,
+plus the producer's raw UTF-8 byte length. Decode checks that exact length
+with bounded output and requires a complete stream with no trailing data.
+This is an integrity check, not an independent limit on a legitimate result's
+working set. The general serializer, broker protocol, registered ActiveThread
+contract and cache namespace remain unchanged. Old and new workers use
+different key families during rolling updates; the broker stores already
+encoded JSON without needing the listing decoder.
+
+Production measurement on 2026-11-02 UTC, Mimir 3.39.0:
+203 inboxes and 406 proposed current-month/maximum-since queries took
+38.974 seconds of serial SQL time, with 1.078 seconds packing, producing
+47.89 MB of raw compact JSON. Only lkml's 90-day entry exceeded 8 MiB.
+For that 38,875-thread window, raw compact JSON was 9,468,100 bytes;
+level-1 compression produced a 5,256,038-byte base64 JSON envelope and a
+5,256,164-byte broker request, taking 116.82 ms to compress/encode and
+89.102 ms to decode/check all fields. The final raw_bytes integrity field
+adds exactly 20 value bytes and 22 request bytes with the same request key
+and RPC id, giving 5,256,058 and 5,256,186 bytes respectively. That metadata
+adjustment is calculated with the actual serializer, not a new production
+query. Level 6 saved
+additional space but took 271.849 ms, so level 1 was selected. These are
+serial-query and single-window codec measurements, not a concurrent warm
+load test or a guaranteed fleet refresh duration.
+
+Filters run before caps and daily pagination; lifecycle queries run after
+slicing. Root patch metadata preserves the same not-a-reply rule used by
+patch state. Unanswered means zero replies in the selected window, not over
+its lifetime. The generic cache size and broker request limits still apply.
+Oversized compressed web results render correctly but are not cached; an
+oversized warm reports an error. No truncation is hidden inside a cached result.
+
 ### Active-threads ranking with recency decay
 
 `active_threads` orders by a half-life-weighted score, not raw

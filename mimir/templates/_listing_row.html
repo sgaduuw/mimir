@@ -1,0 +1,8 @@
+{% from "_lifecycle_badges.html" import badges %}
+<tr class="listing-row">
+  <td class="listing-time"><time{% if row_time %} datetime="{{ row_time.isoformat() }}"{% endif %}>{% if row_time %}{% if message_row|default(false) %}<span class="listing-date">{{ row_time.strftime('%Y-%m-%d') }}</span> {% endif %}{{ row_time.strftime('%H:%M') }}{% else %}?{% endif %}</time></td>
+  <td class="listing-main"><a href="{{ row_url }}" class="listing-subject">{{ row_subject|clean_subject or '(no subject)' }}</a>
+    <div class="listing-detail">{% if row_author is defined %}{{ row_author|listing_sender }}{% endif %} {{ badges(lifecycle_status_by_id, row_id) }}</div>
+  </td>
+  <td class="listing-count">{% if row_role is defined %}<span class="badge">{{ row_role }}</span>{% elif row_replies is defined %}{{ row_replies if row_replies else 'none' }}{% endif %}</td>
+</tr>

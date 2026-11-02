@@ -493,3 +493,33 @@ def _advertised_urls_for(
         else:
             out[art_id] = base + _msg_url(article, name)
     return out
+
+
+def listing_options(args, *, paging=False):
+    """Accept the same listing options emitted by listing_url."""
+    from mimir.listings import FILTERS
+
+    selected = args.get("filter", "all")
+    raw = args.get("page", "1")
+    if (
+        selected not in FILTERS
+        or not raw.isascii()
+        or not raw.isdecimal()
+        or len(raw) > 9
+    ):
+        abort(404)
+    page = int(raw)
+    if page < 1 or (not paging and page != 1):
+        abort(404)
+    return selected, page
+
+
+def listing_url(path: str, selected="all", page=1):
+    """Build only option combinations the listing routes accept."""
+    listing_options({"filter": selected, "page": str(page)}, paging=True)
+    params = {}
+    if selected != "all":
+        params["filter"] = selected
+    if page != 1:
+        params["page"] = page
+    return path + ("?" + urlencode(params) if params else "")
