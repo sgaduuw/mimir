@@ -33,6 +33,7 @@ from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
+from mimir.pull_requests import PULL_PREFIX, is_pull_subject
 from mimir.rendering import render_body, render_body_text
 from mimir.rendering.linkify import EMAIL_TOKEN_RE as _EMAIL_TOKEN_RE
 from mimir.subsystems import (
@@ -648,3 +649,25 @@ def _highlight_match_filter(subject: str | None, query: str | None) -> Markup:
         + Markup("</mark>")
         + escape(subject[end:])
     )
+
+
+@bp_web.app_template_filter("pull_label")
+def _pull_label(subject: str | None) -> str:
+    """Strip only the shared pull predicate's prefix, for display."""
+    subject = subject or ""
+    label = subject[len(PULL_PREFIX) :].strip() if is_pull_subject(subject) else subject
+    return label or subject or "(no subject)"
+
+
+@bp_web.app_template_filter("release_label")
+def _release_label(subject: str | None) -> str:
+    """Use an announcement's version token without changing its URL."""
+    subject = subject or ""
+    parts = subject.split(maxsplit=2)
+    if (
+        len(parts) > 1
+        and parts[0] == "Linux"
+        and re.fullmatch(r"[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z]+[0-9]+)?", parts[1])
+    ):
+        return parts[1]
+    return subject or "(no subject)"

@@ -1038,6 +1038,7 @@ def test_message_page_hunk_quote_omits_jump_link_when_parent_off_list(
 def test_maintainer_listed_address_surfaces_in_from_line(
     client,
     tmp_path,
+    monkeypatch,
 ):
     """A From-line address that isn't in the static
     `email_allowlist` BUT is listed as M:/R: in `subsystem_maintainers`
@@ -1049,6 +1050,7 @@ def test_maintainer_listed_address_surfaces_in_from_line(
     from mimir.extensions import SessionLocal
     from mimir.models import Subsystem, SubsystemMaintainer
 
+    monkeypatch.setattr(settings, "email_allowlist", [])
     with SessionLocal() as s:
         sub = Subsystem(name="OUTSIDE-CONTRIB", status="Maintained")
         s.add(sub)
@@ -1064,40 +1066,50 @@ def test_maintainer_listed_address_surfaces_in_from_line(
         s.commit()
     maintainer_allowlist.invalidate()
 
+    assert "contrib@somecorp.example" in maintainer_allowlist.maintainer_addresses()
+
     # Ingest one article with that address as the sender.
-    _ingest_one_article(
+    _, url = _ingest_one_article(
         tmp_path,
         "alpha",
         "from-test@example.com",
         subject="patch from outside contributor",
         author="Outside Contributor <contrib@somecorp.example>",
     )
-    # The author surfaces on the inbox dashboard recent list.
-    body = client.get("/alpha/").data.decode()
-    assert "contrib@somecorp.example" in body, (
-        "MAINTAINERS-derived address should bypass <hidden> redaction"
+    response = client.get(url)
+    assert response.status_code == 200
+    assert (
+        "<dt>From</dt><dd>Outside Contributor &lt;contrib@somecorp.example&gt;</dd>"
+        in response.get_data(as_text=True)
     )
+    dashboard = client.get("/alpha/").get_data(as_text=True)
+    assert '<span class="recent-sender">Outside Contributor</span>' in dashboard
 
 
-def test_non_maintainer_address_still_redacted(client, tmp_path):
+def test_non_maintainer_address_still_redacted(client, tmp_path, monkeypatch):
     """Inverse: an address neither in the static allowlist nor
     MAINTAINERS still goes through the `<hidden>` placeholder.
     Without this, the union check would be silently leaking and we
     couldn't tell."""
     from mimir import maintainer_allowlist
 
-    maintainer_allowlist.invalidate()  # ensure empty set
-    _ingest_one_article(
+    monkeypatch.setattr(settings, "email_allowlist", [])
+    maintainer_allowlist.invalidate()
+    assert "rando@somecorp.example" not in maintainer_allowlist.maintainer_addresses()
+    _, url = _ingest_one_article(
         tmp_path,
         "alpha",
         "from-test-2@example.com",
         subject="patch from random",
         author="Random Sender <rando@somecorp.example>",
     )
-    body = client.get("/alpha/").data.decode()
+    response = client.get(url)
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert "<dt>From</dt><dd>Random Sender &lt;hidden&gt;</dd>" in body
     assert "rando@somecorp.example" not in body
-    # Display name + <hidden> placeholder is the documented shape.
-    assert "Random Sender" in body
+    dashboard = client.get("/alpha/").get_data(as_text=True)
+    assert '<span class="recent-sender">Random Sender</span>' in dashboard
 
 
 def test_message_page_shows_applied_as_when_mainline_commit_matches(
