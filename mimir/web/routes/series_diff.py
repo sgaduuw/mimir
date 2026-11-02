@@ -7,13 +7,10 @@ in-series patch. Both `from` and `to` are version strings (`v1`,
 `v2`, etc.) as they appear in `Article.patch_series_version`. `s` is
 the series head id (#816), absent for a key's first series.
 
-Resolves both revisions' cover letters by series (key and head) and
-`patch_series_version`, walks each cover's thread children to find
-in-series patches (`mimir.patch_revisions.resolve_series_patches`),
-matches the requested position across revisions, fetches both
-bodies via `store.read_message`, computes the unified diff, and
-caches the rendered HTML for 24h (source emails are immutable
-once committed to the public-inbox mirror, so the diff is stable).
+Resolves exact series slots with request-local navigation metadata, retaining
+subject/file matching where indexing is incomplete. Fetches only the selected
+two bodies and caches their rendered diff for 24 hours. Navigation and canonical
+nomination are refreshed independently of that body cache.
 
 Per-issue-210 design choices:
 - **Full body** diff (commit message + patch hunks); the commit-
@@ -25,36 +22,30 @@ Per-issue-210 design choices:
 """
 
 from flask import abort, render_template, request
-from sqlalchemy import func, select
 
 from mimir import cache
 from mimir.extensions import SessionLocal
 from mimir.models import Article
 from mimir.patch_revisions import (
-    AMBIGUOUS_MATCH,
     RevisionDiff,
     compute_revision_diff,
-    match_revision_position,
     patch_bracket,
-    resolve_series_patches,
 )
-from mimir.patch_series import same_series, slot_winner
-from mimir.patches import article_has_files
 from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _clean_subject_filter
+from mimir.web.series_diff_navigation import load_series_diff_navigation
 from mimir.web.urls import (
     _canonical_url_for,
     _get_inbox_or_404,
-    _series_diff_url,
     _site_base,
 )
 
 # Long TTL: source emails are immutable in the public-inbox mirror
 # (see CONTEXT.md "Append-only upstreams"), so a computed diff
 # between two specific revisions is stable forever. 24h matches
-# the archive-stats cache shape; cache.NAMESPACE_VERSION bump
-# invalidates everything if the RevisionDiff shape ever changes.
+# the archive-stats cache shape. The render2 key versions the markup
+# without changing the registered RevisionDiff wire shape.
 REVISION_DIFF_CACHE_TTL_SEC = 86400
 
 # SQLite binds signed 64-bit integers; a larger one raises OverflowError
@@ -71,42 +62,6 @@ def _positive_int_or_404(raw: str) -> int:
     if not 1 <= value < _SQLITE_INT_LIMIT:
         abort(404)
     return value
-
-
-def _resolve_via_index(
-    session,
-    series_key: str,
-    head_id: int | None,
-    from_version: str,
-    to_version: str,
-    pos: int,
-) -> tuple[list[Article], list[Article]]:
-    """Indexed lookup for the article at `(series, version, pos)` for
-    both sides. Returns `(from_slot, to_slot)`; a side is empty when its
-    row hasn't been backfilled yet, in which case the caller falls back
-    to the heuristic resolver. A side holds one article, the slot's
-    patch (`patch_series.slot_rank`), when the same slot was sent
-    twice (a resend): the rest are re-posts.
-
-    One SELECT over the `ix_articles_patch_series_key` index, then
-    position filter, fast.
-    """
-    rows = session.execute(
-        select(Article, article_has_files()).where(
-            same_series(series_key, head_id),
-            Article.patch_series_version.in_([from_version, to_version]),
-            # NULL is 0, as in the revisions fold that links here.
-            func.coalesce(Article.patch_series_position, 0) == pos,
-        )
-    ).all()
-
-    def winner(version: str) -> list[Article]:
-        slot = [
-            (a, has_diff) for a, has_diff in rows if a.patch_series_version == version
-        ]
-        return [slot_winner(slot)] if slot else []
-
-    return winner(from_version), winner(to_version)
 
 
 def _message_url(article: Article) -> str:
@@ -145,112 +100,36 @@ def series_diff(inbox_name: str, series_key: str):
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
 
-        # Indexed-lookup primary path (#212): with
-        # `patch_series_position` populated on both covers (pos=0)
-        # and in-series patches (pos=N), a single indexed query
-        # returns the two articles directly, no thread walk + match
-        # heuristic. The heuristic fallback below catches articles
-        # whose backfill hasn't run yet (rolling deploy, partial
-        # backfill), so the route stays correct during transition.
-        # Cover-letter listing for the "Available: …" 404 hint is
-        # still needed for unknown-revision URLs.
-        covers = (
-            session.execute(
-                select(Article).where(
-                    same_series(series_key, head_id),
-                    Article.patch_series_version.in_([from_version, to_version]),
-                    func.coalesce(Article.patch_series_position, 0) == 0,
-                )
-            )
-            .scalars()
-            .all()
+        navigation = load_series_diff_navigation(
+            session, inbox, series_key, head_id, from_version, to_version, pos
         )
-        from_cover = next(
-            (c for c in covers if c.patch_series_version == from_version),
-            None,
-        )
-        to_cover = next(
-            (c for c in covers if c.patch_series_version == to_version),
-            None,
-        )
-        if from_cover is None or to_cover is None:
-            # Show the list of available revisions in the 404 message
-            # so the user can fix the URL without guessing.
-            available = sorted(
-                {c.patch_series_version for c in covers if c.patch_series_version}
-            )
-            if not available:
-                # The series (key, and `s` head) is unknown. Plain 404; nothing to
-                # show.
-                abort(404)
-            abort(
-                404,
-                description=(
-                    f"Series revision(s) not found. Available: {', '.join(available)}"
-                ),
-            )
-
-        from_slot, to_slot = _resolve_via_index(
-            session,
-            series_key,
-            head_id,
-            from_version,
-            to_version,
-            pos,
-        )
+        from_cover, to_cover = navigation.from_cover, navigation.to_cover
 
         # Cache key: what the diff is computed from, not the series
         # identity in the URL (#816), so re-chaining a key can never
         # serve one series' diff for another. That is the two slots'
-        # winner ids, which move when a row gains a diff, or, when either
-        # is empty, the two covers the heuristic fallback walks from. The versions and position stay
+        # winner ids, which move when a row gains a diff. A fallback also
+        # carries the two covers it walked from and the matched children:
+        # a later child can change a match while the cover ids stay put.
+        # The versions and position stay
         # too, because the cached diff is labelled with them and
         # `backfill-patch-series --reprocess` can rewrite a stored
         # version in place under the same ids. The inbox stays because
         # the body read depends on it: each list archives its own copy
         # (some append a footer), and the heuristic walks thread
         # children in the URL's inbox.
-        if from_slot and to_slot:
-            sides = f"{from_slot[0].id}:{to_slot[0].id}"
+        if navigation.indexed:
+            sides = f"{navigation.from_article.id}:{navigation.to_article.id}"
         else:
-            sides = f"h{from_cover.id}:{to_cover.id}"
-        cache_key = (
-            f"revision_diff:{inbox.name}:{from_version}:{to_version}:{pos}:{sides}"
-        )
+            sides = (
+                f"h{from_cover.id}:{to_cover.id}:"
+                f"{navigation.from_article.id}:{navigation.to_article.id}"
+            )
+        cache_key = f"revision_diff:render2:{inbox.name}:{from_version}:{to_version}:{pos}:{sides}"
 
         def _compute() -> RevisionDiff:
-            v1_candidates, v2_candidates = from_slot, to_slot
-            if not v1_candidates or not v2_candidates:
-                # Indexed lookup didn't find one or both sides
-                # (in-series patch awaiting backfill, or partial
-                # ingest). Fall back to the heuristic resolver from
-                # #210. Drop this fallback once prod backfill is
-                # complete.
-                v1_patches = resolve_series_patches(session, inbox, from_cover)
-                v2_patches = resolve_series_patches(session, inbox, to_cover)
-                match = match_revision_position(v1_patches, v2_patches, pos)
-                if match is AMBIGUOUS_MATCH:
-                    abort(
-                        404,
-                        description=(
-                            f"Couldn't pick which v{to_version.lstrip('v')} patch "
-                            f"corresponds to v{from_version.lstrip('v')}'s "
-                            f"pos={pos}: multiple candidates have matching file "
-                            "overlap."
-                        ),
-                    )
-                if match is None:
-                    abort(
-                        404,
-                        description=(
-                            f"No counterpart in v{to_version.lstrip('v')} for "
-                            f"v{from_version.lstrip('v')}'s pos={pos}; it may have "
-                            "been dropped between revisions."
-                        ),
-                    )
-                v1_in_series, v2_in_series = match  # type: ignore[misc]
-                v1_candidates = [v1_in_series.article]
-                v2_candidates = [v2_in_series.article]
+            v1_candidates = [navigation.from_article]
+            v2_candidates = [navigation.to_article]
             v1_read = read_first_readable(session, v1_candidates, inbox.id)
             v2_read = read_first_readable(session, v2_candidates, inbox.id)
             if v1_read is None or v2_read is None:
@@ -284,29 +163,14 @@ def series_diff(inbox_name: str, series_key: str):
             REVISION_DIFF_CACHE_TTL_SEC,
             _compute,
         )
-        # Not cached with the diff: the nominated inbox follows
-        # `canonical_inbox_id` and `canonical_demoted_inboxes`, which
-        # can change inside the 24h the diff lives.
-        # When either slot is empty the body came from the heuristic,
-        # which walks the URL's inbox only, so that inbox is the one
-        # known to serve the diff.
-        canonical_url = _series_diff_url(
-            to_slot[0] if from_slot and to_slot else None,
-            series_key,
-            from_version,
-            to_version,
-            pos,
-            head_id=head_id,
-            fallback_inbox=inbox.name,
-            base=_site_base(),
-        )
+        canonical_url = _site_base() + navigation.canonical_path
         # The title and description name the series (#846): ~194k of these
         # pages shared one generic title.
         bracket = patch_bracket(to_cover.subject or "")
         series_subject = bracket[1] if bracket else to_cover.subject
 
     position_label = "cover letter" if pos == 0 else f"patch {pos}"
-    # One string for the H1 and the title, so they cannot drift (#880).
+    # The document title also identifies this particular comparison.
     heading = (
         f"{_clean_subject_filter(series_subject)}: "
         f"{diff.from_version}→{diff.to_version} diff ({position_label})"
@@ -320,5 +184,6 @@ def series_diff(inbox_name: str, series_key: str):
         series_subject=series_subject,
         heading=heading,
         diff=diff,
+        navigation=navigation,
         position_label=position_label,
     )

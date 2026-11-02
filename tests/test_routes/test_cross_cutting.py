@@ -758,14 +758,32 @@ def test_keyboard_nav_script_loaded_on_every_page(client, inbox_name):
     """keyboard-nav.js (vim-style hjkl + ? for help) ships on every
     rendered page via base.html. Deferred (no FOUC concern; the
     controller binds on document keydown after parse)."""
+    from html.parser import HTMLParser
+    from urllib.parse import parse_qs, urlsplit
+
+    from mimir import __version__
+
+    class Scripts(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                scripts.append(dict(attrs))
+
     for path in ("/", f"/{inbox_name}/", f"/{inbox_name}/today"):
+        scripts = []
         body = client.get(path, follow_redirects=True).data.decode()
-        assert 'src="/static/js/keyboard-nav.js"' in body, (
-            f"keyboard-nav.js missing on {path!r}"
-        )
-        # `defer` keeps the load asynchronous, unlike thread-fold.js,
-        # which is synchronous to dodge FOUC.
-        assert 'src="/static/js/keyboard-nav.js" defer' in body
+        Scripts().feed(body)
+        matches = [
+            attrs
+            for attrs in scripts
+            if urlsplit(attrs.get("src", "")).path == "/static/js/keyboard-nav.js"
+        ]
+        assert len(matches) == 1, f"keyboard-nav.js missing or duplicated on {path!r}"
+        script = matches[0]
+        source = urlsplit(script["src"])
+        assert not source.netloc
+        assert parse_qs(source.query) == {"v": [__version__]}
+        # Deferred execution preserves ordering with the other page controllers.
+        assert "defer" in script and "async" not in script
 
 
 def test_keyboard_help_dialog_present_on_every_page(client, inbox_name):
