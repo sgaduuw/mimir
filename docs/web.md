@@ -11,7 +11,12 @@ Start at `/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and
 archive statistics. Browse by day or month, or search subjects and authors.
 Search is substring-based rather than full-text body search; broad misses can
-be expensive on a cold archive.
+be expensive on a cold archive. The 100 newest matching messages are grouped by
+inbox thread root, using the newest match's subject and time. Each row shows
+matching sender names and a linked matching-message count, rather than the
+thread's lifetime size. Multiple matching patches of the displayed posting
+show their additional positions. The cap applies before grouping; refine the
+query to find older matches.
 
 A message page shows a mail header, body and attachments, followed by its
 thread overview. The context bar links to the whole thread and offers

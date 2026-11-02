@@ -1083,3 +1083,9 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 }
 
 .listing-date { display: block; overflow-wrap: anywhere; }
+
+/* Keep sender lists and posting notes within the fixed listing columns. */
+.listing-detail { overflow-wrap: anywhere; }
+.listing-series { display: block; }
+.search-form input[type="search"] { border-radius: var(--pico-border-radius); min-height: 44px; }
+.search-form button { min-height: 44px; }
