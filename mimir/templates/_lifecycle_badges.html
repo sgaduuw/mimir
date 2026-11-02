@@ -1,3 +1,6 @@
+{% macro badges(status_map, article_id, activity=false) -%}
+{%- set status = status_map.get(article_id) if status_map else None -%}
+{%- set show_activity = activity -%}
 {# Listing-row badges: activity chip + (optional) lifecycle pill.
 
    Caller passes `status` (LifecycleStatusInfo or None). The activity
@@ -25,3 +28,6 @@
 </span>
 {%- endif -%}
 {%- endif -%}
+
+{%- endmacro %}
+{{ badges({0: status}, 0, show_activity|default(true)) if status is defined else "" }}

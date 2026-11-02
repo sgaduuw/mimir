@@ -27,6 +27,8 @@ from mimir.dashboard import (
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import list_inboxes, pinned_first
+from mimir.listings import listing_for_day as threads_for_day
+from mimir.listings import listing_for_month, listing_since, warm_listing
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -40,7 +42,7 @@ from mimir.subsystems_dashboard import (
     quiet_patches_in_subsystem,
     recent_articles_in_subsystem,
 )
-from mimir.threading import active_threads, threads_for_day
+from mimir.threading import THREADS_SINCE_MAX_DAYS, active_threads
 from mimir.web import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
@@ -140,11 +142,23 @@ def _build_slow_inbox_targets(
         ),
         (
             f"{inbox.name} threads_for_day (today)",
-            lambda s, ib=inbox: threads_for_day(s, ib, today),
+            lambda s, ib=inbox: warm_listing(threads_for_day(s, ib, today)),
         ),
         (
             f"{inbox.name} threads_for_day (yesterday)",
-            lambda s, ib=inbox: threads_for_day(s, ib, yesterday),
+            lambda s, ib=inbox: warm_listing(threads_for_day(s, ib, yesterday)),
+        ),
+        (
+            f"{inbox.name} listing current month",
+            lambda s, ib=inbox: warm_listing(
+                listing_for_month(s, ib, today.year, today.month)
+            ),
+        ),
+        (
+            f"{inbox.name} listing since maximum",
+            lambda s, ib=inbox: warm_listing(
+                listing_since(s, ib, today - timedelta(days=THREADS_SINCE_MAX_DAYS))
+            ),
         ),
         (
             f"{inbox.name} daily_volume (30d)",

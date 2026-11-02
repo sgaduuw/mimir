@@ -22,6 +22,7 @@
   <meta name="htmx-config" content='{"historyRestoreAsHxRequest":false}'>
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
+  <script src="{{ url_for('static', filename='js/theme.js') }}?v={{ mimir_version }}"></script>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">
   {% if noindex %}
   <meta name="robots" content="noindex">
@@ -149,6 +150,13 @@
         {# The one site-wide page to browse; readers mostly arrive on a
            thread from a search engine, never seeing the front page (#891). #}
         <li><small>{% call nav_link(url_for('web.merge_window_page')) %}Merge window{% endcall %}</small></li>
+        <li id="theme-control" hidden>
+          <select id="theme-select" class="theme-select" aria-label="Color theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </li>
       </ul>
     </nav>
     {% block content %}{% endblock %}

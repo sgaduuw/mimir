@@ -39,6 +39,11 @@ text, so it works without JavaScript too). Patch bodies there keep their
 
 ## Follow patch and review activity
 
+The navigation's theme selector offers System, Light and Dark. System follows
+your device preference; Light and Dark are remembered in this browser. On a
+phone within an inbox, open the navigation menu to reach the selector. Without JavaScript,
+the site follows your system theme.
+
 Thread pages show review trailers, maintainer attestations, tracked-tree landing
 records, revision history, and links to compare patch revisions. Each message
 also has a details disclosure for its own status, subsystem attribution and
@@ -62,7 +67,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | --- | --- |
 | `/` | List of inboxes |
 | `/<inbox>/` | Inbox dashboard |
-| `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views |
+| `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views, 100 threads per page (`?page=2`) |
 | `/<inbox>/since/<date>` | Activity since an ISO date (`YYYY-MM-DD`), limited to the last 90 days |
 | `/<inbox>/<YYYY>/`, `/<inbox>/<YYYY>/<MM>/` | Year and month archives |
 | `/<inbox>/search?q=<query>` | Search subject and author |
@@ -86,6 +91,19 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
 | `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
+
+Daily, month and since listings accept `?filter=patches`, `?filter=unanswered`
+or `?filter=pulls`; omitting the filter shows all threads. Unanswered means
+no replies in the selected window. Filtering precedes display caps. Daily
+paging preserves the filter, for example `/lkml/today?filter=patches&page=2`.
+Invalid filters/pages and pages beyond the result set return 404. Month shows
+at most 100 matching threads; since shows at most 200. Author and reviewer
+listings remain message lists, without these thread filters.
+
+Today, yesterday and since are noindex with no canonical on every page.
+Filtered month views are also noindex; links remain followable. Unfiltered
+month archives retain their archive indexing policy.
+
 
 Unsupported maintainer addresses remain visible as text without profile links.
 Unknown or unsupported profile addresses return 404.

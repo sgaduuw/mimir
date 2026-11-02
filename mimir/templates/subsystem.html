@@ -1,3 +1,4 @@
+{% from "_lifecycle_badges.html" import badges %}
 {% extends "base.html" %}
 {% block title %}{{ subsystem.name|lower }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|lower }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
@@ -68,8 +69,7 @@
   <ul>
     {% for t in active %}
     <li>
-      {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
+      {{ badges(lifecycle_status_by_id, t.id, true) }}
       <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
         &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d
@@ -112,8 +112,7 @@
   <ul>
     {% for p in recent %}
     <li>
-      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
+      {{ badges(lifecycle_status_by_id, p.article_id, true) }}
       <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
         &middot; {{ p.author|safe_from }}</small>
@@ -134,8 +133,7 @@
   <ul>
     {% for p in needs_attention %}
     <li>
-      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
+      {{ badges(lifecycle_status_by_id, p.article_id, true) }}
       <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       {%- if p.series_more %} <small>+{{ p.series_more }} more in this series</small>{% endif %}
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
@@ -153,8 +151,7 @@
   <ul>
     {% for p in quiet %}
     <li>
-      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
+      {{ badges(lifecycle_status_by_id, p.article_id, true) }}
       <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
       {%- if p.series_more %} <small>+{{ p.series_more }} more in this series</small>{% endif %}
       <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}

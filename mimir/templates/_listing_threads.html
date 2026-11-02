@@ -1,0 +1,19 @@
+<table class="listing-table">
+  <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies</th></tr></thead>
+  <tbody>
+  {% set days = namespace(previous=none) %}
+  {% for t in threads %}
+    {% set day_key = t.last_activity.strftime('%Y-%m-%d') if t.last_activity else '?' %}
+    {% if group_days|default(false) and day_key != days.previous %}
+    {% if not loop.first %}</tbody><tbody>{% endif %}
+    <tr class="listing-day"><th colspan="3" scope="rowgroup">{{ t.last_activity.strftime('%A %-d %B') if t.last_activity else 'Unknown date' }}</th></tr>
+    {% set days.previous = day_key %}
+    {% endif %}
+    {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}
+    {% set row_time = t.last_activity %}{% set row_replies = t.reply_count %}
+    {% set row_url = thread_page_url(t.id, t.date, inbox_name) if t.reply_count else t|msg_url(inbox_name) %}
+    {% include "_listing_row.html" %}
+  {% endfor %}
+  </tbody>
+</table>
+{% if not threads %}<p><em>No matching threads in this window.</em></p>{% endif %}

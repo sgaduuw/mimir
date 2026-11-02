@@ -1,3 +1,4 @@
+{% from "_lifecycle_badges.html" import badges %}
 {% extends "base.html" %}
 {% block title %}{{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}
@@ -20,9 +21,7 @@
   <ul>
     {% for t in active %}
     <li>
-      {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-      {%- set show_activity = false -%}
-      {% include "_lifecycle_badges.html" %}
+      {{ badges(lifecycle_status_by_id, t.id, false) }}
       <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
         {# The reply count links to the whole-thread view. Replies in
@@ -75,9 +74,7 @@
     <ul>
       {% for a in pulls %}
       <li>
-        {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
+        {{ badges(lifecycle_status_by_id, a.id, false) }}
         <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
           &middot; {{ a.author|safe_from }}</small>
@@ -92,9 +89,7 @@
     <ul>
       {% for a in stable %}
       <li>
-        {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
+        {{ badges(lifecycle_status_by_id, a.id, false) }}
         <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
       </li>
@@ -113,9 +108,7 @@
     <ul>
       {% for a in t.messages %}
       <li>
-        {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
+        {{ badges(lifecycle_status_by_id, a.id, false) }}
         <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
         <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
       </li>
@@ -141,9 +134,7 @@
   <ul>
     {% for a in history %}
     <li>
-      {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-      {%- set show_activity = false -%}
-      {% include "_lifecycle_badges.html" %}
+      {{ badges(lifecycle_status_by_id, a.id, false) }}
       <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
       <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
         &middot; {{ a.author|safe_from }}</small>

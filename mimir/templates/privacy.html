@@ -5,7 +5,7 @@
 <section class="privacy">
   <hgroup>
     <h1>Privacy</h1>
-    <p><small><em>Last updated: 27 October 2026.</em></small></p>
+    <p><small><em>Last updated: 2 November 2026.</em></small></p>
   </hgroup>
 
   <h2>Controller</h2>
@@ -40,8 +40,11 @@
     <a href="https://developers.cloudflare.com/fundamentals/reference/policies-compliances/cloudflare-cookies/">published
     cookie list</a> documents them.
   </p>
-  <p>One localStorage entry, set by {{ site_name }} itself:</p>
+  <p>Local storage preferences, set by {{ site_name }} itself:</p>
   <ul>
+    <li><code>mimir.theme</code>: your light or dark theme preference.
+      Written when you choose Light or Dark; choosing System removes it.
+      Stays in your browser, never sent to the server.</li>
     <li><code>mimir.fold.&lt;id&gt;</code>: your fold-state
       preference for that thread&rsquo;s reply tree. Written only
       when you click the fold toggle. Stays in your browser,
