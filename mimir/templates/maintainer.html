@@ -1,30 +1,41 @@
 {% extends "base.html" %}
-{% block title %}{{ profile.name or profile.address }} | Maintainers | {{ site_name }}{% endblock %}
-{% block meta_description %}MAINTAINERS entry and cross-inbox review activity for {{ profile.name or profile.address }}.{% endblock %}
+{% set safe_name = profile.name|listing_name %}
+{% set display_name = safe_name if safe_name != 'unknown sender' else profile.address %}
+{% block title %}{{ display_name }} | Maintainers | {{ site_name }}{% endblock %}
+{% block meta_description %}MAINTAINERS entry and cross-inbox review activity for {{ display_name }}.{% endblock %}
 {% block content %}
-<h1>{{ profile.name or profile.address }}</h1>
-<p><code>{{ profile.address }}</code></p>
+<section class="maintainer-profile">
+  <header class="maintainer-heading">
+    {% set words = display_name.split() %}
+    <span class="maintainer-initials" aria-hidden="true">{{ (words[0][0] ~ (words[-1][0] if words|length > 1 else ''))|upper }}</span>
+    <div>
+      <h1>{{ display_name }}</h1>
+      <p><code>{{ profile.address }}</code> · Maintainer of {{ profile.subsystems|length }} subsystem{{ '' if profile.subsystems|length == 1 else 's' }} · Reviews seen in {{ review_inboxes|length }} inbox{{ '' if review_inboxes|length == 1 else 'es' }}</p>
+    </div>
+  </header>
 
-<h2>Maintains</h2>
-{% if profile.subsystems %}
-<ul>
-  {% for subsystem_name, status in profile.subsystems %}
-  {# ponytail: not linked; the subsystem dashboard route is inbox-scoped and needs an inbox context, deferred #}
-  <li>{{ subsystem_name }} <small>{{ status or '' }}</small></li>
-  {% endfor %}
-</ul>
-{% else %}
-<p><em>No indexed subsystems.</em></p>
-{% endif %}
+  <h2>Maintains</h2>
+  {% if profile.subsystems %}
+  <ul class="maintainer-subsystems">
+    {% for subsystem_name, status in profile.subsystems %}
+    {# These cards have no inbox context; selecting a dashboard is deferred. #}
+    <li><strong>{{ subsystem_name|lower }}</strong>{% if status %}<span class="subsystem-status{% if status|lower == 'maintained' %} subsystem-status-maintained{% elif status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ status }}</span>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p><em>No indexed subsystems.</em></p>
+  {% endif %}
 
-<h2>Review activity</h2>
-{% if profile.review_inboxes %}
-<ul>
-  {% for inbox in profile.review_inboxes %}
-  <li><a href="{{ url_for('web.reviewer_view', inbox_name=inbox, address=profile.address) }}">{{ inbox }}</a></li>
-  {% endfor %}
-</ul>
-{% else %}
-<p><em>No indexed review activity yet.</em></p>
-{% endif %}
+  <h2>Review activity</h2>
+  {% if review_inboxes %}
+  {% if review_counts is not none %}<p class="muted">All-time indexed review trailers. Multiple roles on one message count separately.</p>{% endif %}
+  <ul class="maintainer-review-chips">
+    {% for inbox in review_inboxes %}
+    <li><a href="{{ url_for('web.reviewer_view', inbox_name=inbox, address=profile.address) }}"><span>{{ inbox }}</span>{% if review_counts is not none %}<strong>{{ review_counts[inbox] }}</strong>{% endif %}</a></li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p><em>No indexed review activity yet.</em></p>
+  {% endif %}
+</section>
 {% endblock %}

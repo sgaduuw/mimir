@@ -169,3 +169,91 @@ def test_maintainer_profile_review_inboxes_seek_the_trailer_index(seeded_db):
     assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
         plan
     )
+
+
+def test_review_counts_keep_trailer_roles_and_cross_post_memberships(session):
+    from mimir.maintainer_directory import maintainer_review_counts_query
+
+    _add_trailer(session, "art3@example.com", "Alice@Kernel.org")
+    _add_trailer(session, "art3@example.com", "alice@kernel.org", role="Tested-by")
+    _add_trailer(session, "art2@example.com", "alice@kernel.org", role="Acked-by")
+    _add_trailer(session, "art3@example.com", "bob@kernel.org")
+    _add_trailer(session, "art3@example.com", "alice@kernel.org", role="Signed-off-by")
+    session.commit()
+
+    assert maintainer_review_counts_query(session, "alice@kernel.org") == {
+        "alpha": 2,
+        "beta": 3,
+    }
+    assert maintainer_review_counts_query(session, "nobody@kernel.org") == {}
+
+
+def test_review_counts_seek_the_trailer_index(seeded_db):
+    from mimir.maintainer_directory import maintainer_review_counts_query
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        plan = plan_of(
+            session,
+            lambda: maintainer_review_counts_query(session, "alice@kernel.org"),
+            "article_trailers",
+        )
+    assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
+        plan
+    )
+
+
+def test_review_count_warmer_filters_owners_and_refreshes_existing_keys(
+    session, monkeypatch
+):
+    from mimir import maintainer_directory as directory
+
+    _add_subsystem(
+        session,
+        "FILES",
+        "Maintained",
+        [
+            ("M", "Alice", "Alice@Kernel.org"),
+            ("M", "Alice", "alice@kernel.org"),
+            ("M", "Empty", "empty@kernel.org"),
+            ("M", "Unsupported", "bad/address@kernel.org"),
+            ("R", "Reviewer", "reviewer@kernel.org"),
+        ],
+    )
+    _add_trailer(session, "art1@example.com", "alice@kernel.org")
+    session.commit()
+    assert directory.cached_maintainer_review_counts("alice@kernel.org") is None
+    directory.warm_maintainer_review_counts(session)
+    assert directory.cached_maintainer_review_counts("ALICE@KERNEL.ORG") == {"alpha": 1}
+    assert directory.cached_maintainer_review_counts("empty@kernel.org") == {}
+    keys = [
+        key for key in cache.keys() if key.startswith("maintainer:review_counts_v1:")
+    ]
+    assert len(keys) == 2
+
+    original = directory.maintainer_review_counts_query
+    calls = []
+
+    def counted(s, address):
+        calls.append(address)
+        return original(s, address)
+
+    monkeypatch.setattr(directory, "maintainer_review_counts_query", counted)
+    directory.warm_maintainer_review_counts(session)
+    assert calls == []
+    _add_trailer(session, "art2@example.com", "alice@kernel.org")
+    session.commit()
+    _add_subsystem(session, "NEW", "Maintained", [("M", "New", "new@kernel.org")])
+    session.commit()
+    assert directory.cached_maintainer_review_counts("new@kernel.org") is None
+    # Existing slow-warmer context refreshes near expiry without a new policy.
+    now = cache._now()
+    monkeypatch.setattr(cache, "_now", lambda: now + 3599)
+    with cache.refresh_window(450):
+        directory.warm_maintainer_review_counts(session)
+    assert calls == ["alice@kernel.org", "empty@kernel.org", "new@kernel.org"]
+    assert directory.cached_maintainer_review_counts("new@kernel.org") == {}
+    assert directory.cached_maintainer_review_counts("alice@kernel.org") == {
+        "alpha": 1,
+        "beta": 1,
+    }
