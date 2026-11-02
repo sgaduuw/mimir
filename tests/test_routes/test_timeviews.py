@@ -570,3 +570,30 @@ def test_daily_reply_count_links_to_the_thread_view(client, tmp_path, frozen_clo
     assert f'<link rel="canonical" href="http://localhost{msg_path}/t">' in canonical
     assert f'href="{msg_path}/t" class="listing-subject"' in body
     assert '<td class="listing-count">1</td>' in body
+
+
+def test_one_thread_listings_say_thread_and_message_in_the_singular(
+    client, inbox_name, frozen_clock
+):
+    """One thread of one message: "1 thread", "1 message", never
+    "1 threads" or "1 messages". `filter=unanswered` takes the other
+    sentence form, "1 matching thread"."""
+    _seed_since_threads(1)
+    for url in (
+        f"/{inbox_name}/today",
+        f"/{inbox_name}/since/2024-06-14",
+        f"/{inbox_name}/2024/06/",
+        f"/{inbox_name}/today?filter=unanswered",
+        f"/{inbox_name}/since/2024-06-14?filter=unanswered",
+        f"/{inbox_name}/2024/06/?filter=unanswered",
+    ):
+        body = client.get(url).get_data(as_text=True)
+        assert re.search(r"\b1 (matching )?thread\b", body), url
+        assert not re.search(r"\b1 (matching )?(threads|messages)\b", body), url
+
+
+def test_empty_daily_page_does_not_claim_a_showing_range(
+    client, inbox_name, frozen_clock
+):
+    body = client.get(f"/{inbox_name}/today").get_data(as_text=True)
+    assert "Showing 0" not in body

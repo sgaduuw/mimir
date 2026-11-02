@@ -47,7 +47,7 @@ def test_standalone_patch_keeps_metadata_and_revision_access(client, tmp_path):
         session.commit()
     aid, url = seeded["solo@x"]
     html = client.get(url + "/t").get_data(as_text=True)
-    assert f'href="/api/alpha/metadata/{aid}"' in html
+    assert f'href="/api/alpha/metadata/{aid}?context=thread"' in html
     assert html.count('class="revisions-fold"') == 1
     metadata = client.get(f"/api/alpha/metadata/{aid}")
     assert metadata.status_code == 200
@@ -125,7 +125,9 @@ def test_collapsed_thread_details_do_not_compute_metadata(
     aid, url = seeded["reply@x"]
     thread = client.get(seeded["root@x"][1] + "/t")
     assert thread.status_code == 200
-    assert f'href="/api/alpha/metadata/{aid}"' in thread.get_data(as_text=True)
+    assert f'href="/api/alpha/metadata/{aid}?context=thread"' in thread.get_data(
+        as_text=True
+    )
     assert calls == []
     assert client.get(f"/api/alpha/metadata/{aid}").status_code == 200
     assert calls == [aid]
