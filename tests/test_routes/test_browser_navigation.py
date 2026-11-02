@@ -441,3 +441,190 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def test_series_diff_htmx_navigation_history_failures_and_native_form(
+    client, tmp_path, monkeypatch
+):
+    """Real HTMX DOM swaps must keep successive targets, history and chrome aligned."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+    from tests.test_routes._helpers import _ingest_series_pair
+    from tests.test_routes.test_series_diff import _file_in_beta
+
+    def posting(version):
+        cover = f"v{version}-cover@htmx"
+        prefix = "PATCH" if version == 1 else f"PATCH v{version}"
+        return [
+            (
+                cover,
+                f"[{prefix} 0/3] browser series",
+                None,
+                f"cover {version}\n".encode(),
+                "Alice <a@example>",
+            ),
+            *[
+                (
+                    f"v{version}-{pos}@htmx",
+                    f"[{prefix} {pos}/3] change {pos}",
+                    cover,
+                    f"version {version} patch {pos}\n".encode(),
+                    "Alice <a@example>",
+                )
+                for pos in range(1, 4)
+            ],
+        ]
+
+    key = _ingest_series_pair(tmp_path, "alpha", posting(1), posting(2) + posting(3))
+    _file_in_beta(tmp_path, ["v2-2@htmx"])
+    with SessionLocal() as session:
+        beta = session.scalar(select(Inbox).where(Inbox.name == "beta"))
+        target = session.scalar(
+            select(Article).where(Article.message_id == "v2-2@htmx")
+        )
+        target.canonical_inbox_id = beta.id
+        session.commit()
+
+    def path(pos, inbox="alpha", older="v1", newer="v2"):
+        return f"/{inbox}/series/{key}/diff?from={older}&to={newer}&pos={pos}"
+
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setattr(settings, "site_base_url", base)
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.goto(base + path("cover"))
+            assert page.evaluate("typeof htmx") == "object"
+            page.evaluate("window.diffNavigationSentinel = 42")
+            page.locator("#theme-select").select_option("dark")
+
+            def expect_position(
+                pos, inbox="alpha", older="v1", newer="v2", canonical_inbox=None
+            ):
+                expected = path(pos, inbox, older, newer)
+                expect(page).to_have_url(base + expected)
+                expect(page.locator("#series-diff")).to_have_attribute(
+                    "data-position", str(pos)
+                )
+                expect(page.locator("#series-diff-position")).to_have_value(str(pos))
+                expect(page.locator("main")).to_have_count(1)
+                expect(page.locator("html")).to_have_attribute(
+                    "data-nav-up", f"/{inbox}/"
+                )
+                expect(
+                    page.locator(".site-nav > ul").first.locator("a").last
+                ).to_have_attribute("href", f"/{inbox}/")
+                expect(page.locator('link[rel="canonical"]')).to_have_attribute(
+                    "href",
+                    base + path(pos, canonical_inbox or inbox, older, newer),
+                )
+                label = "cover letter" if pos == "cover" else f"patch {pos}"
+                expect(page).to_have_title(
+                    re.compile(re.escape(f"{older}→{newer} diff ({label})"))
+                )
+                expect(page.locator('meta[name="description"]')).to_have_attribute(
+                    "content", re.compile(re.escape(label))
+                )
+                expect(page.locator('meta[property="og:title"]')).to_have_attribute(
+                    "content", page.title()
+                )
+                expect(
+                    page.locator('link[type="application/atom+xml"]')
+                ).to_have_attribute("href", f"/{inbox}/feed.atom")
+                expect(page.locator("#theme-select")).to_have_value("dark")
+                assert page.evaluate("window.diffNavigationSentinel") == 42, (
+                    "navigation reloaded the document"
+                )
+
+            with page.expect_response(lambda r: r.url == base + path(1)) as response:
+                page.locator('.series-diff-pager a[rel="next"]').click()
+            assert response.value.request.headers.get("hx-request") == "true"
+            assert "<!doctype html>" in response.value.text().lower()
+            expect_position(1)
+            expect(page.locator("#series-diff")).to_be_focused()
+            page.keyboard.press("j")
+            expect_position(2, "beta")
+            page.keyboard.press("j")
+            expect_position(3)
+            page.keyboard.press("k")
+            expect_position(2, "beta")
+            page.go_back()
+            expect_position(3)
+            page.go_forward()
+            expect_position(2, "beta")
+
+            # History cache misses request the same full representation as a browser.
+            page.evaluate("sessionStorage.removeItem('htmx-history-cache')")
+            with page.expect_response(lambda r: r.url == base + path(3)) as restored:
+                page.go_back()
+            assert (
+                restored.value.request.headers.get("hx-history-restore-request")
+                == "true"
+            )
+            assert restored.value.request.headers.get("hx-request") != "true"
+            assert "<!doctype html>" in restored.value.text().lower()
+            expect_position(3)
+            page.locator("#series-diff-position").select_option("1")
+            expect_position(1)
+
+            # Failed selection must leave the selected option naming the readable body.
+            for status in (404, 500):
+                page.route(
+                    base + path(3),
+                    lambda route: route.fulfill(status=status),
+                )
+                with page.expect_response(lambda r: r.url == base + path(3)):
+                    page.locator("#series-diff-position").select_option("3")
+                expect_position(1)
+                page.unroute(base + path(3))
+            page.route(base + path(3), lambda route: route.abort())
+            with page.expect_event(
+                "requestfailed", predicate=lambda r: r.url == base + path(3)
+            ):
+                page.locator("#series-diff-position").select_option("3")
+            expect_position(1)
+            page.unroute(base + path(3))
+
+            # Go remains a form submission; a requesting inbox can nominate another.
+            page.locator("#series-diff-position").evaluate(
+                "select => { select.value = '2'; }"
+            )
+            page.locator('.series-diff-pager button[type="submit"]').click()
+            expect_position(2, canonical_inbox="beta")
+            page.locator(".series-diff-pairs a").click()
+            expect_position(2, older="v2", newer="v3")
+            page.locator(".series-diff-overview a").first.click()
+            expect_position("cover", older="v2", newer="v3")
+            page.keyboard.press("?")
+            page.keyboard.press("j")
+            expect_position("cover", older="v2", newer="v3")
+            page.keyboard.press("Escape")
+            page.locator("#series-diff-position").focus()
+            page.keyboard.press("j")
+            expect_position("cover", older="v2", newer="v3")
+            assert not errors, errors
+
+            with browser.new_context(java_script_enabled=False) as context:
+                plain = context.new_page()
+                plain.goto(base + path("cover"))
+                plain.locator('.series-diff-pager a[rel="next"]').click()
+                expect(plain).to_have_url(base + path(1))
+                plain.locator("#series-diff-position").select_option("2")
+                plain.locator('.series-diff-pager button[type="submit"]').click()
+                expect(plain).to_have_url(base + path(2))
+                expect(plain.locator("#series-diff")).to_have_attribute(
+                    "data-position", "2"
+                )
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()

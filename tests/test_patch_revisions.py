@@ -433,7 +433,6 @@ def test_compute_revision_diff_over_cap_skips_the_diff(monkeypatch):
         raise AssertionError("diff computed for an oversize body")
 
     monkeypatch.setattr(patch_revisions.difflib, "unified_diff", boom)
-    monkeypatch.setattr(patch_revisions, "highlight", boom)
     rd = _diff_of("a\nb\nc\nd\n", "a\nb\n")
     assert rd.too_large is True
     assert rd.is_identical is False
@@ -523,3 +522,48 @@ def test_resolve_series_patches_scoped_to_inbox(seeded_db):
     # only the beta-linked child p2.
     assert [p.position for p in result_alpha] == [0, 1]
     assert [p.position for p in result_beta] == [0, 2]
+
+
+def test_revision_diff_line_counts_include_content_resembling_file_headers():
+    """Only the two generated headers are excluded, never sender text."""
+    import re
+    from html import unescape
+
+    result = _diff_of("--old\n<script>old</script>\n", "++new\n<script>new</script>\n")
+    counts = re.search(r'data-added="(\d+)" data-removed="(\d+)"', result.diff_html)
+    assert counts is not None
+    assert tuple(map(int, counts.groups())) == (2, 2)
+    assert "<script>" not in result.diff_html
+    assert "<script>new</script>" in unescape(result.diff_html)
+    assert len(re.findall(r'class="diff-line gd"', result.diff_html)) == 2
+    assert len(re.findall(r'class="diff-line gi"', result.diff_html)) == 2
+
+
+def test_changed_lines_retain_accessible_addition_and_deletion_markers():
+    """The marker gutter communicates each line's meaning without colour."""
+    from html.parser import HTMLParser
+
+    class AccessibleText(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hidden = [False]
+            self.parts = []
+
+        def handle_starttag(self, tag, attrs):
+            self.hidden.append(
+                self.hidden[-1] or dict(attrs).get("aria-hidden") == "true"
+            )
+
+        def handle_endtag(self, tag):
+            self.hidden.pop()
+
+        def handle_data(self, text):
+            if not self.hidden[-1]:
+                self.parts.append(text)
+
+    result = _diff_of("old\n", "new\n")
+    parser = AccessibleText()
+    parser.feed(result.diff_html)
+    accessible = "".join(parser.parts)
+    assert "-old" in accessible, "deletion marker is hidden from assistive technology"
+    assert "+new" in accessible, "addition marker is hidden from assistive technology"

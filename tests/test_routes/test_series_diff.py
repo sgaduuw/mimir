@@ -133,8 +133,8 @@ def test_series_diff_per_patch_match_by_subject(client, tmp_path):
     # Both patch bodies' distinctive content surfaces in the diff.
     assert "v1 commit message" in out
     assert "v2 commit message updated" in out
-    h1 = html_lib.unescape(re.search(r"<h1>([^<]*)</h1>", out).group(1))
-    assert h1 == "series title: v1→v2 diff (patch 1)", h1
+    h1 = html_lib.unescape(re.search(r"<h1[^>]*>([^<]*)</h1>", out).group(1))
+    assert h1 == "series title", h1
 
 
 def test_series_diff_no_match_404(client, tmp_path):
@@ -412,7 +412,9 @@ def test_series_diff_message_links_use_canonical_helper(client, tmp_path):
     _file_in_beta(tmp_path, ["v1-cv@x"])
     resp = client.get(f"/beta/series/{series_key}/diff?from=v1&to=v2&pos=cover")
     assert resp.status_code == 200
-    hrefs = re.findall(r'<a href="([^"]+)">message</a>', resp.data.decode())
+    hrefs = re.findall(
+        r'<a class="series-diff-version [^"]+" href="([^"]+)">', resp.data.decode()
+    )
     assert len(hrefs) == 2
     expected = []
     with SessionLocal() as s:
@@ -838,6 +840,11 @@ def test_series_diff_canonical_and_sitemap_name_the_same_slot_patch(client, tmp_
     locs = [html_lib.unescape(m) for m in re.findall(r"<loc>([^<]+)</loc>", xml)]
     mine = [loc for loc in locs if f"/series/{key}/" in loc]
     assert mine == [canonical]
+    destinations = [
+        html_lib.unescape(value)
+        for value in re.findall(r'data-url="([^"]+)"', page.text)
+    ]
+    assert destinations == [re.sub(r"^https?://[^/]+", "", canonical)]
     assert "/beta/series/" in canonical  # the winner's inbox, not the low row's
 
 
@@ -910,10 +917,10 @@ def test_series_diff_heading_escapes_the_subject(client, tmp_path):
         v2_messages=[("c2@x", "[PATCH v2 0/2] fix a & <b>", None, b"b\n", author)],
     )
     out = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover").data.decode()
-    h1 = re.search(r"<h1>(.*?)</h1>", out, re.DOTALL).group(1)
+    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", out, re.DOTALL).group(1)
     title = re.search(r"<title>(.*?)</title>", out, re.DOTALL).group(1)
-    assert h1 == "fix a &amp; &lt;b&gt;: v1→v2 diff (cover letter)", h1
-    assert title.startswith(h1 + " | "), (h1, title)
+    assert h1 == "fix a &amp; &lt;b&gt;", h1
+    assert title.startswith(h1 + ": v1→v2 diff (cover letter) | "), (h1, title)
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------
