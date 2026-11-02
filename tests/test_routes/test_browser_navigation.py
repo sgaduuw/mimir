@@ -441,3 +441,51 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def test_a_revision_link_in_a_message_details_fragment_scrolls_in_place(
+    client, tmp_path, monkeypatch
+):
+    """A re-post of a patch sits in the same thread as the patch, on a
+    later page. Its link in the patch's details fragment names that thread
+    page and the message's anchor. With the page already appended by HTMX,
+    a click scrolls to it without loading the page again (#1035). Red with
+    `.revisions-fold a` out of thread-anchors.js."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    from tests.test_routes.test_revision_links import _seed_with_repost
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 4)
+    seeded = _seed_with_repost(tmp_path)
+    page1 = seeded["c@x"][1] + "/t"
+    page2 = seeded["c@x"][1] + "/t/2"
+    repost = seeded["pp2@x"][0]
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            page.goto(base + page1)
+            # Precondition: the re-post is not on page 1 until page 2 is appended.
+            expect(page.locator(f"#m{repost}")).to_have_count(0)
+            page.locator(f'.thread-more a[href="{page2}"]').click()
+            expect(page.locator(f"#m{repost}")).to_be_attached()
+            # A marker a full load would wipe.
+            page.evaluate("window.stayed = true")
+            page.locator('[role="tab"][data-tab="patches"]').click()
+            card = page.locator(f"#m{seeded['p2@x'][0]}")
+            card.locator("details.thread-message-details > summary").click()
+            card.locator(".message-details-content .revisions-fold > summary").click()
+            link = card.locator(
+                ".message-details-content a", has_text="go to this post"
+            )
+            expect(link).to_have_attribute("href", f"{page2}#m{repost}")
+            link.click()
+            expect(page).to_have_url(f"{base}{page2}#m{repost}")
+            assert page.evaluate("window.stayed") is True
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
