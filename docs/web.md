@@ -71,8 +71,11 @@ posting across inboxes and paths, separately from its matching count. Quiet
 patches start collapsed; ownership, file inclusions/exclusions and reviewer
 activity sit in a sidebar that stacks on smaller screens.
 
-The subsystem index lists active subsystems; it can be empty before a slow
-cache-warming pass. Maintainer profiles collect activity across inboxes.
+The subsystem index lists addressable active subsystems in activity order,
+with seven-day message counts, proportional bars, maintainer summaries and
+last-activity dates. Its columns stack on phones. It can be empty before a
+slow cache-warming pass; a request never runs the activity aggregation.
+Maintainer profiles collect activity across inboxes.
 
 ## Page and feed reference
 

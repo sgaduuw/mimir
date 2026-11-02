@@ -279,6 +279,8 @@ def subsystem_index(inbox_name: str):
             limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
             compute_on_miss=False,
         )
+        # Count and scale only rows whose shared URL predicate permits a link.
+        subsystems = [s for s in subsystems if is_addressable_subsystem_name(s.name)]
         base = _site_base()
         return render_template(
             "subsystem_index.html",
