@@ -20,6 +20,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Inbox dashboards pair active threads and compact badge-free recent messages with pull requests, release chips, configured author lists, subsystem activity bars and history in a sidebar. The header summarizes existing cached archive and 30-day activity data (#993).
+
 - Search groups the 100 newest matching messages by inbox thread root, with safe subject highlights, matching sender names and counts, and posting-specific patch positions (#992).
 
 - Daily, catch-up, month, author and reviewer listings share accessible timestamp, subject and count columns, sender names and meaningful lifecycle badges. Daily archives and filtered listings are noindex with no canonical (#991).

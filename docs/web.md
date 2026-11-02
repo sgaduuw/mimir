@@ -9,7 +9,13 @@ thread pagination also works with ordinary links. The interface is read-only.
 
 Start at `/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and
-archive statistics. Browse by day or month, or search subjects and authors.
+archive statistics. Active threads and compact recent messages share the main
+column; pulls, release chips, configured author lists, subsystem activity and
+history stack in a sidebar. The header shows cached archive totals, the first
+message date, 30-day UTC calendar volume and latest activity. Active roots keep
+meaningful lifecycle badges and seven-day reply counts; Recent has no badges,
+including messages appended with Load more. Browse by day or month, or search
+subjects and authors.
 Search is substring-based rather than full-text body search; broad misses can
 be expensive on a cold archive. The 100 newest matching messages are grouped by
 inbox thread root, using the newest match's subject and time. Each row shows
