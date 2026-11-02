@@ -14,7 +14,6 @@ from sqlalchemy import select
 import mimir
 from mimir import maintainer_allowlist
 from mimir.extensions import SessionLocal
-from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Article, ArticleList
 from mimir.rendering import render_body
 from mimir.store import MessageNotFound, read_message
@@ -52,16 +51,12 @@ def api_recent(inbox_name: str):
         recent, recent_has_more = _fetch_recent(
             session, inbox, offset, RECENT_PAGE_SIZE
         )
-        lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, [a.id for a in recent], inbox.id
-        )
     return render_template(
         "_recent_items.html",
         inbox_name=inbox.name,
         recent=recent,
         recent_has_more=recent_has_more,
         recent_next_offset=offset + RECENT_PAGE_SIZE,
-        lifecycle_status_by_id=lifecycle_status_by_id,
     )
 
 

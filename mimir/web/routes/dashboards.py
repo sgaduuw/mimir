@@ -47,6 +47,7 @@ from mimir.subsystems_dashboard import (
 from mimir.threading import active_threads
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _relative_time
+from mimir.web.routes.search import SEARCH_QUERY_MAX_LEN, SEARCH_QUERY_MIN_LEN
 from mimir.web.urls import (
     _get_inbox_or_404,
     _site_base,
@@ -214,20 +215,9 @@ def inbox_dashboard(inbox_name: str):
             limit=10,
             compute_on_miss=False,
         )
-        # Collect IDs across every Article-shaped list the template
-        # renders with a pill: active threads, pulls, stable releases,
-        # tracker tiles, this-day-in-history, and recent. One bulk
-        # SELECT covers all of them via the per-id cache layer.
-        dashboard_ids: list[int] = []
-        dashboard_ids.extend(t.id for t in active)
-        dashboard_ids.extend(a.id for a in pulls)
-        dashboard_ids.extend(a.id for a in stable)
-        for t in trackers:
-            dashboard_ids.extend(a.id for a in t["messages"])
-        dashboard_ids.extend(a.id for a in history)
-        dashboard_ids.extend(a.id for a in recent)
+        # Only active rows display lifecycle badges.
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, dashboard_ids, inbox.id
+            session, [t.id for t in active], inbox.id
         )
         base = _site_base()
         # Inside the session: it asks which active threads have a `/t`.
@@ -239,6 +229,8 @@ def inbox_dashboard(inbox_name: str):
         "inbox.html",
         inbox_name=inbox.name,
         current_inbox=inbox.name,
+        search_min_len=SEARCH_QUERY_MIN_LEN,
+        search_max_len=SEARCH_QUERY_MAX_LEN,
         active=active,
         trackers=trackers,
         pulls=pulls,

@@ -1089,3 +1089,54 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .listing-series { display: block; }
 .search-form input[type="search"] { border-radius: var(--pico-border-radius); min-height: 44px; }
 .search-form button { min-height: 44px; }
+
+/* Inbox dashboard: one reading column with compact cached highlights. */
+.inbox-header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+.inbox-header > div { min-width: 0; }
+.inbox-header h1 { margin-bottom: .35rem; overflow-wrap: anywhere; }
+.inbox-header h1 small { font-size: .55em; color: var(--pico-muted-color); }
+.inbox-summary { margin: 0; color: var(--pico-muted-color); font-size: .8rem; }
+.inbox-summary span { display: inline-block; margin-right: .75rem; }
+.inbox-search { flex: 0 1 22rem; margin: 0; }
+.inbox-search label { font-size: .8rem; }
+.inbox-search fieldset { margin-bottom: 0; }
+.inbox-dashboard { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1.5rem; }
+.inbox-main, .inbox-sidebar { min-width: 0; }
+.inbox-dashboard section { margin-bottom: 1.5rem; }
+.inbox-dashboard h2 { font-size: 1.05rem; margin-bottom: .65rem; }
+.inbox-dashboard h2 small { font-size: .75em; font-weight: 400; }
+.inbox-active { font-size: .85rem; }
+.inbox-active th, .inbox-active td { padding: .45rem .35rem; }
+.inbox-active th:last-child, .inbox-active .listing-count { width: 5.75rem; }
+.inbox-active .listing-count a { display: inline-block; min-height: 44px; }
+.inbox-active .listing-detail { font-size: .75rem; }
+.inbox-section-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem 1rem; }
+.inbox-section-heading > a { font-size: .8rem; min-height: 44px; }
+.recent-list, .inbox-compact-list, .inbox-release-list { list-style: none; padding: 0; margin: 0; }
+.recent-list .recent-row { list-style: none; display: grid; grid-template-columns: 7rem minmax(0, 1fr) minmax(4rem, 6rem); align-items: center; gap: 0 .6rem; border-bottom: 1px solid var(--pico-muted-border-color); padding: .2rem 0; font-size: .8rem; }
+.recent-row time { font-size: .7rem; color: var(--pico-muted-color); font-variant-numeric: tabular-nums; }
+.recent-row > a { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-height: 44px; align-content: center; }
+.recent-sender { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--pico-muted-color); font-size: .7rem; overflow-wrap: anywhere; }
+.recent-list .recent-more-trigger { list-style: none; padding-top: .75rem; }
+.inbox-sidebar { font-size: .8rem; }
+.inbox-sidebar h3 { font-size: .85rem; margin-block: 1rem .25rem; overflow-wrap: anywhere; }
+.inbox-sidebar p { font-size: .8rem; }
+.inbox-compact-list li { list-style: none; margin: 0 0 .3rem; padding: 0; overflow-wrap: anywhere; }
+.inbox-compact-list li > a { display: block; min-height: 44px; align-content: center; }
+.inbox-compact-list small { display: block; color: var(--pico-muted-color); font-size: .7rem; }
+.inbox-sidebar section > a, .inbox-trackers > small > a { display: inline-flex; align-items: center; min-height: 44px; }
+.inbox-release-list { display: flex; flex-wrap: wrap; gap: .4rem; }
+.inbox-release-list li { list-style: none; padding: 0; margin: 0; max-width: 100%; }
+.inbox-release-list a { display: block; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); padding: .3rem .5rem; min-height: 44px; overflow-wrap: anywhere; }
+.inbox-release-list small { display: block; font-size: .65rem; color: var(--pico-muted-color); }
+.inbox-subsystems .bar-meter { margin-top: .3rem; }
+@media (max-width: 767px) {
+  .inbox-header { flex-direction: column; }
+  .inbox-search { flex: auto; width: 100%; }
+  .inbox-dashboard { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+  .inbox-active th:last-child, .inbox-active .listing-count { width: 4rem; }
+  .inbox-active .listing-subject { display: block; min-height: 44px; align-content: center; }
+  .inbox-active .badge { white-space: normal; }
+  .recent-list .recent-row { grid-template-columns: 5.5rem minmax(0, 1fr); }
+  .recent-sender { grid-column: 2; }
+}
