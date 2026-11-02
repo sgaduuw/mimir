@@ -196,8 +196,10 @@ def test_article_paths_reads_the_posting_by_the_series_key_index(seeded_db):
 # patch page's 47 is since #844 Part 3, which dropped the card's own
 # landing query (the status line reads the pill's row). #1003 dropped the
 # canonical's "does the thread have another member" lookup: -1 on every
-# count.
-MESSAGE_PAGE_STATEMENTS = {"p1@x": (46, 20), "cover@x": (None, 18)}
+# count. #990 moved the state card, lifecycle pill, related patches and
+# related discussions to `/api/<inbox>/metadata/<id>`: the patch page's
+# full render drops 16, 46 to 30; the 304s are unchanged.
+MESSAGE_PAGE_STATEMENTS = {"p1@x": (30, 20), "cover@x": (None, 18)}
 
 
 def test_message_page_statement_budget(client, tmp_path):
@@ -233,8 +235,4 @@ def test_message_page_statement_budget(client, tmp_path):
     finally:
         event.remove(engine, "before_cursor_execute", grab)
 
-    for mid, (full_budget, revalidation_budget) in MESSAGE_PAGE_STATEMENTS.items():
-        full_count, revalidation_count = counted[mid]
-        if full_budget is not None:
-            assert 0 < full_count <= full_budget, counted
-        assert 0 < revalidation_count <= revalidation_budget, counted
+    assert counted == MESSAGE_PAGE_STATEMENTS
