@@ -4,7 +4,7 @@
 {% block content %}
 <nav aria-label="breadcrumb"><ul><li><a href="/{{ inbox_name }}/">{{ inbox_name }}</a></li><li><a href="/{{ inbox_name }}/{{ year }}/">{{ year }}</a></li><li>{{ month_label.split()[0] }}</li></ul></nav>
 <h1>{{ month_label }}</h1>
-<p>{{ '{:,}'.format(total_messages) }} messages {% if selected_filter == 'all' %}across {{ matching_threads }} threads{% else %}in this window. {{ matching_threads }} matching threads{% endif %}.{% if matching_threads > thread_cap %} The {{ thread_cap }} most recently active threads.{% endif %}</p>
+<p>{{ '{:,}'.format(total_messages) }} message{{ '' if total_messages == 1 else 's' }} {% if selected_filter == 'all' %}across {{ matching_threads }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if matching_threads > thread_cap %} The {{ thread_cap }} most recently active threads.{% endif %}</p>
 <nav aria-label="Months"><ul>{% if prev_url %}<li><a href="{{ prev_url }}">Previous: {{ prev_label }}</a></li>{% endif %}</ul><ul>{% if next_url %}<li><a href="{{ next_url }}">Next: {{ next_label }}</a></li>{% endif %}</ul></nav>
 {% include "_listing_filters.html" %}
 {% set group_days = true %}{% include "_listing_threads.html" %}
