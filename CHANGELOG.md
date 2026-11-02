@@ -20,6 +20,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Active subsystem indexes use aligned activity counts and proportional bars, maintainer summaries and last-activity dates. Rows stack on phones, and totals count only subsystems with valid dashboard links (#996).
+
 - Subsystem dashboards lead with reviewed patches awaiting pickup, followed by active threads and recent postings. Recent patches group by exact series posting before the 30-row limit, with at most 30 matching patch positions per disclosure and explicit truncation. Full-posting lifecycle progress stays separate from subsystem counts. Ownership, file rules and reviewer activity move to a responsive sidebar; quiet patches start collapsed (#995).
 
 - Inbox dashboards pair active threads and compact badge-free recent messages with pull requests, release chips, configured author lists, subsystem activity bars and history in a sidebar. The header summarizes existing cached archive and 30-day activity data (#993).
