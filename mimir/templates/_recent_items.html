@@ -1,12 +1,11 @@
+{% from "_lifecycle_badges.html" import badges %}
 {# Partial used both for the initial render of the inbox dashboard's
    "Recent" list and as the response body for /api/<list>/recent (HTMX
    load-more). Vars: `inbox_name`, `recent` (list), `recent_has_more`
    (bool), `recent_next_offset` (int). #}
 {% for a in recent %}
 <li>
-  {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-  {%- set show_activity = false -%}
-  {% include "_lifecycle_badges.html" %}
+  {{ badges(lifecycle_status_by_id, a.id, false) }}
   <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
   <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
     &middot; {{ a.author|safe_from }}</small>

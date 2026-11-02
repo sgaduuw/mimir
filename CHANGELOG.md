@@ -11,7 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- A System / Light / Dark theme selector remembers your browser preference and applies it to page and badge colours (#991).
+
+- Daily archives have 100-thread pages with Previous and Next links. Daily, month and catch-up listings can filter patches, pull requests and threads with no replies in the selected window (#991).
+
+
 ### Changed
+
+- Daily, catch-up, month, author and reviewer listings share accessible timestamp, subject and count columns, sender names and meaningful lifecycle badges. Daily archives and filtered listings are noindex with no canonical (#991).
 
 - The message page leads with its mail header and body, with the windowed thread overview below them (#990). A context bar inside each swapped message links to the whole thread at that message and offers Previous, Next and Reply to navigation. HTMX navigation scrolls back to the message header. Lifecycle, status, subsystem ownership, revisions and related content move to the thread view; each thread message has a details disclosure with a link that works without JavaScript, including standalone patches. Revision and series-diff links remain server-rendered, including nested series.
 

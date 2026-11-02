@@ -619,3 +619,10 @@ def _is_addressable_subsystem_filter(name: str) -> bool:
     """Whether a subsystem name has a URL the dashboard route accepts.
     See `mimir.subsystems.is_addressable_subsystem_name`."""
     return is_addressable_subsystem_name(name or "")
+
+
+@bp_web.app_template_filter("listing_sender")
+def _listing_sender_filter(author: str | None) -> str:
+    """A listing displays a safe name, never an address fallback."""
+    name = _usable_display_name(author)
+    return name if name and not _EMAIL_TOKEN_RE.search(name) else "unknown sender"
