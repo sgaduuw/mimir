@@ -86,9 +86,15 @@ def patch_bracket(subject: str) -> tuple[str, str] | None:
     if second is not None and _PATCH_TOKEN_RE.search(second.group(1)):
         return second.group(1), second.group(2).strip()
     n_of_m = _ANY_N_OF_M_RE.search(inside)
+    if n_of_m is None:
+        return None
+    try:
+        ordered = int(n_of_m.group(1)) <= int(n_of_m.group(2))
+    except ValueError:
+        # Malformed mail can exceed Python's integer digit limit.
+        return None
     if (
-        n_of_m is not None
-        and int(n_of_m.group(1)) <= int(n_of_m.group(2))
+        ordered
         and re.search(r"\w", inside.replace(n_of_m.group(0), "", 1))
         and not _NOT_A_SERIES_RE.search(inside)
         and ":" not in inside

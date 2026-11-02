@@ -25,7 +25,7 @@ from mimir.dashboard import (
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
-from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.lifecycle_status import lifecycle_status_for_articles, review_trailer_counts
 from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import (
@@ -42,7 +42,11 @@ from mimir.subsystems_dashboard import (
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
-    recent_articles_in_subsystem,
+    recent_postings_in_subsystem,
+)
+from mimir.subsystems_dashboard.recent import (
+    RECENT_POSTINGS_LIMIT,
+    RECENT_PREVIEW_LIMIT,
 )
 from mimir.threading import active_threads
 from mimir.web._blueprint import bp_web
@@ -55,13 +59,6 @@ from mimir.web.urls import (
 )
 
 RECENT_PAGE_SIZE = 10
-
-
-# Cap on the per-subsystem dashboard's recent-patches list.
-# MAINTAINERS subsystems vary wildly in volume (BCACHEFS is busy,
-# some are dormant). A flat cap keeps response size bounded and the
-# rendered list readable; a future slice can paginate.
-SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
 
 
 # Real MAINTAINERS subsystem names are quite permissive (spaces,
@@ -355,11 +352,12 @@ def subsystem_dashboard(inbox_name: str, name: str):
         )
         if subsystem is None:
             abort(404)
-        recent = recent_articles_in_subsystem(
+        recent = recent_postings_in_subsystem(
             session,
             inbox,
             subsystem,
-            limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+            limit=RECENT_POSTINGS_LIMIT,
+            preview_limit=RECENT_PREVIEW_LIMIT,
         )
         active = active_threads_in_subsystem(
             session,
@@ -393,18 +391,19 @@ def subsystem_dashboard(inbox_name: str, name: str):
             subsystem,
             limit=10,
         )
-        # Subsystem page: gather IDs from every Article-shaped list
-        # the template attaches a pill to. `recent`, `needs_attention`,
-        # `quiet` carry `article_id`; `active` (ActiveThread) carries
-        # `id`. Reviewers (ReviewerStat) is per-reviewer aggregate
-        # and intentionally excluded.
+        # A posting's cover gets the full lifecycle rollup independently of
+        # its matching preview. Missing covers have no whole-posting status;
+        # child previews never trigger up to 900 extra lifecycle reads.
         subsystem_ids: list[int] = []
         subsystem_ids.extend(t.id for t in active)
-        subsystem_ids.extend(p.article_id for p in recent)
+        subsystem_ids.extend(p.status_id for p in recent if p.status_id is not None)
         subsystem_ids.extend(p.article_id for p in needs_attention)
         subsystem_ids.extend(p.article_id for p in quiet)
         lifecycle_status_by_id = lifecycle_status_for_articles(
             session, subsystem_ids, inbox.id
+        )
+        review_counts = review_trailer_counts(
+            session, [p.article_id for p in needs_attention]
         )
     return render_template(
         "subsystem.html",
@@ -424,7 +423,9 @@ def subsystem_dashboard(inbox_name: str, name: str):
         canonical_url=_site_base() + subsystem_path(inbox.name, name_lower),
         subsystem=subsystem,
         recent=recent,
-        recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        recent_limit=RECENT_POSTINGS_LIMIT,
+        preview_limit=RECENT_PREVIEW_LIMIT,
+        review_counts=review_counts,
         active=active,
         spark=spark,
         reviewers=reviewers,

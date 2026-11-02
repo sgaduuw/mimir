@@ -4,12 +4,13 @@ Pulled out of `mimir.subsystems` to keep that module focused on
 the article-level path-matching primitives (which inbox lookups
 need: `subsystems_for_article`, `recent_patches_touching`,
 `path_matches_glob`). This package owns the heavier read-side
-fan-out, split across three public submodules plus one shared
+fan-out, split across public submodules plus one shared
 infrastructure module:
 
 - `reads`: the per-subsystem read fan-outs
-  (`recent_articles_in_subsystem`, `daily_volume_in_subsystem`,
-  `active_threads_in_subsystem`).
+  (`daily_volume_in_subsystem`, `active_threads_in_subsystem`).
+- `recent`: bounded versioned postings and matching-position previews
+  (`recent_postings_in_subsystem`), with a dedicated primitive cache payload.
 - `reviewers`: the reviewer surfaces (`articles_reviewed_by`,
   `active_reviewers_in_subsystem`) and their `ReviewerStat` /
   `ReviewEntry` dataclasses.
@@ -34,9 +35,8 @@ the submodules import them from there. Asymmetric:
 `subsystems_dashboard` depends on `subsystems`, not the other way
 around.
 
-Cache-key conventions are documented inline per helper; bumping
-`cache.NAMESPACE_VERSION` invalidates everything if a payload
-shape changes.
+Cache-key conventions are documented inline per helper. Grouped recent
+postings have their own versioned key and no registered shared DTO.
 """
 
 from mimir.subsystems_dashboard.activity import (
@@ -49,8 +49,8 @@ from mimir.subsystems_dashboard.activity import (
 from mimir.subsystems_dashboard.reads import (
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
-    recent_articles_in_subsystem,
 )
+from mimir.subsystems_dashboard.recent import recent_postings_in_subsystem
 from mimir.subsystems_dashboard.reviewers import (
     REVIEWS_PER_PAGE_LIMIT,
     ReviewEntry,
@@ -80,5 +80,5 @@ __all__ = [
     "most_active_subsystems_in_inbox",
     "needs_attention_patches_in_subsystem",
     "quiet_patches_in_subsystem",
-    "recent_articles_in_subsystem",
+    "recent_postings_in_subsystem",
 ]

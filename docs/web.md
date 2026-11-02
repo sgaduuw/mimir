@@ -63,8 +63,15 @@ JavaScript. Single-message threads have these paths too. Revision and diff
 links remain in the thread page's HTML. These depend on
 the archived messages and configured [tree tracking](archive.md#track-kernel-trees-and-maintainers).
 
-Subsystem dashboards use MAINTAINERS path rules to group patches and review
-activity. Their index lists active subsystems; it can be empty before a slow
+Subsystem dashboards lead with reviewed patches awaiting pickup, then active
+threads and the 30 newest postings or standalone patches matching the inbox's
+MAINTAINERS path rules. Each posting expands to at most 30 matching patch
+positions, with truncation stated. Cover lifecycle progress describes the full
+posting across inboxes and paths, separately from its matching count. Quiet
+patches start collapsed; ownership, file inclusions/exclusions and reviewer
+activity sit in a sidebar that stacks on smaller screens.
+
+The subsystem index lists active subsystems; it can be empty before a slow
 cache-warming pass. Maintainer profiles collect activity across inboxes.
 
 ## Page and feed reference
