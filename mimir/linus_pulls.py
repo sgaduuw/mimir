@@ -43,6 +43,7 @@ from mimir import cache
 from mimir.config import settings
 from mimir.merge_window import LINUS_TREE, _linus_path, _window, version_tags
 from mimir.models import Article, MainlineState
+from mimir.pull_requests import pull_subject_sql
 from mimir.store import read_first_readable
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
@@ -58,8 +59,6 @@ _REJECTED_RE = re.compile(
     r"\b(?:not\s+pulling|not\s+going\s+to\s+pull|won['\u2019]?t\s+pull|unpulled)\b",
     re.IGNORECASE,
 )
-# As `dashboard.latest_pull_requests` matches them: originals only.
-_PULL_SUBJECT = "[GIT PULL]%"
 
 # A stalled git (a mirror mid-repack, a hung NFS read) must not hold a
 # web worker: past this the section shows pending. Generous, against
@@ -116,7 +115,7 @@ def linus_pulls_state(session: Session) -> str:
         select(Article.id)
         .where(
             or_(
-                Article.subject.ilike(_PULL_SUBJECT),
+                pull_subject_sql(Article.subject),
                 Article.author.ilike(f"%{PR_TRACKER_BOT}%"),
                 # A rejection reply is "Re: [GIT PULL] ...", which the
                 # subject prefix does not match.
@@ -178,7 +177,7 @@ def _compute(session: Session) -> LinusPulls:
     for art in session.execute(
         select(Article)
         .options(selectinload(Article.lists))
-        .where(Article.subject.ilike(_PULL_SUBJECT), Article.date >= since)
+        .where(pull_subject_sql(Article.subject), Article.date >= since)
         .order_by(Article.date.desc(), Article.id.desc())
     ).scalars():
         parsed = _body(session, art)

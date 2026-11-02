@@ -16,7 +16,8 @@ message bodies and attachments from the mirrors when you open them.
 
 ## What you can do
 
-- **Read conversations.** Browse daily and monthly archives, search subjects
+- **Read conversations.** Browse daily and monthly archives, filter patches, pull
+  requests or threads with no replies in the selected window, search subjects
   and authors, or read a whole thread with quoted replies folded away.
 - **Review patches.** View highlighted diffs, jump to individual hunks,
   compare patch revisions, and inspect text attachments.

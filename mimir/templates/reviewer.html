@@ -26,17 +26,14 @@
   ({{ _parts|join(', ') }})
 </small></p>
 
-<ul>
-  {% for e in entries %}
-  <li>
-    {%- set status = lifecycle_status_by_id.get(e.article_id) if lifecycle_status_by_id else None -%}
-    {% include "_lifecycle_badges.html" %}
-    <a href="{{ msg_path(e.article_id, e.date, e.inbox_name) }}">{{ e.subject|clean_subject or '(no subject)' }}</a>
-    <br><small>{{ e.date.strftime('%Y-%m-%d') if e.date else '????-??-??' }}
-      &middot; <kbd>{{ e.role }}</kbd></small>
-  </li>
-  {% endfor %}
-</ul>
+<table class="listing-table"><thead><tr><th scope="col">Last</th><th scope="col">Message</th><th scope="col">Trailer</th></tr></thead><tbody>
+{% for e in entries %}
+{% set row_id = e.article_id %}{% set row_subject = e.subject %}
+{% set row_author = reviewer_authors.get(e.article_id) if reviewer_authors is defined else none %}
+{% set row_time = e.date %}{% set row_role = e.role %}
+{% set row_url = msg_path(e.article_id, e.date, e.inbox_name) %}
+{% set message_row = true %}{% include "_listing_row.html" %}
+{% endfor %}</tbody></table>
 {% else %}
 <p><em>No attestations by this address in the {{ inbox_name }} archive.</em></p>
 {% endif %}

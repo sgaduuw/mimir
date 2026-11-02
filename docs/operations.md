@@ -166,3 +166,21 @@ docker compose exec mimir-broker mimir tracemalloc-diff \
 Substitute actual snapshot filenames. Snapshots consume disk space and tracing
 adds overhead. Disable the setting and restart when finished, then remove the
 snapshots you no longer need. Only load snapshots from a trusted source.
+
+
+### Window listing caches
+
+Daily, month and catch-up listings share compact, level-1 zlib-compressed
+window results across filter choices and pages. Daily targets use the existing slow tier.
+The slow tier also defines the current-month and maximum catch-up-window
+targets; arbitrary historical months and other catch-up dates stay on demand.
+The proposed 406 windows across 203 inboxes took 38.974 seconds of serial
+SQL time in the 2026-11-02 production measurement. This does not measure
+concurrent warm-worker load or promise a complete warm-cycle duration.
+
+The nominal listing TTL is 300 seconds. With the default slow warm extension
+of 7200 seconds, a warmed row can live for 7500 seconds. The existing refresh
+policy does not guarantee a refresh on every hourly tick or five-minute
+freshness. This listing change preserves that policy. Oversized compressed
+values are logged and skipped; web requests still render the complete result, while
+listing warm targets report an error rather than claiming a successful warm.
