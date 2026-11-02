@@ -36,6 +36,7 @@
 
   document.addEventListener("DOMContentLoaded", init);
   document.addEventListener("htmx:historyRestore", init);
+  document.addEventListener("htmx:afterSwap", init);
   window.addEventListener("pageshow", function (event) {
     if (event.persisted) {
       restorePreference();

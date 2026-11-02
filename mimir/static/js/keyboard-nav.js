@@ -2,8 +2,8 @@
  *
  * Bindings:
  *   h     left / back out, navigates to <html data-nav-up>'s URL
- *   j     down / next message in the current thread (message page only)
- *   k     up / previous message in the current thread (message page only)
+ *   j     next message in a thread or next series-diff position
+ *   k     previous message in a thread or previous series-diff position
  *   l     right / drill in, navigates to <html data-nav-down>'s URL
  *   Esc   close help / close thread-fold
  *   ?     toggle help overlay
@@ -83,6 +83,13 @@
     return null;
   }
 
+  function navigateDiff(direction) {
+    var link = document.querySelector('#series-diff .series-diff-pager a[rel="' + direction + '"]');
+    if (!link) return false;
+    link.click();
+    return true;
+  }
+
   function navigateThread(direction) {
     var anchor = threadNeighbor(direction);
     if (!anchor) return false;
@@ -150,16 +157,18 @@
   document.addEventListener("keydown", function (e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (isTypingTarget(e.target)) return;
+    var help = document.getElementById("keyboard-help");
+    if (help && help.open && e.key !== "Escape" && e.key !== "?") return;
 
     switch (e.key) {
       case "h":
         if (navigateTo("data-nav-up")) e.preventDefault();
         break;
       case "j":
-        if (navigateThread("next")) e.preventDefault();
+        if (navigateDiff("next") || navigateThread("next")) e.preventDefault();
         break;
       case "k":
-        if (navigateThread("prev")) e.preventDefault();
+        if (navigateDiff("prev") || navigateThread("prev")) e.preventDefault();
         break;
       case "l":
         if (navigateTo("data-nav-down")) e.preventDefault();
@@ -196,4 +205,5 @@
   } else {
     wireHelpDialog();
   }
+  document.addEventListener("htmx:historyRestore", wireHelpDialog);
 })();

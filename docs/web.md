@@ -137,6 +137,28 @@ month archives retain their archive indexing policy.
 Unsupported maintainer addresses remain visible as text without profile links.
 Unknown or unsupported profile addresses return 404.
 
+### Series comparisons
+
+Series diff pages compare full message bodies, including commit explanations.
+Previous/Next and the position selector visit only resolvable comparisons.
+The selector's GET form works without JavaScript and preserves the exact
+`from`, `to` and optional `s` values; JavaScript follows the selected canonical
+URL automatically. With HTMX available, diff links, the selector and Go replace
+the main content without reloading the document. The inbox navigation, title,
+canonical and description follow the displayed comparison, including Back and
+Forward history restores. Failed requests leave the current comparison and
+selected position intact. `j` and `k` move to the next and previous position, except
+while typing or using a modified key. Other adjacent revision pairs keep the
+current position when available, otherwise explicitly link their cover letters.
+
+The position extent is the largest observed ordinal in either posting, not
+the total claimed in a subject. The separate comparable-position count includes
+the cover and can be smaller when patches are missing or ambiguous. A complete
+100-patch pair has 101 choices. Sparse numbering creates no empty choices.
+The overview and long diff lines scroll within their own containers on phones.
+Line totals count changes in the selected unified diff; oversized comparisons
+retain the notice and message links without reporting uncomputed totals.
+
 ### Markdown pages
 
 Each message and thread page has a Markdown version at the same URL plus

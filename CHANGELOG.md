@@ -13,12 +13,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Series comparisons have Previous/Next controls, a native position selector, a scrollable position overview and links to other adjacent revision pairs. The selector works without JavaScript; HTMX changes comparisons in place while preserving browser history, and `j` and `k` move between comparable positions (#999).
+
 - A System / Light / Dark theme selector remembers your browser preference and applies it to page and badge colours (#991).
 
 - Daily archives have 100-thread pages with Previous and Next links. Daily, month and catch-up listings can filter patches, pull requests and threads with no replies in the selected window (#991).
 
 
 ### Changed
+
+- Series diffs show a clean series heading, dated revision links, a patch heading and added/removed line totals. Added, removed and hunk lines have themed backgrounds and marker gutters; long lines scroll inside the diff. Navigation uses current metadata without reading the other patches' bodies (#999).
 
 - Maintainer profiles show initials, subsystem and inbox totals, lowercase subsystem cards with status pills, and responsive review-activity chips. Cached all-time trailer counts order the chips by activity; cold pages retain alphabetical links without counts (#997).
 

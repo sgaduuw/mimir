@@ -35,10 +35,10 @@ function page(saved, blocked = false) {
     get select() { return select; },
     ready: () => listeners.DOMContentLoaded(),
     pageshow: () => listeners.pageshow({ persisted: true }),
-    restore() {
+    restore(event = "htmx:historyRestore") {
       select = selector();
       control = { hidden: true };
-      listeners["htmx:historyRestore"]();
+      listeners[event]();
     },
   };
 }
@@ -108,4 +108,16 @@ test("Back restores the preference selected on a later page", () => {
   p.pageshow();
   assert.equal(p.attributes["data-theme"], undefined);
   assert.equal(p.select.value, "system");
+});
+
+
+test("a swapped main restores the current theme control", () => {
+  const p = page("dark");
+  p.ready();
+  p.restore("htmx:afterSwap");
+  assert.equal(p.control.hidden, false);
+  assert.equal(p.select.value, "dark");
+  p.select.value = "light";
+  p.select.change();
+  assert.equal(p.attributes["data-theme"], "light");
 });
