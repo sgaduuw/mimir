@@ -20,7 +20,7 @@
 (function () {
   document.addEventListener("click", function (e) {
     if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    var a = e.target.closest(".replied-to a, .thread-outline a, .patch-index a, a.permalink");
+    var a = e.target.closest(".replied-to a, .thread-outline a, .patch-index a, .revisions-fold a, a.permalink");
     if (!a) return;
     var url = new URL(a.href, location.href);
     var el = /^#m\d+$/.test(url.hash) && document.getElementById(url.hash.slice(1));
