@@ -434,6 +434,23 @@ SELECT t.article_id,
 """).bindparams(bindparam("ids", expanding=True), _REVIEW_ROLES_PARAM)
 
 
+def review_trailer_counts(
+    session: Session, article_ids: list[int]
+) -> dict[int, tuple[int, int]]:
+    """Source trailer-event counts and the existing global M/R subset.
+
+    Keep dashboard prose independent of formatted badge suffixes and the
+    registered lifecycle cache shape. A repeated person still counts once
+    per trailer event, exactly as the lifecycle badge does.
+    """
+    counts = {}
+    if article_ids:
+        for row in session.execute(_REVIEWER_NAMES_SQL, {"ids": article_ids}):
+            total, maintainers = counts.get(row.article_id, (0, 0))
+            counts[row.article_id] = (total + 1, maintainers + row.is_maintainer)
+    return counts
+
+
 def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
     """Build the uppercase pill label for a state. QUEUED reads
     `IN <TREE>` (kebab-case slug uppercased). LANDED / REVIEWED /

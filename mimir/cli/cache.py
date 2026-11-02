@@ -40,7 +40,12 @@ from mimir.subsystems_dashboard import (
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
-    recent_articles_in_subsystem,
+    recent_postings_in_subsystem,
+)
+from mimir.subsystems_dashboard.recent import (
+    RECENT_POSTINGS_LIMIT,
+    RECENT_PREVIEW_LIMIT,
+    warm_postings,
 )
 from mimir.threading import THREADS_SINCE_MAX_DAYS, active_threads
 from mimir.web import (
@@ -50,7 +55,6 @@ from mimir.web import (
     sitemap_indexes_xml,
     warm_latest_archive_sitemaps,
 )
-from mimir.web.routes.dashboards import SUBSYSTEM_RECENT_PATCHES_LIMIT
 from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
 
 # Refresh-window used by warm-cache. See the call site in
@@ -334,7 +338,7 @@ def _per_subsystem_warm_call(
     for the broker handler's reply payload.
 
     The helper args mirror the `subsystem_dashboard` route call sites
-    (same `SUBSYSTEM_RECENT_PATCHES_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
+    (same `RECENT_POSTINGS_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
     constants, same reviewer dedup) so the warmed cache keys match what
     the route reads. This is the broker handler's entry point for
     `warm_subsystem` (per-(inbox, subsystem) RPC dispatched at the
@@ -343,13 +347,15 @@ def _per_subsystem_warm_call(
     consistent.
     """
     warmed: list[str] = []
-    recent_articles_in_subsystem(
+    recent = recent_postings_in_subsystem(
         session,
         inbox,
         sub,
-        limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        limit=RECENT_POSTINGS_LIMIT,
+        preview_limit=RECENT_PREVIEW_LIMIT,
     )
-    warmed.append(f"{inbox.name}/{sub.name} recent_articles_in_subsystem")
+    warm_postings(recent)
+    warmed.append(f"{inbox.name}/{sub.name} recent_postings_in_subsystem")
     active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
     warmed.append(f"{inbox.name}/{sub.name} active_threads_in_subsystem")
     daily_volume_in_subsystem(session, inbox, sub, days=30)

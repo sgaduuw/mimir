@@ -626,7 +626,13 @@ def _is_addressable_subsystem_filter(name: str) -> bool:
 @bp_web.app_template_filter("listing_sender")
 def _listing_sender_filter(author: str | None) -> str:
     """A listing displays a safe name, never an address fallback."""
-    name = _usable_display_name(author)
+    return _listing_name_filter(_usable_display_name(author))
+
+
+@bp_web.app_template_filter("listing_name")
+def _listing_name_filter(name: str | None) -> str:
+    """Names already parsed from trailers/MAINTAINERS need no address parsing."""
+    name = (name or "").strip()
     return name if name and not _EMAIL_TOKEN_RE.search(name) else "unknown sender"
 
 

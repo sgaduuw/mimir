@@ -481,10 +481,8 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     assert "bcachefs" in body
     assert "Supported" in body
     assert "Kent Overstreet" in body
-    # Maintainer address renders on the dashboard page (operator-
-    # facing surface; the per-patch header redacts it to keep that
-    # surface compact, the dashboard doesn't).
-    assert "kent.overstreet@kernel.org" in body
+    # The safe name links to the existing M-only profile.
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
     # The recent-patches list surfaces the seeded article.
     assert "bcachefs: tweak super" in body
 
@@ -526,7 +524,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
     assert r.status_code == 200
     text = r.data.decode()
     assert "Active reviewers" in text
-    assert "kent.overstreet@kernel.org" in text
+    assert "Kent Overstreet" in text
     # Allowlisted (@kernel.org) → clickable link to per-reviewer page.
     assert '/alpha/reviewer/kent.overstreet%40kernel.org"' in text
 
@@ -1036,7 +1034,7 @@ def test_reviewer_view_lists_attestations(client, tmp_path):
     r = client.get("/alpha/reviewer/kent.overstreet@kernel.org")
     assert r.status_code == 200
     text = r.data.decode()
-    assert "kent.overstreet@kernel.org" in text
+    assert "Kent Overstreet" in text
     assert "patch with attestation" in text
     assert "Reviewed-by" in text
 
@@ -1252,7 +1250,7 @@ def test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
     html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
 
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
-    assert "reviewer.only@kernel.org" in html, "the reviewer should still be shown"
+    assert "Reviewer Person" in html, "the reviewer should still be shown"
     assert 'href="/maintainers/reviewer.only@kernel.org"' not in html
     # And the thing that actually matters: nothing linked from here 404s.
     assert client.get("/maintainers/kent.overstreet@kernel.org").status_code == 200

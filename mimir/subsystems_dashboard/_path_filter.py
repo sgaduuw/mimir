@@ -51,7 +51,7 @@ def _subsystem_path_filter_sql(
     articles" rather than running an unfiltered query. Wildcard
     F: rules (`fs/*/file.c`-style) are skipped silently in this
     slice for the same reason they're skipped in
-    `recent_articles_in_subsystem`.
+    `recent_postings_in_subsystem`.
     """
     includes = [r.glob for r in subsystem.paths if not r.is_exclude]
     excludes = [r.glob for r in subsystem.paths if r.is_exclude]

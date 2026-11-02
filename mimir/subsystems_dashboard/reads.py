@@ -1,133 +1,29 @@
 """Per-subsystem read fan-outs: helpers that take `(inbox, subsystem)`
-and return article-shaped results (`recent_articles_in_subsystem`,
-`daily_volume_in_subsystem`, `active_threads_in_subsystem`).
+and return daily volume and active threads. Grouped recent postings
+live in the sibling `recent` module.
 
 The shared path-filter SQL builder lives in `_path_filter.py` so this
 module covers one concern (read fan-outs) and the sibling
 `reviewers.py` can pull the builder from the same neutral home.
 """
 
-from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.canonical import fallback_canonical_name
 from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
-from mimir.datetime_utils import coerce_dt
 from mimir.models import (
-    ArticleList,
     Inbox,
     Subsystem,
 )
 from mimir.subsystems import (
     SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
-    RelatedPatch,
 )
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 from mimir.threading import ActiveThread, _active_threads_query
-
-
-def recent_articles_in_subsystem(
-    session: Session,
-    inbox: Inbox,
-    subsystem: Subsystem,
-    limit: int = 20,
-    *,
-    force: bool = False,
-) -> list[RelatedPatch]:
-    """Recent articles linked to `inbox` whose `article_files` paths
-    match any of `subsystem`'s F: globs and aren't vetoed by its
-    X: globs.
-
-    Per-inbox scoping matches the other per-inbox surfaces
-    (today / yesterday / year / month). The subsystem dashboard
-    URL is `/<inbox>/subsystem/<name>/`, so we want articles linked
-    to *this* inbox via `article_lists`.
-
-    Glob handling in this slice covers the two MAINTAINERS shapes
-    that dominate the file: trailing-slash directory prefixes and
-    exact paths. Wildcard globs (`fs/*/file.c` and friends) are
-    skipped silently, they're a small minority of rules and add
-    a full-table scan to every dashboard hit. A follow-up slice
-    can fold them in once the simple-glob case is shipping.
-
-    Cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC`. The path filter
-    delegates to `_subsystem_path_filter_sql` so the SQL-side X:
-    semantics ("at least one path is included and not excluded")
-    do the work without a Python overfetch + post-filter pass; the
-    earlier shape ran tens of seconds cold on busy subsystems like
-    NETWORKING (#198).
-    """
-
-    def compute() -> list[RelatedPatch]:
-        path_filter = _subsystem_path_filter_sql(subsystem, prefix="rasf")
-        if path_filter is None:
-            return []
-        path_sql, path_params = path_filter
-        rows = session.execute(
-            text(
-                f"""
-                SELECT a.id AS article_id, a.message_id, a.subject,
-                       a.author, a.date AS art_date,
-                       a.canonical_inbox_id
-                FROM articles a
-                JOIN article_lists al ON al.article_id = a.id
-                WHERE al.inbox_id = :inbox_id
-                  AND a.id IN ({path_sql})
-                ORDER BY a.date DESC
-                LIMIT :limit
-                """
-            ),
-            {
-                "inbox_id": inbox.id,
-                "limit": limit,
-                **path_params,
-            },
-        ).all()
-        if not rows:
-            return []
-
-        # Resolve inbox names for the canonical-or-fallback URL building,
-        # one bulk query.
-        valid_ids = [r.article_id for r in rows]
-        links = session.execute(
-            select(ArticleList.article_id, Inbox.id, Inbox.name)
-            .join(Inbox, Inbox.id == ArticleList.inbox_id)
-            .where(ArticleList.article_id.in_(valid_ids))
-        ).all()
-        links_by_article: dict[int, list[tuple[int, str]]] = defaultdict(list)
-        for art_id, ix_id, ix_name in links:
-            links_by_article[art_id].append((ix_id, ix_name))
-
-        out: list[RelatedPatch] = []
-        for r in rows:
-            link_set = links_by_article.get(r.article_id, [])
-            canon_name = fallback_canonical_name(r.canonical_inbox_id, link_set)
-            if canon_name is None:
-                continue
-            out.append(
-                RelatedPatch(
-                    article_id=r.article_id,
-                    message_id=r.message_id,
-                    subject=r.subject,
-                    author=r.author,
-                    date=coerce_dt(r.art_date),
-                    inbox_name=canon_name,
-                )
-            )
-        return out
-
-    return cache.get_or_compute(
-        session,
-        f"recent_articles_in_subsystem:{inbox.name}:{subsystem.id}:{limit}",
-        SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
-        compute,
-        force=force,
-    )
 
 
 def daily_volume_in_subsystem(
