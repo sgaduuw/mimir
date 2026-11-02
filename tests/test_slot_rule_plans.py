@@ -48,15 +48,19 @@ def _assert_seeks(plan):
 
 
 def test_the_series_diff_slot_query_seeks_both_indexes(seeded_db):
-    from mimir.web.routes.series_diff import _resolve_via_index
+    from mimir.web.series_diff_navigation import load_series_diff_navigation
 
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
-        _seed_slot(s)
-        plan = plan_of(
-            s,
-            lambda: _resolve_via_index(s, "planslotkey", None, "v1", "v2", 0),
-            "patch_series_version IN",
-        )
+        viewed = _seed_slot(s)
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+
+        def resolve():
+            navigation = load_series_diff_navigation(
+                s, alpha, "planslotkey", None, "v1", "v2", 0
+            )
+            assert navigation.to_article.id == viewed.id
+
+        plan = plan_of(s, resolve, "WHERE articles.patch_series_key =")
     _assert_seeks(plan)
 
 
