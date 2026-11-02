@@ -1146,9 +1146,9 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .subsystem-dashboard .subsystem-header > div { min-width: 0; }
 .subsystem-dashboard .subsystem-breadcrumb { font-size: .8rem; margin-bottom: .5rem; }
 .subsystem-dashboard h1 { margin-bottom: .4rem; overflow-wrap: anywhere; }
-.subsystem-dashboard .subsystem-status { display: inline-block; border-radius: 999px; padding: .15rem .6rem; font-size: .75rem; background: var(--pico-muted-background-color); color: var(--pico-muted-color); }
+.subsystem-dashboard .subsystem-status, .subsystem-index .subsystem-status { display: inline-block; border-radius: 999px; padding: .15rem .6rem; font-size: .75rem; background: var(--pico-muted-background-color); color: var(--pico-muted-color); }
 .subsystem-dashboard .subsystem-status-maintained { background: light-dark(#e3f3e8, #183b27); color: light-dark(#246238, #9dd7ae); }
-.subsystem-dashboard .subsystem-status-supported { background: light-dark(#e5eefb, #19334f); color: light-dark(#24568c, #a8cefb); }
+.subsystem-dashboard .subsystem-status-supported, .subsystem-index .subsystem-status-supported { background: light-dark(#e5eefb, #19334f); color: light-dark(#24568c, #a8cefb); }
 .subsystem-dashboard .subsystem-volume { flex-shrink: 0; max-width: 100%; color: var(--pico-muted-color); }
 .subsystem-dashboard .subsystem-volume small { display: block; font-size: .7rem; }
 .subsystem-dashboard .subsystem-volume svg { display: block; max-width: 100%; color: var(--mimir-accent); }
@@ -1201,4 +1201,31 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .subsystem-dashboard .subsystem-active th:last-child, .subsystem-dashboard .subsystem-active .listing-count { width: 4rem; }
   .subsystem-dashboard .listing-subject { display: block; min-height: 44px; align-content: center; }
   .subsystem-dashboard .badge { white-space: normal; }
+}
+
+
+/* Subsystem index (#996): aligned activity columns, stacked on phones. */
+.subsystem-index h1 { margin-bottom: .5rem; }
+.subsystem-index-note { color: var(--pico-muted-color); font-size: .85rem; }
+.subsystem-index-table { table-layout: fixed; font-size: .85rem; }
+.subsystem-index-table th, .subsystem-index-table td { padding: .6rem .5rem; vertical-align: middle; overflow-wrap: anywhere; }
+.subsystem-index-table thead th { font-size: .7rem; color: var(--pico-muted-color); }
+.subsystem-index-table thead th:first-child { width: 43%; }
+.subsystem-index-table thead th:nth-child(2) { width: 20%; }
+.subsystem-index-table thead th:nth-child(3) { width: 22%; }
+.subsystem-index-table tbody th { font-weight: normal; }
+.subsystem-index-table tbody th > a { display: flex; align-items: center; min-height: 44px; font-weight: 600; text-decoration: none; }
+.subsystem-index-table tbody th > a:hover { text-decoration: underline; }
+.subsystem-index-table .subsystem-index-count { font-variant-numeric: tabular-nums; text-align: right; }
+.subsystem-index-count .bar-meter { height: .3rem; margin-bottom: .3rem; }
+.subsystem-index-table time { font-variant-numeric: tabular-nums; }
+@media (max-width: 767px) {
+  /* Explicit table roles retain relationships when CSS stacks the cells. */
+  .subsystem-index-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .subsystem-index-table tbody { display: block; }
+  .subsystem-index-table tbody tr { display: grid; grid-template-columns: minmax(0, 1fr); padding: .65rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+  .subsystem-index-table tbody th, .subsystem-index-table td { display: block; padding: .2rem 0; border: 0; }
+  .subsystem-index-table td::before { content: attr(data-label) ": "; color: var(--pico-muted-color); font-size: .75rem; }
+  .subsystem-index-table .subsystem-index-count { text-align: left; }
+  .subsystem-index-count .bar-meter { max-width: 12rem; margin: .25rem 0; }
 }
