@@ -349,3 +349,91 @@ def test_unthreaded_revisions_cost_the_same_statements_for_any_count(client, tmp
             client, tmp_path / str(versions), versions
         )
     assert counts[2] == counts[5], counts
+
+
+# The per-message details fragment (`/api/<inbox>/metadata/<id>`) links a
+# revision to its thread page when `/t` asked for it, and to its message
+# page otherwise. `/t` emits `context=thread`; the endpoint accepts exactly
+# that, and anything else keeps the message-page link.
+
+
+def _emitted_fragment_url(client, thread_url, aid):
+    """The URL `/t` gives message `aid`'s disclosure, read from whichever
+    page of the thread renders it."""
+    import html
+
+    for page in ("", "/2", "/3", "/4"):
+        body = client.get(thread_url + page).get_data(as_text=True)
+        m = re.search(rf'hx-get="(/api/alpha/metadata/{aid}[^"]*)"', body)
+        if m:
+            return html.unescape(m.group(1))
+    raise AssertionError(f"no page of {thread_url} emits a fragment for {aid}")
+
+
+def _fragment_rev_hrefs(client, url):
+    r = client.get(url)
+    assert r.status_code == 200, url
+    body = r.get_data(as_text=True)
+    return re.findall(r'<a class="rev-label" href="([^"]+)"', body)
+
+
+def _ids(*mids):
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as s:
+        return [
+            s.scalar(select(Article.id).where(Article.message_id == m)) for m in mids
+        ]
+
+
+def _v1_thread_path(c1):
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from mimir.web.urls import thread_page_url
+
+    with SessionLocal() as s:
+        a = s.get(Article, c1)
+        return lambda page: thread_page_url(c1, a.date, "alpha", page)
+
+
+def test_fragment_from_thread_links_revisions_to_their_thread_pages(
+    client, tmp_path, cap2
+):
+    seeded = _seed_two_versions(tmp_path, 3)
+    thread = seeded["c@x"][1] + "/t"
+    c1, q1, q3 = _ids("c1@x", "q1@x", "q3@x")
+    v1 = _v1_thread_path(c1)
+    # v1's thread is c1, q1, q2, q3 at two per page: q1 is on page 1, q3
+    # (index 3) on page 2, a revision in another thread and on a later page.
+    for mid, rev, page in (("p1@x", q1, 1), ("p3@x", q3, 2)):
+        url = _emitted_fragment_url(client, thread, seeded[mid][0])
+        assert _fragment_rev_hrefs(client, url) == [f"{v1(page)}#m{rev}"], mid
+
+
+def test_fragment_without_context_links_revisions_to_their_message_pages(
+    client, tmp_path, cap2
+):
+    seeded = _seed_two_versions(tmp_path, 3)
+    (q3,) = _ids("q3@x")
+    url = f"/api/alpha/metadata/{seeded['p3@x'][0]}"
+    assert _fragment_rev_hrefs(client, url) == [f"/alpha/2024/01/{q3}"]
+
+
+@pytest.mark.parametrize("value", ["", "bogus", "Thread", "thread2", "message"])
+def test_fragment_with_an_unknown_context_falls_back(client, tmp_path, cap2, value):
+    seeded = _seed_two_versions(tmp_path, 3)
+    (q3,) = _ids("q3@x")
+    url = f"/api/alpha/metadata/{seeded['p3@x'][0]}?context={value}"
+    assert _fragment_rev_hrefs(client, url) == [f"/alpha/2024/01/{q3}"]
+
+
+def test_fragment_from_thread_stays_uncached_and_unindexed(client, tmp_path, cap2):
+    """The thread links add no ETag input: the response is `no-store`, so
+    there is no validator for them to go stale under."""
+    seeded = _seed_two_versions(tmp_path, 3)
+    url = _emitted_fragment_url(client, seeded["c@x"][1] + "/t", seeded["p3@x"][0])
+    r = client.get(url)
+    assert r.headers["Cache-Control"] == "no-store"
+    assert r.headers["X-Robots-Tag"] == "noindex"
+    assert "ETag" not in r.headers

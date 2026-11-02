@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 import mimir
 from mimir import maintainer_allowlist
+from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList
 from mimir.rendering import render_body
@@ -23,6 +24,7 @@ from mimir.web.filters import _redact_trailer_address
 from mimir.web.routes._message_metadata import message_metadata
 from mimir.web.routes._validators import allowlist_tag
 from mimir.web.routes.dashboards import RECENT_PAGE_SIZE, _fetch_recent
+from mimir.web.routes.thread import _revision_hrefs
 from mimir.web.urls import _get_inbox_or_404
 
 # Hard ceiling on `?offset=` for the load-more endpoint. SQLite's
@@ -157,6 +159,11 @@ def api_message_metadata(inbox_name: str, article_id: int):
     HTTP caching is disabled: related threads and wall-clock activity are
     deliberately outside the parent page's validator. Real links keep this
     available without JavaScript and for single-message threads too.
+
+    `?context=thread`, which `/t` puts on its disclosures, links each
+    revision to the thread page that holds it, as the page's own folds do.
+    Any other value keeps the message-page links. That adds no validator
+    input: the response is `no-store`, so nothing caches the links.
     """
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
@@ -170,11 +177,17 @@ def api_message_metadata(inbox_name: str, article_id: int):
         )
         if article is None:
             abort(404)
-        response = Response(
-            render_template(
-                "_message_metadata.html", **message_metadata(session, inbox, article)
+        context = message_metadata(session, inbox, article)
+        if request.args.get("context") == "thread":
+            state = context["patch_state"]
+            context["revision_hrefs"] = _revision_hrefs(
+                session,
+                state.series if state else [],
+                cap=settings.thread_view_render_cap,
+                current=None,
+                ordered_rows=[],
             )
-        )
+        response = Response(render_template("_message_metadata.html", **context))
     response.headers["X-Robots-Tag"] = "noindex"
     response.headers["Cache-Control"] = "no-store"
     return response

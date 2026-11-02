@@ -190,6 +190,20 @@ def test_message_page_has_single_h1(client, tmp_path):
     assert "<h1>single h1 please</h1>" in body
 
 
+def test_message_h1_collapses_header_folding_whitespace(client, tmp_path):
+    """A folded Subject header renders on one line in the <h1>, on the
+    full page and in the HTMX partial, as it does in the <title>."""
+    _, url = _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "folded-h1@example.com",
+        subject="folded\r\n    subject here",
+    )
+    for headers in ({}, {"HX-Request": "true"}):
+        body = client.get(url, headers=headers).get_data(as_text=True)
+        assert "<h1>folded subject here</h1>" in body, headers
+
+
 def test_thread_summary_helper_counts_and_relative_time(frozen_clock):
     """`_thread_summary` returns author_count (deduped by email) and a
     coarse relative-time string for the most-recent message. Drives
