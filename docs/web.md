@@ -94,7 +94,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 
 | Path | Purpose |
 | --- | --- |
-| `/` | List of inboxes |
+| `/` | Header figures, a Message-ID lookup form, the busiest inboxes this month, active subsystems this week, and every inbox on one line (filter and sort need JavaScript) |
 | `/<inbox>/` | Inbox dashboard |
 | `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views, 100 threads per page (`?page=2`) |
 | `/<inbox>/since/<date>` | Activity since an ISO date (`YYYY-MM-DD`), limited to the last 90 days |

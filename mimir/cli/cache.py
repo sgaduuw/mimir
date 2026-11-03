@@ -23,6 +23,7 @@ from mimir.dashboard import (
     latest_pull_requests,
     latest_stable_releases,
     recent_articles,
+    recent_message_total,
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
@@ -258,8 +259,10 @@ def _build_inbox_targets(
 def _build_fast_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
-    """Fast tier global warm targets: `sitemap:index` alone, which
-    builds `/sitemap.xml` and `/messages-sitemap.xml` together (#964).
+    """Fast tier global warm targets: the front page's 30-day message
+    total (6 ms warm on production, 2026-11-03; #994), then `sitemap:index`,
+    which builds `/sitemap.xml` and `/messages-sitemap.xml` together (#964).
+    The total needs no `SITE_BASE_URL`; the sitemap does.
 
     It is the most expensive warm target there is (41 s cold in
     production on 2026-10-07, about 10 s after #640), so it looks out of place
@@ -273,9 +276,14 @@ def _build_fast_global_targets(
     against a 60 s worker timeout. The fast tier also warms it within
     a minute of boot, of a `cache.NAMESPACE_VERSION` bump and of a
     render-cap change (#589)."""
-    if not sitemap_base:
-        return []
-    return [("sitemap:index", lambda s, b=sitemap_base: sitemap_indexes_xml(s, b))]
+    targets: list[tuple[str, object]] = [
+        ("recent_message_total (30d)", lambda s: recent_message_total(s))
+    ]
+    if sitemap_base:
+        targets.append(
+            ("sitemap:index", lambda s, b=sitemap_base: sitemap_indexes_xml(s, b))
+        )
+    return targets
 
 
 def _build_slow_global_targets(

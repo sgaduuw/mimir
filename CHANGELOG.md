@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- The front page has a Message-ID lookup form that works without JavaScript, and a header with the inbox count, how many inboxes had a message in the last 24 hours, and the messages of the last 30 days, each counted once even when cross-posted. The 30-day total is refreshed by the fast warm tier and left out until the first run (#994).
+
 - `/m/?id=` opens a message from what you paste: a bare Message-ID, `<id>`, `mid:<id>`, a lore.kernel.org link, or a path such as `/all/<id>/` or `/r/<id>`. `/m/<id>` and `/<inbox>/m/<id>` read the ID the same way, so `<id>` in angle brackets now resolves there too (#984).
 
 - Series comparisons have Previous/Next controls, a native position selector, a scrollable position overview and links to other adjacent revision pairs. The selector works without JavaScript; HTMX changes comparisons in place while preserving browser history, and `j` and `k` move between comparable positions (#999).
@@ -23,6 +25,8 @@ changes, not internal refactors. Categories: **Added**,
 
 
 ### Changed
+
+- The front page is much shorter: it shows the six busiest inboxes this month as cards with a 30-day sparkline, the active subsystems of the week as rows with a bar and count, and every inbox on one line with its message total and last activity, instead of 203 cards with a sparkline each. With JavaScript, a box filters the inboxes and "A to Z" or "Most active" reorders them. Pinned inboxes stay first and say "pinned". Subsystem rows no longer show a maintainer or a status (#994).
 
 - The merge window page states whether the window is open, with a three-step release cycle, and shows pull requests to Linus as cards that lead with their count: "Waiting" (was Pending), "Merged", "Unclear" (was Unknown) and "Rejected". Each card lists its four newest subjects and keeps the rest in an "All N" disclosure. The queued patches are one list of subsystems with a proportional bar and a count, each opening to its series; a "Find a subsystem" box filters it when JavaScript is on. Subsystem names are lowercase, and the note on how patches are counted moves below the list. The fold-box controls and their script are gone (#1000).
 
