@@ -169,3 +169,22 @@ def test_form_partial_escapes_the_prefill(client):
     html = _render_form(client, value='"><script>alert(1)</script>')
     assert "<script>" not in html
     assert "&lt;script&gt;" in html
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "https://lore.kernel.org/all/art3@example.com/T/#u",
+        "https://lore.kernel.org/linux-fsdevel/art3@example.com/T/",
+        "https://lore.kernel.org/linux-fsdevel/art3@example.com/raw",
+        "https://lore.kernel.org/linux-fsdevel/art3@example.com/t.mbox.gz",
+    ],
+)
+def test_form_route_opens_lore_thread_and_raw_links(client, typed):
+    from mimir.msgid_url import msgid_from_url
+
+    assert msgid_from_url(typed) == "art3@example.com"  # the linkifier reads it
+    good = client.get("/m/art3@example.com", follow_redirects=False)
+    r = client.get("/m/", query_string={"id": typed}, follow_redirects=False)
+    assert r.status_code == 301
+    assert r.headers["Location"] == good.headers["Location"]

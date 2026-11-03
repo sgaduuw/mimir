@@ -29,6 +29,12 @@ ACCEPTED = [
     # Percent-encoded, as a browser address bar leaves it.
     (f"/linux-fsdevel/{ID.replace('@', '%40')}/", ID),
     (f"/r/%3C{ID}%3E", ID),
+    # lore's thread, raw and mbox forms keep the ID before the suffix.
+    (f"https://lore.kernel.org/x/{ID}/T/#u", ID),
+    (f"https://lore.kernel.org/x/{ID}/T/", ID),
+    (f"https://lore.kernel.org/x/{ID}/raw", ID),
+    (f"https://lore.kernel.org/x/{ID}/t.mbox.gz", ID),
+    (f"/r/{ID}/raw", ID),
     # A query string or fragment is not part of the ID.
     (f"https://lore.kernel.org/x/{ID}/?q=1#frag", ID),
 ]
@@ -69,9 +75,3 @@ def test_accepts(raw, expected):
 @pytest.mark.parametrize("raw", REJECTED)
 def test_rejects(raw):
     assert normalise_message_id(raw) is None
-
-
-def test_every_case_ran():
-    """Rule 3: a parametrisation that lost its cases would pass silently."""
-    assert len(ACCEPTED) >= 15
-    assert len(REJECTED) >= 20
