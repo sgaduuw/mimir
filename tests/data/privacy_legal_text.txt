@@ -6,6 +6,7 @@ What gets stored in your browser
 Three Cloudflare cookies, set by the edge for security and availability:
 All three are strictly necessary for operating the service. Under the ePrivacy Directive (Art. 5(3)(b)) and EDPB guidance, strictly necessary cookies do not require consent. Cloudflare’s published cookie list documents them.
 Local storage preferences, set by mimir itself:
+Session storage, set by htmx, the page library mimir uses:
 No analytics. No tracking pixels. No advertising. No third-party embeds beyond the static-asset CDNs listed below.
 What gets processed server-side
 Standard HTTP request metadata, one log record per request:
