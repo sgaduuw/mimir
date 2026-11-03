@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.40.0] - 2026-11-03
+
 ### Added
 
 - The front page has a Message-ID lookup form that works without JavaScript, and a header with the inbox count, how many inboxes had a message in the last 24 hours, and the messages of the last 30 days, each counted once even when cross-posted. The 30-day total is refreshed by the fast warm tier and left out until the first run (#994).
@@ -28,7 +30,7 @@ changes, not internal refactors. Categories: **Added**,
 
 - The 404 page names the address it could not find and offers a way forward: the front page, the Message-ID lookup form (prefilled from a failed lookup, or from a path segment that holds an `@`), and, for an address like `/lkml/2026/10/1`, the inbox dashboard and the month, each only when that page exists. A message-shaped address says "This message isn't in the archive". The page stays noindex, uncached and cheap: an address that cannot be an inbox costs no query, and a database error still gives a plain 404 (#1002, #984).
 
-- The front page is much shorter: it shows the six busiest inboxes this month as cards with a 30-day sparkline, the active subsystems of the week as rows with a bar and count, and every inbox on one line with its message total and last activity, instead of 203 cards with a sparkline each. With JavaScript, a box filters the inboxes and "A to Z" or "Most active" reorders them. Pinned inboxes stay first and say "pinned". Subsystem rows no longer show a maintainer or a status (#994).
+- The front page is much shorter: it shows the six busiest inboxes this month as cards with a 30-day sparkline, the active subsystems of the week as rows with a bar and count, and every inbox on one line with its message total and last activity, instead of a sparkline card for every inbox. With JavaScript, a box filters the inboxes and "A to Z" or "Most active" reorders them. Pinned inboxes stay first and say "pinned". Subsystem rows no longer show a maintainer or a status (#994).
 
 - The privacy notice has an "In short" summary, a contents list, a reading column of about 68 characters, and its browser-storage lists as tables (Cloudflare cookies, local storage, session storage). The notice now also names `htmx-history-cache`, the sessionStorage entry htmx keeps for the back button (up to ten page copies, cleared when the tab closes); it was in use before and not listed. The rest of the wording is unchanged. The summary says there are two local preferences, theme and thread fold; it is new text, so this entry records the change to the notice (#1001).
 

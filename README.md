@@ -18,9 +18,11 @@ message bodies and attachments from the mirrors when you open them.
 
 - **Read conversations.** Browse daily and monthly archives, filter patches, pull
   requests or threads with no replies in the selected window, search subjects
-  and authors, or read a whole thread with quoted replies folded away.
+  and authors, or open a pasted Message-ID or lore.kernel.org link. Read a
+  whole thread with quoted replies folded away.
 - **Review patches.** View highlighted diffs, jump to individual hunks,
-  compare patch revisions, and inspect text attachments.
+  compare patch revisions with position and version navigation, and inspect
+  text attachments.
 - **Follow development.** See active threads, patch review activity,
   subsystem ownership from MAINTAINERS, links to tracked Git commits, and
   what linux-next holds for the next merge window, by subsystem, with the
