@@ -7,6 +7,7 @@ imports it from here.
 """
 
 import re
+from datetime import UTC, datetime, timedelta
 
 from flask import abort, redirect, render_template, request, url_for
 from sqlalchemy import func, select
@@ -17,12 +18,14 @@ from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
+    cached_recent_message_total,
     daily_volume,
     latest_pull_requests,
     latest_stable_releases,
     recent_page,
     this_day_in_history,
 )
+from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles, review_trailer_counts
@@ -83,37 +86,48 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
     return rows[:limit], has_more
 
 
+# Inboxes shown as "Busiest this month", by messages in the last 30 days.
+FRONT_PAGE_BUSIEST = 6
+
+
 @bp_web.route("/")
 def index():
-    """Meta-index: card grid of configured inboxes with per-inbox
-    stats. Pinned inboxes (settings.pinned_inboxes) surface first in
-    config order; the rest follow alphabetically.
+    """Front page: header figures, the busiest inboxes this month, the
+    active subsystems this week, and one line per inbox. Pinned inboxes
+    (settings.pinned_inboxes) stay first in config order; the rest follow
+    alphabetically.
 
-    Each card carries `archive_stats` (counts + date span) plus a
-    30-day `daily_volume` sparkline. Both are cached helpers; the
-    per-card cost on a warm cache is one cache row read per inbox.
+    Nothing here is computed on the request. `archive_stats` and
+    `daily_volume` are cached helpers (one cache-row read each per inbox)
+    and the 30-day total is read from the cache the fast warm tier fills,
+    so a cold cache omits that one figure instead of running a count. The
+    page has no validator, only `max-age=300`, so it is at most that stale.
     """
     pinned = set(settings.pinned_inboxes)
+    now = datetime.now(UTC)
     with SessionLocal() as session:
         inboxes = pinned_first(session.execute(select(Inbox)).scalars().all())
         inbox_summaries = []
         for inbox in inboxes:
             stats = archive_stats(session, inbox)
+            # 30 UTC days, today included: the window `recent_message_total`
+            # shares, so the cards and the header figure agree.
+            spark = daily_volume(session, inbox, days=30)
             inbox_summaries.append(
                 {
                     "name": inbox.name,
                     "stats": stats,
                     "pinned": inbox.name in pinned,
-                    # Relative-time string for the visible "Last activity"
-                    # line. None when the inbox has no messages yet (the
-                    # template falls back to the empty-state copy).
+                    # None when the inbox has no messages yet.
                     "last_activity_rel": (
                         _relative_time(stats.last_date) if stats.last_date else None
                     ),
-                    # 30-day sparkline. Always renders so cards line up
-                    # vertically even on dormant inboxes (zero-filled
-                    # series → flat bar row).
-                    "spark": daily_volume(session, inbox, days=30),
+                    "spark": spark,
+                    "messages_30d": sum(count for _, count in spark.days),
+                    "active_24h": bool(
+                        stats.last_date
+                        and aware_utc(stats.last_date) >= now - timedelta(hours=24)
+                    ),
                 }
             )
         # Cross-inbox subsystem teaser. Surfaces the most active
@@ -138,20 +152,25 @@ def index():
             compute_on_miss=False,
         )
         # Drop names the dashboard route cannot serve before the template
-        # ever sees them. The card grid makes the WHOLE card an anchor,
-        # so unlike the inline chips there is no useful unlinked form to
-        # fall back to. Filtering here rather than in the template also
-        # means the section's `{% if %}` and its loop agree by
-        # construction: gating on the unfiltered list would render a
-        # heading over an empty grid whenever every active name happens
-        # to be unaddressable.
+        # ever sees them: a row for one would link to a 404. Filtering here
+        # rather than in the template also means the section's `{% if %}`
+        # and its loop agree by construction: gating on the unfiltered list
+        # would render a heading over an empty list whenever every active
+        # name happens to be unaddressable.
         active_subsystems = [
             s for s in active_subsystems if is_addressable_subsystem_name(s.name)
         ]
+    busiest = sorted(
+        (s for s in inbox_summaries if s["messages_30d"]),
+        key=lambda s: (-s["messages_30d"], s["name"]),
+    )[:FRONT_PAGE_BUSIEST]
     base = _site_base()
     return render_template(
         "index.html",
         inbox_summaries=inbox_summaries,
+        busiest=busiest,
+        active_24h=sum(1 for s in inbox_summaries if s["active_24h"]),
+        recent_total=cached_recent_message_total(),
         active_subsystems=active_subsystems,
         current_inbox=None,
         canonical_url=base + "/",
