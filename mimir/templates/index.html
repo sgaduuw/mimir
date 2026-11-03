@@ -2,123 +2,100 @@
 {% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
 {% block content %}
 {% from "_sparkline.html" import spark_bars %}
-<section class="index-hero">
-  <figure>
-    {# `alt` and `title` carry the same text: what the image depicts
-       plus its attribution. `alt` is the assistive-tech / fallback
-       surface; `title` is what browsers expose on mouse hover (they
-       do not surface `alt` on hover, only `title`). Identical text
-       means screen readers that announce both dedup naturally. The
-       attribution used to live in a global footer line that showed
-       on every page including ones where the image is not rendered,
-       removed in favour of putting the credit on the image itself. #}
-    {% set _ratatoskr_credit = "Ratatoskr, the messenger squirrel of Norse mythology, from a 17th-century Icelandic Edda manuscript, Árni Magnússon Institute (public domain)." %}
-    <img src="{{ url_for('static', filename='img/ratatoskr.png') }}"
-         alt="{{ _ratatoskr_credit }}"
-         title="{{ _ratatoskr_credit }}">
-  </figure>
-  <hgroup>
-    <h1>{{ site_name }}</h1>
-    <p><small><em>linux kernel mailing list archives, indexed across
-    ~200 public-inbox mirrors. cross-list deduplication, subsystem
-    dashboards, patch-series timelines, reviewer activity.</em></small></p>
-  </hgroup>
-</section>
-
-<h2 id="inboxes">Inboxes</h2>
-
-{% if inbox_summaries %}
-<div class="inbox-grid" role="list">
-  {% for ix in inbox_summaries %}
-  <a class="inbox-card" role="listitem" href="/{{ ix.name }}/"
-     aria-label="Open {{ ix.name }} archive">
-    <div class="inbox-card-header">
-      <span class="inbox-card-name">{{ ix.name }}</span>
-      {% if ix.pinned %}
-      <span class="inbox-card-pinned" title="Pinned via Settings.pinned_inboxes">📌 pinned</span>
-      {% endif %}
+{% from "_bar_meter.html" import bar_meter %}
+{% from "_message_id_form.html" import message_id_form %}
+<section class="front-page">
+  <header class="front-head">
+    <figure>
+      {# `alt` and `title` carry the same text: what the image depicts
+         plus its attribution. `alt` is the assistive-tech / fallback
+         surface; `title` is what browsers expose on mouse hover (they
+         do not surface `alt` on hover, only `title`). Identical text
+         means screen readers that announce both dedup naturally. The
+         attribution used to live in a global footer line that showed
+         on every page including ones where the image is not rendered,
+         removed in favour of putting the credit on the image itself. #}
+      {% set _ratatoskr_credit = "Ratatoskr, the messenger squirrel of Norse mythology, from a 17th-century Icelandic Edda manuscript, Árni Magnússon Institute (public domain)." %}
+      <img src="{{ url_for('static', filename='img/ratatoskr.png') }}"
+           alt="{{ _ratatoskr_credit }}"
+           title="{{ _ratatoskr_credit }}">
+    </figure>
+    <div class="front-title">
+      <h1>{{ site_name }}</h1>
+      <p class="front-tagline">Linux kernel mailing list archives, with cross-list deduplication, subsystem dashboards, patch-series timelines and reviewer activity.</p>
+      {{ message_id_form() }}
     </div>
-    <p class="inbox-card-stats"><small>
-      {% if ix.stats.total %}
-        {{ '{:,}'.format(ix.stats.total) }} message{{ '' if ix.stats.total == 1 else 's' }}
-        across {{ ix.stats.epochs }} epoch{{ '' if ix.stats.epochs == 1 else 's' }}
-        {% if ix.stats.first_date and ix.stats.last_date %}
-        <br>{{ ix.stats.first_date.strftime('%Y-%m-%d') }} → {{ ix.stats.last_date.strftime('%Y-%m-%d') }}
-        {% endif %}
-        {% if ix.last_activity_rel %}
-        <br>Last activity: {{ ix.last_activity_rel }}
-        {% endif %}
-      {% else %}
-        <em>not yet ingested</em>
+    <dl class="front-figures">
+      <div><dt>inboxes</dt><dd data-figure="inboxes">{{ inbox_summaries|length }}</dd></div>
+      <div><dt>with a message in the last 24 hours</dt><dd data-figure="active-24h">{{ active_24h }}</dd></div>
+      {# Absent, not zero, while the cache is cold: the count runs in the
+         warm-cache tier, never on a request. Each message counts once, a
+         cross-post included. #}
+      {% if recent_total is not none %}
+      <div><dt>messages in the last 30 days, each counted once</dt><dd data-figure="messages-30d">{{ recent_total|short_count }}</dd></div>
       {% endif %}
-    </small></p>
-    {% if ix.spark and ix.spark.days and ix.stats.total %}
-    {# 30-day daily-volume sparkline. Same shape as the per-subsystem
-       dashboard's. currentColor + opacity so it adapts to the theme. #}
-    <svg class="inbox-card-spark" viewBox="0 0 186 24"
-         preserveAspectRatio="none"
-         aria-label="Daily message volume in {{ ix.name }}, last 30 days">
-      {{ spark_bars(ix.spark, 6, 5, 24) }}
-    </svg>
-    {% endif %}
-  </a>
-  {% endfor %}
-</div>
-{% else %}
-<p><em>No inboxes configured. Add entries to <code>Settings.inboxes</code> in <code>mimir/config.py</code>.</em></p>
-{% endif %}
+    </dl>
+  </header>
 
-{% if active_subsystems %}
-{# Front-page subsystem teaser. Cross-inbox: each card links to
-   the subsystem dashboard on whichever inbox saw the most
-   activity for that subsystem in the last 7 days. Surfaces the
-   subsystem-level navigation so a curious reader landing on `/`
-   has a path other than "pick an inbox first".
+  {% if busiest %}
+  <h2 id="busiest">Busiest this month</h2>
+  <ul class="front-cards">
+    {% for ix in busiest %}
+    <li>
+      <a class="front-card" href="/{{ ix.name }}/">
+        <span class="front-card-name">{{ ix.name }}</span>
+        <span class="front-card-when">last {{ ix.last_activity_rel }}</span>
+        <p class="count front-card-count">{{ '{:,}'.format(ix.messages_30d) }}</p>
+        <span class="front-card-sub">messages in 30 days{% if ix.stats.first_date %}, of {{ '{:,}'.format(ix.stats.total) }} since {{ ix.stats.first_date.year }}{% endif %}</span>
+        {# Same 30-day series the cards always had: currentColor and
+           opacity, so the bars follow the theme. #}
+        <svg class="front-card-spark" viewBox="0 0 186 24" preserveAspectRatio="none"
+             role="img" aria-label="Daily messages in {{ ix.name }}, last 30 days">{{ spark_bars(ix.spark, 6, 5, 24) }}</svg>
+      </a>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 
-   Card grid (smaller cards than the inbox grid) to match the
-   visual language above. Display name is lowercased, MAINTAINERS
-   stores names upper-case ASCII which reads as shouty on a
-   browse surface; the URL canonical form is already lowercase. #}
-<h2 id="subsystems" class="active-subsystems-heading">Active subsystems <small><em>(last 7 days)</em></small></h2>
-<div class="subsystem-grid" role="list">
   {# `active_subsystems` arrives already filtered to names the dashboard
-     route can serve; see `dashboards.py`. Unlike the inline chips there
-     is no useful unlinked form here, because the whole card is the
-     anchor, so the row is dropped rather than rendered as text. Same
-     predicate, different presentation: see `_subsystem_link.html`. #}
-  {% for s in active_subsystems %}
-  <a class="subsystem-card" role="listitem"
-     href="{{ s.name | subsystem_url(s.inbox_name) }}"
-     aria-label="Open {{ s.name|subsystem_label }} subsystem dashboard">
-    <div class="subsystem-card-header">
-      <strong class="subsystem-card-name">{{ s.name|subsystem_label }}</strong>
-      {# Status badge: only render for non-default values so the
-         common "Maintained" case doesn't put a meaningless pill
-         on every card. The discriminating values (`Supported`,
-         `Odd Fixes`, `Orphan`, `Obsolete`) are what's worth
-         calling attention to. #}
-      {% if s.status and s.status != "Maintained" %}
-      <span class="subsystem-card-status">{{ s.status }}</span>
-      {% endif %}
-    </div>
-    {% if s.maintainer_name %}
-    <small class="subsystem-card-maint">maintained by {{ s.maintainer_name }}{% if s.multiple_maintainers %} et al.{% endif %}</small>
-    {% endif %}
-    <small class="subsystem-card-meta">{{ s.inbox_name }} · {{ s.message_count }} msg{{ '' if s.message_count == 1 else 's' }} · {{ s.last_activity|relative_time }}</small>
-    {% if s.spark and s.spark.days %}
-    {# 7-day daily-volume sparkline scoped to this subsystem on
-       its busiest inbox. Same currentColor + opacity shape as
-       the inbox-card sparkline so the visual language is
-       consistent across the page. #}
-    <svg class="subsystem-card-spark" viewBox="0 0 84 20"
-         preserveAspectRatio="none"
-         aria-label="Daily message volume in {{ s.name|subsystem_label }}, last 7 days">
-      {{ spark_bars(s.spark, 12, 11, 20) }}
-    </svg>
-    {% endif %}
-  </a>
-  {% endfor %}
-</div>
-{% endif %}
+     route can serve (see `dashboards.py`), so no row links to a 404. Each
+     row goes to the inbox where that subsystem is busiest. #}
+  {% if active_subsystems %}
+  <h2 id="subsystems">Active subsystems this week</h2>
+  {% set busiest_count = active_subsystems|map(attribute='message_count')|max %}
+  <ul class="divided front-subsystems">
+    {% for s in active_subsystems %}
+    <li>
+      <span class="front-row-name"><a href="{{ s.name|subsystem_url(s.inbox_name) }}">{{ s.name|subsystem_label }}</a> <small class="front-row-meta">{{ s.inbox_name }}</small></span>
+      {{ bar_meter(s.message_count, busiest_count) }}
+      <span class="count">{{ s.message_count }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
 
+  <h2 id="inboxes">All {{ inbox_summaries|length }} inboxes</h2>
+  {% if inbox_summaries %}
+  <div class="front-controls" data-filter-controls hidden>
+    <label for="inbox-find">Find an inbox</label>
+    <input id="inbox-find" type="search" data-filter-input="inbox-list" autocomplete="off">
+    <span class="front-sort">
+      <button type="button" class="outline secondary" data-sort-button="default" data-sort-list="inbox-list" aria-pressed="true">A to Z</button>
+      <button type="button" class="outline secondary" data-sort-button="active" data-sort-list="inbox-list" aria-pressed="false">Most active</button>
+    </span>
+  </div>
+  <ul class="front-inboxes" id="inbox-list">
+    {% for ix in inbox_summaries %}
+    <li data-filter-item data-filter-text="{{ ix.name }}" data-order="{{ loop.index0 }}" data-active="{{ ix.messages_30d }}">
+      <a class="inbox-link" href="/{{ ix.name }}/">{{ ix.name }}</a>
+      {% if ix.pinned %}<span class="inbox-pinned" title="Pinned via Settings.pinned_inboxes">pinned</span>{% endif %}
+      <span class="inbox-meta">{% if ix.stats.total %}{{ ix.stats.total|short_count }} &middot; {{ ix.last_activity_rel or 'no activity' }}{% else %}not yet ingested{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p><em>No inboxes configured. Add entries to <code>Settings.inboxes</code> in <code>mimir/config.py</code>.</em></p>
+  {% endif %}
+</section>
+<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>
 {% endblock %}
