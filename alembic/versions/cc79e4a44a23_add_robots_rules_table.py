@@ -5,10 +5,9 @@ Revises: 7bbe216da110
 Create Date: 2026-05-22 12:15:49.619581
 
 Adds the `robots_rules` table that backs `/robots.txt` and the
-`admin robots` CLI surface. Seeds the `*` stanza with the previous
-hardcoded template's values (`crawl_delay=5,
-disallow_paths=["/*/attachment/"]`) so the rendered output is
-byte-identical immediately after `alembic upgrade head`.
+`admin robots` CLI surface. Seeds the `*` stanza without a crawl delay,
+with attachment URLs disallowed, matching current reset policy.
+Already-applied revisions do not rewrite operator rules.
 """
 import json
 from typing import Sequence, Union
@@ -35,7 +34,7 @@ def upgrade() -> None:
     op.execute(
         sa.text(
             "INSERT INTO robots_rules (user_agent, crawl_delay, disallow_paths) "
-            "VALUES ('*', 5, :paths)"
+            "VALUES ('*', NULL, :paths)"
         ).bindparams(paths=json.dumps(["/*/attachment/"]))
     )
 

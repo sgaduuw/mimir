@@ -122,7 +122,8 @@ uv run mimir admin robots update '*' --set-content-signal ai-train=yes
 ```
 
 Content Signals support `search`, `ai-input`, and `ai-train`, each `yes` or `no`.
-Defaults are `search=yes, ai-input=no, ai-train=no`. Omit a key to express no
+Defaults are `search=yes, ai-input=yes, ai-train=no`, with no crawl delay.
+Crawler budgets provide backoff. Omit a key to express no
 preference; use `--clear-content-signal KEY` or `--clear-all-content-signals`
 to remove settings. The `*` stanza cannot be deleted. `admin robots reset --yes`
 restores defaults, replacing custom rules. These are crawler instructions, not
