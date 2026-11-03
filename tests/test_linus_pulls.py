@@ -6,7 +6,6 @@ rejected (Linus replied he will not pull it), unknown (no commit named)
 or pending (#803)."""
 
 import logging
-import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -469,7 +468,7 @@ def test_new_pull_moves_the_etag_not_the_queue_key(client, messages):
         _pull(s, bodies, "first@x", _TIP_A)
         s.commit()
     first = client.get(MERGE_WINDOW_PATH)
-    assert "[GIT PULL] first@x" in first.get_data(as_text=True)  # primed
+    assert ">first@x</a>" in first.get_data(as_text=True)  # primed
     with SessionLocal() as s:
         queue_state = merge_window_state(s)
         art = _pull(s, bodies, "second@x", _TIP_B, hours=30)
@@ -483,8 +482,9 @@ def test_new_pull_moves_the_etag_not_the_queue_key(client, messages):
     assert again.headers["ETag"] != first.headers["ETag"]
     html = again.get_data(as_text=True)
     assert _columns(html) == {"pending": 1, "merged": 1}
-    assert f'<a href="{url}">[GIT PULL] second@x</a>' in _column_html(html, "pending")
-    assert "[GIT PULL] first@x</a>" in _column_html(html, "merged")
+    pending = _column_html(html, "pending")
+    assert url in pending and "second@x" in pending
+    assert "first@x" in _column_html(html, "merged")
 
 
 def test_linus_mirror_path_moves_the_section_key(seeded_db, monkeypatch, tmp_path):
@@ -572,44 +572,87 @@ def test_open_window_counts_rc_week_pulls_against_the_last_rc(
     assert revlist_tags == [_TAG]
 
 
+def _cards(html):
+    from tests._dom import parse
+
+    return parse(html).find_all("section", cls="pull-card")
+
+
 def _column_html(html, state):
-    return re.search(
-        rf'<section class="pull-column" id="pulls-{state}">(.*?)</section>',
-        html,
-        re.DOTALL,
-    ).group(1)
+    """The card's inner text and links, as one string for `in` checks on
+    names and URLs (counts and labels are parsed, never searched)."""
+    card = [c for c in _cards(html) if c.attrs["id"] == f"pulls-{state}"][0]
+    return " ".join([card.text()] + [a.attrs["href"] for a in card.find_all("a")])
 
 
 def _columns(html):
-    """Heading count per rendered column, in page order."""
+    """Count shown per rendered card, in page order."""
     return {
-        m.group(1): int(m.group(2))
-        for m in re.finditer(
-            r'<section class="pull-column" id="pulls-(\w+)">\s*'
-            r'<div class="fold-box"[^>]*>\s*<header[^>]*>\s*'
-            r"<h3>[^<]*<small>(\d+)</small>",
-            html,
-        )
+        c.attrs["id"].removeprefix("pulls-"): int(c.find("p", cls="count").text())
+        for c in _cards(html)
     }
 
 
-def test_each_column_sits_in_a_fold_box(client, messages):
-    """A long column scrolls inside a capped box with the thread view's
-    toggle instead of stretching the page (#881)."""
+def test_cards_use_waiting_and_unclear(client, messages):
     from mimir.extensions import SessionLocal
-    from tests.test_merge_window import _fold_boxes
 
     bodies, merged = messages
     merged.add(_TIP_A)
     with SessionLocal() as s:
         _pull(s, bodies, "a@x", _TIP_A, hours=10)
         _pull(s, bodies, "b@x", _TIP_B, hours=20)
-        _pull(s, bodies, "c@x", _TIP_B, hours=30)
+        _pull(s, bodies, "u@x", hours=30)
+        _pull(s, bodies, "r@x", _TIP_B, hours=40)
+        _linus_reply(s, bodies, "r@x", "Not pulling this.")
         s.commit()
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
-    toggle = ["closed", "partial", "expanded"]
-    assert _fold_boxes(_column_html(html, "pending")) == [("partial", toggle, 2)]
-    assert _fold_boxes(_column_html(html, "merged")) == [("partial", toggle, 1)]
+    cards = _cards(html)
+    labels = [c.find("h3").text() for c in cards]
+    assert labels == ["Waiting", "Merged", "Unclear", "Rejected"]
+    # The model's own state names are untouched: only the words shown change.
+    assert [c.attrs["id"] for c in cards] == [
+        "pulls-pending",
+        "pulls-merged",
+        "pulls-unknown",
+        "pulls-rejected",
+    ]
+    assert "Pending" not in labels and "Unknown" not in labels
+    unclear = cards[2]
+    assert "pull-card--unclear" in unclear.classes
+    assert "Names no commit" in unclear.text()
+
+
+def test_a_card_shows_four_subjects_and_the_rest_in_a_disclosure(client, messages):
+    from mimir.extensions import SessionLocal
+
+    bodies, _ = messages
+    with SessionLocal() as s:
+        for n in range(6):
+            _pull(s, bodies, f"p{n}@x", _TIP_B, hours=10 + n)
+        s.commit()
+    card = _cards(client.get(MERGE_WINDOW_PATH).get_data(as_text=True))[0]
+    assert card.find("p", cls="count").text() == "6"
+    direct = [c for c in card.children if getattr(c, "tag", None) == "ul"]
+    assert len(direct) == 1
+    shown = direct[0].find_all("a")
+    # Newest first, with the [GIT PULL] prefix stripped.
+    assert [a.text() for a in shown] == ["p5@x", "p4@x", "p3@x", "p2@x"]
+    more = card.find("details")
+    assert more.find("summary").text() == "All 6 waiting"
+    assert [a.text() for a in more.find_all("a")] == ["p1@x", "p0@x"]
+
+
+def test_a_small_card_has_no_disclosure(client, messages):
+    from mimir.extensions import SessionLocal
+
+    bodies, _ = messages
+    with SessionLocal() as s:
+        for n in range(4):
+            _pull(s, bodies, f"q{n}@x", _TIP_B, hours=10 + n)
+        s.commit()
+    card = _cards(client.get(MERGE_WINDOW_PATH).get_data(as_text=True))[0]
+    assert card.find_all("details") == []
+    assert len(card.find_all("a")) == 4
 
 
 def test_columns_render_only_when_populated(client, messages):
