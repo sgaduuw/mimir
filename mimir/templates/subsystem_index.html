@@ -18,7 +18,7 @@
       {% for s in subsystems %}
       <tr role="row">
         <th scope="row" role="rowheader">
-          <a href="{{ s.name|subsystem_url(inbox_name) }}">{{ s.name|lower }}</a>
+          <a href="{{ s.name|subsystem_url(inbox_name) }}">{{ s.name|subsystem_label }}</a>
           {% if s.status and s.status != 'Maintained' %}<span class="subsystem-status{% if s.status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ s.status }}</span>{% endif %}
         </th>
         <td role="cell" class="subsystem-index-count" data-label="Messages, 7 days">

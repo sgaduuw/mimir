@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% from "_lifecycle_badges.html" import badges %}
 {% from "_sparkline.html" import spark_bars %}
-{% block title %}{{ subsystem.name|lower }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
-{% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|lower }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
+{% block title %}{{ subsystem.name|subsystem_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|subsystem_label }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
 {% block content %}
 {% macro patch_link(p, label=none) -%}
 {% if p.date and p.inbox_name %}<a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ label or p.subject|clean_subject or '(no subject)' }}</a>{% else %}<span>{{ label or p.subject|clean_subject or '(no subject)' }}</span>{% endif %}
@@ -18,12 +18,12 @@
   <header class="subsystem-header">
     <div>
       <p class="subsystem-breadcrumb"><a href="/{{ inbox_name }}/">{{ inbox_name }}</a> / <a href="{{ inbox_name|subsystem_index_url }}">subsystems</a></p>
-      <h1>{{ subsystem.name|lower }}</h1>
+      <h1>{{ subsystem.name|subsystem_label }}</h1>
       {% if subsystem.status %}<span class="subsystem-status{% if subsystem.status|lower == 'maintained' %} subsystem-status-maintained{% elif subsystem.status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ subsystem.status }}</span>{% endif %}
     </div>
     {% if spark and spark.days %}
     <div class="subsystem-volume"><small>Last 30 days</small>
-      <svg width="240" height="28" viewBox="0 0 240 28" class="dashboard-sparkline-svg" role="img" aria-label="Daily message volume in {{ subsystem.name|lower }}, last 30 days">{{ spark_bars(spark, 8, 6, 28) }}</svg>
+      <svg width="240" height="28" viewBox="0 0 240 28" class="dashboard-sparkline-svg" role="img" aria-label="Daily message volume in {{ subsystem.name|subsystem_label }}, last 30 days">{{ spark_bars(spark, 8, 6, 28) }}</svg>
     </div>
     {% endif %}
   </header>

@@ -19,7 +19,7 @@
   <ul class="maintainer-subsystems">
     {% for subsystem_name, status in profile.subsystems %}
     {# These cards have no inbox context; selecting a dashboard is deferred. #}
-    <li><strong>{{ subsystem_name|lower }}</strong>{% if status %}<span class="subsystem-status{% if status|lower == 'maintained' %} subsystem-status-maintained{% elif status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ status }}</span>{% endif %}</li>
+    <li><strong>{{ subsystem_name|subsystem_label }}</strong>{% if status %}<span class="subsystem-status{% if status|lower == 'maintained' %} subsystem-status-maintained{% elif status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ status }}</span>{% endif %}</li>
     {% endfor %}
   </ul>
   {% else %}
