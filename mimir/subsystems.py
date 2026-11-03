@@ -101,8 +101,9 @@ def is_addressable_subsystem_name(name: str) -> bool:
 def subsystem_path(inbox_name: str, name: str) -> str:
     """Site-relative URL for one subsystem's per-inbox dashboard.
 
-    The lowercased form is the URL convention (since 1.18.x); display
-    keeps MAINTAINERS' upstream casing. Shared because four templates
+    The lowercased form is the URL convention (since 1.18.x). Display is
+    lowercased too, by the `subsystem_label` filter, so the two spellings
+    are decided apart and neither follows the other. Shared because four templates
     plus the sitemap builder construct this, and a sitemap entry that
     does not match the link (or the page's own canonical) is a
     duplicate-URL signal rather than a clean one. Spaces in compound

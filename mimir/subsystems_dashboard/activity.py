@@ -34,8 +34,8 @@ class SubsystemActivity:
 
     `name` is the stored MAINTAINERS-verbatim casing
     (e.g. "BCACHEFS"). The dashboard route lowercases the URL
-    component on emit; the rendered chip keeps the upstream
-    casing so it matches what readers see elsewhere in the UI.
+    component on emit, and templates show the name through the
+    `subsystem_label` filter, so the chip matches the rest of the UI.
 
     `maintainer_name` is the display name of the first `M:` row
     in `subsystem_maintainers` for this subsystem. Empty string

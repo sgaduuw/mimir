@@ -10,12 +10,10 @@ rule for the page's URL (sitemap `loc` equals the page canonical).
 import os
 import re
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 
 import pytest
 from sqlalchemy import select
 
-import mimir
 from mimir.merge_window import (
     MERGE_WINDOW_PATH,
     NO_SUBSYSTEM,
@@ -474,69 +472,159 @@ def test_page_says_whether_the_merge_window_is_open(client, monkeypatch, tag, ex
     assert sentences == ([expected] if expected else [])
 
 
-def _fold_boxes(html):
-    """(data-fold, toggle buttons, rows) per fold box, in page order."""
-    return [
+def _page(client):
+    from tests._dom import parse
+
+    return parse(client.get(MERGE_WINDOW_PATH).get_data(as_text=True))
+
+
+def _seed_postings(s, sizes):
+    """One single-patch posting per queued patch, `sizes` = {subsystem:
+    patches}. Each subsystem owns a directory named after it."""
+    for name, count in sizes.items():
+        directory = name.split()[0].lower()
+        _subsystem(s, name, [f"{directory}/"])
+        for n in range(count):
+            msgid = f"{directory}{n}@x"
+            _article(s, msgid, days=n, files=[f"{directory}/{n}.c"])
+            _commit(s, msgid, "linux-next")
+    s.commit()
+
+
+@pytest.mark.parametrize(
+    ("tag", "pill", "steps", "current"),
+    [
         (
-            m.group(1),
-            re.findall(r'data-fold-set="(\w+)"', m.group(2)),
-            m.group(3).count("<li>"),
-        )
-        for m in re.finditer(
-            r'<div class="fold-box" data-fold="(\w+)">\s*'
-            r'<header class="thread-toolbar">(.*?)</header>\s*'
-            r'<div class="thread-box" tabindex="0">(.*?)</div>\s*</div>',
-            html,
-            re.DOTALL,
-        )
-    ]
+            "v7.3",
+            "Open since v7.3",
+            ["v7.3 released", "Merge window", "rc1 closes the window"],
+            "Merge window",
+        ),
+        (
+            "v7.4-rc3",
+            "Closed until v7.4 is released",
+            ["v7.4-rc3", "v7.4 release", "Merge window opens"],
+            "v7.4-rc3",
+        ),
+        (None, None, [], None),
+    ],
+)
+def test_header_shows_the_state_and_the_cycle(
+    client, monkeypatch, tag, pill, steps, current
+):
+    """The pill and the three-step strip come only from what the page
+    already knows. The next version is never named (Linus picks major
+    bumps by hand), so the strip says "rc1", not "v7.4-rc1"."""
+    import mimir.merge_window as mwmod
+
+    monkeypatch.setattr(mwmod, "linus_tag", lambda path: tag)
+    page = _page(client)
+    pills = page.find_all("span", cls="subsystem-status")
+    assert [p.text() for p in pills] == ([pill] if pill else [])
+    if pill:
+        assert ("subsystem-status-maintained" in pills[0].classes) == (tag == "v7.3")
+    strips = page.find_all("ol", cls="mw-cycle")
+    assert len(strips) == (1 if steps else 0)
+    if steps:
+        items = strips[0].find_all("li")
+        assert [li.find("span", cls="mw-step-name").text() for li in items] == steps
+        marked = [i for i in items if i.attrs.get("aria-current") == "step"]
+        assert [m.find("span", cls="mw-step-name").text() for m in marked] == [current]
+    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    assert re.search(r"v\d+\.\d+-rc1\b", html) is None
 
 
-def test_long_section_sits_in_a_fold_box(client):
-    """Each section renders every row in one capped box, partial by
-    default, with the thread view's closed/partial/expanded toggle, so
-    the page stays short and crawlers still see every link (#881). The
-    index links to the section by its anchor."""
+def test_the_queue_is_one_list_of_disclosures(client, monkeypatch):
+    import mimir.merge_window as mwmod
     from mimir.extensions import SessionLocal
 
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
     with SessionLocal() as s:
-        _subsystem(s, "KERNEL VIRTUAL MACHINE FOR X86 (KVM/x86)", ["arch/x86/kvm/"])
-        for n in range(25):
-            _article(s, f"fold{n:02d}@x", days=n, files=[f"arch/x86/kvm/{n}.c"])
-            _commit(s, f"fold{n:02d}@x", "linux-next")
+        _seed_postings(
+            s, {"KERNEL FOO (BAR)": 3, "MIDDLE": 2, "TINYONE": 1, "TINYTWO": 1}
+        )
+    page = _page(client)
+    assert page.find("h2", id="queued").text() == "7 patches queued in linux-next"
+    listing = page.find("ul", id="mw-subsystems")
+    rows = [c for c in listing.children if getattr(c, "tag", None) == "li"]
+    # Two sections, then the group of smaller subsystems.
+    assert len(rows) == 3
+    names = [r.find_all("span", cls="mw-name")[0].text() for r in rows]
+    assert names == ["kernel foo (bar)", "middle", "2 smaller subsystems"]
+    opened = ["open" in r.find_all("details")[0].attrs for r in rows]
+    assert opened == [True, False, False]
+    # Anchors survive: each section's <details> carries its fragment id.
+    assert rows[0].find_all("details")[0].attrs["id"] == "kernel-foo-bar"
+    group = rows[2].find_all("details")[0]
+    assert group.attrs["id"] == "smaller-subsystems"
+    nested = [
+        li.find_all("span", cls="mw-name")[0].text()
+        for li in group.find_all("li")
+        if "data-filter-item" in li.attrs
+    ]
+    assert sorted(nested) == ["tinyone", "tinytwo"]
+    # The count column and the bars agree with the data.
+    counts = [r.find_all("span", cls="count")[0].text() for r in rows]
+    assert counts == ["3", "2", "2"]
+    widths = [r.find_all("rect")[0].attrs["width"] for r in rows[:2]]
+    assert widths == ["100.0", "66.7"]
+    # Every queued posting is still a link (crawlers see the closed rows).
+    links = [a for a in page.find_all("a") if a.attrs["href"].startswith("/alpha/")]
+    assert len(links) == 7
+    # No fold boxes any more.
+    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    assert "data-fold" not in html
+    assert "thread-toggle" not in html
+    assert "fold-box" not in html
+
+
+def test_the_filter_ships_hidden_and_points_at_the_list(client, monkeypatch):
+    import mimir.merge_window as mwmod
+    from mimir.extensions import SessionLocal
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 1)
+    with SessionLocal() as s:
+        _seed_postings(s, {"KERNEL FOO": 1})
+    page = _page(client)
+    controls = page.find("p", cls="mw-find")
+    assert "hidden" in controls.attrs
+    box = controls.find("input")
+    assert box.attrs["data-filter-input"] == "mw-subsystems"
+    assert page.find("ul", id="mw-subsystems")
+    scripts = [s.attrs["src"] for s in page.find_all("script") if "src" in s.attrs]
+    assert [x for x in scripts if x.endswith("/js/list-tools.js")]
+    assert not [x for x in scripts if "fold-box" in x]
+
+
+def test_the_counting_note_follows_the_list_and_is_linked(client, monkeypatch):
+    import mimir.merge_window as mwmod
+    from mimir.extensions import SessionLocal
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 1)
+    with SessionLocal() as s:
+        _seed_postings(s, {"KERNEL FOO": 2})
+        s.add(
+            MainlineState(
+                tree_name="linux-next",
+                last_walked_at=_T0,
+                walked_commits=10,
+                walked_linked=6,
+            )
+        )
         s.commit()
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
-    anchor = "kernel-virtual-machine-for-x86-kvm-x86"
-    assert f'<a href="#{anchor}">' in html
-    section = html.split(f'<h2 id="{anchor}">', 1)[1].split("<h2", 1)[0]
-    assert "<details" not in section
-    assert _fold_boxes(html) == [("partial", ["closed", "partial", "expanded"], 25)]
-    assert re.search(r'<script src="[^"]*/js/fold-box\.js" defer>', html)
-    # Pages render partial, so the closed button shows the open triangle
-    # (#930); CSS swaps it to ▶ when the box is closed. The title doubles
-    # as aria-label so the glyph never becomes the accessible name.
-    assert re.search(
-        r'data-fold-set="closed" title="([^"]+)" aria-label="\1">▼</button>', html
-    )
-    assert "▶" not in html
-
-
-def test_merge_window_closed_box_css_swaps_to_right_triangle():
-    """The ▶ lives in CSS: dropping the closed-state rule leaves ▼ on a
-    closed box (#930)."""
-    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
-    rule = re.search(
-        r'\.fold-box\[data-fold="closed"\][^{}]*\[data-fold-set="closed"\]::before\s*'
-        r'\{[^}]*content:\s*"\\25B6\\FE0E"',
-        css,
-    )
-    assert rule
-    # The ▼ stays in the HTML; without this rule a closed box shows both.
-    assert re.search(
-        r'\.fold-box\[data-fold="closed"\][^{}]*\[data-fold-set="closed"\]\s*'
-        r"\{\s*font-size:\s*0;",
-        css,
-    )
+    page = _page(client)
+    assert any(a.attrs["href"] == "#how-counted" for a in page.find_all("a"))
+    note = page.find("p", id="how-counted")
+    assert html.index('id="how-counted"') > html.index('id="mw-subsystems"')
+    text = note.text()
+    for sentence in (
+        "2 patches in linux-next are not in Linus's tree yet, grouped by MAINTAINERS subsystem: each series goes under the most specific subsystem that covers at least half as many of its files as the subsystem covering the most.",
+        "6 of 10 commits in linux-next link their mailing-list patch; the rest cannot be shown here.",
+        "Only commits that link their mailing-list message (a Link: trailer) are counted.",
+        "A series shows once, by its cover letter.",
+    ):
+        assert sentence in text, sentence
 
 
 @pytest.mark.parametrize(

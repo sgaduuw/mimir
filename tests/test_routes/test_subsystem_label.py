@@ -17,6 +17,7 @@ NAME = "KERNEL FOO (BAR)"
 # Operands that are not subsystem names: status words, a series-diff
 # position label and the first letter of a thread tag.
 _OTHER_OPERANDS = {
+    "pull_labels[state]",
     "status",
     "s.status",
     "subsystem.status",
