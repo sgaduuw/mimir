@@ -50,14 +50,6 @@ class Node:
             parts.append(child if isinstance(child, str) else child.text())
         return " ".join("".join(parts).split())
 
-    def has_ancestor(self, tag):
-        node = self.parent
-        while node is not None:
-            if node.tag == tag:
-                return True
-            node = node.parent
-        return False
-
 
 class _Builder(HTMLParser):
     def __init__(self):

@@ -12,18 +12,14 @@
  * Lives in /static/ because the CSP blocks inline scripts.
  */
 (function () {
-  function all(root, selector) {
-    return Array.prototype.slice.call(root.querySelectorAll(selector));
-  }
-
-  all(document, "[data-filter-controls]").forEach(function (box) {
+  Array.from(document.querySelectorAll("[data-filter-controls]")).forEach(function (box) {
     box.hidden = false;
   });
 
-  all(document, "[data-filter-input]").forEach(function (input) {
+  Array.from(document.querySelectorAll("[data-filter-input]")).forEach(function (input) {
     var list = document.getElementById(input.getAttribute("data-filter-input"));
     if (!list) return;
-    var items = all(list, "[data-filter-item]");
+    var items = Array.from(list.querySelectorAll("[data-filter-item]"));
     var rendered = items.map(function (item) {
       var d = item.querySelector("details");
       return d ? d.open : false;
@@ -35,7 +31,7 @@
       // Last row first: a nested row is decided before the row holding it.
       for (var i = items.length - 1; i >= 0; i--) {
         var item = items[i];
-        var nested = all(item, "[data-filter-item]");
+        var nested = Array.from(item.querySelectorAll("[data-filter-item]"));
         var show;
         if (!query) {
           show = true;
