@@ -609,6 +609,15 @@ def _subsystem_url_filter(name: str, inbox_name: str) -> str:
     return subsystem_path(inbox_name, name)
 
 
+@bp_web.app_template_filter("subsystem_label")
+def _subsystem_label_filter(name: str | None) -> str:
+    """A MAINTAINERS subsystem name as shown to a reader: lowercased, as
+    the upstream capitals read as shouting on a browse surface. Display
+    only. The URL spelling is `subsystem_path`'s own, so the two cannot
+    drift into each other."""
+    return (name or "").lower()
+
+
 @bp_web.app_template_filter("subsystem_index_url")
 def _subsystem_index_url_filter(inbox_name: str) -> str:
     """Site-relative URL for an inbox's subsystem index. See

@@ -89,9 +89,9 @@
   {% for s in active_subsystems %}
   <a class="subsystem-card" role="listitem"
      href="{{ s.name | subsystem_url(s.inbox_name) }}"
-     aria-label="Open {{ s.name|lower }} subsystem dashboard">
+     aria-label="Open {{ s.name|subsystem_label }} subsystem dashboard">
     <div class="subsystem-card-header">
-      <strong class="subsystem-card-name">{{ s.name|lower }}</strong>
+      <strong class="subsystem-card-name">{{ s.name|subsystem_label }}</strong>
       {# Status badge: only render for non-default values so the
          common "Maintained" case doesn't put a meaningless pill
          on every card. The discriminating values (`Supported`,
@@ -112,7 +112,7 @@
        consistent across the page. #}
     <svg class="subsystem-card-spark" viewBox="0 0 84 20"
          preserveAspectRatio="none"
-         aria-label="Daily message volume in {{ s.name|lower }}, last 7 days">
+         aria-label="Daily message volume in {{ s.name|subsystem_label }}, last 7 days">
       {{ spark_bars(s.spark, 12, 11, 20) }}
     </svg>
     {% endif %}

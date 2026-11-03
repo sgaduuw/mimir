@@ -23,9 +23,9 @@
    nothing but noise. Same predicate either way. #}
 {% macro subsystem_link(name, inbox_name) -%}
 {% if name | is_addressable_subsystem -%}
-<a href="{{ name | subsystem_url(inbox_name) }}">{{ name|lower }}</a>
+<a href="{{ name | subsystem_url(inbox_name) }}">{{ name|subsystem_label }}</a>
 {%- else -%}
-{{ name|lower }}
+{{ name|subsystem_label }}
 {%- endif %}
 {%- endmacro %}
 
