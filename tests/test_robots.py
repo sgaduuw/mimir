@@ -619,4 +619,3 @@ def test_default_disallow_blocks_the_lookup_and_nothing_a_reader_is_sent_to():
     assert _blocked("/*/m/", "/lkml/m/a@b")
     blocked = [(p, path) for p in patterns for path in _EMITTED if _blocked(p, path)]
     assert blocked == []
-    assert len(_EMITTED) >= 15

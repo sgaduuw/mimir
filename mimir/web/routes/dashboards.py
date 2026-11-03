@@ -306,7 +306,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
     case-insensitive-matches against `subsystems.name`, and 301s
     non-canonical (uppercase) requests to the canonical lowercase
     form. The DB row's stored casing remains the upstream-verbatim
-    one and is what the H1 renders.
+    one; the H1 shows it through `subsystem_label` (lowercased).
     """
     if not _SUBSYSTEM_NAME_RE.match(name):
         abort(404)
