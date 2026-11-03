@@ -89,10 +89,10 @@ def _reaches(selector: str, nav_tag: str, nav_html: str) -> bool:
 
 
 def test_phone_rules_reach_only_the_site_nav(client):
-    """The phone block is for the site nav. A bare `nav a` also flexed the
-    merge window's in-page subsystem index (each link and each "(n), " on
-    its own line), and a bare `nav > ul li + li::before` put a "/" between
-    the month archive's "prev" and "up" links."""
+    """The phone block is for the site nav. A bare `nav a` once flexed the
+    merge window's in-page subsystem index (since replaced by a list of
+    disclosures, #1000), and a bare `nav > ul li + li::before` put a "/"
+    between the month archive's "prev" and "up" links."""
     from mimir.extensions import SessionLocal
     from tests.test_merge_window import _article, _commit, _subsystem
 
@@ -106,7 +106,7 @@ def test_phone_rules_reach_only_the_site_nav(client):
         (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
     )
     reached = {}
-    for path in ("/merge-window", month):
+    for path in (month,):
         html = client.get(path).get_data(as_text=True)
         navs = re.findall(r"(<nav\b[^>]*>)(.*?)</nav>", html, re.DOTALL)
         site = [n for n in navs if 'class="site-nav"' in n[0]]
@@ -123,4 +123,4 @@ def test_phone_rules_reach_only_the_site_nav(client):
                 if _reaches(sel, tag, body)
             }
         )
-    assert reached == {"/merge-window": [], month: []}
+    assert reached == {month: []}
