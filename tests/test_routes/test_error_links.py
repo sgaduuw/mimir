@@ -167,7 +167,7 @@ def test_no_link_on_a_404_leads_into_the_lookup_space(client):
         assert not [h for h in hrefs if "id=" in h or h.startswith("/m/")], path
 
 
-def test_410_and_500_pages_have_no_form_and_no_lookup(client):
+def test_410_page_has_no_form_and_no_lookup(client):
     from flask import abort
 
     app = client.application
@@ -213,3 +213,28 @@ def test_the_month_route_and_the_404_agree_on_the_range(client):
         assert client.get(f"/alpha/{year}/{month:02d}/").status_code == 404
     for year, month in ((1995, 1), (2024, 3)):
         assert client.get(f"/alpha/{year}/{month:02d}/").status_code == 200
+
+
+def test_500_renders_plain_with_no_lookup(client):
+    from mimir.extensions import engine
+
+    app = client.application
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+
+    @app.route("/_boom")
+    def _boom():
+        raise RuntimeError("boom")
+
+    seen = []
+    grab = lambda c, cur, st, p, ctx, em: seen.append(st)  # noqa: E731
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        r = client.get("/_boom")
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    html = r.get_data(as_text=True)
+    assert r.status_code == 500
+    assert "message-id-form" not in html and "error-code" not in html
+    assert "Back to" in html
+    assert [s for s in seen if "FROM inboxes" in s] == []
+    assert "Cache-Control" not in r.headers
