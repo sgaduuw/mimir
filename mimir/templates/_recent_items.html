@@ -3,13 +3,10 @@
    load-more). Vars: `inbox_name`, `recent` (list), `recent_has_more`
    (bool), `recent_next_offset` (int). #}
 {% for a in recent %}
-<li>
-  {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-  {%- set show_activity = false -%}
-  {% include "_lifecycle_badges.html" %}
-  <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-  <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
-    &middot; {{ a.author|safe_from }}</small>
+<li class="recent-row">
+  <time{% if a.date %} datetime="{{ a.date.isoformat() }}"{% endif %}>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else 'Unknown date' }}</time>
+  <a href="{{ a|msg_url(inbox_name) }}" title="{{ a.subject|clean_subject or '(no subject)' }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
+  <span class="recent-sender">{{ a.author|listing_sender }}</span>
 </li>
 {% endfor %}
 {% if recent_has_more %}

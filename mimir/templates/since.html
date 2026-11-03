@@ -2,35 +2,9 @@
 {% block title %}Since {{ since.strftime('%Y-%m-%d') }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}Threads on {{ inbox_name }} with activity since {{ since.strftime('%Y-%m-%d') }}.{% endblock %}
 {% block content %}
-<section>
-  <h1>Since <small><em>({{ since.strftime('%Y-%m-%d') }})</em></small></h1>
-
-  {% if capped %}
-    <p><small><em>Window capped at {{ max_days }} days; showing activity from
-      {{ effective_since.strftime('%Y-%m-%d') }} onward.</em></small></p>
-  {% endif %}
-
-  {% if total_messages == 0 %}
-    <p><em>No messages in this window.</em></p>
-  {% else %}
-    <p><small>{{ total_messages }} message{{ '' if total_messages == 1 else 's' }}
-      {%- if truncated %} in this window. Showing the {{ max_threads }} most recently active threads.
-      {%- else %} across {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity.
-      {%- endif %}</small></p>
-
-    <ul>
-      {% for t in threads %}
-      <li>
-        {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
-        <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
-        <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
-          &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in window
-          &middot; {{ t.author|safe_from }}</small>
-      </li>
-      {% endfor %}
-    </ul>
-  {% endif %}
-</section>
+<h1>Since {{ since.strftime('%Y-%m-%d') }}</h1>
+{% if capped %}<p><small>Window capped at {{ max_days }} days; showing activity from {{ effective_since.strftime('%Y-%m-%d') }} onward.</small></p>{% endif %}
+<p>{{ total_messages }} message{{ "" if total_messages == 1 else "s" }} {% if selected_filter == 'all' %}across {{ matching_threads }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if truncated %} Showing the {{ max_threads }} most recently active threads.{% endif %}</p>
+{% include "_listing_filters.html" %}
+{% set group_days = true %}{% include "_listing_threads.html" %}
 {% endblock %}

@@ -226,7 +226,7 @@ def test_the_tabs_script_loads_only_where_there_are_tabs(client, tmp_path):
     )
 
 
-def _seed_two_versions(tmp_path, n: int):
+def _seed_two_versions(tmp_path, n: int, *, secondary_covers=False):
     """v1 of an n-patch series in its own thread, then v2 in a thread of
     its own with one reply, so each v2 patch has a revisions timeline (v1,
     v2) with a diff link. One repository, so every body (and so every
@@ -245,9 +245,20 @@ def _seed_two_versions(tmp_path, n: int):
         + [(f"p{i}@x", "c@x") for i in patches]
         + [("r@x", "p1@x")]
     )
+    if secondary_covers:
+        edges.insert(1, ("secondary-v1@x", None))
+        edges.insert(edges.index(("c@x", None)) + 1, ("secondary-v2@x", None))
     seeded = seed_thread_shape(tmp_path, "alpha", edges)
     with SessionLocal() as s:
         for mid, (aid, _url) in seeded.items():
+            if mid.startswith("secondary-"):
+                version = mid.split("-")[1].split("@")[0]
+                a = s.get(Article, aid)
+                a.subject = f"[PATCH {version} 0/{n}] another series"
+                a.patch_series_key = "o" * 40
+                a.patch_series_version = version
+                a.patch_series_position = 0
+                continue
             if mid == "r@x":
                 continue
             version = "v1" if mid in {"c1@x"} | {f"q{i}@x" for i in patches} else "v2"
@@ -297,10 +308,11 @@ def _timeline(html: str, start: int) -> str:
 
 
 def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_path):
-    """Each in-series patch's revisions on `/t` are byte-identical to the
-    ones its own message page renders (one builder, `_series_timeline`),
-    and every diff link resolves. Per-position diffs are not in the series
-    diff sitemap (covers only), so the message page is the reference."""
+    """Each in-series patch's revisions on `/t` are the ones its own message
+    page renders (one builder, `_series_timeline`), and every diff link
+    resolves. Per-position diffs are not in the series diff sitemap (covers
+    only), so the message page is the reference. Only the revision links
+    differ: on `/t` they name thread pages (pinned below)."""
     import html as htmllib
     import re
 
@@ -312,8 +324,13 @@ def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_p
         start = page.find(f'<details class="patch-detail" id="patch-{aid}"')
         assert start != -1, f"no disclosure for p{i}"
         on_t = _timeline(page, start)
-        msg = client.get(url).get_data(as_text=True)
-        assert on_t == _timeline(msg, msg.index('class="revisions-fold"'))
+        from tests.test_routes._helpers import _metadata_url
+
+        msg = client.get(_metadata_url(url)).get_data(as_text=True)
+        on_msg = _timeline(msg, msg.index('class="revisions-fold"'))
+        rev_href = re.compile(r'(class="rev-label" href=")[^"]*')
+        assert rev_href.search(on_t), "no revision link"  # precondition
+        assert rev_href.sub(r"\1", on_t) == rev_href.sub(r"\1", on_msg)
         diffs = re.findall(r'href="([^"]*/series/[^"]*)"', on_t)
         assert len(diffs) == 1, diffs  # precondition: v1 to v2
         assert client.get(htmllib.unescape(diffs[0])).status_code == 200
@@ -454,11 +471,13 @@ def test_the_htmx_slice_and_markdown_do_not_read_what_only_the_full_page_renders
     url = seeded["c@x"][1] + "/t"
 
     assert client.get(url).status_code == 200
-    assert calls == ["thread_rows", "patch_timelines"]  # precondition
+    # This thread's rows, the revisions, then the v1 thread's rows for the
+    # revision links.
+    assert calls == ["thread_rows", "patch_timelines", "thread_rows"]
 
     calls.clear()
     assert client.get(url, headers={"HX-Request": "true"}).status_code == 200
-    assert "patch_timelines" not in calls, calls
+    assert calls == ["thread_rows"], calls
 
     calls.clear()
     assert client.get(url + ".md").status_code == 200
@@ -498,15 +517,16 @@ def test_a_patch_disclosure_s_summary_holds_no_link(client, tmp_path):
         assert "<a " not in s, s
 
 
-def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
-    """D5: inline revisions only for the root's own series, the rows the
-    validator digests. A patch of another series in the same thread keeps
-    its index row and related list, but not its timeline, even when that
-    series has two versions of it."""
+def test_a_patch_of_another_series_keeps_its_inline_revisions(client, tmp_path):
+    """#990: each series has a validator-covered, server-rendered timeline,
+    including a patch from another series inside the root's thread."""
+    import html as htmllib
+    import re
+
     from mimir.extensions import SessionLocal
     from mimir.models import Article
 
-    seeded = _seed_two_versions(tmp_path, 2)
+    seeded = _seed_two_versions(tmp_path, 2, secondary_covers=True)
     p2 = seeded["p2@x"][0]
     with SessionLocal() as s:
         older = (
@@ -517,15 +537,35 @@ def test_a_patch_of_another_series_gets_no_inline_revisions(client, tmp_path):
             )
             .one()
         )
-        # p2 and its v1 move to a series of their own.
+        covers = s.query(Article).filter(Article.patch_series_key == "o" * 40).all()
+        assert {(a.patch_series_version, a.patch_series_position) for a in covers} == {
+            ("v1", 0),
+            ("v2", 0),
+        }
+        by_version = {a.patch_series_version: a for a in covers}
+        for patch in (older, s.get(Article, p2)):
+            cover = by_version[patch.patch_series_version]
+            assert cover.patch_series_head_id == patch.patch_series_head_id
+            assert cover.date <= patch.date
+            assert {row.inbox_id for row in cover.lists} == {
+                row.inbox_id for row in patch.lists
+            }
+        # p2 and its v1 join the other series' real, readable covers.
+        # Keep p2 nested in the original thread and p1 in its original series.
         for a in (older, s.get(Article, p2)):
             a.patch_series_key = "o" * 40
         s.commit()
     html = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
     start = html.index(f'<details class="patch-detail" id="patch-{p2}"')
     disclosure = html[start : html.index("</details>", start)]
-    assert "<summary>Related patches</summary>" in disclosure
-    assert "revisions-fold" not in disclosure
+    assert "<summary>Revisions and related patches</summary>" in disclosure
+    assert "revisions-fold" in disclosure
+    links = re.findall(r'href="([^"]*/series/[^"]*/diff\?[^"]*)"', disclosure)
+    assert len(links) == 1, links
+    link = htmllib.unescape(links[0])
+    assert "/series/" + "o" * 40 + "/diff?" in link
+    assert "from=v1&to=v2&pos=2" in link
+    assert client.get(link).status_code == 200
     # Precondition: p1, in the root's series, does get its timeline.
     p1 = seeded["p1@x"][0]
     assert "Revisions and related patches" in html.split(f'id="patch-{p1}"')[1][:400]
@@ -654,3 +694,63 @@ def test_monospace_text_uses_picos_stack_not_a_typed_out_one():
     """One monospace stack for the page (`--pico-font-family-monospace`),
     not three copies of a list of fonts."""
     assert '"SF Mono"' not in _css()
+
+
+def test_revision_links_on_t_open_the_thread_page_that_holds_the_revision(
+    client, tmp_path, monkeypatch
+):
+    """On `/t`, every revision link (the root's fold and each patch's in the
+    Patches index) names the thread page holding that revision, with its
+    anchor: a 200 with no redirect. The v1 thread spans two pages here, so
+    the later v1 patches must link page 2, not the thread's first page."""
+    import re
+
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_two_versions(tmp_path, 3)
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    links = re.findall(r'<a class="rev-label" href="([^"]+)"', page)
+    # The root's fold (v1 cover) plus one per patch (v1 patch).
+    assert len(links) == 4, links
+    pages = set()
+    for link in links:
+        path, _, anchor = link.partition("#")
+        assert re.fullmatch(r"m\d+", anchor), link
+        r = client.get(path)
+        assert r.status_code == 200, (link, r.status_code)
+        assert re.search(r"/t(/\d+)?$", path), link
+        assert f'id="{anchor}"' in r.get_data(as_text=True), link
+        pages.add(path)
+    # Precondition: the v1 thread spans pages, and the links follow.
+    assert any(p.endswith("/t/2") for p in pages), pages
+
+
+def test_a_revision_in_an_unranked_thread_keeps_its_message_page_link(client, tmp_path):
+    """A NULL `thread_root_id` in the v1 thread makes it unrankable
+    (`unmaterialised_roots`), so its revisions make no page claim and link
+    their message pages, as before #989's follow-up."""
+    import re
+
+    from sqlalchemy import select, update
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    seeded = _seed_two_versions(tmp_path, 3)
+    with SessionLocal() as s:
+        q2 = s.scalar(select(Article.id).where(Article.message_id == "q2@x"))
+        s.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == q2)
+            .values(thread_root_id=None)
+        )
+        s.commit()
+    page = client.get(seeded["c@x"][1] + "/t").get_data(as_text=True)
+    links = re.findall(r'<a class="rev-label" href="([^"]+)"', page)
+    assert len(links) == 4, links  # precondition: every fold still renders
+    assert not any("#" in link or re.search(r"/t(/\d+)?$", link) for link in links), (
+        links
+    )
+    for link in links:
+        assert client.get(link).status_code == 200, link

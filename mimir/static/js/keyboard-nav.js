@@ -2,8 +2,8 @@
  *
  * Bindings:
  *   h     left / back out, navigates to <html data-nav-up>'s URL
- *   j     down / next message in the current thread (message page only)
- *   k     up / previous message in the current thread (message page only)
+ *   j     next message in a thread or next series-diff position
+ *   k     previous message in a thread or previous series-diff position
  *   l     right / drill in, navigates to <html data-nav-down>'s URL
  *   Esc   close help / close thread-fold
  *   ?     toggle help overlay
@@ -58,34 +58,80 @@
   }
 
   function focusedThreadItem() {
-    // The active thread-list <li> is the source of truth for "current
-    // position" on the message page, thread-fold.js keeps it in sync
-    // with the rendered #msg via htmx:afterSwap.
-    return document.querySelector(".thread-list li.is-active");
+    // Read #msg rather than the marker: this also works when our
+    // afterSwap handler runs before thread-fold.js updates is-active.
+    var msg = document.getElementById("msg");
+    var id = msg && msg.getAttribute("data-article-id");
+    return id ? document.querySelector('.thread-list li[data-article-id="' + id + '"]') : null;
   }
 
-  function navigateThread(direction) {
+  function threadNeighbor(direction) {
     var active = focusedThreadItem();
-    if (!active) return false;
-    // Walk siblings until we hit a message row. The off-list-ancestor
-    // row and a long thread's gap and footer rows are not messages:
-    // their links leave the page for the thread view.
+    if (!active) return null;
+    var tree = document.querySelector(".thread-context");
+    if (direction === "prev" && tree &&
+        active.getAttribute("data-article-id") === tree.getAttribute("data-thread-root-id")) return null;
     var next = direction === "next"
       ? active.nextElementSibling
       : active.previousElementSibling;
     while (next) {
       var anchor = next.hasAttribute("data-article-id")
-        ? next.querySelector("a[href]")
-        : null;
-      if (anchor) {
-        anchor.click();
-        return true;
-      }
-      next = direction === "next"
-        ? next.nextElementSibling
-        : next.previousElementSibling;
+        ? next.querySelector("a[href]") : null;
+      if (anchor) return anchor;
+      next = direction === "next" ? next.nextElementSibling : next.previousElementSibling;
     }
-    return false;
+    return null;
+  }
+
+  function navigateDiff(direction) {
+    var link = document.querySelector('#series-diff .series-diff-pager a[rel="' + direction + '"]');
+    if (!link) return false;
+    link.click();
+    return true;
+  }
+
+  function navigateThread(direction) {
+    var anchor = threadNeighbor(direction);
+    if (!anchor) return false;
+    anchor.click();
+    return true;
+  }
+
+  function syncMessagePager() {
+    // An HTMX swap preserves the original window tree. Deriving the
+    // controls from a freshly computed server window would disagree
+    // with j/k after opening a message with different visible children.
+    ["prev", "next"].forEach(function (direction) {
+      var link = document.querySelector('#msg [data-message-nav="' + direction + '"]');
+      if (!link) return;
+      var neighbor = threadNeighbor(direction);
+      if (neighbor) {
+        var url = neighbor.getAttribute("href");
+        link.setAttribute("href", url);
+        link.setAttribute("hx-get", url);
+        link.setAttribute("hx-target", "#msg");
+        link.setAttribute("hx-swap", "outerHTML show:#msg:top");
+        link.setAttribute("hx-push-url", "true");
+        link.removeAttribute("aria-disabled");
+        link.removeAttribute("tabindex");
+      } else {
+        ["href", "hx-get", "hx-target", "hx-swap", "hx-push-url"].forEach(function (name) { link.removeAttribute(name); });
+        link.setAttribute("aria-disabled", "true");
+        link.setAttribute("tabindex", "-1");
+      }
+      // htmx caches the verb/path when binding; changing hx-get alone
+      // leaves a previously processed control targeting the old message.
+      if (window.htmx) window.htmx.process(link);
+    });
+  }
+
+  document.addEventListener("htmx:afterSwap", function (event) {
+    if (event.detail.target && event.detail.target.id === "msg") syncMessagePager();
+  });
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", syncMessagePager);
+  } else {
+    syncMessagePager();
   }
 
   function navigateTo(attr) {
@@ -111,16 +157,18 @@
   document.addEventListener("keydown", function (e) {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     if (isTypingTarget(e.target)) return;
+    var help = document.getElementById("keyboard-help");
+    if (help && help.open && e.key !== "Escape" && e.key !== "?") return;
 
     switch (e.key) {
       case "h":
         if (navigateTo("data-nav-up")) e.preventDefault();
         break;
       case "j":
-        if (navigateThread("next")) e.preventDefault();
+        if (navigateDiff("next") || navigateThread("next")) e.preventDefault();
         break;
       case "k":
-        if (navigateThread("prev")) e.preventDefault();
+        if (navigateDiff("prev") || navigateThread("prev")) e.preventDefault();
         break;
       case "l":
         if (navigateTo("data-nav-down")) e.preventDefault();
@@ -157,4 +205,5 @@
   } else {
     wireHelpDialog();
   }
+  document.addEventListener("htmx:historyRestore", wireHelpDialog);
 })();

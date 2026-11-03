@@ -26,9 +26,10 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 {%- if thread_total > 1 %} data-thread-root-id="{{ thread_root_id }}" data-thread-context="{{ 'root' if thread_root_id == article.id else 'deep' }}"{%- endif -%}
 {% endblock %}
 {% block content %}
+{% include "_message_body.html" %}
 {% if thread_total > 1 or parent_off_list %}
 {# Three-state fold for the thread tree. State lives on <html data-thread-fold>
-   and is set by the inline script just below before this section paints, so
+   and is set by thread-fold.js in the head before this section paints, so
    a localStorage pin doesn't cause a visible flash from the server's context
    default (root → partial, deep → closed). #}
 <section class="thread-context"
@@ -84,7 +85,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       <a href="{{ thread_urls[n.message_id] }}"
          hx-get="{{ thread_urls[n.message_id] }}"
          hx-target="#msg"
-         hx-swap="outerHTML"
+         hx-swap="outerHTML show:#msg:top"
          hx-push-url="true">{{ n.subject|clean_subject or '(no subject)' }}</a>
       <small>&middot; {{ n.author|safe_from }} &middot; {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
       {% if n.id in hidden_replies %}
@@ -106,36 +107,5 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
    via the html_data_attrs block above) carry the per-page context the
    controller needs. #}
 {% endif %}
-{% include "_message_body.html" %}
-{# Related patches: other recent articles touching at least one
-   file this patch touches. The reverse-lookup side of the
-   subsystem header, useful when reviewing one patch in a larger
-   recent flurry. Skipped silently when the article isn't a patch. #}
-{% if related_patches %}
-<section class="related-patches">
-  <details>
-    <summary><strong>Other recent patches touching these files</strong></summary>
-    {% include "_related_patch_list.html" %}
-  </details>
-</section>
-{% endif %}
-{# Related discussions (#71): non-patch threads only; the route
-   gate guarantees related_threads is empty on patch threads. Open
-   by default: on non-patch pages this panel is the only related
-   surface. Signals tooltip mirrors the badge tooltip idiom. #}
-{% if related_threads %}
-<section class="related-discussions">
-  <details open>
-    <summary><strong>Related discussions</strong></summary>
-    <ul>
-      {% for r in related_threads %}
-      <li>
-        <a href="{{ r.url }}">{{ r.subject|clean_subject or '(no subject)' }}</a>
-        <small data-tooltip="matched: {{ r.signals|join(', ') }}" data-placement="bottom">&middot; {{ r.last_activity.strftime('%Y-%m-%d') if r.last_activity else '' }}</small>
-      </li>
-      {% endfor %}
-    </ul>
-  </details>
-</section>
-{% endif %}
+
 {% endblock %}

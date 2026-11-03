@@ -1,7 +1,7 @@
 """The whole-thread view: every message in one conversation on one page.
 
 Additive to the message page, which keeps its own reading model (tree
-stacked above a single body). This surface exists because a single
+stacked below a single body). This surface exists because a single
 message is a poor unit for an index: most replies are a couple of lines
 ("Acked-by", "applied, thanks"), so a 60-message thread is 60 thin,
 near-duplicate URLs. The conversation as a whole is the substantial,
@@ -24,7 +24,7 @@ the single predicate every one of those surfaces consults.
 
 import hashlib
 import logging
-from collections import Counter
+from collections import Counter, defaultdict
 
 from flask import (
     Response,
@@ -37,12 +37,14 @@ from flask import (
 from sqlalchemy import select
 
 import mimir
+from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import (
     Article,
     ArticleList,
+    Inbox,
 )
 from mimir.parser import normalize_subject
 from mimir.patch_revisions import subject_tags
@@ -65,10 +67,15 @@ from mimir.threading import (
     thread_rows,
     thread_series_rows,
     thread_sort_key,
+    unmaterialised_roots,
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _clean_subject_filter, thread_summary_from
-from mimir.web.routes._validators import render_state_tag, series_rows_tag
+from mimir.web.routes._validators import (
+    render_state_tag,
+    revision_groups_tag,
+    series_rows_tag,
+)
 from mimir.web.urls import (
     MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
@@ -98,6 +105,98 @@ def _message_href(root, inbox_name, page, article_id) -> str:
     bare fragment in it resolves to page 1, which does not hold the message
     (a copied permalink or a new-tab click lands on the wrong page)."""
     return thread_page_url(root.id, root.date, inbox_name, page) + f"#m{article_id}"
+
+
+def _revision_hrefs(session, entries, *, cap, current, ordered_rows) -> dict[int, str]:
+    """`article id -> thread page and anchor` for the revisions the page's
+    folds link (the root's and each patch's), so a reader on `/t` stays in
+    thread views. The page is the revision's index in its thread's rows
+    (`index // cap + 1`, the Patches index's rank), in its canonical inbox,
+    like the message page's canonical. One statement for the revisions, two
+    per inbox for `unmaterialised_roots` (batched), and one `thread_rows`
+    per other thread that holds a revision below its root (usually one per
+    version). A revision that is its own root, which is every revision of a
+    version posted unthreaded, is on page 1 (`thread_page_of`) and reads
+    nothing more. `current` (`(inbox_id, root_id)`) reuses `ordered_rows`.
+
+    A revision whose thread is not materialised, or not ranked, gets no
+    entry and keeps its message-page link. Another thread's state is not in
+    this page's validator, so a cached link there goes stale when an
+    earlier-dated message joins ahead of the revision, or when that thread
+    is re-rooted (a late parent arrives); the cap is in the ETag. Reading
+    those threads on every 304 is not worth that rare stale link, which
+    lands on a page of the right thread (a re-rooted `/t` redirects).
+    """
+    ids = {e.article_id for e in entries if not e.is_current} | {
+        r.article_id for e in entries for r in e.reposts if not r.is_current
+    }
+    if not ids:
+        return {}
+    # Each revision's links with their roots, in one statement. The inbox
+    # pick is `fallback_canonical_name`, the rule `_canonical_inbox_name`
+    # applies for the revision's message-page URL.
+    links: dict[int, list] = defaultdict(list)
+    canonical_id: dict[int, int | None] = {}
+    rev_rows = {}
+    for row in session.execute(
+        select(
+            Article.id,
+            Article.date,
+            ArticleList.thread_root_id,
+            Article.canonical_inbox_id,
+            Inbox,
+        )
+        .join(Article, Article.id == ArticleList.article_id)
+        .join(Inbox, Inbox.id == ArticleList.inbox_id)
+        .where(ArticleList.article_id.in_(ids))
+    ):
+        rev_id, box = row.id, row.Inbox
+        links[rev_id].append((box, row.thread_root_id))
+        canonical_id[rev_id] = row.canonical_inbox_id
+        rev_rows[rev_id] = row
+    by_thread: dict[tuple, list[int]] = defaultdict(list)
+    inboxes = {}
+    for rev_id, rev_links in links.items():
+        name = fallback_canonical_name(
+            canonical_id[rev_id], [(box.id, box.name) for box, _ in rev_links]
+        )
+        box, root_id = next(
+            (link for link in rev_links if link[0].name == name), (None, None)
+        )
+        if box is None or root_id is None:
+            continue
+        inboxes[box.id] = box
+        by_thread[(box.id, root_id)].append(rev_id)
+    others: dict[int, list[int]] = defaultdict(list)
+    for key in by_thread:
+        if key != current:
+            others[key[0]].append(key[1])
+    unranked = {
+        (inbox_id, root_id)
+        for inbox_id, roots in others.items()
+        for root_id in unmaterialised_roots(session, inbox_id, roots)
+    }
+    hrefs = {}
+    for (inbox_id, root_id), rev_ids in by_thread.items():
+        if (inbox_id, root_id) == current:
+            rows = ordered_rows
+        elif (inbox_id, root_id) in unranked:
+            continue
+        elif rev_ids == [root_id]:
+            # A root sorts first (`_thread_order`): page 1, no read.
+            rows = [rev_rows[root_id]]
+        else:
+            rows = thread_rows(session, inboxes[inbox_id], root_id)
+        index = {row.id: i for i, row in enumerate(rows)}
+        root = next((row for row in rows if row.id == root_id), None)
+        if root is None or root.date is None:
+            continue
+        for rev_id in rev_ids:
+            if rev_id in index:
+                hrefs[rev_id] = _message_href(
+                    root, inboxes[inbox_id].name, index[rev_id] // cap + 1, rev_id
+                )
+    return hrefs
 
 
 def _reply_markers(
@@ -144,9 +243,9 @@ def _outline_rows(nodes, *, root, kinds, ordered, cap, page, inbox_name, total_c
     the patches as one row, each reply indented by its depth among the rows
     listed, and a last row for what is not listed. Each links the page and
     anchor that hold its message (`_message_href`, by the Patches index's
-    rank, `index // cap + 1`). `ordered` is
-    the whole thread in page order; `kinds` is empty on the CTE fallback, which
-    then lists every message but the root as a reply."""
+    rank, `index // cap + 1`). `ordered` is the whole thread in page order;
+    full HTML also loads the CTE fallback's Article rows for classification,
+    so its patches share the same outline grouping and index links."""
     page_of = {row.id: i // cap + 1 for i, row in enumerate(ordered)}
     here = {n.id for n in nodes if page_of.get(n.id, 1) == page}
 
@@ -498,6 +597,71 @@ def thread_view(
             session, inbox, days=7, limit=1, compute_on_miss=False
         )
         own_subsystem_id = busiest[0].id if busiest else None
+        representation = "md" if markdown else "hx" if hx_request else "full"
+        fallback_rows = []
+        if all_nodes is not None and not markdown:
+            # Both HTML representations classify fallback nodes. Keep their
+            # series columns in the validator before an HTMX append can 304.
+            ids = [node.id for node in all_nodes]
+            by_id = {}
+            for start in range(0, len(ids), 500):
+                by_id.update(
+                    (row.id, row)
+                    for row in session.scalars(
+                        select(Article).where(Article.id.in_(ids[start : start + 500]))
+                    )
+                )
+            fallback_rows = [by_id[node.id] for node in all_nodes if node.id in by_id]
+            series_rows = [
+                (
+                    row.id,
+                    row.patch_series_key,
+                    row.patch_series_head_id,
+                    row.patch_series_position,
+                    row.patch_series_version,
+                )
+                for row in fallback_rows
+            ]
+        visible_covers = []
+        if hx_request and not markdown:
+            visible_ids = {
+                node.id for node in rendered_nodes if node.id != root_node.id
+            }
+            cover_ids = {
+                row.id
+                for row in (fallback_rows if all_nodes is not None else series_rows)
+                if row.id in visible_ids
+                and row.patch_series_key
+                and row.patch_series_position in (None, 0)
+            }
+            if all_nodes is not None:
+                cover_candidates = fallback_rows
+            else:
+                cover_candidates = (
+                    session.scalars(
+                        select(Article).where(Article.id.in_(cover_ids))
+                    ).all()
+                    if cover_ids
+                    else []
+                )
+            visible_covers = [
+                row
+                for row in cover_candidates
+                if row.id in cover_ids and message_kind(row) == "cover"
+            ]
+        revision_groups = (
+            {
+                (row.patch_series_key, row.patch_series_head_id)
+                for row in (fallback_rows if all_nodes is not None else series_rows)
+                if row.patch_series_key
+            }
+            if representation == "full"
+            else {
+                (row.patch_series_key, row.patch_series_head_id)
+                for row in visible_covers
+            }
+        )
+        revisions_tag = revision_groups_tag(session, revision_groups)
         # Split so the ETag is the content part plus the representation
         # (which page, full or htmx). The root's pill and card depend on
         # the content part alone, so their caches key by it: one entry
@@ -510,7 +674,6 @@ def thread_view(
             f"{series_rows_tag(series_rows)}|{own_subsystem_id or ''}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
-        representation = "md" if markdown else "hx" if hx_request else "full"
         # What the cards say about each reply's parent, for the messages
         # of THIS page only, so it is page-local and costs no statement:
         # the slice is read above. Not in `content_input`, which keys the
@@ -529,9 +692,7 @@ def thread_view(
             "|".join(f"{n.id}:{n.thread_parent or ''}" for n in outline_nodes).encode(),
             digest_size=8,
         ).hexdigest()
-        etag_input = (
-            f"{content_input}|{page}|{representation}|{parents_tag}|{outline_tag}"
-        )
+        etag_input = f"{content_input}|{page}|{representation}|{parents_tag}|{outline_tag}|{revisions_tag}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
         if etag in request.if_none_match:
             response = Response(status=304)
@@ -543,7 +704,7 @@ def thread_view(
         ordered_rows = (
             thread_rows(session, inbox, article.id)
             if thread_rooted and not markdown
-            else []
+            else fallback_rows
         )
 
         # One bulk read rather than one `read_message` per node: that
@@ -740,8 +901,8 @@ def thread_view(
         # here. Counted as the issue counts them ("Discussion 76 | Patches
         # 27 | Everything 104" for 1 cover, 27 patches, 76 replies):
         # replies, patches, everything. A cover, the root's or another
-        # posting's, is in neither of the first two; accepted in review. No
-        # rows on the CTE fallback, so no kinds and no tabs there.
+        # posting's, is in neither of the first two; accepted in review.
+        # Full HTML classifies the CTE fallback's Article rows too.
         kinds = {row.id: message_kind(row) for row in ordered_rows}
         kind_counts = Counter(kinds.values())
         show_tabs = total_count > 1 and kind_counts["patch"] > 0
@@ -767,7 +928,7 @@ def thread_view(
         # would otherwise re-read the whole series on every "load more".
         patch_index = []
         patch_revisions: dict = {}
-        if show_tabs and representation == "full":
+        if representation == "full":
             patch_index = [
                 {
                     "id": row.id,
@@ -777,20 +938,46 @@ def thread_view(
                 for i, row in enumerate(ordered_rows)
                 if kinds[row.id] == "patch"
             ]
-            # Revisions inline only for the root's own series when the root
-            # is a cover: exactly the rows `render_state_tag` digests, so
-            # the timelines need no validator input of their own (D5).
-            # `patch_timelines` reads that series only, so a patch of
-            # another series in the thread gets no entry.
-            root_row = ordered_rows[0]
-            if kinds[root_row.id] == "cover":
-                patch_revisions = patch_timelines(
-                    session,
-                    root_row.patch_series_key,
-                    root_row.patch_series_head_id,
-                    [p["id"] for p in patch_index],
-                    inbox.name,
+        if representation == "full" or visible_covers:
+            # One timeline read per series, including standalone and nested
+            # postings. The pre-304 group digest covers all these inputs.
+            by_series = defaultdict(list)
+            for row in ordered_rows if representation == "full" else visible_covers:
+                if (
+                    row.id != root_node.id
+                    and row.patch_series_key
+                    and kinds.get(row.id) in {"patch", "cover"}
+                ):
+                    by_series[(row.patch_series_key, row.patch_series_head_id)].append(
+                        row.id
+                    )
+            for (key, head_id), patch_ids in by_series.items():
+                patch_revisions.update(
+                    patch_timelines(
+                        session,
+                        key,
+                        head_id,
+                        patch_ids,
+                        inbox.name,
+                    )
                 )
+        revision_hrefs: dict[int, str] = {}
+        if representation == "full" or visible_covers:
+            entries = [
+                *(
+                    root_patch_state.series
+                    if root_patch_state and representation == "full"
+                    else []
+                ),
+                *(e for timeline in patch_revisions.values() for e in timeline),
+            ]
+            revision_hrefs = _revision_hrefs(
+                session,
+                entries,
+                cap=cap,
+                current=(inbox.id, root_node.id) if ordered_rows else None,
+                ordered_rows=ordered_rows,
+            )
 
     author_count = thread_summary_from(authors, thread_max_date, total_count)[
         "author_count"
@@ -823,6 +1010,7 @@ def thread_view(
         show_tabs=show_tabs,
         patch_index=patch_index,
         patch_revisions=patch_revisions,
+        revision_hrefs=revision_hrefs,
         canonical_url=canonical_url,
         page_json_ld=page_json_ld,
         root_url=_msg_url(root_node, inbox.name),

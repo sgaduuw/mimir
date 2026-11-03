@@ -1098,6 +1098,41 @@ order).
   a key that no write touches: a change to the rule itself, such as
   `SPLIT_BELOW_MATCHED_SHARE`, must ship its own pass over the archive.
 
+### Series diff navigation (#999)
+
+`web/series_diff_navigation.py` resolves the selected comparison and its links
+from one batch of indexed slots for the exact series key/head. `slot_winner`
+still chooses each slot before the existing subject/file fallback is tried.
+The two current postings' fallback lists are loaded once per request to discover
+unindexed children as well as fill missing slots. Only observed positions are
+visited, never a range through an untrusted maximum. Other adjacent version
+pairs resolve only the current position, or their cover when that is missing.
+No navigation step reads a mail body or compares every patch.
+
+Canonical inbox names are fetched in bulk for indexed destination winners.
+Heuristic destinations stay in the requesting inbox, because that is the
+inbox whose children were matched. The shared URL spelling supplies links,
+canonicals and the native form's path; the sitemap remains cover-only.
+
+Metadata stays outside the 24-hour rendered-diff cache, so a new patch or a
+canonical reassignment is visible on a warm page. `revision_diff:render2`
+separates line-classed markup from older Pygments markup without changing the
+registered `RevisionDiff` fields or global cache protocol. Identity still
+carries the inbox, exact versions, position and winning article IDs; fallback
+keys include their cover IDs and matched article IDs, since a child match can
+change while its covers stay the same. Only the selected two bodies are read
+on a cold diff; a warm diff reads neither. Counts and escaped line markup come
+from the same unified-diff records, skipping only the two generated headers.
+
+Diff navigation boosts native links/forms with HTMX and selects `main` from the
+same full HTML response used without JavaScript. There is no fragment variant
+or extra render cache key. Replacing `main` includes the inbox-dependent chrome
+when a canonical position link changes inbox. Page metadata travels on the
+article so `series-diff.js` can restore the document head and upward navigation
+after a swap or a history restore. The keyboard controller clicks live pager
+anchors, and the theme controller reinitializes the replaced control. Failed
+selection requests keep the selected position naming the body still on screen.
+
 ### Materialised thread roots (2026-07-28)
 
 The materialised-column approach was considered and rejected for
@@ -1334,6 +1369,81 @@ fail.
 Indexed and computed at ingest in `_to_article_insert`. Existing rows are
 backfilled by a one-shot Python loop because SQL doesn't easily express
 the regex-based prefix stripping.
+
+### Compact window listings (#991)
+
+Daily, month and catch-up views cache one uncapped, unfiltered root set in
+`listing_threads_v1:<inbox>:<window>`. A listing-owned representation holds
+inbox identity once and primitive row arrays in the documented column order
+in listings.py. Dates are plain ISO strings. Every listing key stores the
+same `zlib-json-v1` envelope: level-1 zlib-compressed JSON encoded as base64,
+plus the producer's raw UTF-8 byte length. Decode checks that exact length
+with bounded output and requires a complete stream with no trailing data.
+This is an integrity check, not an independent limit on a legitimate result's
+working set. The general serializer, broker protocol, registered ActiveThread
+contract and cache namespace remain unchanged. Old and new workers use
+different key families during rolling updates; the broker stores already
+encoded JSON without needing the listing decoder.
+
+Production measurement on 2026-11-02 UTC, Mimir 3.39.0:
+203 inboxes and 406 proposed current-month/maximum-since queries took
+38.974 seconds of serial SQL time, with 1.078 seconds packing, producing
+47.89 MB of raw compact JSON. Only lkml's 90-day entry exceeded 8 MiB.
+For that 38,875-thread window, raw compact JSON was 9,468,100 bytes;
+level-1 compression produced a 5,256,038-byte base64 JSON envelope and a
+5,256,164-byte broker request, taking 116.82 ms to compress/encode and
+89.102 ms to decode/check all fields. The final raw_bytes integrity field
+adds exactly 20 value bytes and 22 request bytes with the same request key
+and RPC id, giving 5,256,058 and 5,256,186 bytes respectively. That metadata
+adjustment is calculated with the actual serializer, not a new production
+query. Level 6 saved
+additional space but took 271.849 ms, so level 1 was selected. These are
+serial-query and single-window codec measurements, not a concurrent warm
+load test or a guaranteed fleet refresh duration.
+
+Filters run before caps and daily pagination; lifecycle queries run after
+slicing. Root patch metadata preserves the same not-a-reply rule used by
+patch state. Unanswered means zero replies in the selected window, not over
+its lifetime. The generic cache size and broker request limits still apply.
+Oversized compressed web results render correctly but are not cached; an
+oversized warm reports an error. No truncation is hidden inside a cached result.
+
+### Subsystem posting dashboard (#995)
+
+`subsystems_dashboard/recent.py` groups path/inbox-qualified canonical patches
+by series key, the shared normalized head, and exact stored version before
+selecting the newest 30 postings. Incomplete series metadata is a singleton
+by article ID. The existing UNION of path-index seeks keeps F/X semantics;
+a deterministic connection-local SQLite function calls the existing subject
+predicates so replies and non-patches cannot consume grouped slots. A CASE
+expression gates that callback on indexed inbox membership, since a plain join
+lets SQLite parse a path-matched subject before rejecting its inbox. Registering
+on the executing session also covers the broker's independent read pool.
+
+Only selected postings enter the SQL slot-count and preview windows. All
+matching candidates necessarily have a diff, so the shared diff-first,
+lowest-ID slot rule reduces to lowest ID there. The preview has at most 30
+matching positions per posting, with its complete matching count retained.
+Cover selection uses the full slot rule across paths and inboxes. Cover links
+are message links, since one posting need not be a single thread; dates and
+canonical inbox membership must be usable before rendering a link.
+
+The dedicated primitive `recent_postings_v1:<inbox>:<subsystem>:30:30` cache
+stores posting/article fields only. Route and existing slow warmer use the
+same limits, the existing one-hour TTL/refresh approximation and existing
+fan-out. The global cache namespace, shared DTOs and opaque JSON broker
+transport are unchanged. Oversized web results remain best-effort; the slow
+warm reports an error rather than calling a skipped entry warmed.
+
+Lifecycle state is fetched independently for covers and standalone rows,
+plus active and triage rows. A cover's progress still covers its full posting,
+including other paths/inboxes and missing declared positions as pending.
+Matching preview counts never stand in for that denominator. No-cover postings
+have no inferred whole-series state. Triage prose reads trailer-event counts
+and the lifecycle helper's existing global M/R classification, so multiple
+trailers from one person are not described as distinct reviewers. Ownership
+and reviewer links retain their separate addressability/redaction predicates;
+reviewer rows remain per address pending #986.
 
 ### Active-threads ranking with recency decay
 
@@ -2072,7 +2182,7 @@ The shared `_subsystem_path_filter_sql` builder
 (`mimir/subsystems_dashboard/_path_filter.py`) emits the
 "article IDs matching this subsystem's F: globs and not vetoed by
 its X: globs" SELECT used by every per-subsystem dashboard helper
-(`recent_articles_in_subsystem`, `daily_volume_in_subsystem`,
+(`recent_postings_in_subsystem`, `daily_volume_in_subsystem`,
 `active_threads_in_subsystem`, `active_reviewers_in_subsystem`).
 Its shape is load-bearing for cold-miss latency on busy
 subsystems.
@@ -2385,6 +2495,29 @@ Two consequences worth knowing:
   propagates.
 
 ## What the page ETags version
+
+**After #990:** the single-message reader no longer renders lifecycle,
+status, revisions or related panels. It keeps `render_state_tag`
+conservatively because subsystem attribution still feeds its navigation,
+HTMX menu refresh and JSON-LD, and address allowlists still feed redaction.
+On `/t`, each message can open `/api/<inbox>/metadata/<id>` for its own
+metadata. That fragment is `noindex`, `no-store`, and does not return
+conditional 304s. Its state-card cache keys carry the current derived
+state, inbox, version and thread summary; related-list helper TTLs retain
+the existing documented approximation. A collapsed thread card performs
+no metadata lookup. This is the same separate-response boundary as the
+per-patch related fragment, rather than an eager computation per message.
+
+Revision and diff links remain server-rendered. Timelines are read once
+per distinct series, including nested postings and standalone patches.
+The full HTML thread ETag additionally digests those series' revisions,
+dates, positions, versions, canonical inboxes, memberships and file
+presence before the 304 check. An HTMX append reads and digests only
+its visible non-root covers' series, preserving their inline timelines
+and diff links; it does not build the Patches index. Markdown reads none
+of those extra groups. This supersedes the root-series-only
+restriction described in the historical rationale below.
+
 
 Both the message page and the thread view are served
 `Cache-Control: public, no-cache`, so their ETag is the only thing

@@ -18,6 +18,9 @@ from datetime import UTC, datetime
 
 from sqlalchemy import select
 
+from mimir.listings import listing_for_day as threads_for_day
+from mimir.listings import listing_for_month as threads_for_month
+from mimir.listings import listing_since as threads_since
 from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import (
     MAX_DEPTH,
@@ -26,9 +29,6 @@ from mimir.threading import (
     active_threads,
     find_thread_root,
     get_thread,
-    threads_for_day,
-    threads_for_month,
-    threads_since,
 )
 
 
@@ -527,8 +527,8 @@ def test_threads_for_month_excludes_other_inbox(seeded_db):
     assert "art1@example.com" not in msgids
 
 
-def test_threads_for_month_respects_limit(seeded_db):
-    """Seed five extra threads in March, then cap the result at 2."""
+def test_threads_for_month_returns_all_before_display_cap(seeded_db):
+    """The cache must retain every root so filters run before the display cap."""
     alpha = _inbox(seeded_db, "alpha")
     with seeded_db() as s:
         for i in range(5):
@@ -551,8 +551,8 @@ def test_threads_for_month_respects_limit(seeded_db):
                 )
             )
         s.commit()
-        results = threads_for_month(s, alpha, 2024, 5, limit=2, force=True)
-    assert len(results) == 2
+        results = threads_for_month(s, alpha, 2024, 5, force=True)
+    assert len(results) == 5
 
 
 # active_threads (the cached wrapper) and its decay-weighted ranking.

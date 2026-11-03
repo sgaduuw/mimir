@@ -8,162 +8,113 @@
 {%- endif -%}
 {% endblock %}
 {% block content %}
-<h1>{{ inbox_name }} <small><em>archive</em></small></h1>
-
-<form method="get" action="/{{ inbox_name }}/search" role="search">
-  <input type="search" name="q" placeholder="search subject / from …" maxlength="80">
-</form>
-
-{% if active %}
-<section>
-  <h2>Most active threads <small><em>(last 7 days)</em></small></h2>
-  <ul>
-    {% for t in active %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-      {%- set show_activity = false -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
-      <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
-        {# The reply count links to the whole-thread view. Replies in
-           the window prove the thread is multi-message, which is
-           exactly when `/t` is the canonical target and contains what
-           it claims. This is the inbound link that page was missing:
-           this dashboard is sitemapped and is the inbox's hub. #}
-        &middot; {% if t.reply_count %}<a href="{{ thread_page_url(t.id, t.date, inbox_name) }}">{{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d</a>{% else %}{{ t.reply_count }} replies in 7d{% endif %}
-        &middot; {{ t.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
-{% if active_subsystems %}
-{# Subsystem discoverability on the inbox dashboard. Plain <ul>
-   matches the visual language of the surrounding "Most active
-   threads" / "Recent patches" lists, cards would be heavier
-   than the rest of the page warrants. The front-page surface
-   keeps the card grid because it has nothing else around it to
-   anchor against. Display name is lowercased (anti-shouty pass);
-   URL canonical form is also lowercase. #}
-<section>
-  <h2>Most active subsystems <small><em>(last 7 days)</em></small></h2>
-  <ul>
-    {% from "_subsystem_link.html" import subsystem_link %}
-    {% for s in active_subsystems %}
-    <li>
-      {{ subsystem_link(s.name, s.inbox_name) }}
-      <br><small>{{ s.message_count }} message{{ '' if s.message_count == 1 else 's' }} in 7d</small>
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
-{# The crawl path into the subsystem index, OUTSIDE the widget's
-   `if`. The widget is empty whenever its cache is cold and on the
-   45-of-200 production inboxes whose recent traffic touches no
-   MAINTAINERS-claimed path, and gating the link on it would orphan
-   the index on exactly those, which is the defect this whole change
-   set exists to close. The index page handles its own empty state. #}
-<p><small><a href="{{ inbox_name|subsystem_index_url }}">Browse active subsystems &rarr;</a></small></p>
-
-<div class="grid">
-  {% if pulls %}
-  <section>
-    <h3>Latest pull requests</h3>
-    <ul>
-      {% for a in pulls %}
-      <li>
-        {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
-        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-        <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
-          &middot; {{ a.author|safe_from }}</small>
-      </li>
+<header class="inbox-header">
+  <div>
+    <h1>{{ inbox_name }} <small>archive</small></h1>
+    <p class="inbox-summary">{{ '{:,}'.format(stats.total if stats else 0) }} messages
+      {% if stats and stats.first_date %}<span>Since {{ stats.first_date.strftime('%Y-%m-%d') }}</span>{% endif %}
+      <span>{{ '{:,}'.format(spark.days|sum(attribute=1) if spark else 0) }} in the last 30 days</span>
+      <span>{% if stats and stats.last_date %}Latest {{ stats.last_date|relative_time }}{% elif stats and stats.total %}Latest date unknown{% else %}No messages yet{% endif %}</span>
+    </p>
+  </div>
+  <form method="get" action="/{{ inbox_name }}/search" role="search" class="search-form inbox-search">
+    <label for="inbox-query">Search subject or sender</label>
+    <fieldset role="group">
+      <input type="search" id="inbox-query" name="q" minlength="{{ search_min_len }}" maxlength="{{ search_max_len }}" placeholder="subject or sender …">
+      <button type="submit" class="secondary">Search</button>
+    </fieldset>
+  </form>
+</header>
+<div class="inbox-dashboard">
+  <div class="inbox-main">
+    <section aria-labelledby="active-heading">
+      <h2 id="active-heading">Most active threads <small>(last 7 days)</small></h2>
+      {% if active %}
+      <table class="listing-table inbox-active">
+        <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies in 7d</th></tr></thead>
+        <tbody>
+        {% for t in active %}
+          {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}
+          {% set row_time = t.last_activity %}{% set row_replies = t.reply_count %}{% set row_reply_label = true %}
+          {% set row_url = thread_page_url(t.id, t.date, inbox_name) if t.reply_count else t|msg_url(inbox_name) %}
+          {% include "_listing_row.html" %}
+        {% endfor %}
+        </tbody>
+      </table>
+      {% else %}<p><em>No active threads in the last 7 days.</em></p>{% endif %}
+    </section>
+    <section aria-labelledby="recent-heading">
+      <div class="inbox-section-heading"><h2 id="recent-heading">Recent messages</h2><a href="/{{ inbox_name }}/today">All of today →</a></div>
+      {% if recent %}<ul class="recent-list">{% include "_recent_items.html" %}</ul>
+      {% else %}<p><em>No messages yet.</em></p>{% endif %}
+    </section>
+  </div>
+  <aside class="inbox-sidebar" aria-label="Inbox highlights">
+    <section>
+      <h2>Latest pull requests</h2>
+      {% if pulls %}
+      <ul class="inbox-compact-list">
+        {% for a in pulls %}
+        <li><a href="{{ a|msg_url(inbox_name) }}" title="{{ a.subject or '(no subject)' }}">{{ a.subject|pull_label }}</a>
+          <small>{{ a.author|listing_sender }} · {{ a.date.strftime('%Y-%m-%d') if a.date else 'Unknown date' }}</small></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p><em>No recent pull requests.</em></p>{% endif %}
+      <a href="{{ url_for('web.merge_window_page') }}">Merge window →</a>
+    </section>
+    <section>
+      <h2>Stable / release announcements</h2>
+      {% if stable %}
+      <ul class="inbox-release-list">
+        {% for a in stable %}
+        <li><a href="{{ a|msg_url(inbox_name) }}" title="{{ a.subject or '(no subject)' }}">{{ a.subject|release_label }}<small>{{ a.date.strftime('%Y-%m-%d') if a.date else 'Unknown date' }}</small></a></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p><em>No recent release announcements.</em></p>{% endif %}
+    </section>
+    {% if trackers %}
+    <section class="inbox-trackers">
+      <h2>Latest from</h2>
+      {% for t in trackers %}
+      <h3>Latest from {{ t.label }}</h3>
+      {% if t.messages %}
+      <ul class="inbox-compact-list">
+        {% for a in t.messages %}
+        <li><a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a><small>{{ a.author|listing_sender }} · {{ a.date.strftime('%Y-%m-%d') if a.date else 'Unknown date' }}</small></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p><em>No recent messages.</em></p>{% endif %}
+      <small><a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}">all →</a> · <a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}/feed.atom" title="Atom feed for {{ t.label }}">atom</a></small>
       {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-  {% if stable %}
-  <section>
-    <h3>Stable / release announcements</h3>
-    <ul>
-      {% for a in stable %}
-      <li>
-        {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
-        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-        <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
-      </li>
-      {% endfor %}
-    </ul>
-  </section>
-  {% endif %}
-</div>
-
-{% if trackers %}
-<div class="grid">
-  {% for t in trackers %}
-  <section>
-    <h3>Latest from {{ t.label }}</h3>
-    {% if t.messages %}
-    <ul>
-      {% for a in t.messages %}
-      <li>
-        {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
-        <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-        <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}</small>
-      </li>
-      {% endfor %}
-    </ul>
-    <small>
-      <a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}">all →</a>
-      &middot;
-      <a href="/{{ inbox_name }}/author/{{ t.substr|urlencode }}/feed.atom"
-         title="Atom feed for {{ t.label }}">atom</a>
-    </small>
-    {% else %}
-    <p><em>No recent messages.</em></p>
+    </section>
     {% endif %}
-  </section>
-  {% endfor %}
+    <section>
+      <h2>Most active subsystems <small>(last 7 days)</small></h2>
+      {% from "_subsystem_link.html" import subsystem_link %}
+      {% set max_messages = active_subsystems|map(attribute='message_count')|select|list|max|default(0) %}
+      {% if active_subsystems %}
+      <ul class="inbox-compact-list inbox-subsystems">
+        {% for s in active_subsystems %}
+        {% set count = s.message_count or 0 %}
+        <li>{{ subsystem_link(s.name, s.inbox_name) }}<small>{{ count }} message{{ '' if count == 1 else 's' }} in 7d</small>
+          <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ count }} messages in the last 7 days"><rect class="bar-added" width="{{ 100 * count / max_messages if max_messages else 0 }}" height="6"/></svg></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p><em>No recent subsystem activity available.</em></p>{% endif %}
+      <a href="{{ inbox_name|subsystem_index_url }}">Browse active subsystems →</a>
+    </section>
+    <section>
+      <h2>This day, 5 years ago</h2>
+      {% if history %}
+      <ul class="inbox-compact-list">
+        {% for a in history %}
+        <li><a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a><small>{{ a.author|listing_sender }} · {{ a.date.strftime('%Y-%m-%d') if a.date else 'Unknown date' }}</small></li>
+        {% endfor %}
+      </ul>
+      {% else %}<p><em>No messages on this day five years ago.</em></p>{% endif %}
+    </section>
+  </aside>
 </div>
-{% endif %}
-
-{% if history %}
-<section>
-  <h3>This day, 5 years ago</h3>
-  <ul>
-    {% for a in history %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-      {%- set show_activity = false -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-      <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '?' }}
-        &middot; {{ a.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-</section>
-{% endif %}
-
-<section>
-  <h2>Recent messages</h2>
-  {% if recent %}
-  <ul>
-    {% include "_recent_items.html" %}
-  </ul>
-  {% else %}
-  <p><em>No articles yet. Run <code>flask --app mimir ingest</code> first.</em></p>
-  {% endif %}
-</section>
-
 {% endblock %}
 
 {% block footer_extra %}
@@ -177,11 +128,9 @@
   <br>
   {% endif %}
   {% if stats %}
-  <small>
-    {{ '{:,}'.format(stats.total) }} messages across {{ stats.epochs }} epoch{{ '' if stats.epochs == 1 else 's' }}{% if stats.first_date and stats.last_date %},
-    spanning {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}.
-  </small>
+  <small>{{ stats.epochs }} archive epoch{{ '' if stats.epochs == 1 else 's' }}{% if stats.first_date and stats.last_date %}, spanning {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}.</small>
   <br>
+  {% endif %}
   {% if year_decades %}
   <small>Browse by year:</small>
   <ul class="year-decade-list">
@@ -196,5 +145,4 @@
   </ul>
   {% endif %}
   <small><a href="/{{ inbox_name }}/feed.atom">Atom feed</a></small>
-  {% endif %}
 {% endblock %}

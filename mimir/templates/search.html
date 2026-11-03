@@ -10,22 +10,20 @@ Search the {{ inbox_name }} archive by subject or author.
 {% block content %}
 <h1>Search <small><em>· {{ inbox_name }}</em></small></h1>
 
-<form method="get" action="/{{ inbox_name }}/search">
-  {# fieldset role="group" gives Pico its inline-row treatment so the
-     input + button render as a unified pill on one line. Enter-to-
-     submit still works on hardware keyboards; the visible button is
-     for phone-thumb usability (2026-05-12 review). #}
+<form method="get" action="/{{ inbox_name }}/search" class="search-form">
+  <label for="search-query">Subject or sender</label>
   <fieldset role="group">
     <input type="search"
+           id="search-query"
            name="q"
            value="{{ query }}"
-           placeholder="subject or author …"
+           placeholder="subject or sender …"
            minlength="{{ min_len }}"
            maxlength="{{ max_len }}"
            autofocus>
-    <button type="submit">Search</button>
+    <button type="submit" class="secondary">Search</button>
   </fieldset>
-  <small><em>Substring match against subject and From; case-insensitive.</em></small>
+  <small><em>Matches subject and sender, any case.</em></small>
 </form>
 
 {% if too_short %}
@@ -33,21 +31,28 @@ Search the {{ inbox_name }} archive by subject or author.
 {% elif query %}
   {% if results %}
   <p><small>
-    {{ results|length }} result{{ '' if results|length == 1 else 's' }}
-    {% if truncated %} · capped at {{ result_cap }}; refine the query for more{% endif %}.
+    The {{ matching_count }} newest matching message{{ '' if matching_count == 1 else 's' }}, grouped by thread root.
+    {% if truncated %}Capped at {{ result_cap }}; refine the query for more.{% endif %}
   </small></p>
-  <ul>
-    {% for a in results %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-      {%- set show_activity = false -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-      <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
-        &middot; {{ a.author|safe_from }}</small>
-    </li>
+  <table class="listing-table search-results">
+    <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Matches</th></tr></thead>
+    <tbody>
+    {% for group in results %}
+      {% set a = group.representative %}
+      {% set row_time = a.date %}
+      {% set row_id = a.id %}
+      {% set row_subject = a.subject %}
+      {% set message_row = true %}
+      {% set row_url = thread_page_url(group.root_id, group.destination_date, inbox_name) if group.root_id is not none else msg_path(a.id, group.destination_date, inbox_name) %}
+      {% set row_senders = group.authors|map('listing_sender')|unique(case_sensitive=true)|list %}
+      {% set row_matches = group.count %}
+      {% set row_positions = group.positions %}
+      {% set row_version = group.version %}
+      {% set row_query = query %}
+      {% include "_listing_row.html" %}
     {% endfor %}
-  </ul>
+    </tbody>
+  </table>
   {% else %}
   <p><em>No matches for {{ query }}.</em></p>
   {% endif %}

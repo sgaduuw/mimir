@@ -11,6 +11,57 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.40.0] - 2026-11-03
+
+### Added
+
+- The front page has a Message-ID lookup form that works without JavaScript, and a header with the inbox count, how many inboxes had a message in the last 24 hours, and the messages of the last 30 days, each counted once even when cross-posted. The 30-day total is refreshed by the fast warm tier and left out until the first run (#994).
+
+- `/m/?id=` opens a message from what you paste: a bare Message-ID, `<id>`, `mid:<id>`, a lore.kernel.org link, or a path such as `/all/<id>/` or `/r/<id>`. `/m/<id>` and `/<inbox>/m/<id>` read the ID the same way, so `<id>` in angle brackets now resolves there too (#984).
+
+- Series comparisons have Previous/Next controls, a native position selector, a scrollable position overview and links to other adjacent revision pairs. The selector works without JavaScript; HTMX changes comparisons in place while preserving browser history, and `j` and `k` move between comparable positions (#999).
+
+- A System / Light / Dark theme selector remembers your browser preference and applies it to page and badge colours (#991).
+
+- Daily archives have 100-thread pages with Previous and Next links. Daily, month and catch-up listings can filter patches, pull requests and threads with no replies in the selected window (#991).
+
+
+### Changed
+
+- The 404 page names the address it could not find and offers a way forward: the front page, the Message-ID lookup form (prefilled from a failed lookup, or from a path segment that holds an `@`), and, for an address like `/lkml/2026/10/1`, the inbox dashboard and the month, each only when that page exists. A message-shaped address says "This message isn't in the archive". The page stays noindex, uncached and cheap: an address that cannot be an inbox costs no query, and a database error still gives a plain 404 (#1002, #984).
+
+- The front page is much shorter: it shows the six busiest inboxes this month as cards with a 30-day sparkline, the active subsystems of the week as rows with a bar and count, and every inbox on one line with its message total and last activity, instead of a sparkline card for every inbox. With JavaScript, a box filters the inboxes and "A to Z" or "Most active" reorders them. Pinned inboxes stay first and say "pinned". Subsystem rows no longer show a maintainer or a status (#994).
+
+- The privacy notice has an "In short" summary, a contents list, a reading column of about 68 characters, and its browser-storage lists as tables (Cloudflare cookies, local storage, session storage). The notice now also names `htmx-history-cache`, the sessionStorage entry htmx keeps for the back button (up to ten page copies, cleared when the tab closes); it was in use before and not listed. The rest of the wording is unchanged. The summary says there are two local preferences, theme and thread fold; it is new text, so this entry records the change to the notice (#1001).
+
+- The merge window page states whether the window is open, with a three-step release cycle, and shows pull requests to Linus as cards that lead with their count: "Waiting" (was Pending), "Merged", "Unclear" (was Unknown) and "Rejected". Each card lists its four newest subjects and keeps the rest in an "All N" disclosure. The queued patches are one list of subsystems with a proportional bar and a count, each opening to its series; a "Find a subsystem" box filters it when JavaScript is on. Subsystem names are lowercase, and the note on how patches are counted moves below the list. The fold-box controls and their script are gone (#1000).
+
+- `robots.txt` disallows `/m/` and `/*/m/`, which hold only redirects. A data migration adds both paths to an existing `*` stanza and keeps any path an operator added (#984).
+
+- Series diffs show a clean series heading, dated revision links, a patch heading and added/removed line totals. Added, removed and hunk lines have themed backgrounds and marker gutters; long lines scroll inside the diff. Navigation uses current metadata without reading the other patches' bodies (#999).
+
+- Maintainer profiles show initials, subsystem and inbox totals, lowercase subsystem cards with status pills, and responsive review-activity chips. Cached all-time trailer counts order the chips by activity; cold pages retain alphabetical links without counts (#997).
+
+- Active subsystem indexes use aligned activity counts and proportional bars, maintainer summaries and last-activity dates. Rows stack on phones, and totals count only subsystems with valid dashboard links (#996).
+
+- Subsystem dashboards lead with reviewed patches awaiting pickup, followed by active threads and recent postings. Recent patches group by exact series posting before the 30-row limit, with at most 30 matching patch positions per disclosure and explicit truncation. Full-posting lifecycle progress stays separate from subsystem counts. Ownership, file rules and reviewer activity move to a responsive sidebar; quiet patches start collapsed (#995).
+
+- Inbox dashboards pair active threads and compact badge-free recent messages with pull requests, release chips, configured author lists, subsystem activity bars and history in a sidebar. The header summarizes existing cached archive and 30-day activity data (#993).
+
+- Search groups the 100 newest matching messages by inbox thread root, with safe subject highlights, matching sender names and counts, and posting-specific patch positions (#992).
+
+- Daily, catch-up, month, author and reviewer listings share accessible timestamp, subject and count columns, sender names and meaningful lifecycle badges. Daily archives and filtered listings are noindex with no canonical (#991).
+
+- The message page leads with its mail header and body, with the windowed thread overview below them (#990). A context bar inside each swapped message links to the whole thread at that message and offers Previous, Next and Reply to navigation. HTMX navigation scrolls back to the message header. Lifecycle, status, subsystem ownership, revisions and related content move to the thread view; each thread message has a details disclosure with a link that works without JavaScript, including standalone patches. Revision and series-diff links remain server-rendered, including nested series.
+
+- On the thread page, a revision link (in the root's Revisions and in each patch's in the Patches index) opens the revision on the thread page that holds it, at that message, instead of on its message page, so switching revisions stays in the thread view. A revision whose thread cannot be ranked yet still links its message page.
+
+### Fixed
+
+- Daily, catch-up and month listings say "1 thread" and "1 message" instead of "1 threads" and "1 messages", and an empty daily page no longer says "Showing 0–0". The message page heading collapses a folded subject onto one line again, as the page title does.
+
+- On the thread page, the revision links in a message's details disclosure open the revision on the thread page that holds it, like the root's Revisions fold and the Patches index. All three scroll in place when that page is already loaded.
+
 ## [3.39.0] - 2026-11-01
 
 ### Added

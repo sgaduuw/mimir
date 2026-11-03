@@ -4,6 +4,7 @@ Run: uv run --frozen --with playwright pytest -q tests/test_routes/test_browser_
 Install Chromium once: uv run --with playwright playwright install chromium
 """
 
+import re
 from threading import Thread
 
 import pytest
@@ -120,7 +121,9 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
             assert not errors, errors
 
             later_id, later_path = messages[5]
-            flat_view = page.get_by_role("link", name="flat view", exact=True)
+            flat_view = page.get_by_role(
+                "link", name=re.compile("Read the whole thread"), exact=True
+            )
             for article_id, path, destination in [
                 (later_id, later_path, root_path + "/t/2"),
                 (root_id, root_path, root_path + "/t"),
@@ -128,9 +131,13 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
             ]:
                 page.locator(f'.thread-list a[href="{path}"]').click()
                 expect_message(article_id, path)
-                expect(flat_view).to_have_attribute("href", destination)
-            page.get_by_role("link", name="flat view", exact=True).click()
-            expect(page).to_have_url(base + root_path + "/t/2")
+                expect(flat_view).to_have_attribute(
+                    "href", destination + f"#m{article_id}"
+                )
+            page.get_by_role(
+                "link", name=re.compile("Read the whole thread"), exact=True
+            ).click()
+            expect(page).to_have_url(base + root_path + f"/t/2#m{later_id}")
             expect(page.locator(f"#m{later_id}")).to_be_visible()
 
             page.goto(base + "/alpha/")
@@ -144,8 +151,10 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
 
             thread_path = root_path + "/t"
             page.goto(base + root_path)
-            page.get_by_role("link", name="flat view", exact=True).click()
-            expect(page).to_have_url(base + thread_path)
+            page.get_by_role(
+                "link", name=re.compile("Read the whole thread"), exact=True
+            ).click()
+            expect(page).to_have_url(base + thread_path + f"#m{root_id}")
             expect(page.locator(".thread-message")).to_have_count(5)
             page.locator(".thread-more a").click()
             expect(page.locator(".thread-message")).to_have_count(10)
@@ -161,8 +170,10 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 expect(plain.locator("#msg")).to_have_attribute(
                     "data-article-id", str(next_id)
                 )
-                plain.get_by_role("link", name="flat view", exact=True).click()
-                expect(plain).to_have_url(base + thread_path)
+                plain.get_by_role(
+                    "link", name=re.compile("Read the whole thread"), exact=True
+                ).click()
+                expect(plain).to_have_url(base + thread_path + f"#m{next_id}")
                 next_page = plain.locator(".thread-more a").get_attribute("href")
                 plain.locator(".thread-more a").click()
                 expect(plain).to_have_url(base + next_page)
@@ -324,6 +335,351 @@ def test_an_in_page_jump_opens_the_tab_that_holds_the_message(
             )
             expect(page.locator(f"#m{reply}")).to_be_in_viewport()
             expect(page).to_have_url(f"{base}{page2}#m{reply}")
+    finally:
+        server.shutdown()
+        thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
+    client, tmp_path, monkeypatch, width, scheme
+):
+    """The tree sits below a long body. Its swap must bring #msg back into
+    view, rather than leaving the reader where the old tree was."""
+    import mimir.web.routes.message as message_route
+
+    playwright = pytest.importorskip("playwright.sync_api")
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("root@x", None),
+            ("reply@x", "root@x"),
+            ("hidden@x", "reply@x"),
+            ("sibling@x", "root@x"),
+        ],
+    )
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    real = message_route.read_message
+
+    def long_body(*args):
+        parsed = real(*args)
+        return parsed.model_copy(
+            update={"body": "\n".join(f"    code line {i}" for i in range(150))}
+        )
+
+    monkeypatch.setattr(message_route, "read_message", long_body)
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    root_id, root_url = seeded["root@x"]
+    reply_id, reply_url = seeded["reply@x"]
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(
+                viewport={"width": width, "height": 800}, color_scheme=scheme
+            )
+            page.goto(base + root_url)
+            assert page.evaluate("typeof htmx") == "object"
+            assert (
+                page.locator("#msg").bounding_box()["y"]
+                < page.locator(".thread-context").bounding_box()["y"]
+            )
+            page.locator('[data-fold-set="expanded"]').click()
+            link = page.locator(
+                f'.thread-list li[data-article-id="{reply_id}"] > a'
+            ).first
+            link.scroll_into_view_if_needed()
+            assert page.locator("#msg").bounding_box()["y"] < -500
+            link.click()
+            playwright.expect(page.locator("#msg")).to_have_attribute(
+                "data-article-id", str(reply_id)
+            )
+            # Polled from Python: `wait_for_function(<string>)` evals in the
+            # page, which the CSP (no 'unsafe-eval') refuses.
+            for _ in range(50):
+                top = page.evaluate(
+                    "document.getElementById('msg').getBoundingClientRect().top"
+                )
+                if -1 <= top < 300:
+                    break
+                page.wait_for_timeout(100)
+            else:
+                raise AssertionError(f"#msg not scrolled into view, top={top}")
+            playwright.expect(page).to_have_url(base + reply_url)
+            assert page.locator('#msg [rel="prev"]').get_attribute("href") == root_url
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            sibling_id, sibling_url = seeded["sibling@x"]
+            next_link = page.locator('#msg [data-message-nav="next"]')
+            playwright.expect(next_link).to_have_attribute("href", sibling_url)
+            playwright.expect(next_link).to_have_attribute("hx-get", sibling_url)
+            next_link.click()
+            playwright.expect(page.locator("#msg")).to_have_attribute(
+                "data-article-id", str(sibling_id)
+            )
+            playwright.expect(
+                page.locator('#msg [data-message-nav="next"]')
+            ).to_have_attribute("aria-disabled", "true")
+            page.keyboard.press("j")
+            playwright.expect(page.locator("#msg")).to_have_attribute(
+                "data-article-id", str(sibling_id)
+            )
+            page.keyboard.press("k")
+            playwright.expect(page.locator("#msg")).to_have_attribute(
+                "data-article-id", str(reply_id)
+            )
+            page.keyboard.press("k")
+            playwright.expect(page.locator("#msg")).to_have_attribute(
+                "data-article-id", str(root_id)
+            )
+            with browser.new_context(
+                java_script_enabled=False, viewport={"width": width, "height": 800}
+            ) as context:
+                plain = context.new_page()
+                plain.goto(base + root_url)
+                plain.locator('#msg [rel="next"]').click()
+                playwright.expect(plain).to_have_url(base + reply_url)
+                playwright.expect(plain.locator("#msg")).to_have_attribute(
+                    "data-article-id", str(reply_id)
+                )
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
+def test_series_diff_htmx_navigation_history_failures_and_native_form(
+    client, tmp_path, monkeypatch
+):
+    """Real HTMX DOM swaps must keep successive targets, history and chrome aligned."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    from sqlalchemy import select
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, Inbox
+    from tests.test_routes._helpers import _ingest_series_pair
+    from tests.test_routes.test_series_diff import _file_in_beta
+
+    def posting(version):
+        cover = f"v{version}-cover@htmx"
+        prefix = "PATCH" if version == 1 else f"PATCH v{version}"
+        return [
+            (
+                cover,
+                f"[{prefix} 0/3] browser series",
+                None,
+                f"cover {version}\n".encode(),
+                "Alice <a@example>",
+            ),
+            *[
+                (
+                    f"v{version}-{pos}@htmx",
+                    f"[{prefix} {pos}/3] change {pos}",
+                    cover,
+                    f"version {version} patch {pos}\n".encode(),
+                    "Alice <a@example>",
+                )
+                for pos in range(1, 4)
+            ],
+        ]
+
+    key = _ingest_series_pair(tmp_path, "alpha", posting(1), posting(2) + posting(3))
+    _file_in_beta(tmp_path, ["v2-2@htmx"])
+    with SessionLocal() as session:
+        beta = session.scalar(select(Inbox).where(Inbox.name == "beta"))
+        target = session.scalar(
+            select(Article).where(Article.message_id == "v2-2@htmx")
+        )
+        target.canonical_inbox_id = beta.id
+        session.commit()
+
+    def path(pos, inbox="alpha", older="v1", newer="v2"):
+        return f"/{inbox}/series/{key}/diff?from={older}&to={newer}&pos={pos}"
+
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setattr(settings, "site_base_url", base)
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.goto(base + path("cover"))
+            assert page.evaluate("typeof htmx") == "object"
+            page.evaluate("window.diffNavigationSentinel = 42")
+            page.locator("#theme-select").select_option("dark")
+
+            def expect_position(
+                pos, inbox="alpha", older="v1", newer="v2", canonical_inbox=None
+            ):
+                expected = path(pos, inbox, older, newer)
+                expect(page).to_have_url(base + expected)
+                expect(page.locator("#series-diff")).to_have_attribute(
+                    "data-position", str(pos)
+                )
+                expect(page.locator("#series-diff-position")).to_have_value(str(pos))
+                expect(page.locator("main")).to_have_count(1)
+                expect(page.locator("html")).to_have_attribute(
+                    "data-nav-up", f"/{inbox}/"
+                )
+                expect(
+                    page.locator(".site-nav > ul").first.locator("a").last
+                ).to_have_attribute("href", f"/{inbox}/")
+                expect(page.locator('link[rel="canonical"]')).to_have_attribute(
+                    "href",
+                    base + path(pos, canonical_inbox or inbox, older, newer),
+                )
+                label = "cover letter" if pos == "cover" else f"patch {pos}"
+                expect(page).to_have_title(
+                    re.compile(re.escape(f"{older}→{newer} diff ({label})"))
+                )
+                expect(page.locator('meta[name="description"]')).to_have_attribute(
+                    "content", re.compile(re.escape(label))
+                )
+                expect(page.locator('meta[property="og:title"]')).to_have_attribute(
+                    "content", page.title()
+                )
+                expect(
+                    page.locator('link[type="application/atom+xml"]')
+                ).to_have_attribute("href", f"/{inbox}/feed.atom")
+                expect(page.locator("#theme-select")).to_have_value("dark")
+                assert page.evaluate("window.diffNavigationSentinel") == 42, (
+                    "navigation reloaded the document"
+                )
+
+            with page.expect_response(lambda r: r.url == base + path(1)) as response:
+                page.locator('.series-diff-pager a[rel="next"]').click()
+            assert response.value.request.headers.get("hx-request") == "true"
+            assert "<!doctype html>" in response.value.text().lower()
+            expect_position(1)
+            expect(page.locator("#series-diff")).to_be_focused()
+            page.keyboard.press("j")
+            expect_position(2, "beta")
+            page.keyboard.press("j")
+            expect_position(3)
+            page.keyboard.press("k")
+            expect_position(2, "beta")
+            page.go_back()
+            expect_position(3)
+            page.go_forward()
+            expect_position(2, "beta")
+
+            # History cache misses request the same full representation as a browser.
+            page.evaluate("sessionStorage.removeItem('htmx-history-cache')")
+            with page.expect_response(lambda r: r.url == base + path(3)) as restored:
+                page.go_back()
+            assert (
+                restored.value.request.headers.get("hx-history-restore-request")
+                == "true"
+            )
+            assert restored.value.request.headers.get("hx-request") != "true"
+            assert "<!doctype html>" in restored.value.text().lower()
+            expect_position(3)
+            page.locator("#series-diff-position").select_option("1")
+            expect_position(1)
+
+            # Failed selection must leave the selected option naming the readable body.
+            for status in (404, 500):
+                page.route(
+                    base + path(3),
+                    lambda route: route.fulfill(status=status),
+                )
+                with page.expect_response(lambda r: r.url == base + path(3)):
+                    page.locator("#series-diff-position").select_option("3")
+                expect_position(1)
+                page.unroute(base + path(3))
+            page.route(base + path(3), lambda route: route.abort())
+            with page.expect_event(
+                "requestfailed", predicate=lambda r: r.url == base + path(3)
+            ):
+                page.locator("#series-diff-position").select_option("3")
+            expect_position(1)
+            page.unroute(base + path(3))
+
+            # Go remains a form submission; a requesting inbox can nominate another.
+            page.locator("#series-diff-position").evaluate(
+                "select => { select.value = '2'; }"
+            )
+            page.locator('.series-diff-pager button[type="submit"]').click()
+            expect_position(2, canonical_inbox="beta")
+            page.locator(".series-diff-pairs a").click()
+            expect_position(2, older="v2", newer="v3")
+            page.locator(".series-diff-overview a").first.click()
+            expect_position("cover", older="v2", newer="v3")
+            page.keyboard.press("?")
+            page.keyboard.press("j")
+            expect_position("cover", older="v2", newer="v3")
+            page.keyboard.press("Escape")
+            page.locator("#series-diff-position").focus()
+            page.keyboard.press("j")
+            expect_position("cover", older="v2", newer="v3")
+            assert not errors, errors
+
+            with browser.new_context(java_script_enabled=False) as context:
+                plain = context.new_page()
+                plain.goto(base + path("cover"))
+                plain.locator('.series-diff-pager a[rel="next"]').click()
+                expect(plain).to_have_url(base + path(1))
+                plain.locator("#series-diff-position").select_option("2")
+                plain.locator('.series-diff-pager button[type="submit"]').click()
+                expect(plain).to_have_url(base + path(2))
+                expect(plain.locator("#series-diff")).to_have_attribute(
+                    "data-position", "2"
+                )
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
+def test_a_revision_link_in_a_message_details_fragment_scrolls_in_place(
+    client, tmp_path, monkeypatch
+):
+    """A re-post of a patch sits in the same thread as the patch, on a
+    later page. Its link in the patch's details fragment names that thread
+    page and the message's anchor. With the page already appended by HTMX,
+    a click scrolls to it without loading the page again (#1035). Red with
+    `.revisions-fold a` out of thread-anchors.js."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    expect = playwright.expect
+    from tests.test_routes.test_revision_links import _seed_with_repost
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 4)
+    seeded = _seed_with_repost(tmp_path)
+    page1 = seeded["c@x"][1] + "/t"
+    page2 = seeded["c@x"][1] + "/t/2"
+    repost = seeded["pp2@x"][0]
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            page.goto(base + page1)
+            # Precondition: the re-post is not on page 1 until page 2 is appended.
+            expect(page.locator(f"#m{repost}")).to_have_count(0)
+            page.locator(f'.thread-more a[href="{page2}"]').click()
+            expect(page.locator(f"#m{repost}")).to_be_attached()
+            # A marker a full load would wipe.
+            page.evaluate("window.stayed = true")
+            page.locator('[role="tab"][data-tab="patches"]').click()
+            card = page.locator(f"#m{seeded['p2@x'][0]}")
+            card.locator("details.thread-message-details > summary").click()
+            card.locator(".message-details-content .revisions-fold > summary").click()
+            link = card.locator(
+                ".message-details-content a", has_text="go to this post"
+            )
+            expect(link).to_have_attribute("href", f"{page2}#m{repost}")
+            link.click()
+            expect(page).to_have_url(f"{base}{page2}#m{repost}")
+            assert page.evaluate("window.stayed") is True
     finally:
         server.shutdown()
         thread.join()

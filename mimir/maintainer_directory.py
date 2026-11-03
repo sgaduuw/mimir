@@ -232,3 +232,57 @@ def maintainer_profile(
         compute,
         force=force,
     )
+
+
+def maintainer_review_counts_query(session: Session, address: str) -> dict[str, int]:
+    """Uncached indexed trailer-event totals per inbox for a normalized address.
+
+    Matches the reviewer listing's role and membership semantics: two roles
+    on one article count twice, and a cross-post contributes to each inbox.
+    Keeping the role constraint lets SQLite seek the role/address index.
+    """
+    rows = session.execute(
+        select(Inbox.name, func.count(ArticleTrailer.id))
+        .select_from(ArticleTrailer)
+        .join(ArticleList, ArticleList.article_id == ArticleTrailer.article_id)
+        .join(Inbox, Inbox.id == ArticleList.inbox_id)
+        .where(
+            ArticleTrailer.role.in_(INDEXED_TRAILER_ROLES),
+            ArticleTrailer.address_normalized == address,
+        )
+        .group_by(Inbox.id, Inbox.name)
+        .order_by(Inbox.name)
+    ).all()
+    return dict(rows)
+
+
+def _review_counts_key(address: str) -> str:
+    return f"maintainer:review_counts_v1:{address.lower()}"
+
+
+def cached_maintainer_review_counts(address: str) -> dict[str, int] | None:
+    """Read counts without aggregation; an empty snapshot is distinct from a miss.
+
+    Separate primitive data preserves the registered MaintainerProfile shape
+    across rolling versions. The route checks current M-only existence first.
+    """
+    return cache.get(_review_counts_key(address))
+
+
+def warm_maintainer_review_counts(session: Session, *, force: bool = False) -> None:
+    """Slow global target, sharing the directory's TTL and refresh-window policy.
+
+    New owners enter through the refreshed directory; removed owners are
+    rejected by the profile's uncached existence check even while keys survive.
+    """
+    for address, _name in all_maintainers(session, force=force):
+        if is_addressable_maintainer_address(address):
+            cache.get_or_compute(
+                session,
+                _review_counts_key(address),
+                MAINTAINER_DIRECTORY_CACHE_TTL_SEC,
+                lambda address=address: maintainer_review_counts_query(
+                    session, address
+                ),
+                force=force,
+            )

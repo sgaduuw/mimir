@@ -63,7 +63,7 @@ def test_maintainer_view_200_shows_profile_and_reviewer_link(client, session):
     body = r.data.decode()
     assert "Kent Overstreet" in body
     assert "kent@kernel.org" in body
-    assert "BCACHEFS" in body
+    assert "bcachefs" in body
     assert "/alpha/reviewer/kent@kernel.org" in body
 
 
@@ -150,17 +150,18 @@ def test_maintainer_view_emits_profilepage_json_ld(client, session):
     assert payload["url"].endswith("/maintainers/kent@kernel.org")
 
 
-def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
-    client, tmp_path
+@pytest.mark.parametrize("surface", ["thread", "metadata"])
+def test_message_metadata_does_not_link_reviewers_to_maintainer_profiles(
+    client, tmp_path, surface
 ):
     """`/maintainers/<address>` is an M-only surface, and the message
-    page's subsystem header is the second place that linkifies a
-    maintainer.
+    metadata's subsystem header also linkifies a maintainer. The thread
+    summary and per-message fragment must keep the same link predicate.
 
     The sibling guard on the subsystem page
     (`test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles`)
     had no counterpart here, so the `_role == 'M'` filter in
-    `_message_body.html` was the only thing standing between an `R:`
+    `_subsystem_link.html` is what stands between an `R:`
     reviewer and a linked 404, with nothing holding it.
 
     The allowlist gate the template also applies does NOT stand in for
@@ -168,7 +169,11 @@ def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
     every reviewer passes it. It answers "is this address safe to
     display", not "does this profile exist".
     """
-    from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _metadata_url,
+        _seed_subsystem,
+    )
 
     _seed_subsystem(
         "BCACHEFS",
@@ -185,7 +190,8 @@ def test_message_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
         "msgpage-roles@example.com",
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
-    body = client.get(url).get_data(as_text=True)
+    target = url + "/t" if surface == "thread" else _metadata_url(url)
+    body = client.get(target).get_data(as_text=True)
 
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
     assert 'href="/maintainers/reviewer.only@kernel.org"' not in body
@@ -252,7 +258,7 @@ def test_maintainer_link_url_requires_the_allowlist(monkeypatch):
     assert _maintainer_link_url_filter(address) == "/maintainers/kent@example.com"
 
 
-@pytest.mark.parametrize("surface", ["sitemap", "subsystem", "message"])
+@pytest.mark.parametrize("surface", ["sitemap", "subsystem", "thread", "metadata"])
 def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface):
     """Removing any emitter's validity gate publishes a seeded 404."""
     from urllib.parse import quote, urlsplit
@@ -262,6 +268,7 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
     from tests.test_routes._helpers import (
         _clear_sitemap_cache,
         _ingest_one_article,
+        _metadata_url,
         _seed_subsystem,
     )
 
@@ -295,13 +302,14 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
         ]
     else:
         url = "/alpha/subsystem/shapes/"
-        if surface == "message":
+        if surface in {"thread", "metadata"}:
             _, url = _ingest_one_article(
                 tmp_path,
                 "alpha",
                 "address-shapes@example.com",
                 body=b"diff --git a/fs/shapes/a.c b/fs/shapes/a.c\n@@ -1 +1 @@\n-x\n+y\n",
             )
+            url = url + "/t" if surface == "thread" else _metadata_url(url)
         response = client.get(url)
         assert response.status_code == 200
 
@@ -315,3 +323,134 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
     assert client.get(paths[0]).status_code == 200
     for addr in unsupported:
         assert client.get("/maintainers/" + quote(addr, safe="@")).status_code == 404
+
+
+def _profile_panel(body):
+    from xml.etree import ElementTree as ET
+
+    match = re.search(
+        r'<section class="maintainer-profile">.*?</section>', body, re.DOTALL
+    )
+    assert match is not None, "expected the maintainer profile panel"
+    return ET.fromstring(match.group())
+
+
+def test_profile_header_cards_and_alphabetical_cold_review_chips(client, session):
+    from flask import url_for
+
+    _add_subsystem(
+        session, "ZFS", "Maintained", [("M", "Ada Example", "ada@kernel.org")]
+    )
+    _add_subsystem(
+        session, "BCACHEFS", "Supported", [("M", "Ada Example", "ada@kernel.org")]
+    )
+    _add_trailer(session, "art2@example.com", "ada@kernel.org")
+    _add_trailer(session, "art1@example.com", "ada@kernel.org")
+    response = client.get("/maintainers/Ada@Kernel.org")
+    assert response.status_code == 200
+    panel = _profile_panel(response.get_data(as_text=True))
+    avatar = panel.find("./header/span")
+    assert avatar.text == "AE"
+    assert avatar.attrib["aria-hidden"] == "true"
+    assert panel.find("./header/div/h1").text == "Ada Example"
+    assert "Maintainer of 2 subsystems" in "".join(panel.itertext())
+    assert "Reviews seen in 2 inboxes" in "".join(panel.itertext())
+    cards = panel.findall("./ul[@class='maintainer-subsystems']/li")
+    assert [c.find("strong").text for c in cards] == ["bcachefs", "zfs"]
+    assert [c.find("span").text for c in cards] == ["Supported", "Maintained"]
+    assert all(c.find("a") is None for c in cards)
+    chips = panel.findall("./ul[@class='maintainer-review-chips']/li/a")
+    assert [a.find("span").text for a in chips] == ["alpha", "beta"]
+    assert all(a.find("strong") is None for a in chips)
+    for chip in chips:
+        with client.application.test_request_context():
+            expected = url_for(
+                "web.reviewer_view",
+                inbox_name=chip.find("span").text,
+                address="ada@kernel.org",
+            )
+        assert chip.attrib["href"] == expected
+        assert client.get(chip.attrib["href"]).status_code == 200
+    assert response.headers["Cache-Control"] == "public, max-age=600"
+    assert "ETag" not in response.headers
+    assert panel.findall(".//*[@style]") == []
+
+
+def test_profile_safe_display_and_missing_name_initials(client, session):
+    _add_subsystem(
+        session, "DRIVERS", None, [("M", "private@example.com", "ada@kernel.org")]
+    )
+    panel = _profile_panel(
+        client.get("/maintainers/ada@kernel.org").get_data(as_text=True)
+    )
+    assert panel.find("./header/div/h1").text == "ada@kernel.org"
+    assert panel.find("./header/span").text == "A"
+    assert "private@example.com" not in "".join(panel.itertext())
+    assert "No indexed review activity yet." in "".join(panel.itertext())
+    assert panel.findall("./ul[@class='maintainer-subsystems']/li/span") == []
+
+
+def test_profile_counts_use_one_snapshot_and_never_aggregate_in_requests(
+    client, session, monkeypatch
+):
+    from mimir import cache
+    from mimir import maintainer_directory as directory
+
+    address = "ada@kernel.org"
+    _add_subsystem(session, "FILES", "Maintained", [("M", "Ada Example", address)])
+    _add_trailer(session, "art1@example.com", address)
+    directory.maintainer_profile(session, address)  # Older profile knows only alpha.
+    _add_trailer(session, "art2@example.com", address)
+    _add_trailer(session, "art2@example.com", address, role="Tested-by")
+    directory.warm_maintainer_review_counts(session)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("profile request aggregated trailer counts")
+
+    monkeypatch.setattr(directory, "maintainer_review_counts_query", unexpected)
+
+    def panel():
+        return _profile_panel(
+            client.get("/maintainers/Ada@Kernel.org").get_data(as_text=True)
+        )
+
+    warm = panel()
+    chips = warm.findall("./ul[@class='maintainer-review-chips']/li/a")
+    assert [(c.findtext("span"), c.findtext("strong")) for c in chips] == [
+        ("beta", "2"),
+        ("alpha", "1"),
+    ]
+    assert "Reviews seen in 2 inboxes" in "".join(warm.itertext())
+    for chip in chips:
+        assert client.get(chip.attrib["href"]).status_code == 200
+
+    key = "maintainer:review_counts_v1:" + address
+    cache.set(key, {"beta": 2, "alpha": 2}, 3600)
+    assert [
+        c.findtext("span")
+        for c in panel().findall("./ul[@class='maintainer-review-chips']/li/a")
+    ] == ["alpha", "beta"]
+    cache.set(key, {"beta": 2}, 3600)
+    reduced = panel()
+    assert "Reviews seen in 1 inbox" in "".join(reduced.itertext())
+    assert [
+        c.findtext("span")
+        for c in reduced.findall("./ul[@class='maintainer-review-chips']/li/a")
+    ] == ["beta"]
+    cache.set(key, {}, 3600)
+    empty = panel()
+    assert "Reviews seen in 0 inboxes" in "".join(empty.itertext())
+    assert "No indexed review activity yet." in "".join(empty.itertext())
+    cache.set(key, {"beta": 2}, -1)
+    cold = panel()
+    chips = cold.findall("./ul[@class='maintainer-review-chips']/li/a")
+    assert [c.findtext("span") for c in chips] == ["alpha"]
+    assert all(c.find("strong") is None for c in chips)
+
+    cache.set(key, {"beta": 2}, 3600)
+    owner = session.execute(
+        select(SubsystemMaintainer).where(SubsystemMaintainer.address == address)
+    ).scalar_one()
+    owner.role = "R"
+    session.commit()
+    assert client.get("/maintainers/ada@kernel.org").status_code == 404

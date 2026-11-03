@@ -1,0 +1,9 @@
+{# A horizontal proportional bar (#988). The CSP forbids `style=`, so the
+   width is an attribute of an SVG `rect`, as in `_sparkline.html`; colour
+   and size come from `.bar-meter` in mimir.css. `maximum` is the value that
+   fills the bar; zero or no maximum draws an empty one. A `label` makes it
+   an image with that accessible name; without one the bar is decoration and
+   the number beside it carries the meaning. #}
+{% macro bar_meter(value, maximum, label=none) -%}
+<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none"{% if label %} role="img" aria-label="{{ label }}"{% else %} aria-hidden="true"{% endif %}><rect class="bar-added" width="{{ ((100 * value / maximum) if maximum else 0.0) | round(1) }}" height="6"/></svg>
+{%- endmacro %}

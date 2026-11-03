@@ -9,11 +9,26 @@ thread pagination also works with ordinary links. The interface is read-only.
 
 Start at `/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and
-archive statistics. Browse by day or month, or search subjects and authors.
+archive statistics. Active threads and compact recent messages share the main
+column; pulls, release chips, configured author lists, subsystem activity and
+history stack in a sidebar. The header shows cached archive totals, the first
+message date, 30-day UTC calendar volume and latest activity. Active roots keep
+meaningful lifecycle badges and seven-day reply counts; Recent has no badges,
+including messages appended with Load more. Browse by day or month, or search
+subjects and authors.
 Search is substring-based rather than full-text body search; broad misses can
-be expensive on a cold archive.
+be expensive on a cold archive. The 100 newest matching messages are grouped by
+inbox thread root, using the newest match's subject and time. Each row shows
+matching sender names and a linked matching-message count, rather than the
+thread's lifetime size. Multiple matching patches of the displayed posting
+show their additional positions. The cap applies before grouping; refine the
+query to find older matches.
 
-A message page shows headers, its thread tree, body, and attachments. In a
+A message page shows a mail header, body and attachments, followed by its
+thread overview. The context bar links to the whole thread and offers
+Previous and Next controls. These controls and the thread overview keep
+working without JavaScript; with HTMX, navigation replaces the message and
+scrolls back to its header. In a
 thread longer than one thread-view page, the tree shows the part around the
 message (its ancestors, nearest sibling replies and first replies) and links to
 the thread view for the rest. Whole-thread
@@ -35,13 +50,40 @@ text, so it works without JavaScript too). Patch bodies there keep their
 
 ## Follow patch and review activity
 
-Patch pages show review trailers, maintainer attestations, tracked-tree landing
-records, revision history, and links to compare patch revisions. These depend on
+The navigation's theme selector offers System, Light and Dark. System follows
+your device preference; Light and Dark are remembered in this browser. On a
+phone within an inbox, open the navigation menu to reach the selector. Without JavaScript,
+the site follows your system theme.
+
+Thread pages show review trailers, maintainer attestations, tracked-tree landing
+records, revision history, and links to compare patch revisions. Each message
+also has a details disclosure for its own status, subsystem attribution and
+related content. Details load when opened, with a link for readers without
+JavaScript. Single-message threads have these paths too. Revision and diff
+links remain in the thread page's HTML. These depend on
 the archived messages and configured [tree tracking](archive.md#track-kernel-trees-and-maintainers).
 
-Subsystem dashboards use MAINTAINERS path rules to group patches and review
-activity. Their index lists active subsystems; it can be empty before a slow
-cache-warming pass. Maintainer profiles collect activity across inboxes.
+Subsystem dashboards lead with reviewed patches awaiting pickup, then active
+threads and the 30 newest postings or standalone patches matching the inbox's
+MAINTAINERS path rules. Each posting expands to at most 30 matching patch
+positions, with truncation stated. Cover lifecycle progress describes the full
+posting across inboxes and paths, separately from its matching count. Quiet
+patches start collapsed; ownership, file inclusions/exclusions and reviewer
+activity sit in a sidebar that stacks on smaller screens.
+
+The subsystem index lists addressable active subsystems in activity order,
+with seven-day message counts, proportional bars, maintainer summaries and
+last-activity dates. Its columns stack on phones. It can be empty before a
+slow cache-warming pass; a request never runs the activity aggregation.
+Maintainer profiles collect activity across inboxes for each MAINTAINERS `M:`
+address. Their header shows initials and subsystem/inbox totals; lowercase
+subsystem cards carry status pills and stack on phones. Cards have no links
+because this page has no selected inbox. Review chips link to each inbox's
+reviewer listing. When cached counts are available, chips sort by descending
+count with alphabetical ties; otherwise they stay alphabetical without counts.
+Counts cover all indexed review-trailer events: multiple roles on one message
+count separately, and cross-posts contribute to each inbox. They are not counts
+of unique patches or people.
 
 ## Page and feed reference
 
@@ -52,15 +94,16 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 
 | Path | Purpose |
 | --- | --- |
-| `/` | List of inboxes |
+| `/` | Header figures, a Message-ID lookup form, the busiest inboxes this month, active subsystems this week, and every inbox on one line (filter and sort need JavaScript) |
 | `/<inbox>/` | Inbox dashboard |
-| `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views |
+| `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views, 100 threads per page (`?page=2`) |
 | `/<inbox>/since/<date>` | Activity since an ISO date (`YYYY-MM-DD`), limited to the last 90 days |
 | `/<inbox>/<YYYY>/`, `/<inbox>/<YYYY>/<MM>/` | Year and month archives |
 | `/<inbox>/search?q=<query>` | Search subject and author |
 | `/<inbox>/author/<substring>` | Author activity |
 | `/<inbox>/reviewer/<address>` | Review activity |
 | `/m/<message-id>` | Redirect to the canonical message URL |
+| `/m/?id=<text>` | The same lookup for a GET form. Accepts a bare ID, `<id>`, `mid:<id>`, or a lore-style URL or path ending in the ID; a miss is a 404 |
 | `/<inbox>/m/<message-id>` | Message lookup restricted to an inbox |
 | `/<inbox>/<YYYY>/<MM>/<id>` | Message and thread tree |
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t` | First page of a whole thread |
@@ -76,10 +119,46 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
+| `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
+
+Daily, month and since listings accept `?filter=patches`, `?filter=unanswered`
+or `?filter=pulls`; omitting the filter shows all threads. Unanswered means
+no replies in the selected window. Filtering precedes display caps. Daily
+paging preserves the filter, for example `/lkml/today?filter=patches&page=2`.
+Invalid filters/pages and pages beyond the result set return 404. Month shows
+at most 100 matching threads; since shows at most 200. Author and reviewer
+listings remain message lists, without these thread filters.
+
+Today, yesterday and since are noindex with no canonical on every page.
+Filtered month views are also noindex; links remain followable. Unfiltered
+month archives retain their archive indexing policy.
+
 
 Unsupported maintainer addresses remain visible as text without profile links.
 Unknown or unsupported profile addresses return 404.
+
+### Series comparisons
+
+Series diff pages compare full message bodies, including commit explanations.
+Previous/Next and the position selector visit only resolvable comparisons.
+The selector's GET form works without JavaScript and preserves the exact
+`from`, `to` and optional `s` values; JavaScript follows the selected canonical
+URL automatically. With HTMX available, diff links, the selector and Go replace
+the main content without reloading the document. The inbox navigation, title,
+canonical and description follow the displayed comparison, including Back and
+Forward history restores. Failed requests leave the current comparison and
+selected position intact. `j` and `k` move to the next and previous position, except
+while typing or using a modified key. Other adjacent revision pairs keep the
+current position when available, otherwise explicitly link their cover letters.
+
+The position extent is the largest observed ordinal in either posting, not
+the total claimed in a subject. The separate comparable-position count includes
+the cover and can be smaller when patches are missing or ambiguous. A complete
+100-patch pair has 101 choices. Sparse numbering creates no empty choices.
+The overview and long diff lines scroll within their own containers on phones.
+Line totals count changes in the selected unified diff; oversized comparisons
+retain the notice and message links without reporting uncomputed totals.
 
 ### Markdown pages
 

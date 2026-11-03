@@ -5,28 +5,17 @@ the .badge primitive). The bulk fetcher
 from every listing route; this module pins that at least one
 non-PENDING state produces rendered badges in the listing HTML.
 
-Picking the per-inbox dashboard's "Recent messages" surface as the
-single integration point: it's the lowest-friction listing in the
-seeded fixture (alpha already carries `art1@example.com`), and the
-badge rendering through `_lifecycle_badges.html` exercises the same
-include partial that every other listing template uses.
+The inbox dashboard's active rows retain the same integration point
+while its Recent messages rows are deliberately badge-free (#993).
 """
 
 from datetime import UTC
+from html.parser import HTMLParser
 
 
-def test_recent_listing_renders_landed_pill_for_landed_article(client):
-    """Seeding a `mainline_commits` row tagged `linus` for one of the
-    seeded articles flips its lifecycle state from PENDING to
-    LANDED; the per-inbox dashboard's Recent-messages list must
-    then render the lifecycle-landed badge on the .badge primitive.
-
-    The fixture `art1@example.com` lives on alpha and appears in
-    the dashboard's Recent list. After seeding the landing, the
-    bulk fetcher's per-id cache is populated by the page render
-    itself; we clear the cache row beforehand so the test isn't
-    racing a stale entry from another test."""
-    from datetime import datetime
+def test_active_listing_renders_landed_pill_for_landed_article(client, frozen_clock):
+    """A landed active root keeps its badge; the same root in Recent has none."""
+    from datetime import datetime, timedelta
 
     from mimir import cache
     from mimir.extensions import SessionLocal
@@ -52,6 +41,8 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
         art = s.execute(
             select(Article).where(Article.message_id == "art1@example.com")
         ).scalar_one()
+        art.date = datetime.now(UTC) - timedelta(hours=1)
+        s.commit()
         alpha_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
         cache.delete(f"lifecycle_status:{art.id}:i{alpha_id}")
 
@@ -64,6 +55,9 @@ def test_recent_listing_renders_landed_pill_for_landed_article(client):
     # pill_label for LANDED is the state name uppercased; the template
     # may insert whitespace before the label text but the word appears.
     assert "LANDED" in body
+    recent = body.split('id="recent-heading"', 1)[1].split("</section>", 1)[0]
+    assert "hello alpha" in recent  # the landed article also appears in Recent
+    assert "badge" not in recent
     # A list ordered by recency gives every row the same heat (#988).
     assert "badge-activity-" not in body
 
@@ -107,10 +101,24 @@ def test_listings_ordered_by_activity_carry_no_activity_chip(client, frozen_cloc
     threads), today, since, month and search is HOT or the same heat:
     the chip says nothing there (#988). The lifecycle chip still
     distinguishes the rows."""
+
+    class Text(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts = []
+
+        def handle_data(self, data):
+            self.parts.append(data)
+
     for surface, url in _surfaces(client).items():
         body = client.get(url).get_data(as_text=True)
-        assert "hello alpha" in body, surface
-        assert 'class="badge badge-lifecycle-landed"' in body, surface
+        text = Text()
+        text.feed(body)
+        assert "hello alpha" in "".join(text.parts), surface
+        # Search represents the newer pending reply, not the landed root.
+        assert ('class="badge badge-lifecycle-landed"' in body) == (
+            surface != "search"
+        ), surface
         assert "badge-activity-" not in body, surface
 
 

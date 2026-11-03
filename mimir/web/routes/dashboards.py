@@ -7,6 +7,7 @@ imports it from here.
 """
 
 import re
+from datetime import UTC, datetime, timedelta
 
 from flask import abort, redirect, render_template, request, url_for
 from sqlalchemy import func, select
@@ -17,15 +18,17 @@ from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
+    cached_recent_message_total,
     daily_volume,
     latest_pull_requests,
     latest_stable_releases,
     recent_page,
     this_day_in_history,
 )
+from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
-from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.lifecycle_status import lifecycle_status_for_articles, review_trailer_counts
 from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import (
@@ -42,11 +45,16 @@ from mimir.subsystems_dashboard import (
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
-    recent_articles_in_subsystem,
+    recent_postings_in_subsystem,
+)
+from mimir.subsystems_dashboard.recent import (
+    RECENT_POSTINGS_LIMIT,
+    RECENT_PREVIEW_LIMIT,
 )
 from mimir.threading import active_threads
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _relative_time
+from mimir.web.routes.search import SEARCH_QUERY_MAX_LEN, SEARCH_QUERY_MIN_LEN
 from mimir.web.urls import (
     _get_inbox_or_404,
     _site_base,
@@ -54,13 +62,6 @@ from mimir.web.urls import (
 )
 
 RECENT_PAGE_SIZE = 10
-
-
-# Cap on the per-subsystem dashboard's recent-patches list.
-# MAINTAINERS subsystems vary wildly in volume (BCACHEFS is busy,
-# some are dormant). A flat cap keeps response size bounded and the
-# rendered list readable; a future slice can paginate.
-SUBSYSTEM_RECENT_PATCHES_LIMIT = 30
 
 
 # Real MAINTAINERS subsystem names are quite permissive (spaces,
@@ -85,37 +86,48 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
     return rows[:limit], has_more
 
 
+# Inboxes shown as "Busiest this month", by messages in the last 30 days.
+FRONT_PAGE_BUSIEST = 6
+
+
 @bp_web.route("/")
 def index():
-    """Meta-index: card grid of configured inboxes with per-inbox
-    stats. Pinned inboxes (settings.pinned_inboxes) surface first in
-    config order; the rest follow alphabetically.
+    """Front page: header figures, the busiest inboxes this month, the
+    active subsystems this week, and one line per inbox. Pinned inboxes
+    (settings.pinned_inboxes) stay first in config order; the rest follow
+    alphabetically.
 
-    Each card carries `archive_stats` (counts + date span) plus a
-    30-day `daily_volume` sparkline. Both are cached helpers; the
-    per-card cost on a warm cache is one cache row read per inbox.
+    Nothing here is computed on the request. `archive_stats` and
+    `daily_volume` are cached helpers (one cache-row read each per inbox)
+    and the 30-day total is read from the cache the fast warm tier fills,
+    so a cold cache omits that one figure instead of running a count. The
+    page has no validator, only `max-age=300`, so it is at most that stale.
     """
     pinned = set(settings.pinned_inboxes)
+    now = datetime.now(UTC)
     with SessionLocal() as session:
         inboxes = pinned_first(session.execute(select(Inbox)).scalars().all())
         inbox_summaries = []
         for inbox in inboxes:
             stats = archive_stats(session, inbox)
+            # 30 UTC days, today included: the window `recent_message_total`
+            # shares, so the cards and the header figure agree.
+            spark = daily_volume(session, inbox, days=30)
             inbox_summaries.append(
                 {
                     "name": inbox.name,
                     "stats": stats,
                     "pinned": inbox.name in pinned,
-                    # Relative-time string for the visible "Last activity"
-                    # line. None when the inbox has no messages yet (the
-                    # template falls back to the empty-state copy).
+                    # None when the inbox has no messages yet.
                     "last_activity_rel": (
                         _relative_time(stats.last_date) if stats.last_date else None
                     ),
-                    # 30-day sparkline. Always renders so cards line up
-                    # vertically even on dormant inboxes (zero-filled
-                    # series → flat bar row).
-                    "spark": daily_volume(session, inbox, days=30),
+                    "spark": spark,
+                    "messages_30d": sum(count for _, count in spark.days),
+                    "active_24h": bool(
+                        stats.last_date
+                        and aware_utc(stats.last_date) >= now - timedelta(hours=24)
+                    ),
                 }
             )
         # Cross-inbox subsystem teaser. Surfaces the most active
@@ -140,20 +152,25 @@ def index():
             compute_on_miss=False,
         )
         # Drop names the dashboard route cannot serve before the template
-        # ever sees them. The card grid makes the WHOLE card an anchor,
-        # so unlike the inline chips there is no useful unlinked form to
-        # fall back to. Filtering here rather than in the template also
-        # means the section's `{% if %}` and its loop agree by
-        # construction: gating on the unfiltered list would render a
-        # heading over an empty grid whenever every active name happens
-        # to be unaddressable.
+        # ever sees them: a row for one would link to a 404. Filtering here
+        # rather than in the template also means the section's `{% if %}`
+        # and its loop agree by construction: gating on the unfiltered list
+        # would render a heading over an empty list whenever every active
+        # name happens to be unaddressable.
         active_subsystems = [
             s for s in active_subsystems if is_addressable_subsystem_name(s.name)
         ]
+    busiest = sorted(
+        (s for s in inbox_summaries if s["messages_30d"]),
+        key=lambda s: (-s["messages_30d"], s["name"]),
+    )[:FRONT_PAGE_BUSIEST]
     base = _site_base()
     return render_template(
         "index.html",
         inbox_summaries=inbox_summaries,
+        busiest=busiest,
+        active_24h=sum(1 for s in inbox_summaries if s["active_24h"]),
+        recent_total=cached_recent_message_total(),
         active_subsystems=active_subsystems,
         current_inbox=None,
         canonical_url=base + "/",
@@ -214,20 +231,9 @@ def inbox_dashboard(inbox_name: str):
             limit=10,
             compute_on_miss=False,
         )
-        # Collect IDs across every Article-shaped list the template
-        # renders with a pill: active threads, pulls, stable releases,
-        # tracker tiles, this-day-in-history, and recent. One bulk
-        # SELECT covers all of them via the per-id cache layer.
-        dashboard_ids: list[int] = []
-        dashboard_ids.extend(t.id for t in active)
-        dashboard_ids.extend(a.id for a in pulls)
-        dashboard_ids.extend(a.id for a in stable)
-        for t in trackers:
-            dashboard_ids.extend(a.id for a in t["messages"])
-        dashboard_ids.extend(a.id for a in history)
-        dashboard_ids.extend(a.id for a in recent)
+        # Only active rows display lifecycle badges.
         lifecycle_status_by_id = lifecycle_status_for_articles(
-            session, dashboard_ids, inbox.id
+            session, [t.id for t in active], inbox.id
         )
         base = _site_base()
         # Inside the session: it asks which active threads have a `/t`.
@@ -239,6 +245,8 @@ def inbox_dashboard(inbox_name: str):
         "inbox.html",
         inbox_name=inbox.name,
         current_inbox=inbox.name,
+        search_min_len=SEARCH_QUERY_MIN_LEN,
+        search_max_len=SEARCH_QUERY_MAX_LEN,
         active=active,
         trackers=trackers,
         pulls=pulls,
@@ -290,6 +298,8 @@ def subsystem_index(inbox_name: str):
             limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
             compute_on_miss=False,
         )
+        # Count and scale only rows whose shared URL predicate permits a link.
+        subsystems = [s for s in subsystems if is_addressable_subsystem_name(s.name)]
         base = _site_base()
         return render_template(
             "subsystem_index.html",
@@ -315,7 +325,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
     case-insensitive-matches against `subsystems.name`, and 301s
     non-canonical (uppercase) requests to the canonical lowercase
     form. The DB row's stored casing remains the upstream-verbatim
-    one and is what the H1 renders.
+    one; the H1 shows it through `subsystem_label` (lowercased).
     """
     if not _SUBSYSTEM_NAME_RE.match(name):
         abort(404)
@@ -363,11 +373,12 @@ def subsystem_dashboard(inbox_name: str, name: str):
         )
         if subsystem is None:
             abort(404)
-        recent = recent_articles_in_subsystem(
+        recent = recent_postings_in_subsystem(
             session,
             inbox,
             subsystem,
-            limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+            limit=RECENT_POSTINGS_LIMIT,
+            preview_limit=RECENT_PREVIEW_LIMIT,
         )
         active = active_threads_in_subsystem(
             session,
@@ -401,18 +412,19 @@ def subsystem_dashboard(inbox_name: str, name: str):
             subsystem,
             limit=10,
         )
-        # Subsystem page: gather IDs from every Article-shaped list
-        # the template attaches a pill to. `recent`, `needs_attention`,
-        # `quiet` carry `article_id`; `active` (ActiveThread) carries
-        # `id`. Reviewers (ReviewerStat) is per-reviewer aggregate
-        # and intentionally excluded.
+        # A posting's cover gets the full lifecycle rollup independently of
+        # its matching preview. Missing covers have no whole-posting status;
+        # child previews never trigger up to 900 extra lifecycle reads.
         subsystem_ids: list[int] = []
         subsystem_ids.extend(t.id for t in active)
-        subsystem_ids.extend(p.article_id for p in recent)
+        subsystem_ids.extend(p.status_id for p in recent if p.status_id is not None)
         subsystem_ids.extend(p.article_id for p in needs_attention)
         subsystem_ids.extend(p.article_id for p in quiet)
         lifecycle_status_by_id = lifecycle_status_for_articles(
             session, subsystem_ids, inbox.id
+        )
+        review_counts = review_trailer_counts(
+            session, [p.article_id for p in needs_attention]
         )
     return render_template(
         "subsystem.html",
@@ -432,7 +444,9 @@ def subsystem_dashboard(inbox_name: str, name: str):
         canonical_url=_site_base() + subsystem_path(inbox.name, name_lower),
         subsystem=subsystem,
         recent=recent,
-        recent_limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        recent_limit=RECENT_POSTINGS_LIMIT,
+        preview_limit=RECENT_PREVIEW_LIMIT,
+        review_counts=review_counts,
         active=active,
         spark=spark,
         reviewers=reviewers,

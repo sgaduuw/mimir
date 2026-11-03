@@ -1,167 +1,118 @@
 {% extends "base.html" %}
-{% block title %}{{ subsystem.name|lower }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
-{% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|lower }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
+{% from "_lifecycle_badges.html" import badges %}
+{% from "_sparkline.html" import spark_bars %}
+{% block title %}{{ subsystem.name|subsystem_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|subsystem_label }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
 {% block content %}
-<section>
-  <p><small><a href="{{ inbox_name|subsystem_index_url }}">&larr; All active subsystems in {{ inbox_name }}</a></small></p>
-  <h1>{{ subsystem.name|lower }}
-    {% if subsystem.status %}
-    <small><em>· {{ subsystem.status }}</em></small>
+{% macro patch_link(p, label=none) -%}
+{% if p.date and p.inbox_name %}<a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ label or p.subject|clean_subject or '(no subject)' }}</a>{% else %}<span>{{ label or p.subject|clean_subject or '(no subject)' }}</span>{% endif %}
+{%- endmacro %}
+{% macro triage_row(p, reviewed=false) -%}
+<li>
+  {{ badges(lifecycle_status_by_id, p.article_id) }} {{ patch_link(p) }}
+  {% if p.series_more %}<small>+{{ p.series_more }} more in this series</small>{% endif %}
+  <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}{% if reviewed %}{% set counts = review_counts.get(p.article_id, (0, 0)) %} · {{ counts[0] }} review trailer{{ '' if counts[0] == 1 else 's' }}, {{ counts[1] }} from {{ 'a maintainer' if counts[1] == 1 else 'maintainers' }}{% endif %}</small>
+</li>
+{%- endmacro %}
+<div class="subsystem-dashboard">
+  <header class="subsystem-header">
+    <div>
+      <p class="subsystem-breadcrumb"><a href="/{{ inbox_name }}/">{{ inbox_name }}</a> / <a href="{{ inbox_name|subsystem_index_url }}">subsystems</a></p>
+      <h1>{{ subsystem.name|subsystem_label }}</h1>
+      {% if subsystem.status %}<span class="subsystem-status{% if subsystem.status|lower == 'maintained' %} subsystem-status-maintained{% elif subsystem.status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ subsystem.status }}</span>{% endif %}
+    </div>
+    {% if spark and spark.days %}
+    <div class="subsystem-volume"><small>Last 30 days</small>
+      <svg width="240" height="28" viewBox="0 0 240 28" class="dashboard-sparkline-svg" role="img" aria-label="Daily message volume in {{ subsystem.name|subsystem_label }}, last 30 days">{{ spark_bars(spark, 8, 6, 28) }}</svg>
+    </div>
     {% endif %}
-  </h1>
-
-  {% if subsystem.maintainers %}
-  <h2><small>Maintainers</small></h2>
-  <ul class="subsystem-paths-list">
-    {# Link the address to the maintainer's cross-inbox profile. Those
-       pages are in `/sitemap-maintainers.xml` but, until this, were
-       linked from nowhere at all: advertised to crawlers with no path
-       through the site to reach them.
-
-       Linked for `M:` rows ONLY. This list carries both `M:` and `R:`
-       (the role is the kbd right there), and `/maintainers/<address>`
-       is an M-only surface: `maintainer_profile` filters on the role
-       and 404s otherwise. The allowlist gate does NOT stand in for
-       this, because the allowlist is the union of M: and R:, so every
-       reviewer passes it. That gate is about redaction, not about
-       whether the target exists. Getting this wrong linked a 404 for
-       every reviewer, on pages this same change set put in the
-       sitemap. #}
-    {% for m in subsystem.maintainers %}
-    <li><small><kbd>{{ m.role }}</kbd>
-      {{ m.name }}{% if m.name %} {% endif %}&lt;{% set _url = m.address | maintainer_link_url if m.role == 'M' else '' %}{% if _url %}<a
-        href="{{ _url }}">{{ m.address }}</a>{% else %}{{ m.address }}{% endif %}&gt;</small></li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  {% if subsystem.paths %}
-  <h2><small>Paths</small></h2>
-  <ul class="subsystem-paths-list subsystem-paths-list--columns">
-    {% for p in subsystem.paths %}
-    <li><small>{% if p.is_exclude %}<kbd>X</kbd>{% else %}<kbd>F</kbd>{% endif %}
-      <code>{{ p.glob }}</code></small></li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  {% if spark and spark.days %}
-  <h2><small>Last 30 days</small></h2>
-  <svg width="186" height="28" class="dashboard-sparkline-svg"
-       aria-label="Daily message volume in {{ subsystem.name|lower }}, last 30 days">
-    {% for day, count in spark.days %}
-      {% set h = (count / spark.max_count * 26) if spark.max_count > 0 else 0 %}
-      <rect x="{{ loop.index0 * 6 }}"
-            y="{{ 27 - h }}"
-            width="5"
-            height="{{ h if h > 0 else 1 }}"
-            fill="currentColor"
-            opacity="0.55">
-        <title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title>
-      </rect>
-    {% endfor %}
-  </svg>
-  {% endif %}
-
-  {% if active %}
-  <h2>Most active threads <small><em>(last 7 days)</em></small></h2>
-  <ul>
-    {% for t in active %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
-      <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
-        &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} in 7d
-        &middot; {{ t.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  {% if reviewers %}
-  <h2>Active reviewers <small><em>(last 30 days)</em></small></h2>
-  <ul>
-    {% for r in reviewers %}
-    <li>
-      {% set _label = (r.name + ' <' + r.address + '>') if r.name else ('<' + r.address + '>') %}
-      {# Only allowlisted addresses get a clickable link to the per-
-         reviewer page. Non-allowlisted addresses render as <hidden>
-         via safe_from with no outbound link, so mimir doesn't push
-         them into URLs / browser history / scraper paths. #}
-      {% if r.address|is_allowlisted_address and r.address_normalized|is_addressable_reviewer %}
-      <strong><a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ _label|safe_from }}</a></strong>
-      {% else %}
-      <strong>{{ _label|safe_from }}</strong>
-      {% endif %}
-      <br><small>{{ r.total }} attestation{{ '' if r.total == 1 else 's' }}
-        {% set _parts = [] %}
-        {% for role, n in r.role_counts.items()|sort %}
-          {% set _ = _parts.append(n|string + ' ' + role) %}
-        {% endfor %}
-        ({{ _parts|join(', ') }})
-        &middot; last on {{ r.last_seen.strftime('%Y-%m-%d') }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  <h2>Recent patches</h2>
-  {% if recent %}
-  <p><small>Most-recent {{ recent|length }} patch{{ '' if recent|length == 1 else 'es' }} in this subsystem on {{ inbox_name }}{% if recent|length >= recent_limit %} (capped at {{ recent_limit }}){% endif %}, ordered by date desc.</small></p>
-  <ul>
-    {% for p in recent %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
-      <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
-        &middot; {{ p.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% else %}
-  <p><em>No patches touching this subsystem's paths on {{ inbox_name }} yet.</em></p>
-  {% endif %}
-
-  {# Triage queues. Both hidden when empty (no card-with-no-rows
-     noise on subsystems where the queue happens to be clear). #}
-  {% if needs_attention %}
-  <h2>Needs attention <small><em>(review trailers in, no pickup)</em></small></h2>
-  <p><small>Patches with review trailers that haven't landed in
-  mainline and haven't been Acked by a maintainer. Oldest
-  first.</small></p>
-  <ul>
-    {% for p in needs_attention %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
-      {%- if p.series_more %} <small>+{{ p.series_more }} more in this series</small>{% endif %}
-      <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
-        &middot; {{ p.author|safe_from }}
-        {% if p.trailer_summary %}&middot; {{ p.trailer_summary }}{% endif %}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  {% if quiet %}
-  <h2>Quiet for {{ quiet_days }}+ days</h2>
-  <p><small>Patches with no review trailers and no replies. Either the
-  author is heads-down elsewhere or these slipped through. Oldest first.</small></p>
-  <ul>
-    {% for p in quiet %}
-    <li>
-      {%- set status = lifecycle_status_by_id.get(p.article_id) if lifecycle_status_by_id else None -%}
-      {% include "_lifecycle_badges.html" %}
-      <a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ p.subject|clean_subject or '(no subject)' }}</a>
-      {%- if p.series_more %} <small>+{{ p.series_more }} more in this series</small>{% endif %}
-      <br><small>{{ p.date.strftime('%Y-%m-%d') if p.date else '?' }}
-        &middot; {{ p.author|safe_from }}</small>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-</section>
+  </header>
+  <div class="subsystem-columns">
+    <div class="subsystem-main">
+      <section class="subsystem-triage" aria-labelledby="triage-heading">
+        <h2 id="triage-heading">Reviewed, not picked up <small>({{ needs_attention|length }})</small></h2>
+        <p class="subsystem-note">Review trailers in, no mainline landing or maintainer Ack. Oldest first.</p>
+        {% if needs_attention %}
+        <ul class="subsystem-rows">{% for p in needs_attention[:5] %}{{ triage_row(p, true) }}{% endfor %}</ul>
+        {% if needs_attention|length > 5 %}<details class="subsystem-more"><summary>Show all {{ needs_attention|length }} ({{ needs_attention|length - 5 }} more)</summary><ul class="subsystem-rows">{% for p in needs_attention[5:] %}{{ triage_row(p, true) }}{% endfor %}</ul></details>{% endif %}
+        {% else %}<p class="subsystem-empty">No reviewed patches awaiting pickup in this queue.</p>{% endif %}
+      </section>
+      <section aria-labelledby="active-heading">
+        <h2 id="active-heading">Most active threads <small>(last 7 days)</small></h2>
+        {% if active %}
+        <table class="listing-table subsystem-active">
+          <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies in 7d</th></tr></thead>
+          <tbody>{% for t in active %}
+            {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}
+            {% set row_time = t.last_activity %}{% set row_replies = t.reply_count %}{% set row_reply_label = true %}
+            {% if t.date %}
+            {% set row_url = thread_page_url(t.id, t.date, inbox_name) if t.reply_count else t|msg_url(inbox_name) %}
+            {% include "_listing_row.html" %}
+            {% else %}
+            <tr><td class="listing-time">{{ t.last_activity.strftime('%H:%M') if t.last_activity else '?' }}</td><td><span class="listing-subject">{{ t.subject|clean_subject or '(no subject)' }}</span><div class="listing-detail">{{ t.author|listing_sender }} {{ badges(lifecycle_status_by_id, t.id) }}</div></td><td class="listing-count"><span aria-label="{{ t.reply_count }} replies in the last 7 days">{{ t.reply_count }}</span></td></tr>
+            {% endif %}
+          {% endfor %}</tbody>
+        </table>
+        {% else %}<p class="subsystem-empty">No active threads in the last 7 days.</p>{% endif %}
+      </section>
+      <section aria-labelledby="recent-heading">
+        <h2 id="recent-heading">Recent patches</h2>
+        {% if recent %}
+        <p class="subsystem-note">Latest {{ recent|length }} posting{{ '' if recent|length == 1 else 's' }} or standalone patch{{ '' if recent|length == 1 else 'es' }}{% if recent|length >= recent_limit %} (up to {{ recent_limit }}){% endif %}, newest first. Counts below cover matching patches in {{ inbox_name }} touching this subsystem.</p>
+        <ul class="subsystem-rows subsystem-postings">
+          {% for posting in recent %}{% set p = posting.representative %}
+          <li>
+            {% if posting.children %}
+            <details class="subsystem-posting">
+              <summary><strong>{% if not posting.cover %}Posting without cover: {% endif %}{{ posting.title|clean_subject or '(no subject)' }}</strong> <small>{{ posting.version }} · {{ posting.matching_count }} matching patch{{ '' if posting.matching_count == 1 else 'es' }}</small></summary>
+              {% if posting.cover %}<p class="subsystem-posting-status"><small>Entire posting:</small> {% set status = lifecycle_status_by_id.get(posting.status_id) %}{% if status and status.state.value == 'pending' and not status.rollup %}<small>Pending</small>{% else %}{{ badges(lifecycle_status_by_id, posting.status_id) }}{% endif %} {{ patch_link(posting.cover, 'Open cover letter') }}<small class="subsystem-meta">Lifecycle progress covers the full posting, including patches outside this subsystem and inbox.</small></p>{% else %}<p class="subsystem-note">No cover letter available; no entire-posting lifecycle rollup.</p>{% endif %}
+              {% if posting.matching_count > posting.children|length %}<p class="subsystem-note">Showing first {{ posting.children|length }} of {{ posting.matching_count }} matching patches (preview limited to {{ preview_limit }}).</p>{% endif %}
+              <ul class="subsystem-children">{% for child in posting.children %}<li>{{ patch_link(child) }} <small>{{ child.date.strftime('%Y-%m-%d') if child.date else 'Unknown date' }}</small></li>{% endfor %}</ul>
+            </details>
+            {% else %}{{ badges(lifecycle_status_by_id, posting.status_id) }} {{ patch_link(p) }}{% endif %}
+            <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}</small>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}<p class="subsystem-empty">No patches touching this subsystem's paths on {{ inbox_name }} yet.</p>{% endif %}
+      </section>
+      <section aria-label="Quiet patches">
+        <details class="subsystem-quiet"><summary>Quiet for {{ quiet_days }}+ days <small>({{ quiet|length }})</small></summary>
+          <p class="subsystem-note">Patches with no review trailers and no replies. Oldest first.</p>
+          {% if quiet %}<ul class="subsystem-rows">{% for p in quiet %}{{ triage_row(p) }}{% endfor %}</ul>{% else %}<p class="subsystem-empty">No patches in this quiet queue.</p>{% endif %}
+        </details>
+      </section>
+    </div>
+    <aside class="subsystem-sidebar" aria-label="Subsystem ownership and activity">
+      {% for role, heading in [('M', 'Maintainers'), ('R', 'Designated reviewers')] %}
+      <section><h2>{{ heading }}</h2>
+        <ul class="subsystem-people">{% for m in subsystem.maintainers if m.role == role %}
+          {% set name = m.name|listing_name %}{% set label = name if name != 'unknown sender' else ('Unnamed maintainer' if role == 'M' else 'Unnamed reviewer') %}
+          {# Maintainer profiles accept M entries only; allowlisting alone is insufficient. #}
+          {% set target = m.address|maintainer_link_url if m.role == 'M' else '' %}
+          <li>{% if target %}<a href="{{ target }}">{{ label }}</a>{% else %}{{ label }}{% endif %}</li>
+        {% else %}<li class="subsystem-empty">None listed.</li>{% endfor %}</ul>
+      </section>
+      {% endfor %}
+      <section><h2>Files</h2>
+        {% if subsystem.paths %}<ul class="subsystem-files">{% for p in subsystem.paths %}<li><kbd>{{ 'X' if p.is_exclude else 'F' }}</kbd> <code>{{ p.glob }}</code></li>{% endfor %}</ul>{% else %}<p class="subsystem-empty">No file rules listed.</p>{% endif %}
+      </section>
+      <section><h2>Active reviewers <small>(last 30 days)</small></h2>
+        {% if reviewers %}
+        <p class="subsystem-review-legend"><span class="subsystem-reviewed-key">Reviewed-by</span> · <span class="subsystem-other-key">Other trailers</span></p>
+        {% set max_total = reviewers|map(attribute='total')|select|list|max|default(0) %}
+        <ul class="subsystem-reviewers">{% for r in reviewers %}
+          {% set label = r.name|listing_name %}
+          {% set total = r.total or 0 %}{% set roles = r.role_counts or {} %}
+          {% set reviewed = [[(roles.get('Reviewed-by', 0) or 0), 0]|max, total]|min %}{% set other = [total - reviewed, 0]|max %}
+          <li><div class="subsystem-reviewer-heading"><strong>{% if r.address|is_allowlisted_address and r.address_normalized|is_addressable_reviewer %}<a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ label if label != 'unknown sender' else 'Unnamed reviewer' }}</a>{% else %}{{ label if label != 'unknown sender' else 'Unnamed reviewer' }}{% endif %}</strong><span class="count">{{ total }}</span></div>
+            <svg class="subsystem-review-bar" viewBox="0 0 100 8" aria-hidden="true"><rect class="subsystem-reviewed-segment" x="0" y="0" width="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" height="8"/><rect class="subsystem-other-segment" x="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" y="0" width="{{ other / max_total * 100 if max_total > 0 else 0 }}" height="8"/></svg>
+            <small>{{ reviewed }} Reviewed-by, {{ other }} other trailer{{ '' if other == 1 else 's' }}{% if r.last_seen %} · last on {{ r.last_seen.strftime('%Y-%m-%d') }}{% endif %}</small>
+          </li>
+        {% endfor %}</ul>
+        {% else %}<p class="subsystem-empty">No reviewer activity in the last 30 days.</p>{% endif %}
+      </section>
+    </aside>
+  </div>
+</div>
 {% endblock %}
