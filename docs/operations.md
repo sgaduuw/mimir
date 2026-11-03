@@ -44,8 +44,10 @@ uv run mimir warm-cache --tier slow
 uv run mimir warm-cache
 ```
 
-The fast tier covers cheap per-inbox helpers and the two sitemap indexes,
-`/sitemap.xml` and `/messages-sitemap.xml`, built together. The slow
+The fast tier covers cheap per-inbox helpers, the front page's 30-day message
+total (a count of `articles`, so a cross-post counts once; refreshed hourly) and
+the two sitemap indexes, `/sitemap.xml` and `/messages-sitemap.xml`, built
+together. The front page leaves that total out until the first warm run fills it. The slow
 tier covers the other sitemaps, subsystem dashboards, trackers, and other expensive queries. The unqualified
 command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 

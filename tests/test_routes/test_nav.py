@@ -94,15 +94,10 @@ def test_phone_rules_reach_only_the_site_nav(client):
     disclosures, #1000), and a bare `nav > ul li + li::before` put a "/"
     between the month archive's "prev" and "up" links. The privacy page's
     contents list is an in-page nav too (#1001)."""
-    from mimir.extensions import SessionLocal
-    from tests.test_merge_window import _article, _commit, _subsystem
+    from tests.test_routes._helpers import _any_article_in
 
-    with SessionLocal() as s:
-        _subsystem(s, "SCOPE", ["scope/"])
-        art = _article(s, "scope@x", files=["scope/a.c"])
-        _commit(s, "scope@x", "linux-next")
-        s.commit()
-        month = f"/alpha/{art.date:%Y}/{art.date:%m}/"
+    art = _any_article_in("alpha")
+    month = f"/alpha/{art.date:%Y}/{art.date:%m}/"
     selectors = _phone_selectors(
         (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
     )

@@ -1,4 +1,6 @@
-/* Filter a list by typing (/merge-window, #1000).
+/* Filter and sort lists (/merge-window #1000, the front page #994).
+ *
+ * Filter a list by typing.
  *
  * `<input data-filter-input="LIST_ID">` filters the `[data-filter-item]`
  * rows inside that list by their `data-filter-text` (already lowercase).
@@ -12,18 +14,14 @@
  * Lives in /static/ because the CSP blocks inline scripts.
  */
 (function () {
-  function all(root, selector) {
-    return Array.prototype.slice.call(root.querySelectorAll(selector));
-  }
-
-  all(document, "[data-filter-controls]").forEach(function (box) {
+  Array.from(document.querySelectorAll("[data-filter-controls]")).forEach(function (box) {
     box.hidden = false;
   });
 
-  all(document, "[data-filter-input]").forEach(function (input) {
+  Array.from(document.querySelectorAll("[data-filter-input]")).forEach(function (input) {
     var list = document.getElementById(input.getAttribute("data-filter-input"));
     if (!list) return;
-    var items = all(list, "[data-filter-item]");
+    var items = Array.from(list.querySelectorAll("[data-filter-item]"));
     var rendered = items.map(function (item) {
       var d = item.querySelector("details");
       return d ? d.open : false;
@@ -35,7 +33,7 @@
       // Last row first: a nested row is decided before the row holding it.
       for (var i = items.length - 1; i >= 0; i--) {
         var item = items[i];
-        var nested = all(item, "[data-filter-item]");
+        var nested = Array.from(item.querySelectorAll("[data-filter-item]"));
         var show;
         if (!query) {
           show = true;
@@ -52,5 +50,30 @@
     }
 
     input.addEventListener("input", apply);
+  });
+
+  // Sort a list by a number on each row (the front page's inbox list).
+  // `data-order` is the server's order and breaks ties, so "A to Z" is just
+  // that order again. No stored preference, for the reason above.
+  Array.from(document.querySelectorAll("[data-sort-button]")).forEach(function (button) {
+    var list = document.getElementById(button.getAttribute("data-sort-list"));
+    if (!list) return;
+    button.addEventListener("click", function () {
+      var mode = button.getAttribute("data-sort-button");
+      function number(row, name) {
+        return Number(row.getAttribute(name));
+      }
+      Array.from(list.children)
+        .sort(function (a, b) {
+          var order = number(a, "data-order") - number(b, "data-order");
+          return mode === "active" ? number(b, "data-active") - number(a, "data-active") || order : order;
+        })
+        .forEach(function (row) {
+          list.appendChild(row);
+        });
+      Array.from(document.querySelectorAll("[data-sort-button]")).forEach(function (other) {
+        other.setAttribute("aria-pressed", String(other === button));
+      });
+    });
   });
 })();

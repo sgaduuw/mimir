@@ -666,6 +666,20 @@ def _highlight_match_filter(subject: str | None, query: str | None) -> Markup:
     )
 
 
+@bp_web.app_template_filter("short_count")
+def _short_count_filter(n: int | None) -> str:
+    """A count in two or three figures: `999`, `1.5k`, `160k`, `6.6M`."""
+    n = int(n or 0)
+    for unit, size in (("M", 1_000_000), ("k", 1_000)):
+        if n >= size:
+            scaled = n / size
+            scaled = round(scaled, 1) if scaled < 10 else round(scaled)
+            if unit == "k" and scaled >= 1000:
+                return "1M"  # 999,500 and up
+            return f"{scaled:g}{unit}"
+    return str(n)
+
+
 @bp_web.app_template_filter("pull_label")
 def _pull_label(subject: str | None) -> str:
     """Strip only the shared pull predicate's prefix, for display."""
