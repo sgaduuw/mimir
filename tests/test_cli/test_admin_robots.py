@@ -41,7 +41,7 @@ def test_admin_robots_list_renders_seeded_star_rule(seeded_db):
     # padding to align columns).
     assert "*" in result.output
     # Other tokens from the row's representation surface too:
-    # crawl_delay (5 per migration), disallow paths (the attachment
+    # crawl_delay (unset by default), disallow paths (the attachment
     # exclusion path is the canonical seed entry).
     assert "crawl_delay" in result.output
     assert "disallow" in result.output
@@ -250,7 +250,7 @@ def test_admin_robots_reset_drops_added_rows_and_reseeds_star(seeded_db):
     assert "*" in all_uas, (
         "reset must re-seed the `*` row from the migration defaults; "
         "leaving the archive with no `*` rule would silently strip the "
-        "default Disallow + Crawl-delay from /robots.txt"
+        "default Disallow rules from /robots.txt"
     )
 
 
