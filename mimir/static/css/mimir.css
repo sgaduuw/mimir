@@ -1176,6 +1176,12 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 }
 
 
+/* --- 404 page (#1002) --- */
+.error-code { margin: 0 0 .25rem; font-family: var(--pico-font-family-monospace); font-size: .85rem; color: var(--pico-muted-color); }
+.error-path { overflow-wrap: anywhere; }
+.error-links { margin-block: 1rem; max-width: 32rem; }
+.error-links a { display: flex; align-items: center; min-height: 2.75rem; }
+
 /* --- Front page (#994) --- */
 
 .front-head { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1.5rem; align-items: center; margin-bottom: 2rem; }
