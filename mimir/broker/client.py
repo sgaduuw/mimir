@@ -24,7 +24,14 @@ from concurrent.futures import Future
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
-from mimir.broker.protocol import Reply, _BrokerRequest
+from mimir.broker.protocol import (
+    CacheDeleteForInboxRequest,
+    CacheDeleteRequest,
+    CachePurgeExpiredRequest,
+    CacheSetRequest,
+    Reply,
+    _BrokerRequest,
+)
 from mimir.config import settings
 
 logger = logging.getLogger(__name__)
@@ -36,6 +43,10 @@ class BrokerUnavailable(Exception):
     or client.close()). Callers in `mimir.cache` catch this and
     log+drop, matching the best-effort `OperationalError`
     semantics."""
+
+
+class BrokerCacheWriteSkipped(BrokerUnavailable):
+    """Expected best-effort cache rejection during broker maintenance."""
 
 
 class BrokerClient:
@@ -275,6 +286,16 @@ class BrokerClient:
         as `"<op>: <reply.error>"`; the admin CLI parses that format."""
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
+            if reply.error == "vacuum" and isinstance(
+                req,
+                (
+                    CacheSetRequest,
+                    CacheDeleteRequest,
+                    CacheDeleteForInboxRequest,
+                    CachePurgeExpiredRequest,
+                ),
+            ):
+                raise BrokerCacheWriteSkipped(f"{req.op}: {reply.error}")
             raise BrokerUnavailable(f"{req.op}: {reply.error}")
         return reply.result or {}
 

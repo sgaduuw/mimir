@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Cache writes from web requests are skipped immediately during VACUUM instead of queueing for repeated five-second timeouts. The broker logs one skipped-write summary, and expected maintenance rejections no longer warn for every cache key (#1043).
+
 ## [3.40.0] - 2026-11-03
 
 ### Added
