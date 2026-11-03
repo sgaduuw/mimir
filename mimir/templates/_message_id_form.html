@@ -1,0 +1,15 @@
+{# The Message-ID lookup form, one markup for every page that offers it
+   (the front page, the 404 page; #984). A plain GET form to `/m/`, so it
+   works without JS; `normalise_message_id` accepts what is typed, and the
+   route answers with a 301 or a 404. `value` is a prefill from a failed
+   lookup: autoescaped, never marked safe. The button is Pico's own, left
+   unstyled on purpose (Pico's amber `--pico-color` is black). #}
+{% macro message_id_form(value="") -%}
+<form class="message-id-form" action="{{ url_for('web.message_id_lookup_form') }}" method="get">
+  <label for="message-id-input">Open a message by its Message-ID</label>
+  <div class="message-id-form-row">
+    <input id="message-id-input" type="text" name="id" value="{{ value }}" maxlength="998" required autocomplete="off" spellcheck="false" placeholder="20260101.1234-1-name@example.org">
+    <button type="submit">Open</button>
+  </div>
+</form>
+{%- endmacro %}

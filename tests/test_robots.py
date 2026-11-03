@@ -1,6 +1,8 @@
 """Tests for `mimir.robots`: CRUD on robots_rules + the
 `render_robots_txt` body builder."""
 
+import re
+
 import pytest
 
 from mimir import robots
@@ -163,7 +165,13 @@ def test_reset_rules_drops_extras_and_reseeds_star():
     assert [r.user_agent for r in rules] == ["*"]
     star = rules[0]
     assert star.crawl_delay == 5
-    assert star.disallow_paths == ["/*/attachment/", "/api/", "/*/search"]
+    assert star.disallow_paths == [
+        "/*/attachment/",
+        "/api/",
+        "/*/search",
+        "/m/",
+        "/*/m/",
+    ]
     assert star.content_signals == {
         "search": "yes",
         "ai-train": "no",
@@ -194,6 +202,8 @@ def test_render_matches_seeded_defaults():
         + "Disallow: /*/attachment/\n"
         + "Disallow: /api/\n"
         + "Disallow: /*/search\n"
+        + "Disallow: /m/\n"
+        + "Disallow: /*/m/\n"
         + "\n"
         + "Sitemap: https://example.com/sitemap.xml\n"
         + f"LLM-Context: {LLMS_URL}\n"
@@ -253,6 +263,8 @@ def test_render_emits_per_ua_stanzas():
         + "Disallow: /*/attachment/\n"
         + "Disallow: /api/\n"
         + "Disallow: /*/search\n"
+        + "Disallow: /m/\n"
+        + "Disallow: /*/m/\n"
         + "\n"
         + "User-agent: ClaudeBot\n"
         + "Crawl-delay: 20\n"
@@ -422,8 +434,18 @@ def test_reset_rules_reseeds_content_signals():
 # it is precisely the "ships silently inert" failure mode.
 
 
-def _run_migration() -> None:
-    """Drive the migration's upgrade against the test DB.
+_API_SEARCH_MIGRATION = (
+    "e3aa78c72a8d",
+    "alembic/versions/e3aa78c72a8d_seed_robots_disallow_for_api_and_search_.py",
+)
+_MESSAGE_ID_MIGRATION = (
+    "7484f4bf925c",
+    "alembic/versions/7484f4bf925c_seed_robots_disallow_for_message_id_lookup.py",
+)
+
+
+def _run_migration(migration=_API_SEARCH_MIGRATION) -> None:
+    """Drive a migration's upgrade against the test DB.
 
     `Operations.context` installs the global `op` proxy the migration
     module reaches for, so the real function body runs rather than a
@@ -437,10 +459,8 @@ def _run_migration() -> None:
 
     from mimir.extensions import engine
 
-    spec = importlib.util.spec_from_file_location(
-        "_mig_e3aa78c72a8d",
-        "alembic/versions/e3aa78c72a8d_seed_robots_disallow_for_api_and_search_.py",
-    )
+    revision, path = migration
+    spec = importlib.util.spec_from_file_location(f"_mig_{revision}", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
@@ -515,3 +535,88 @@ def test_migration_backfills_a_row_whose_paths_were_all_removed():
     robots.update_rule("*", remove_disallow=list(robots._DEFAULT_STAR_DISALLOW))
     _run_migration()
     assert _star_paths() == ["/api/", "/*/search"]
+
+
+# The `/m/` message-id lookup paths (#984): same shape of backfill.
+
+
+def test_message_id_migration_appends_to_a_pre_984_row():
+    _set_star_paths(["/*/attachment/", "/api/", "/*/search"])
+    _run_migration(_MESSAGE_ID_MIGRATION)
+    assert _star_paths() == ["/*/attachment/", "/api/", "/*/search", "/m/", "/*/m/"]
+
+
+def test_message_id_migration_is_a_no_op_when_the_paths_are_there():
+    before = ["/*/attachment/", "/m/", "/api/", "/*/m/", "/*/search"]
+    _set_star_paths(before)
+    _run_migration(_MESSAGE_ID_MIGRATION)
+    assert _star_paths() == before
+
+
+def test_message_id_migration_appends_only_what_is_missing_and_keeps_edits():
+    _set_star_paths(["/*/attachment/", "/m/", "/operator-private/"])
+    _run_migration(_MESSAGE_ID_MIGRATION)
+    assert _star_paths() == ["/*/attachment/", "/m/", "/operator-private/", "/*/m/"]
+
+
+def test_message_id_migration_backfills_a_row_whose_paths_were_all_removed():
+    robots.update_rule("*", remove_disallow=list(robots._DEFAULT_STAR_DISALLOW))
+    _run_migration(_MESSAGE_ID_MIGRATION)
+    assert _star_paths() == ["/m/", "/*/m/"]
+
+
+def test_message_id_migration_leaves_a_missing_star_row_alone():
+    from sqlalchemy import delete
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as s:
+        s.execute(delete(RobotsRule))
+        s.commit()
+    _run_migration(_MESSAGE_ID_MIGRATION)
+    with SessionLocal() as s:
+        assert robots.get_rule(s, "*") is None
+
+
+def test_default_disallow_carries_both_lookup_paths():
+    assert {"/m/", "/*/m/"} <= set(robots._DEFAULT_STAR_DISALLOW)
+
+
+def _blocked(pattern: str, path: str) -> bool:
+    """robots.txt matching as crawlers read it: a prefix match, `*` is any
+    run of characters, `$` anchors the end."""
+    regex = re.escape(pattern).replace(r"\*", ".*").replace(r"\$", "$")
+    return re.match(regex, path) is not None
+
+
+# One sample of every shape the sitemaps and nav emit for a reader.
+_EMITTED = [
+    "/",
+    "/lkml/",
+    "/lkml/today",
+    "/lkml/2026/",
+    "/lkml/2026/10/",
+    "/lkml/2026/10/123",
+    "/lkml/2026/10/123/t",
+    "/lkml/2026/10/123/t/2",
+    "/lkml/subsystem/",
+    "/lkml/subsystem/kernel-foo/",
+    "/lkml/reviewer/someone@kernel.org",
+    "/lkml/author/someone",
+    "/lkml/series/abc/diff",
+    "/maintainers/someone@kernel.org",
+    "/merge-window",
+    "/privacy",
+]
+
+
+def test_default_disallow_blocks_the_lookup_and_nothing_a_reader_is_sent_to():
+    """Emitter equals acceptor: a pattern that also matched a page we link
+    to would hide it from crawlers without any error."""
+    patterns = robots._DEFAULT_STAR_DISALLOW
+    assert _blocked("/m/", "/m/a@b")
+    assert _blocked("/*/m/", "/lkml/m/a@b")
+    blocked = [(p, path) for p in patterns for path in _EMITTED if _blocked(p, path)]
+    assert blocked == []
+    assert len(_EMITTED) >= 15
