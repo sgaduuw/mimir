@@ -89,6 +89,7 @@ def test_pages_emit_no_inline_style_attributes(client, tmp_path):
         ("/alpha/2024/01/", {}),
         ("/alpha/search?q=sweep", {}),
         ("/merge-window", {}),
+        ("/privacy", {}),
         (msg_url, {}),
         (msg_url + "/t", {}),
         (thread_url, {}),
