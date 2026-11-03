@@ -2163,6 +2163,24 @@ carrying the change. Sentinels are only touched on successful runs
 so a transient failure doesn't push the next retry out by a full
 cadence.
 
+The scheduler handles TERM and INT as normal stops with exit status zero
+(#1007). Task commands and sleeps run as tracked asynchronous children
+while the scheduler waits, so a shell trap can act promptly instead of
+waiting for a foreground command. Initial and slow warm wrappers install
+their own forwarding traps because POSIX asynchronous subshells reset
+caught traps. A short deferred-stop window covers child launch and PID
+capture; either requested stop signal forwards TERM, since asynchronous
+commands can inherit SIGINT ignored. Interrupted runs exit before touching
+a successful-completion sentinel. Completed background jobs are reaped and
+removed from tracking on subsequent ticks.
+
+This is scheduler orchestration cleanup, not a broker cancellation protocol
+or a graceful drain. Already accepted RPCs can continue in the separate
+broker. The stop path does not wait indefinitely for a child that ignores
+TERM; container teardown remains responsible for uncooperative descendants.
+Portable shell PID tracking does not provide an atomic process-identity
+guarantee across every launch/exit timing.
+
 Companion: the broker runs a full-sample `ANALYZE`
 immediately after `alembic upgrade head`
 and `bootstrap_inboxes`, before touching the `/data/.migrated`
