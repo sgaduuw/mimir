@@ -20,9 +20,9 @@ in MEMORY.md) demanded:
    failure must NOT push the next retry out by a full cadence;
    the next tick retries on the unchanged old mtime.
 
-Both behaviors live in pure bash inside `deploy/scheduler.sh`.
-Testing them from pytest extracts the `sentinel_mtime` and `run`
-function definitions out of the script at test time, runs them
+Both behaviors live in POSIX shell inside `deploy/scheduler.sh`.
+Testing them from pytest extracts `sentinel_mtime`, `run` and its child
+handling dependencies out of the script at test time, runs them
 under `sh` in a temp directory, and asserts on the side effects.
 
 A future refactor that moves these helpers into a sourced
@@ -39,11 +39,10 @@ SCHEDULER_SH = Path(__file__).resolve().parent.parent / "deploy" / "scheduler.sh
 
 
 def _extract_multiline_function(name: str, source: str) -> str:
-    """Pull a multi-line bash function definition by name out of
+    """Pull a multi-line shell function definition by name out of
     `source`. Matches `<name>() {` on its own line through the
-    corresponding `}` at column zero. The two functions extracted
-    by this test (`sentinel_mtime`, `run`) are both multi-line in
-    scheduler.sh today. `log()` is a one-liner and is provided
+    corresponding `}` at column zero. The extracted helpers are
+    multi-line in scheduler.sh. `log()` is a one-liner and is provided
     inline by `_scheduler_helpers_snippet()` instead, since
     extracting a one-liner with the same regex would need a
     different pattern.
@@ -69,16 +68,15 @@ _INLINE_LOG = 'log() { echo "[scheduler $(date -Iseconds)] $*"; }\n'
 
 
 def _scheduler_helpers_snippet() -> str:
-    """Build a shell snippet defining the three helpers
-    (`log`, `sentinel_mtime`, `run`) used by the test cases. `log`
-    is inlined; the other two are extracted from `deploy/scheduler.sh`
-    at test time so a refactor of their contents is automatically
-    picked up.
-    """
+    """Extract the real sentinel/run helpers and their child-handling
+    dependencies; only the one-line logger is supplied inline."""
     source = SCHEDULER_SH.read_text()
     return (
         _INLINE_LOG
         + _extract_multiline_function("sentinel_mtime", source)
+        + _extract_multiline_function("stop", source)
+        + _extract_multiline_function("start_command", source)
+        + _extract_multiline_function("wait_command", source)
         + _extract_multiline_function("run", source)
     )
 
