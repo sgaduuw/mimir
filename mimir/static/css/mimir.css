@@ -1298,3 +1298,11 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .series-diff-pager select { flex: 1; max-width: none; }
   .series-diff-pager > .series-diff-step:last-child { grid-column: 3; }
 }
+
+
+/* --- Message-ID lookup form (_message_id_form.html, #984) --- */
+.message-id-form { margin-block: 1rem; }
+.message-id-form label { font-size: .85rem; color: var(--pico-muted-color); }
+.message-id-form-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+.message-id-form-row input { flex: 1 1 16rem; min-width: 0; min-height: 2.75rem; margin: 0; }
+.message-id-form-row button { flex: 0 0 auto; min-height: 2.75rem; margin: 0; width: auto; }
