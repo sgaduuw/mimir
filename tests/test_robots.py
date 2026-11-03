@@ -113,6 +113,9 @@ def test_update_rule_sets_crawl_delay():
 
 
 def test_update_rule_clear_crawl_delay_writes_null():
+    robots.update_rule("*", crawl_delay=5)
+    with SessionLocal() as session:
+        assert robots.get_rule(session, "*").crawl_delay == 5
     robots.update_rule("*", clear_crawl_delay=True)
     with SessionLocal() as session:
         rule = robots.get_rule(session, "*")
@@ -164,7 +167,7 @@ def test_reset_rules_drops_extras_and_reseeds_star():
         rules = robots.list_rules(session)
     assert [r.user_agent for r in rules] == ["*"]
     star = rules[0]
-    assert star.crawl_delay == 5
+    assert star.crawl_delay is None
     assert star.disallow_paths == [
         "/*/attachment/",
         "/api/",
@@ -175,7 +178,7 @@ def test_reset_rules_drops_extras_and_reseeds_star():
     assert star.content_signals == {
         "search": "yes",
         "ai-train": "no",
-        "ai-input": "no",
+        "ai-input": "yes",
     }
 
 
@@ -187,7 +190,8 @@ LLMS_URL = "https://example.com/llms.txt"
 def test_render_matches_seeded_defaults():
     """Default body after migration: preamble (because content_signals
     is non-empty on the seeded `*` row), then `*` stanza with
-    Content-Signal/Crawl-delay/Disallow, then Sitemap."""
+    Content-Signal/Disallow, then Sitemap."""
+    robots.reset_rules()
     with SessionLocal() as session:
         body = robots.render_robots_txt(
             session,
@@ -197,8 +201,7 @@ def test_render_matches_seeded_defaults():
     assert body == (
         robots._ROBOTS_PREAMBLE
         + "User-agent: *\n"
-        + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
-        + "Crawl-delay: 5\n"
+        + "Content-Signal: search=yes, ai-input=yes, ai-train=no\n"
         + "Disallow: /*/attachment/\n"
         + "Disallow: /api/\n"
         + "Disallow: /*/search\n"
@@ -258,8 +261,7 @@ def test_render_emits_per_ua_stanzas():
     expected = (
         robots._ROBOTS_PREAMBLE
         + "User-agent: *\n"
-        + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
-        + "Crawl-delay: 5\n"
+        + "Content-Signal: search=yes, ai-input=yes, ai-train=no\n"
         + "Disallow: /*/attachment/\n"
         + "Disallow: /api/\n"
         + "Disallow: /*/search\n"
@@ -380,7 +382,7 @@ def test_update_rule_set_content_signal_upserts():
     assert rule.content_signals["ai-train"] == "yes"
     # Other seeded keys untouched.
     assert rule.content_signals["search"] == "yes"
-    assert rule.content_signals["ai-input"] == "no"
+    assert rule.content_signals["ai-input"] == "yes"
 
 
 def test_update_rule_clear_content_signal_drops_specific_keys():
@@ -420,7 +422,7 @@ def test_reset_rules_reseeds_content_signals():
     assert rule.content_signals == {
         "search": "yes",
         "ai-train": "no",
-        "ai-input": "no",
+        "ai-input": "yes",
     }
 
 
@@ -444,7 +446,7 @@ _MESSAGE_ID_MIGRATION = (
 )
 
 
-def _run_migration(migration=_API_SEARCH_MIGRATION) -> None:
+def _run_migration(migration=_API_SEARCH_MIGRATION, *, db_engine=None) -> None:
     """Drive a migration's upgrade against the test DB.
 
     `Operations.context` installs the global `op` proxy the migration
@@ -464,10 +466,38 @@ def _run_migration(migration=_API_SEARCH_MIGRATION) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    with engine.begin() as conn:
+    with (db_engine if db_engine is not None else engine).begin() as conn:
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx):
             module.upgrade()
+
+
+def test_fresh_robots_seeds_render_current_policy():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    fresh = create_engine("sqlite://")
+    try:
+        for revision, filename in [
+            ("cc79e4a44a23", "add_robots_rules_table"),
+            ("82e825291162", "add_robots_rules_content_signals"),
+        ]:
+            _run_migration(
+                (revision, f"alembic/versions/{revision}_{filename}.py"),
+                db_engine=fresh,
+            )
+        with Session(fresh) as session:
+            star = robots.get_rule(session, "*")
+            assert star is not None
+            assert star.disallow_paths == ["/*/attachment/"]
+            body = robots.render_robots_txt(session, [], LLMS_URL)
+        stanza = body.split("User-agent: *\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        assert stanza == [
+            "Content-Signal: search=yes, ai-input=yes, ai-train=no",
+            "Disallow: /*/attachment/",
+        ]
+    finally:
+        fresh.dispose()
 
 
 def _star_paths() -> list[str]:
