@@ -24,6 +24,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The privacy notice has an "In short" summary, a contents list, a reading column of about 68 characters, and its browser-storage lists as two tables (Cloudflare cookies, local storage). The wording of the notice is unchanged. The summary says there are two local preferences, theme and thread fold; it is new text, so this entry records the change to the notice (#1001).
+
 - `robots.txt` disallows `/m/` and `/*/m/`, which hold only redirects. A data migration adds both paths to an existing `*` stanza and keeps any path an operator added (#984).
 
 - Series diffs show a clean series heading, dated revision links, a patch heading and added/removed line totals. Added, removed and hunk lines have themed backgrounds and marker gutters; long lines scroll inside the diff. Navigation uses current metadata without reading the other patches' bodies (#999).
