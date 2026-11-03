@@ -312,25 +312,20 @@ def remove_rule(user_agent: str) -> None:
     submit_write(f"robots:remove:{ua}", _fn, timeout=30)
 
 
-# Seeded defaults for the `*` stanza: `Crawl-delay: 5`, the crawl-budget
-# disallows below, and the Content-Signal posture from
-# https://blog.cloudflare.com/content-signals-policy/: search=yes
-# (this IS a publicly-indexed archive, see SEO posture in
-# CONTEXT.md); ai-train=no + ai-input=no (matches the "redaction as
-# friction layer" posture, and Cloudflare's own recommended default).
-# The migrations that create + extend `robots_rules` seed the same
-# values; this constant is the single source of truth for
-# `reset_rules` and for fresh seeds.
-_DEFAULT_STAR_CRAWL_DELAY = 5
+# The wildcard defaults allow search and AI input while opting out of
+# training. Crawler budgets provide backoff instead of a blanket delay.
+# Reset and the two initial seed migrations share this policy. Changing
+# these values does not rewrite rules on already-migrated installations.
+_DEFAULT_STAR_CRAWL_DELAY = None
 # `/api/` is the htmx load-more endpoint: HTML partials, one URL per
 # offset, never a useful search result. `/*/search` is internal search
 # results, which Google's own guidance says to keep out of the crawl.
 # Both are about crawl budget, not index hygiene (`?q=` URLs already
 # canonicalise to the bare search page). `/m/` and `/*/m/` are the
 # Message-ID lookup (#984): pure 301s, nothing for a crawler to index.
-# Existing deploys get these via the e3aa78c72a8d and 7484f4bf925c data
-# migrations, since this constant is only read by `reset_rules()` and a
-# fresh seed; keep them in step.
+# Fresh and existing deploys get these via the e3aa78c72a8d and
+# 7484f4bf925c data migrations. Reset reads the constant below;
+# keep the migration additions and reset defaults in step.
 _DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
     "/*/attachment/",
     "/api/",
@@ -341,7 +336,7 @@ _DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
 _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
     "search": "yes",
     "ai-train": "no",
-    "ai-input": "no",
+    "ai-input": "yes",
 }
 
 

@@ -12,9 +12,9 @@ line between the `User-agent:` line and the `Crawl-delay:`/`Disallow:`
 lines.
 
 Backfills the seeded `*` row with the same defaults a fresh deploy
-would get (`search=yes, ai-train=no, ai-input=no`): public archive +
-existing redaction posture says SEO is the primary use case and AI
-training opt-out matches the "friction layer" stance in CONTEXT.md.
+would get (`search=yes, ai-train=no, ai-input=yes`): allow search and
+AI input while opting out of training, matching current reset policy.
+Already-applied revisions do not rewrite operator rules.
 Operators can override per-row via `admin robots update '*'
 --content-signal …` later.
 """
@@ -35,7 +35,7 @@ depends_on: Union[str, Sequence[str], None] = None
 _DEFAULT_STAR_CONTENT_SIGNALS = {
     "search": "yes",
     "ai-train": "no",
-    "ai-input": "no",
+    "ai-input": "yes",
 }
 
 
