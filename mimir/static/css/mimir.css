@@ -1264,6 +1264,38 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .message-id-form-row button { flex: 0 0 auto; min-height: 2.75rem; margin: 0; width: auto; }
 
 
+/* --- Privacy notice (#1001) --- */
+
+/* A contents list beside the article on wide screens, above it on phones.
+   The article is capped at 68ch, about the longest line that reads well. */
+.privacy { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+.privacy-article { max-width: 68ch; font-size: 1rem; line-height: 1.65; }
+.privacy-article h2 { scroll-margin-top: 1rem; }
+.privacy-toc { font-size: .9rem; }
+.privacy-toc, .privacy-toc ol { display: block; }
+.privacy-toc ol { margin: 0; padding: 0; list-style: none; }
+.privacy-toc li { display: block; margin: 0; padding: 0; list-style: none; }
+.privacy-toc a { display: block; margin: 0; padding: .5rem 0; min-height: 2.75rem; text-decoration: none; }
+.privacy-toc a:hover { text-decoration: underline; }
+.privacy-short { margin: 1.5rem 0; padding: 1rem 1.25rem; border: 1px solid var(--pico-muted-border-color); border-radius: 10px; background: var(--pico-muted-background-color); }
+.privacy-short h2 { margin-top: 0; font-size: .75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--pico-muted-color); }
+.privacy-short ul { margin: 0; padding-inline-start: 1.25rem; }
+.privacy-article table { font-size: .9rem; }
+.privacy-article td, .privacy-article th { overflow-wrap: anywhere; }
+@media (width >= 40rem) {
+  .privacy-article thead th, .privacy-article tbody th, .privacy-article td[data-label="Set by"] { white-space: nowrap; overflow-wrap: normal; }
+}
+@media (width >= 64rem) {
+  .privacy { grid-template-columns: 14rem minmax(0, 1fr); align-items: start; }
+  .privacy-toc { position: sticky; top: 1rem; }
+}
+@media (width < 40rem) {
+  .privacy-article thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .privacy-article tbody tr { display: block; padding: .5rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
+  .privacy-article tbody th, .privacy-article tbody td { display: block; padding: .15rem 0; border: 0; }
+  .privacy-article tbody td::before { content: attr(data-label) ": "; color: var(--pico-muted-color); font-size: .75rem; }
+}
+
 /* --- Merge window (#1000) --- */
 
 /* Divided list (#988): no bullets, a hairline between rows, links
