@@ -15,11 +15,10 @@ wrapper around the same function, and the broker handler's only
 job is to translate the RPC into a Python call.
 
 VACUUM is the load-bearing exception: it acquires the SQLite
-exclusive lock for the duration of the operation, which freezes
-every other broker worker (cache + long + warm). The handler
-emits a high-visibility WARNING at start so an operator
-correlating a cache-write stall against the broker log can tell
-"weekly maintenance, not a fault." Documented in CONTEXT.md.
+writer lock for the duration of the operation. New best-effort cache
+RPC writes are skipped instead of queueing behind it; other admitted
+writes can still wait for SQLite. The handler logs the maintenance
+window and one skipped-cache-write summary. Documented in CONTEXT.md.
 
 Admin-CRUD error mapping: the `InboxNotFound` and
 `InboxValidationError` raised by the service layer turn into
@@ -30,6 +29,7 @@ re-raise as `ClickException` with the operator-facing text intact.
 
 import logging
 
+from mimir.broker.handlers.cache import begin_vacuum, end_vacuum
 from mimir.broker.protocol import (
     AnalyzeRequest,
     BackfillThreadRootsRequest,
@@ -159,25 +159,21 @@ def handle_analyze(req: AnalyzeRequest) -> Reply:
 
 
 def handle_vacuum(req: VacuumRequest) -> Reply:
-    """Run VACUUM on the broker.
+    """Skip new cache RPC writes while VACUUM holds SQLite's writer.
 
-    Holds the SQLite exclusive lock for the duration; every other
-    broker worker pauses, and cache writes from the web tier queue
-    behind the lock until either the VACUUM completes or the
-    client's per-RPC timeout expires (matching today's direct-CLI
-    VACUUM contract).
-
-    The WARNING is the operator-visible "this is the weekly
-    maintenance window" signal; without it, an operator who sees
-    cache.set RPC timeouts during the window has to cross-correlate
-    the cron schedule manually."""
+    Requests admitted before the gate closes retain the usual timeout.
+    The admission lock is never held over writer submission or waits.
+    """
     from mimir.maintenance import run_vacuum
 
-    logger.warning(
-        "broker: pausing for VACUUM; cache writes may time out for "
-        "the duration of the operation",
-    )
-    result = run_vacuum()
+    begin_vacuum()
+    try:
+        logger.warning("broker: pausing for VACUUM; new cache writes are skipped")
+        result = run_vacuum()
+    finally:
+        skipped = end_vacuum()
+        if skipped is not None:
+            logger.info("broker: skipped %d cache writes during VACUUM", skipped)
     logger.info(
         "broker: VACUUM finished in %d ms, reclaimed %d bytes",
         result.elapsed_ms,
