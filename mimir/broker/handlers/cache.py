@@ -27,12 +27,13 @@ out via TTL). Without this catch, a long writer-lock hold
 (VACUUM in particular, ~minutes per cycle) trips
 `TimeoutError` per cache RPC and `dispatch`'s outer exception
 handler logs each one as an ERROR with full traceback, which
-is noisy. The same outcome (Reply ok=False, swallowed by
-client) is the documented "VACUUM holds the writer lock; cache
-writes fail during the window" posture from CONTEXT.md.
+is noisy. During VACUUM, reject new cache mutations before writer submission
+and count them for one maintenance summary. A write admitted before
+the VACUUM gate closes can still hit the ordinary timeout.
 """
 
 import logging
+import threading
 
 from mimir import cache
 from mimir.broker._context import get_active_writer
@@ -47,8 +48,45 @@ from mimir.broker.protocol import (
 
 logger = logging.getLogger(__name__)
 
+# Long-worker concurrency can overlap VACUUM handlers. One exit must not
+# reopen cache admission while another VACUUM still holds SQLite's writer.
+_vacuum_lock = threading.Lock()
+_active_vacuums = 0
+_skipped_writes = 0
+
+
+def begin_vacuum() -> None:
+    global _active_vacuums, _skipped_writes
+    with _vacuum_lock:
+        if not _active_vacuums:
+            _skipped_writes = 0
+        _active_vacuums += 1
+
+
+def end_vacuum() -> int | None:
+    """Reopen admission and return the summary count on the final exit."""
+    global _active_vacuums, _skipped_writes
+    with _vacuum_lock:
+        _active_vacuums -= 1
+        if _active_vacuums:
+            return None
+        skipped = _skipped_writes
+        _skipped_writes = 0
+        return skipped
+
+
+def _skip_during_vacuum() -> bool:
+    global _skipped_writes
+    with _vacuum_lock:
+        if not _active_vacuums:
+            return False
+        _skipped_writes += 1
+        return True
+
 
 def handle_cache_set(req: CacheSetRequest) -> Reply:
+    if _skip_during_vacuum():
+        return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
     writer = get_active_writer()
     # req.key is already namespaced and req.value_json already JSON-encoded
     # (the web tier's cache.set did both, and checked the size cap, before
@@ -65,6 +103,8 @@ def handle_cache_set(req: CacheSetRequest) -> Reply:
 
 
 def handle_cache_delete(req: CacheDeleteRequest) -> Reply:
+    if _skip_during_vacuum():
+        return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
     writer = get_active_writer()
     # req.key is pre-namespaced. We discard the rowcount; reply shape
     # matches the pre-Phase-4 Reply(ok=True) exactly.
@@ -77,6 +117,8 @@ def handle_cache_delete(req: CacheDeleteRequest) -> Reply:
 
 
 def handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
+    if _skip_during_vacuum():
+        return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
     writer = get_active_writer()
     try:
         n = cache.delete_for_inbox_via_writer(writer, req.name).result(timeout=5)
@@ -89,6 +131,8 @@ def handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
 
 
 def handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
+    if _skip_during_vacuum():
+        return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
     writer = get_active_writer()
     try:
         n = cache.purge_expired_via_writer(writer).result(timeout=5)
