@@ -75,12 +75,54 @@ SCHEDULER_VERBOSE=${SCHEDULER_VERBOSE:-}
 
 log() { echo "[scheduler $(date -Iseconds)] $*"; }
 
+stop() {
+    trap '' TERM INT
+    # Async commands inherit SIGINT ignored, so use TERM for either stop
+    # signal. Only signal children tracked by this scheduler, never its group.
+    for pid in "${command_pid:-}" "${initial_pid:-}" "${slow_pid:-}"; do
+        [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null || :
+    done
+    log "received stop signal, exiting"
+    exit 0
+}
+trap stop TERM INT
+
+# Defer a stop across spawn and PID capture so no launched child is missed.
+# Ignoring the signal here would pass that ignored disposition to the child.
+start_command() {
+    stop_requested=0
+    trap 'stop_requested=1' TERM INT
+    "$@" &
+    command_pid=$!
+    trap stop TERM INT
+    [ "$stop_requested" -eq 0 ] || stop
+}
+
+# A trap runs immediately while sh waits for an asynchronous child, unlike
+# a foreground command. Keep the PID in the shell that owns the stop trap.
+wait_command() {
+    start_command "$@"
+    wait "$command_pid"
+    command_rc=$?
+    command_pid=
+    return "$command_rc"
+}
+
+# POSIX async subshells reset caught traps and copy sibling PIDs. Install
+# forwarding here, with only this wrapper's own command left to stop.
+run_background() {
+    command_pid=
+    initial_pid=
+    slow_pid=
+    trap stop TERM INT
+    run "$@"
+}
+
 # Wall-clock seconds since unix epoch for a file's mtime. Returns 0
 # when the file is missing so the comparing tick fires immediately.
 sentinel_mtime() {
     if [ -f "$1" ]; then
-        # `date -r FILE +%s` is portable across BusyBox sh (alpine
-        # base image) and coreutils; stat(1) syntax diverges.
+        # The runtime provides GNU date; stat(1) syntax differs across hosts.
         date -r "$1" +%s
     else
         echo 0
@@ -92,7 +134,7 @@ run() {
     sentinel=$2
     shift 2
     log "$label: start"
-    if "$@"; then
+    if wait_command "$@"; then
         log "$label: ok"
         # Touch on success so a transient failure doesn't push the
         # next attempt out by a full cadence; the next tick will
@@ -147,8 +189,10 @@ run() {
 # `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md`
 # Risk #3.
 # shellcheck disable=SC2086  # SCHEDULER_VERBOSE is a flag string, intentionally unquoted to splat empty -> nothing.
-run "warm-cache fast (initial, backgrounded)" /data/.last_warm_fast \
-    mimir warm-cache --tier fast $SCHEDULER_VERBOSE &
+start_command run_background "warm-cache fast (initial, backgrounded)" /data/.last_warm_fast \
+    mimir warm-cache --tier fast $SCHEDULER_VERBOSE
+initial_pid=$command_pid
+command_pid=
 
 # Persisted-mtime initialisation: read each sentinel's last-touch
 # time off /data. Missing file → 0 → the next tick fires immediately
@@ -182,6 +226,16 @@ last_vacuum=$(sentinel_mtime /data/.last_vacuum)
 was_paused=0
 
 while true; do
+    # Drop finished background jobs rather than retaining their PIDs across
+    # many ticks. Wait consumes their status; failure still permits retry.
+    if [ -n "${initial_pid:-}" ] && ! kill -0 "$initial_pid" 2>/dev/null; then
+        wait "$initial_pid" || :
+        initial_pid=
+    fi
+    if [ -n "${slow_pid:-}" ] && ! kill -0 "$slow_pid" 2>/dev/null; then
+        wait "$slow_pid" || :
+        slow_pid=
+    fi
     now=$(date +%s)
 
     if [ -f /data/.scheduler-paused ]; then
@@ -189,7 +243,7 @@ while true; do
             log "paused (sentinel /data/.scheduler-paused present); skipping task ticks until removed"
             was_paused=1
         fi
-        sleep 10
+        wait_command sleep 10
         continue
     fi
     if [ "$was_paused" -eq 1 ]; then
@@ -221,9 +275,11 @@ while true; do
         # double-dispatch. Overlapping wouldn't help anyway, the broker's
         # priority queue would just serialise them.
         if [ -z "${slow_pid:-}" ] || ! kill -0 "$slow_pid" 2>/dev/null; then
+            [ -z "${slow_pid:-}" ] || wait "$slow_pid" || :
             # shellcheck disable=SC2086
-            run "warm-cache slow" /data/.last_warm_slow mimir warm-cache --tier slow $SCHEDULER_VERBOSE &
-            slow_pid=$!
+            start_command run_background "warm-cache slow" /data/.last_warm_slow mimir warm-cache --tier slow $SCHEDULER_VERBOSE
+            slow_pid=$command_pid
+            command_pid=
             last_warm_slow=$(date +%s)
         fi
     fi
@@ -251,5 +307,5 @@ while true; do
         last_vacuum=$(date +%s)
     fi
 
-    sleep 10
+    wait_command sleep 10
 done
