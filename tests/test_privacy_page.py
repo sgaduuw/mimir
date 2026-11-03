@@ -60,6 +60,13 @@ LOCAL = [
         "your fold-state preference for that thread’s reply tree. Written only when you click the fold toggle. Stays in your browser, never sent to the server.",
     ),
 ]
+SESSION = [
+    (
+        "htmx-history-cache",
+        "htmx",
+        "copies of up to ten recently viewed pages, so the back button can show them without loading them again. Kept only for the open tab and cleared when it closes. Never sent to the server.",
+    ),
+]
 
 
 def _page(client):
@@ -128,21 +135,30 @@ def _table_rows(table):
     return head, rows
 
 
-def test_storage_is_two_real_tables_with_the_notices_own_words(client):
+def test_storage_is_three_real_tables_with_the_notices_own_words(client):
     page = _page(client)
-    cookies, local = page.find("article", cls="privacy-article").find_all("table")
-    for table, rows in ((cookies, COOKIES), (local, LOCAL)):
+    tables = page.find("article", cls="privacy-article").find_all("table")
+    assert len(tables) == 3
+    cookies, local, session = tables
+    for table, rows in ((cookies, COOKIES), (local, LOCAL), (session, SESSION)):
         head, found = _table_rows(table)
         assert head == ["Name", "Set by", "Purpose"]
         assert found == rows
-    # Each table sits under the sentence that introduces it, and the
-    # "strictly necessary" paragraph keeps its place between them.
+    # Each table sits under the sentence that introduces it, the "strictly
+    # necessary" paragraph keeps its place between the first two, and the
+    # session-storage table comes before "No analytics".
     order = []
     for node in page.find("article", cls="privacy-article").iter():
         if node.tag == "table":
             order.append("table")
         elif node.tag == "p":
-            for label in ("Three Cloudflare", "All three", "Local storage"):
+            for label in (
+                "Three Cloudflare",
+                "All three",
+                "Local storage",
+                "Session storage",
+                "No analytics",
+            ):
                 if node.text().startswith(label):
                     order.append(label)
     assert order == [
@@ -151,6 +167,9 @@ def test_storage_is_two_real_tables_with_the_notices_own_words(client):
         "All three",
         "Local storage",
         "table",
+        "Session storage",
+        "table",
+        "No analytics",
     ]
 
 
@@ -163,7 +182,8 @@ def test_every_local_storage_key_the_scripts_write_is_in_the_notice(client):
         scripts += 1
         keys.update(
             re.findall(
-                r'localStorage\.(?:get|set|remove)Item\(\s*"([^"]+)"', path.read_text()
+                r"""(?:local|session)Storage\.(?:get|set|remove)Item\(\s*["'`]([^"'`]+)""",
+                path.read_text(),
             )
         )
     assert scripts >= 5
@@ -175,3 +195,11 @@ def test_every_local_storage_key_the_scripts_write_is_in_the_notice(client):
 def test_the_reading_column_is_capped():
     css = (Path(mimir.__file__).parent / "static" / "css" / "mimir.css").read_text()
     assert re.search(r"\.privacy-article\s*\{[^}]*max-width:\s*68ch", css)
+
+
+def test_the_notice_names_htmx_s_session_storage_entry(client):
+    """htmx 2.0.11 keeps up to ten page snapshots under `htmx-history-cache`
+    in sessionStorage for the back button. It is vendored from a CDN, so no
+    script in this repo writes the key and the scan above cannot see it:
+    this names it, so the notice does not omit it."""
+    assert "htmx-history-cache" in _page(client).text()

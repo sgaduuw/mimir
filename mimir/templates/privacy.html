@@ -98,6 +98,18 @@
         never sent to the server.</td></tr>
     </tbody>
   </table>
+  <p>Session storage, set by htmx, the page library {{ site_name }} uses:</p>
+  <table>
+    <thead>
+      <tr><th scope="col">Name</th><th scope="col">Set by</th><th scope="col">Purpose</th></tr>
+    </thead>
+    <tbody>
+      <tr><th scope="row"><code>htmx-history-cache</code></th><td data-label="Set by">htmx</td><td data-label="Purpose">copies of up to ten recently viewed pages,
+        so the back button can show them without loading them again.
+        Kept only for the open tab and cleared when it closes. Never
+        sent to the server.</td></tr>
+    </tbody>
+  </table>
   <p>
     No analytics. No tracking pixels. No advertising. No
     third-party embeds beyond the static-asset CDNs listed below.

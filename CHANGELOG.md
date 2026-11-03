@@ -24,7 +24,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
-- The privacy notice has an "In short" summary, a contents list, a reading column of about 68 characters, and its browser-storage lists as two tables (Cloudflare cookies, local storage). The wording of the notice is unchanged. The summary says there are two local preferences, theme and thread fold; it is new text, so this entry records the change to the notice (#1001).
+- The privacy notice has an "In short" summary, a contents list, a reading column of about 68 characters, and its browser-storage lists as tables (Cloudflare cookies, local storage, session storage). The notice now also names `htmx-history-cache`, the sessionStorage entry htmx keeps for the back button (up to ten page copies, cleared when the tab closes); it was in use before and not listed. The rest of the wording is unchanged. The summary says there are two local preferences, theme and thread fold; it is new text, so this entry records the change to the notice (#1001).
 
 - The merge window page states whether the window is open, with a three-step release cycle, and shows pull requests to Linus as cards that lead with their count: "Waiting" (was Pending), "Merged", "Unclear" (was Unknown) and "Rejected". Each card lists its four newest subjects and keeps the rest in an "All N" disclosure. The queued patches are one list of subsystems with a proportional bar and a count, each opening to its series; a "Find a subsystem" box filters it when JavaScript is on. Subsystem names are lowercase, and the note on how patches are counted moves below the list. The fold-box controls and their script are gone (#1000).
 

@@ -1275,7 +1275,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .privacy-toc, .privacy-toc ol { display: block; }
 .privacy-toc ol { margin: 0; padding: 0; list-style: none; }
 .privacy-toc li { display: block; margin: 0; padding: 0; list-style: none; }
-.privacy-toc a { display: block; padding: .5rem 0; min-height: 2.75rem; text-decoration: none; }
+.privacy-toc a { display: block; margin: 0; padding: .5rem 0; min-height: 2.75rem; text-decoration: none; }
 .privacy-toc a:hover { text-decoration: underline; }
 .privacy-short { margin: 1.5rem 0; padding: 1rem 1.25rem; border: 1px solid var(--pico-muted-border-color); border-radius: 10px; background: var(--pico-muted-background-color); }
 .privacy-short h2 { margin-top: 0; font-size: .75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--pico-muted-color); }
@@ -1294,6 +1294,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .privacy-article tbody tr { display: block; padding: .5rem 0; border-bottom: 1px solid var(--pico-muted-border-color); }
   .privacy-article tbody th, .privacy-article tbody td { display: block; padding: .15rem 0; border: 0; }
   .privacy-article tbody td::before { content: attr(data-label) ": "; color: var(--pico-muted-color); font-size: .75rem; }
+}
 
 /* --- Merge window (#1000) --- */
 
