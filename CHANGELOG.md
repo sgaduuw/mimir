@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- `/m/?id=` opens a message from what you paste: a bare Message-ID, `<id>`, `mid:<id>`, a lore.kernel.org link, or a path such as `/all/<id>/` or `/r/<id>`. `/m/<id>` and `/<inbox>/m/<id>` read the ID the same way, so `<id>` in angle brackets now resolves there too (#984).
+
 - Series comparisons have Previous/Next controls, a native position selector, a scrollable position overview and links to other adjacent revision pairs. The selector works without JavaScript; HTMX changes comparisons in place while preserving browser history, and `j` and `k` move between comparable positions (#999).
 
 - A System / Light / Dark theme selector remembers your browser preference and applies it to page and badge colours (#991).
@@ -21,6 +23,8 @@ changes, not internal refactors. Categories: **Added**,
 
 
 ### Changed
+
+- `robots.txt` disallows `/m/` and `/*/m/`, which hold only redirects. A data migration adds both paths to an existing `*` stanza and keeps any path an operator added (#984).
 
 - Series diffs show a clean series heading, dated revision links, a patch heading and added/removed line totals. Added, removed and hunk lines have themed backgrounds and marker gutters; long lines scroll inside the diff. Navigation uses current metadata without reading the other patches' bodies (#999).
 

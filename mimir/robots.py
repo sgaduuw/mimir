@@ -326,13 +326,17 @@ _DEFAULT_STAR_CRAWL_DELAY = 5
 # offset, never a useful search result. `/*/search` is internal search
 # results, which Google's own guidance says to keep out of the crawl.
 # Both are about crawl budget, not index hygiene (`?q=` URLs already
-# canonicalise to the bare search page). Existing deploys get these via
-# the e3aa78c72a8d data migration, since this constant is only read by
-# `reset_rules()` and a fresh seed; keep the two in step.
+# canonicalise to the bare search page). `/m/` and `/*/m/` are the
+# Message-ID lookup (#984): pure 301s, nothing for a crawler to index.
+# Existing deploys get these via the e3aa78c72a8d and 7484f4bf925c data
+# migrations, since this constant is only read by `reset_rules()` and a
+# fresh seed; keep them in step.
 _DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
     "/*/attachment/",
     "/api/",
     "/*/search",
+    "/m/",
+    "/*/m/",
 )
 _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
     "search": "yes",

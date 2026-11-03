@@ -103,6 +103,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/author/<substring>` | Author activity |
 | `/<inbox>/reviewer/<address>` | Review activity |
 | `/m/<message-id>` | Redirect to the canonical message URL |
+| `/m/?id=<text>` | The same lookup for a GET form. Accepts a bare ID, `<id>`, `mid:<id>`, or a lore-style URL or path ending in the ID; a miss is a 404 |
 | `/<inbox>/m/<message-id>` | Message lookup restricted to an inbox |
 | `/<inbox>/<YYYY>/<MM>/<id>` | Message and thread tree |
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t` | First page of a whole thread |
