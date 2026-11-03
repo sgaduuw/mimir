@@ -92,7 +92,8 @@ def test_phone_rules_reach_only_the_site_nav(client):
     """The phone block is for the site nav. A bare `nav a` once flexed the
     merge window's in-page subsystem index (since replaced by a list of
     disclosures, #1000), and a bare `nav > ul li + li::before` put a "/"
-    between the month archive's "prev" and "up" links."""
+    between the month archive's "prev" and "up" links. The privacy page's
+    contents list is an in-page nav too (#1001)."""
     from tests.test_routes._helpers import _any_article_in
 
     art = _any_article_in("alpha")
@@ -100,15 +101,22 @@ def test_phone_rules_reach_only_the_site_nav(client):
     selectors = _phone_selectors(
         (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
     )
-    html = client.get(month).get_data(as_text=True)
-    navs = re.findall(r"(<nav\b[^>]*>)(.*?)</nav>", html, re.DOTALL)
-    site = [n for n in navs if 'class="site-nav"' in n[0]]
-    others = [n for n in navs if 'class="site-nav"' not in n[0]]
-    assert len(site) == 1, "expected one site nav"
-    assert others, "precondition, no in-page nav to protect"
-    # The matcher can say yes: the phone block does reach the site nav.
-    assert any(_reaches(sel, *site[0]) for sel in selectors)
-    reached = sorted(
-        {sel for tag, body in others for sel in selectors if _reaches(sel, tag, body)}
-    )
-    assert reached == []
+    reached = {}
+    for path in (month, "/privacy"):
+        html = client.get(path).get_data(as_text=True)
+        navs = re.findall(r"(<nav\b[^>]*>)(.*?)</nav>", html, re.DOTALL)
+        site = [n for n in navs if 'class="site-nav"' in n[0]]
+        others = [n for n in navs if 'class="site-nav"' not in n[0]]
+        assert len(site) == 1, f"{path}: expected one site nav"
+        assert others, f"{path}: precondition, no in-page nav to protect"
+        # The matcher can say yes: the phone block does reach the site nav.
+        assert any(_reaches(sel, *site[0]) for sel in selectors)
+        reached[path] = sorted(
+            {
+                sel
+                for tag, body in others
+                for sel in selectors
+                if _reaches(sel, tag, body)
+            }
+        )
+    assert reached == {month: [], "/privacy": []}
