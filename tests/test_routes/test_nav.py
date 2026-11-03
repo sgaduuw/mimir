@@ -89,24 +89,20 @@ def _reaches(selector: str, nav_tag: str, nav_html: str) -> bool:
 
 
 def test_phone_rules_reach_only_the_site_nav(client):
-    """The phone block is for the site nav. A bare `nav a` also flexed the
-    merge window's in-page subsystem index (each link and each "(n), " on
-    its own line), and a bare `nav > ul li + li::before` put a "/" between
-    the month archive's "prev" and "up" links."""
-    from mimir.extensions import SessionLocal
-    from tests.test_merge_window import _article, _commit, _subsystem
+    """The phone block is for the site nav. A bare `nav a` once flexed the
+    merge window's in-page subsystem index (since replaced by a list of
+    disclosures, #1000), and a bare `nav > ul li + li::before` put a "/"
+    between the month archive's "prev" and "up" links. The privacy page's
+    contents list is an in-page nav too (#1001)."""
+    from tests.test_routes._helpers import _any_article_in
 
-    with SessionLocal() as s:
-        _subsystem(s, "SCOPE", ["scope/"])
-        art = _article(s, "scope@x", files=["scope/a.c"])
-        _commit(s, "scope@x", "linux-next")
-        s.commit()
-        month = f"/alpha/{art.date:%Y}/{art.date:%m}/"
+    art = _any_article_in("alpha")
+    month = f"/alpha/{art.date:%Y}/{art.date:%m}/"
     selectors = _phone_selectors(
         (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
     )
     reached = {}
-    for path in ("/merge-window", month):
+    for path in (month, "/privacy"):
         html = client.get(path).get_data(as_text=True)
         navs = re.findall(r"(<nav\b[^>]*>)(.*?)</nav>", html, re.DOTALL)
         site = [n for n in navs if 'class="site-nav"' in n[0]]
@@ -123,4 +119,4 @@ def test_phone_rules_reach_only_the_site_nav(client):
                 if _reaches(sel, tag, body)
             }
         )
-    assert reached == {"/merge-window": [], month: []}
+    assert reached == {month: [], "/privacy": []}

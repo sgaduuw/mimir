@@ -22,6 +22,7 @@
   <meta name="htmx-config" content='{"historyRestoreAsHxRequest":false}'>
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
+  <script src="{{ url_for('static', filename='js/theme.js') }}?v={{ mimir_version }}"></script>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">
   {% if noindex %}
   <meta name="robots" content="noindex">
@@ -52,7 +53,8 @@
      help. Deferred since nothing here needs to run before paint  
      contrast thread-fold.js, which must run synchronously to avoid
      FOUC. #}
-  <script src="{{ url_for('static', filename='js/keyboard-nav.js') }}" defer></script>
+  <script src="{{ url_for('static', filename='js/keyboard-nav.js') }}?v={{ mimir_version }}" defer></script>
+  {% block page_scripts %}{% endblock %}
 
   {#
     Title and meta-description are defined ONCE (each as a captured
@@ -149,6 +151,13 @@
         {# The one site-wide page to browse; readers mostly arrive on a
            thread from a search engine, never seeing the front page (#891). #}
         <li><small>{% call nav_link(url_for('web.merge_window_page')) %}Merge window{% endcall %}</small></li>
+        <li id="theme-control" hidden>
+          <select id="theme-select" class="theme-select" aria-label="Color theme">
+            <option value="system">System</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </li>
       </ul>
     </nav>
     {% block content %}{% endblock %}
@@ -174,8 +183,8 @@
       <table>
         <tbody>
           <tr><td><kbd>h</kbd></td><td>back out one level</td></tr>
-          <tr><td><kbd>j</kbd></td><td>next message in thread</td></tr>
-          <tr><td><kbd>k</kbd></td><td>previous message in thread</td></tr>
+          <tr><td><kbd>j</kbd></td><td>next message in thread / next series-diff position</td></tr>
+          <tr><td><kbd>k</kbd></td><td>previous message in thread / previous series-diff position</td></tr>
           <tr><td><kbd>l</kbd></td><td>drill in</td></tr>
           <tr><td><kbd>Esc</kbd></td><td>close help / fold thread tree</td></tr>
           <tr><td><kbd>?</kbd></td><td>toggle this help</td></tr>

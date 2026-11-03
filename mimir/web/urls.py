@@ -13,6 +13,7 @@ to repeat per call.
 """
 
 import re
+from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from flask import Response, abort, g, request
@@ -32,15 +33,47 @@ def is_addressable_reviewer_address(address: str | None) -> bool:
     return _REVIEWER_ADDR_RE.match(address or "") is not None
 
 
+def _find_inbox(session: Session, name: str) -> Inbox | None:
+    """Resolve URL slug → Inbox row, or None. The one lookup behind both
+    the routes' 404 (`_get_inbox_or_404`) and the 404 page's links, so a
+    link is only ever built to an inbox the routes will serve."""
+    return session.execute(select(Inbox).where(Inbox.name == name)).scalar_one_or_none()
+
+
 def _get_inbox_or_404(session: Session, name: str) -> Inbox:
     """Resolve URL slug → Inbox row. Single source of truth for whether
     a `/<inbox_name>/...` URL is valid."""
-    inbox = session.execute(
-        select(Inbox).where(Inbox.name == name)
-    ).scalar_one_or_none()
+    inbox = _find_inbox(session, name)
     if inbox is None:
         abort(404)
     return inbox
+
+
+# Plausible bounds for an inbox archive: lkml itself goes back to ~1995.
+# Outside this range a year URL is almost certainly user error / scraper
+# noise; 404 is the right response.
+_MIN_ARCHIVE_YEAR = 1995
+
+
+def _max_archive_year() -> int:
+    return datetime.now(UTC).year + 1
+
+
+def _year_in_range(year: int) -> bool:
+    return _MIN_ARCHIVE_YEAR <= year <= _max_archive_year()
+
+
+def _month_in_range(year: int, month: int) -> bool:
+    """Whether `/<inbox>/<year>/<month>/` is a page. The month route and
+    the 404 page's month link both ask this, so they cannot disagree."""
+    return _year_in_range(year) and 1 <= month <= 12
+
+
+def _month_path(inbox_name: str, year: int, month: int) -> str:
+    """Site-relative URL of a month archive: four-digit year, two-digit
+    month, the spelling every canonical and sitemap uses. `url_for` would
+    drop the zero (`/2026/9/`), which is a duplicate-URL signal."""
+    return f"/{inbox_name}/{year:04d}/{month:02d}/"
 
 
 def _abort_404_if_url_date_mismatches(article: Article, year: int, month: int) -> None:
@@ -493,3 +526,33 @@ def _advertised_urls_for(
         else:
             out[art_id] = base + _msg_url(article, name)
     return out
+
+
+def listing_options(args, *, paging=False):
+    """Accept the same listing options emitted by listing_url."""
+    from mimir.listings import FILTERS
+
+    selected = args.get("filter", "all")
+    raw = args.get("page", "1")
+    if (
+        selected not in FILTERS
+        or not raw.isascii()
+        or not raw.isdecimal()
+        or len(raw) > 9
+    ):
+        abort(404)
+    page = int(raw)
+    if page < 1 or (not paging and page != 1):
+        abort(404)
+    return selected, page
+
+
+def listing_url(path: str, selected="all", page=1):
+    """Build only option combinations the listing routes accept."""
+    listing_options({"filter": selected, "page": str(page)}, paging=True)
+    params = {}
+    if selected != "all":
+        params["filter"] = selected
+    if page != 1:
+        params["page"] = page
+    return path + ("?" + urlencode(params) if params else "")

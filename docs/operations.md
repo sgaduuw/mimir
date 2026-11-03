@@ -44,8 +44,10 @@ uv run mimir warm-cache --tier slow
 uv run mimir warm-cache
 ```
 
-The fast tier covers cheap per-inbox helpers and the two sitemap indexes,
-`/sitemap.xml` and `/messages-sitemap.xml`, built together. The slow
+The fast tier covers cheap per-inbox helpers, the front page's 30-day message
+total (a count of `articles`, so a cross-post counts once; refreshed hourly) and
+the two sitemap indexes, `/sitemap.xml` and `/messages-sitemap.xml`, built
+together. The front page leaves that total out until the first warm run fills it. The slow
 tier covers the other sitemaps, subsystem dashboards, trackers, and other expensive queries. The unqualified
 command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 
@@ -166,3 +168,45 @@ docker compose exec mimir-broker mimir tracemalloc-diff \
 Substitute actual snapshot filenames. Snapshots consume disk space and tracing
 adds overhead. Disable the setting and restart when finished, then remove the
 snapshots you no longer need. Only load snapshots from a trusted source.
+
+
+### Maintainer review counts
+
+The slow global warm target `maintainer_review_counts` refreshes one primitive
+inbox/count map per supported, normalized `M:` address under
+`maintainer:review_counts_v1:<address>`. It uses the existing broker cache-write
+path, directory TTL of 3600 seconds, refresh window and slow-tier extension
+(7200 seconds by default). This is approximate freshness, not an hourly-update
+guarantee. New owners enter when the cached directory refreshes. The profile
+route checks current `M:` existence before reading either cache, so removed
+owners return 404 even while old entries survive.
+
+Requests only read these count entries. A missing or expired entry uses the
+profile's alphabetical inbox list without counts. A present map, including an
+empty one, supplies both the displayed inboxes and the header total because
+profile and count entries can refresh independently. The existing registered
+profile payload remains unchanged for rolling versions. Profile responses keep
+their existing `public, max-age=600` policy without ETag or Last-Modified.
+
+The read-only production measurement on 2026-11-02 covered all 2070 eligible
+addresses: 3.950 seconds of summed query time, 4.067 seconds wall time for reads
+and encoding, 113 ms maximum single query, and at most 2547 encoded JSON bytes
+per address. Sample plans used the trailer role/address index. These figures
+exclude cache writes and do not predict the complete warm-cycle duration.
+
+### Window listing caches
+
+Daily, month and catch-up listings share compact, level-1 zlib-compressed
+window results across filter choices and pages. Daily targets use the existing slow tier.
+The slow tier also defines the current-month and maximum catch-up-window
+targets; arbitrary historical months and other catch-up dates stay on demand.
+The proposed 406 windows across 203 inboxes took 38.974 seconds of serial
+SQL time in the 2026-11-02 production measurement. This does not measure
+concurrent warm-worker load or promise a complete warm-cycle duration.
+
+The nominal listing TTL is 300 seconds. With the default slow warm extension
+of 7200 seconds, a warmed row can live for 7500 seconds. The existing refresh
+policy does not guarantee a refresh on every hourly tick or five-minute
+freshness. This listing change preserves that policy. Oversized compressed
+values are logged and skipped; web requests still render the complete result, while
+listing warm targets report an error rather than claiming a successful warm.

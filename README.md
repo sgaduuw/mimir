@@ -16,14 +16,17 @@ message bodies and attachments from the mirrors when you open them.
 
 ## What you can do
 
-- **Read conversations.** Browse daily and monthly archives, search subjects
-  and authors, or read a whole thread with quoted replies folded away.
+- **Read conversations.** Browse daily and monthly archives, filter patches, pull
+  requests or threads with no replies in the selected window, search subjects
+  and authors, or open a pasted Message-ID or lore.kernel.org link. Read a
+  whole thread with quoted replies folded away.
 - **Review patches.** View highlighted diffs, jump to individual hunks,
-  compare patch revisions, and inspect text attachments.
+  compare patch revisions with position and version navigation, and inspect
+  text attachments.
 - **Follow development.** See active threads, patch review activity,
   subsystem ownership from MAINTAINERS, links to tracked Git commits, and
   what linux-next holds for the next merge window, by subsystem, with the
-  pull requests sent to Linus, sorted into merged, pending, rejected and unknown.
+  pull requests sent to Linus, sorted into merged, waiting, rejected and unclear.
 - **Archive several lists.** Cross-posted messages share an index entry,
   while each list keeps its own thread view. Updates are incremental.
 - **Make the archive discoverable.** Atom feeds, sitemaps, stable message

@@ -4,7 +4,11 @@ import re
 from pathlib import Path
 
 import mimir
-from tests.test_routes._helpers import _ingest_one_article, _seed_subsystem
+from tests.test_routes._helpers import (
+    _ingest_one_article,
+    _metadata_url,
+    _seed_subsystem,
+)
 
 _DD = re.compile(r'<ul id="subsystems-dd-menu"[^>]*>(.*?)</ul>', re.DOTALL)
 _HREF = re.compile(r'<li><a href="([^"]+)"')
@@ -46,9 +50,12 @@ def test_message_page_lists_its_subsystems_then_all_subsystems(client, tmp_path)
         "/alpha/subsystem/xfs/",
         "/alpha/subsystem/",
     ]
-    # The header's own links are the same bytes.
+    # The relocated metadata header uses the same subsystem predicates/URLs.
+    metadata = client.get(_metadata_url(url))
+    assert metadata.status_code == 200
     for h in hrefs[:-1]:
-        assert html.count(f'<a href="{h}">') == 2
+        assert html.count(f'<a href="{h}">') == 1
+        assert f'<a href="{h}">' in metadata.get_data(as_text=True)
 
 
 def test_dropdown_caps_at_eight_subsystems(client, tmp_path):
@@ -62,8 +69,13 @@ def test_dropdown_caps_at_eight_subsystems(client, tmp_path):
         body=_patch(*[f"d/{n.lower()}" for n in names]),
     )
     html = client.get(url).get_data(as_text=True)
-    # Precondition: the header really carries all ten.
-    assert html.count('<a href="/alpha/subsystem/sub09/">') == 1
+    # Precondition: the metadata header really carries all ten matches.
+    metadata = client.get(_metadata_url(url))
+    assert metadata.status_code == 200
+    for i in range(10):
+        assert f'<a href="/alpha/subsystem/sub{i:02d}/">' in metadata.get_data(
+            as_text=True
+        )
     hrefs = _dropdown_hrefs(html)
     assert hrefs == [f"/alpha/subsystem/sub{i:02d}/" for i in range(8)] + [
         "/alpha/subsystem/"

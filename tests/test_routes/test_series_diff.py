@@ -12,7 +12,7 @@ from sqlalchemy import select
 from mimir import patch_revisions
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleFile, ArticleList, Inbox
-from tests.test_routes._helpers import _ingest_series_pair, _seed_resends
+from tests.test_routes._helpers import _ingest_series_pair, _metadata_url, _seed_resends
 
 
 def test_series_diff_cover_letter_renders(client, tmp_path):
@@ -133,8 +133,8 @@ def test_series_diff_per_patch_match_by_subject(client, tmp_path):
     # Both patch bodies' distinctive content surfaces in the diff.
     assert "v1 commit message" in out
     assert "v2 commit message updated" in out
-    h1 = html_lib.unescape(re.search(r"<h1>([^<]*)</h1>", out).group(1))
-    assert h1 == "series title: v1→v2 diff (patch 1)", h1
+    h1 = html_lib.unescape(re.search(r"<h1[^>]*>([^<]*)</h1>", out).group(1))
+    assert h1 == "series title", h1
 
 
 def test_series_diff_no_match_404(client, tmp_path):
@@ -233,7 +233,7 @@ def test_series_diff_sidebar_links_on_cover_page(client, tmp_path):
             _sa_select(Article).where(Article.message_id == "v2-cv@x")
         ).scalar_one()
         v2_url = f"/alpha/{v2_art.date.year}/{v2_art.date.month:02d}/{v2_art.id}"
-    body = client.get(v2_url).data.decode()
+    body = client.get(_metadata_url(v2_url)).data.decode()
     # Badge redesign: series revisions moved from the aside into
     # `_revisions_fold.html`; scope the assertions to that fold.
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
@@ -412,7 +412,9 @@ def test_series_diff_message_links_use_canonical_helper(client, tmp_path):
     _file_in_beta(tmp_path, ["v1-cv@x"])
     resp = client.get(f"/beta/series/{series_key}/diff?from=v1&to=v2&pos=cover")
     assert resp.status_code == 200
-    hrefs = re.findall(r'<a href="([^"]+)">message</a>', resp.data.decode())
+    hrefs = re.findall(
+        r'<a class="series-diff-version [^"]+" href="([^"]+)">', resp.data.decode()
+    )
     assert len(hrefs) == 2
     expected = []
     with SessionLocal() as s:
@@ -531,7 +533,7 @@ def test_series_diff_canonical_is_the_panel_link_and_resolves(client, tmp_path):
             select(Article).where(Article.message_id == "v2-cv@x")
         ).scalar_one()
         beta_url = f"/beta/{v2.date.year}/{v2.date.month:02d}/{v2.id}"
-    page = client.get(beta_url)
+    page = client.get(_metadata_url(beta_url))
     assert page.status_code == 200
     fold = page.data.decode().split('class="revisions-fold"')[1].split("</details>")[0]
     (panel_href,) = re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)
@@ -685,7 +687,7 @@ def test_series_diff_panel_link_and_route_agree_on_the_series_head(
             select(Article).where(Article.message_id == "v2-cv@x")
         ).scalar_one()
         page_url = f"/alpha/{v2.date.year}/{v2.date.month:02d}/{v2.id}"
-    fold = client.get(page_url).data.decode()
+    fold = client.get(_metadata_url(page_url)).data.decode()
     fold = fold.split('class="revisions-fold"')[1].split("</details>")[0]
     (panel_href,) = re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)
     panel_href = html_lib.unescape(panel_href)
@@ -838,6 +840,11 @@ def test_series_diff_canonical_and_sitemap_name_the_same_slot_patch(client, tmp_
     locs = [html_lib.unescape(m) for m in re.findall(r"<loc>([^<]+)</loc>", xml)]
     mine = [loc for loc in locs if f"/series/{key}/" in loc]
     assert mine == [canonical]
+    destinations = [
+        html_lib.unescape(value)
+        for value in re.findall(r'data-url="([^"]+)"', page.text)
+    ]
+    assert destinations == [re.sub(r"^https?://[^/]+", "", canonical)]
     assert "/beta/series/" in canonical  # the winner's inbox, not the low row's
 
 
@@ -910,10 +917,10 @@ def test_series_diff_heading_escapes_the_subject(client, tmp_path):
         v2_messages=[("c2@x", "[PATCH v2 0/2] fix a & <b>", None, b"b\n", author)],
     )
     out = client.get(f"/alpha/series/{key}/diff?from=v1&to=v2&pos=cover").data.decode()
-    h1 = re.search(r"<h1>(.*?)</h1>", out, re.DOTALL).group(1)
+    h1 = re.search(r"<h1[^>]*>(.*?)</h1>", out, re.DOTALL).group(1)
     title = re.search(r"<title>(.*?)</title>", out, re.DOTALL).group(1)
-    assert h1 == "fix a &amp; &lt;b&gt;: v1→v2 diff (cover letter)", h1
-    assert title.startswith(h1 + " | "), (h1, title)
+    assert h1 == "fix a &amp; &lt;b&gt;", h1
+    assert title.startswith(h1 + ": v1→v2 diff (cover letter) | "), (h1, title)
 
 
 # --- Message-page ETag / conditional revalidation -----------------------------

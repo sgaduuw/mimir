@@ -26,10 +26,8 @@ informs that schema decision.
 import difflib
 import re
 from dataclasses import dataclass
+from html import escape
 
-from pygments import highlight
-from pygments.formatters.html import HtmlFormatter
-from pygments.lexers import DiffLexer
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -86,9 +84,15 @@ def patch_bracket(subject: str) -> tuple[str, str] | None:
     if second is not None and _PATCH_TOKEN_RE.search(second.group(1)):
         return second.group(1), second.group(2).strip()
     n_of_m = _ANY_N_OF_M_RE.search(inside)
+    if n_of_m is None:
+        return None
+    try:
+        ordered = int(n_of_m.group(1)) <= int(n_of_m.group(2))
+    except ValueError:
+        # Malformed mail can exceed Python's integer digit limit.
+        return None
     if (
-        n_of_m is not None
-        and int(n_of_m.group(1)) <= int(n_of_m.group(2))
+        ordered
         and re.search(r"\w", inside.replace(n_of_m.group(0), "", 1))
         and not _NOT_A_SERIES_RE.search(inside)
         and ":" not in inside
@@ -363,7 +367,7 @@ def _pick_by_file_overlap(
 @dataclass
 class RevisionDiff:
     """One cached inter-revision diff. `diff_html` is the
-    pre-rendered Pygments output ready to drop into a template;
+    escaped, line-classed HTML ready to drop into a template;
     `is_identical` lets the template render `No changes between
     v1 and v2 of this patch` instead of an empty diff block.
 
@@ -394,18 +398,6 @@ class RevisionDiff:
 cache.register("RevisionDiff", RevisionDiff)
 
 
-# Pygments setup mirrors the inline-diff render in
-# `mimir/rendering/diff.py`.
-# Two-instance duplication is intentional: rendering.py's instances are
-# underscore-prefixed module-locals (not part of its public surface),
-# and adding a public helper there for one extra caller would be the
-# premature-abstraction trap. If a third caller appears, promote.
-_DIFF_LEXER = DiffLexer()
-_DIFF_FORMATTER = HtmlFormatter(
-    noclasses=False, nobackground=True, cssclass="highlight"
-)
-
-
 # difflib slows sharply with length, and bodies can reach 50 MB
 # (parser.py). Measured on synthetic generated-header bodies:
 #   5,000 lines (0.2 MB a side): 0.04 s
@@ -434,8 +426,8 @@ def compute_revision_diff(
     Full-body input was the deliberate choice (issue #210 discussion):
     catching changes to the commit message (added Fixes: trailer,
     rewritten explanation) is as useful to reviewers as catching
-    changes to the patch hunks themselves. The Pygments DiffLexer
-    handles mixed prose + diff cleanly.
+    changes to the patch hunks themselves. Line classification uses the generated unified diff, so sender
+    content is always escaped and cannot masquerade as markup.
 
     None / empty bodies are normalised to empty strings; the diff
     will show "this whole side is new" or "this whole side was
@@ -458,8 +450,31 @@ def compute_revision_diff(
                 lineterm="",
             )
         )
-        diff_text = "\n".join(diff_lines)
-        diff_html = highlight(diff_text, _DIFF_LEXER, _DIFF_FORMATTER)
+        # Only these two records are generated file headers. Sender text
+        # beginning with ++ or -- becomes +++ or --- and still counts.
+        content = diff_lines[2:]
+        added = sum(line.startswith("+") for line in content)
+        removed = sum(line.startswith("-") for line in content)
+        lines = []
+        for line in content:
+            if line.startswith("@@"):
+                kind, marker, text = "gu", "", line
+            else:
+                marker, text = line[:1], line[1:]
+                kind = {"+": "gi", "-": "gd"}.get(marker, "context")
+            lines.append(
+                f'<span class="diff-line {kind}"><span class="diff-marker">'
+                f"{escape(marker)}</span>"
+                f'<span class="diff-text">{escape(text)}</span></span>'
+            )
+        diff_html = (
+            f'<p class="revision-diff-stats" data-added="{added}" data-removed="{removed}">'
+            f'<span class="gi">+{added} added</span> '
+            f'<span class="gd">−{removed} removed</span></p>'
+            '<div class="highlight revision-diff-lines"><pre><code>'
+            + "\n".join(lines)
+            + "</code></pre></div>"
+        )
     return RevisionDiff(
         from_article_id=from_article_id,
         to_article_id=to_article_id,

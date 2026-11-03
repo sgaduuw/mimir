@@ -91,8 +91,12 @@ def _page(seeded_db, message_id):
         return art.id, f"/alpha/{art.date.year}/{art.date.month:02d}/{art.id}"
 
 
-def _fold_links(client, url):
-    body = client.get(url).get_data(as_text=True)
+def _fold_links(client, message_url):
+    # Revision/diff links live on the whole-thread view after #990.
+    response = client.get(message_url + "/t")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert 'class="revisions-fold"' in body, "thread view lost its revisions"
     fold = body.split('class="revisions-fold"')[1].split("</details>")[0]
     return [
         html_lib.unescape(h) for h in re.findall(r'href="([^"]*/diff\?[^"]*)"', fold)

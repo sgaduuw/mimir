@@ -8,7 +8,7 @@ from sqlalchemy import delete
 
 from mimir.extensions import SessionLocal
 from mimir.models import Article, CacheEntry
-from tests.test_routes._helpers import _ingest_one_article
+from tests.test_routes._helpers import _ingest_one_article, _metadata_url
 
 
 def _get(client, url):
@@ -34,13 +34,15 @@ def test_clearing_a_keyless_rows_position_moves_the_etag(client, tmp_path):
         assert (art.patch_series_key, art.patch_series_position) == (None, 2)
 
     before = _get(client, url)
+    before_details = client.get(_metadata_url(url))
 
     # What `backfill-patch-series --reprocess` writes for a reply_patch row.
     with SessionLocal() as s:
         s.get(Article, art_id).patch_series_position = None
         s.commit()
     after = _get(client, url)
+    after_details = client.get(_metadata_url(url))
 
     # Precondition: the card (#838) is gone from the body.
-    assert before.get_data(as_text=True) != after.get_data(as_text=True)
+    assert before_details.get_data(as_text=True) != after_details.get_data(as_text=True)
     assert before.headers["ETag"] != after.headers["ETag"]

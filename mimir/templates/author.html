@@ -19,17 +19,12 @@
   {{ results|length }} message{{ '' if results|length == 1 else 's' }}
   {% if truncated %} · capped at {{ result_cap }} most-recent{% endif %}.
 </small></p>
-<ul>
-  {% for a in results %}
-  <li>
-    {%- set status = lifecycle_status_by_id.get(a.id) if lifecycle_status_by_id else None -%}
-    {% include "_lifecycle_badges.html" %}
-    <a href="{{ a|msg_url(inbox_name) }}">{{ a.subject|clean_subject or '(no subject)' }}</a>
-    <br><small>{{ a.date.strftime('%Y-%m-%d %H:%M') if a.date else '????-??-??' }}
-      &middot; {{ a.author|safe_from }}</small>
-  </li>
-  {% endfor %}
-</ul>
+<table class="listing-table"><thead><tr><th scope="col">Last</th><th scope="col">Message</th><th scope="col">Details</th></tr></thead><tbody>
+{% for a in results %}
+{% set row_id = a.id %}{% set row_subject = a.subject %}{% set row_author = a.author %}
+{% set row_time = a.date %}{% set row_url = a|msg_url(inbox_name) %}
+{% set message_row = true %}{% include "_listing_row.html" %}
+{% endfor %}</tbody></table>
 {% else %}
 <p><em>No matches for {{ sub }}.</em></p>
 {% endif %}

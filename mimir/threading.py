@@ -932,11 +932,11 @@ _ORDER_CLAUSES = {
     "score": "score DESC, last_activity DESC",
     # Plain recency: most-recently-active thread first. Used for daily
     # views where decay is irrelevant (everything is within ~24h).
-    "last_activity": "last_activity DESC, recent_count DESC",
+    "last_activity": "last_activity DESC, recent_count DESC, a.id DESC",
 }
 
 
-def _active_threads_query(
+def _active_thread_rows(
     session: Session,
     inbox: Inbox,
     start: datetime,
@@ -947,7 +947,7 @@ def _active_threads_query(
     extra_ctes_sql: str = "",
     extra_seed_filter_sql: str = "",
     extra_params: dict | None = None,
-) -> list[ActiveThread]:
+) -> list:
     """Run the active-threads recursive CTE over a `[start, end)` window.
 
     `order_by`: 'score' (decay-weighted) or 'last_activity' (recency).
@@ -994,6 +994,7 @@ def _active_threads_query(
             JOIN max_depth m ON m.recent_id = c.recent_id AND m.d = c.depth
         )
         SELECT a.id, a.message_id, a.subject, a.author, a.date AS root_date,
+               a.patch_series_position, a.patch_series_key,
                COUNT(*) AS recent_count,
                SUM(CASE WHEN r.recent_id <> a.id THEN 1 ELSE 0 END) AS reply_count,
                MAX(r.recent_date) AS last_activity,
@@ -1019,7 +1020,18 @@ def _active_threads_query(
     }
     if extra_params:
         params.update(extra_params)
-    rows = session.execute(sql, params).all()
+    return session.execute(sql, params).all()
+
+
+def _active_threads_query(
+    session: Session,
+    inbox: Inbox,
+    start: datetime,
+    end: datetime,
+    **kwargs,
+) -> list[ActiveThread]:
+    """The dashboard projection of the shared recursive query."""
+    rows = _active_thread_rows(session, inbox, start, end, **kwargs)
     return [
         ActiveThread(
             id=r.id,
@@ -1063,41 +1075,14 @@ def active_threads(
     )
 
 
-def threads_for_day(
-    session: Session,
-    inbox: Inbox,
-    day: date,
-    force: bool = False,
-) -> list[ActiveThread]:
-    """Every thread in `inbox` with at least one message on `day`
-    (UTC), ordered by last activity desc."""
-
-    def compute() -> list[ActiveThread]:
-        start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
-        end = start + timedelta(days=1)
-        return _active_threads_query(
-            session, inbox, start, end, order_by="last_activity", limit=None
-        )
-
-    return cache.get_or_compute(
-        session,
-        f"threads_for_day:{inbox.name}:{day.isoformat()}",
-        ACTIVE_THREADS_CACHE_TTL_SEC,
-        compute,
-        force=force,
-    )
-
-
 # Cap on the "what I missed" window, keeps the recursive CTE
 # bounded for a UI surface that anyone can hit. Operators returning
 # from a holiday longer than this see "showing last 90 days" rather
 # than a 30-second query.
 THREADS_SINCE_MAX_DAYS = 90
 
-# Cap on threads listed. lkml has ~38,000 threads in 90 days; listing
-# them all means a lifecycle-pill cache write per id and an `IN :ids`
-# past SQLite's variable limit. The list is newest activity first, so
-# the cap keeps the most recently active threads.
+# Display cap only: filter the full cached root set before slicing,
+# then load lifecycle information for just these displayed roots.
 THREADS_SINCE_MAX_THREADS = 200
 
 
@@ -1107,86 +1092,3 @@ def since_window_start(since: date, end: datetime) -> datetime:
     list and the message total, so the two cover the same window."""
     start = datetime.combine(since, datetime.min.time(), tzinfo=UTC)
     return max(start, end - timedelta(days=THREADS_SINCE_MAX_DAYS))
-
-
-def threads_since(
-    session: Session,
-    inbox: Inbox,
-    since: date,
-    force: bool = False,
-) -> list[ActiveThread]:
-    """Every thread in `inbox` with at least one message after
-    `since` (UTC, inclusive of that whole day) up to now, ordered
-    by last activity desc.
-
-    Window is clamped to `THREADS_SINCE_MAX_DAYS` (90 days) below
-    the present so a "since 2010" URL doesn't drag a multi-year
-    CTE walk into a synchronous request. Caller renders a
-    "showing last N days" notice when the requested window
-    exceeds the cap; this helper returns whatever fits in the
-    capped window.
-
-    Returns at most `THREADS_SINCE_MAX_THREADS + 1` threads: the extra
-    one tells the caller the list was cut, and the caller drops it.
-    Callers pass the already-clamped date so every pre-floor request
-    shares one cache key.
-    """
-
-    def compute() -> list[ActiveThread]:
-        end = datetime.now(UTC)
-        start = since_window_start(since, end)
-        if start >= end:
-            return []
-        return _active_threads_query(
-            session,
-            inbox,
-            start,
-            end,
-            order_by="last_activity",
-            limit=THREADS_SINCE_MAX_THREADS + 1,
-        )
-
-    return cache.get_or_compute(
-        session,
-        f"threads_since:{inbox.name}:{since.isoformat()}",
-        ACTIVE_THREADS_CACHE_TTL_SEC,
-        compute,
-        force=force,
-    )
-
-
-def threads_for_month(
-    session: Session,
-    inbox: Inbox,
-    year: int,
-    month: int,
-    limit: int = 100,
-    force: bool = False,
-) -> list[ActiveThread]:
-    """Top-`limit` threads in `inbox` with at least one message in
-    `(year, month)` (UTC), ordered by last activity desc. Caller is
-    responsible for validating year/month bounds.
-
-    A busy month on lkml has thousands of threads; rendering them all
-    blows the response up past 1 MB. The view pairs this list with a
-    `monthly_volume` count so the operator can see the total even when
-    the rendered list is capped.
-    """
-
-    def compute() -> list[ActiveThread]:
-        start = datetime(year, month, 1, tzinfo=UTC)
-        if month == 12:
-            end = datetime(year + 1, 1, 1, tzinfo=UTC)
-        else:
-            end = datetime(year, month + 1, 1, tzinfo=UTC)
-        return _active_threads_query(
-            session, inbox, start, end, order_by="last_activity", limit=limit
-        )
-
-    return cache.get_or_compute(
-        session,
-        f"threads_for_month:{inbox.name}:{year:04d}-{month:02d}:{limit}",
-        ACTIVE_THREADS_CACHE_TTL_SEC,
-        compute,
-        force=force,
-    )

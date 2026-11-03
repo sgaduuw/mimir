@@ -2,46 +2,10 @@
 {% block title %}{{ month_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}Threads on {{ inbox_name }} for {{ month_label }}.{% endblock %}
 {% block content %}
-<h1>{{ inbox_name }} <small><em>archive · {{ month_label }}</em></small></h1>
-
-<nav>
-  <ul>
-    {% if prev_url %}
-    <li><a href="{{ prev_url }}">← prev</a></li>
-    {% endif %}
-    <li><a href="/{{ inbox_name }}/{{ year }}/">↑ {{ year }}</a></li>
-  </ul>
-  <ul>
-    {% if next_url %}
-    <li><a href="{{ next_url }}">next →</a></li>
-    {% endif %}
-  </ul>
-</nav>
-
-{% if total_messages == 0 %}
-<p><em>No messages on file for this month.</em></p>
-{% else %}
-<p><small>
-  {{ '{:,}'.format(total_messages) }} message{{ '' if total_messages == 1 else 's' }}
-  {% if threads|length >= thread_cap %}
-    · showing the {{ thread_cap }} most-recently-active threads
-  {% else %}
-    across {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity
-  {% endif %}.
-</small></p>
-
-<ul>
-  {% for t in threads %}
-  <li>
-    {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-    {%- set show_activity = false -%}
-    {% include "_lifecycle_badges.html" %}
-    <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
-    <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
-      &middot; {{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} this month
-      &middot; {{ t.author|safe_from }}</small>
-  </li>
-  {% endfor %}
-</ul>
-{% endif %}
+<nav aria-label="breadcrumb"><ul><li><a href="/{{ inbox_name }}/">{{ inbox_name }}</a></li><li><a href="/{{ inbox_name }}/{{ year }}/">{{ year }}</a></li><li>{{ month_label.split()[0] }}</li></ul></nav>
+<h1>{{ month_label }}</h1>
+<p>{{ '{:,}'.format(total_messages) }} message{{ '' if total_messages == 1 else 's' }} {% if selected_filter == 'all' %}across {{ matching_threads }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if matching_threads > thread_cap %} The {{ thread_cap }} most recently active threads.{% endif %}</p>
+<nav aria-label="Months"><ul>{% if prev_url %}<li><a href="{{ prev_url }}">Previous: {{ prev_label }}</a></li>{% endif %}</ul><ul>{% if next_url %}<li><a href="{{ next_url }}">Next: {{ next_label }}</a></li>{% endif %}</ul></nav>
+{% include "_listing_filters.html" %}
+{% set group_days = true %}{% include "_listing_threads.html" %}
 {% endblock %}

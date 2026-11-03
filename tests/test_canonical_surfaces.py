@@ -10,7 +10,7 @@ from sqlalchemy import select
 from mimir.canonical import fallback_canonical_name
 from mimir.models import Article, ArticleFile, ArticleList, Inbox
 from mimir.subsystems import recent_patches_touching
-from mimir.subsystems_dashboard import recent_articles_in_subsystem
+from mimir.subsystems_dashboard import recent_postings_in_subsystem
 from mimir.web.urls import _canonical_inbox_name, _canonical_inbox_names_for
 from tests.test_subsystems._helpers import _add_subsystem
 
@@ -29,7 +29,7 @@ def test_every_surface_agrees_with_fallback_canonical_name(seeded_db, stored):
         sub = _add_subsystem(s, "AGREE", "Supported", files=["fs/agree/"])
         art = Article(
             message_id="agree@x",
-            subject="s",
+            subject="[PATCH] s",
             author="a@example",
             date=datetime.now(UTC),
             thread_parent=None,
@@ -50,8 +50,10 @@ def test_every_surface_agrees_with_fallback_canonical_name(seeded_db, stored):
 
         assert _canonical_inbox_name(art, links) == expected
         assert _canonical_inbox_names_for(s, [art.id]) == {art.id: expected}
-        dash = recent_articles_in_subsystem(s, alpha, sub, force=True)
-        assert [(p.message_id, p.inbox_name) for p in dash] == [("agree@x", expected)]
+        dash = recent_postings_in_subsystem(s, alpha, sub, force=True)
+        assert [
+            (p.representative.message_id, p.representative.inbox_name) for p in dash
+        ] == [("agree@x", expected)]
         related = recent_patches_touching(s, ["fs/agree/x.c"])
         assert [(p.message_id, p.inbox_name) for p in related] == [
             ("agree@x", expected)

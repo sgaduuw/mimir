@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from email.utils import parseaddr
 
 from flask import g
+from markupsafe import Markup, escape
 from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
@@ -32,6 +33,7 @@ from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
+from mimir.pull_requests import PULL_PREFIX, is_pull_subject
 from mimir.rendering import render_body, render_body_text
 from mimir.rendering.linkify import EMAIL_TOKEN_RE as _EMAIL_TOKEN_RE
 from mimir.subsystems import (
@@ -607,6 +609,15 @@ def _subsystem_url_filter(name: str, inbox_name: str) -> str:
     return subsystem_path(inbox_name, name)
 
 
+@bp_web.app_template_filter("subsystem_label")
+def _subsystem_label_filter(name: str | None) -> str:
+    """A MAINTAINERS subsystem name as shown to a reader: lowercased, as
+    the upstream capitals read as shouting on a browse surface. Display
+    only. The URL spelling is `subsystem_path`'s own, so the two cannot
+    drift into each other."""
+    return (name or "").lower()
+
+
 @bp_web.app_template_filter("subsystem_index_url")
 def _subsystem_index_url_filter(inbox_name: str) -> str:
     """Site-relative URL for an inbox's subsystem index. See
@@ -619,3 +630,73 @@ def _is_addressable_subsystem_filter(name: str) -> bool:
     """Whether a subsystem name has a URL the dashboard route accepts.
     See `mimir.subsystems.is_addressable_subsystem_name`."""
     return is_addressable_subsystem_name(name or "")
+
+
+@bp_web.app_template_filter("listing_sender")
+def _listing_sender_filter(author: str | None) -> str:
+    """A listing displays a safe name, never an address fallback."""
+    return _listing_name_filter(_usable_display_name(author))
+
+
+@bp_web.app_template_filter("listing_name")
+def _listing_name_filter(name: str | None) -> str:
+    """Names already parsed from trailers/MAINTAINERS need no address parsing."""
+    name = (name or "").strip()
+    return name if name and not _EMAIL_TOKEN_RE.search(name) else "unknown sender"
+
+
+@bp_web.app_template_filter("highlight_match")
+def _highlight_match_filter(subject: str | None, query: str | None) -> Markup:
+    """Mark only the first literal ASCII-case match, escaping all mail text."""
+    subject = subject or ""
+    match = (
+        re.search(re.escape(query), subject, re.IGNORECASE | re.ASCII)
+        if query
+        else None
+    )
+    if match is None:
+        return escape(subject)
+    start, end = match.span()
+    return (
+        escape(subject[:start])
+        + Markup("<mark>")
+        + escape(subject[start:end])
+        + Markup("</mark>")
+        + escape(subject[end:])
+    )
+
+
+@bp_web.app_template_filter("short_count")
+def _short_count_filter(n: int | None) -> str:
+    """A count in two or three figures: `999`, `1.5k`, `160k`, `6.6M`."""
+    n = int(n or 0)
+    for unit, size in (("M", 1_000_000), ("k", 1_000)):
+        if n >= size:
+            scaled = n / size
+            scaled = round(scaled, 1) if scaled < 10 else round(scaled)
+            if unit == "k" and scaled >= 1000:
+                return "1M"  # 999,500 and up
+            return f"{scaled:g}{unit}"
+    return str(n)
+
+
+@bp_web.app_template_filter("pull_label")
+def _pull_label(subject: str | None) -> str:
+    """Strip only the shared pull predicate's prefix, for display."""
+    subject = subject or ""
+    label = subject[len(PULL_PREFIX) :].strip() if is_pull_subject(subject) else subject
+    return label or subject or "(no subject)"
+
+
+@bp_web.app_template_filter("release_label")
+def _release_label(subject: str | None) -> str:
+    """Use an announcement's version token without changing its URL."""
+    subject = subject or ""
+    parts = subject.split(maxsplit=2)
+    if (
+        len(parts) > 1
+        and parts[0] == "Linux"
+        and re.fullmatch(r"[0-9]+(?:\.[0-9]+)+(?:-[a-zA-Z]+[0-9]+)?", parts[1])
+    ):
+        return parts[1]
+    return subject or "(no subject)"

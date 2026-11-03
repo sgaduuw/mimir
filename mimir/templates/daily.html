@@ -2,32 +2,10 @@
 {% block title %}{{ heading }} ({{ day.strftime('%Y-%m-%d') }}) | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}Threads on {{ inbox_name }} for {{ day.strftime('%Y-%m-%d') }}.{% endblock %}
 {% block content %}
-<section>
-  <h1>{{ heading }}
-    <small><em>(<a href="/{{ inbox_name }}/{{ '%04d' % day.year }}/{{ '%02d' % day.month }}/">{{ day.strftime('%Y-%m-%d') }}</a>)</em></small>
-  </h1>
-
-  {% if total_messages == 0 %}
-    <p><em>No messages on this day.</em></p>
-  {% else %}
-    <p><small>{{ total_messages }} message{{ '' if total_messages == 1 else 's' }} across
-      {{ threads|length }} thread{{ '' if threads|length == 1 else 's' }}, ordered by last activity.</small></p>
-
-    <ul>
-      {% for t in threads %}
-      <li>
-        {%- set status = lifecycle_status_by_id.get(t.id) if lifecycle_status_by_id else None -%}
-        {%- set show_activity = false -%}
-        {% include "_lifecycle_badges.html" %}
-        <a href="{{ t|msg_url(inbox_name) }}">{{ t.subject|clean_subject or '(no subject)' }}</a>
-        <br><small>{{ t.last_activity.strftime('%Y-%m-%d %H:%M') if t.last_activity else '?' }}
-          {# Same as the inbox dashboard: the reply count is the link
-             into the consolidated thread view, only when replies exist. #}
-          &middot; {% if t.reply_count %}<a href="{{ thread_page_url(t.id, t.date, inbox_name) }}">{{ t.reply_count }} repl{{ 'y' if t.reply_count == 1 else 'ies' }} {{ heading|lower }}</a>{% else %}{{ t.reply_count }} replies {{ heading|lower }}{% endif %}
-          &middot; {{ t.author|safe_from }}</small>
-      </li>
-      {% endfor %}
-    </ul>
-  {% endif %}
-</section>
+<h1>{{ heading }}</h1>
+<p><a href="/{{ inbox_name }}/{{ '%04d' % day.year }}/{{ '%02d' % day.month }}/">{{ day.strftime('%Y-%m-%d') }}</a></p>
+<p>{{ total_messages }} message{{ "" if total_messages == 1 else "s" }} {% if selected_filter == 'all' %}across {{ matching_threads }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if matching_threads %} Showing {{ first_thread }}–{{ last_thread }}.{% endif %}</p>
+{% include "_listing_filters.html" %}
+{% include "_listing_threads.html" %}
+<nav aria-label="Listing pages"><ul>{% if previous_page %}<li><a href="{{ previous_page }}" rel="prev">Previous 100</a></li>{% endif %}</ul><ul>{% if next_page %}<li><a href="{{ next_page }}" rel="next">Next 100</a></li>{% endif %}</ul></nav>
 {% endblock %}

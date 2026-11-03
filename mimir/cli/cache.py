@@ -23,10 +23,14 @@ from mimir.dashboard import (
     latest_pull_requests,
     latest_stable_releases,
     recent_articles,
+    recent_message_total,
     this_day_in_history,
 )
 from mimir.extensions import SessionLocal
 from mimir.inboxes import list_inboxes, pinned_first
+from mimir.listings import listing_for_day as threads_for_day
+from mimir.listings import listing_for_month, listing_since, warm_listing
+from mimir.maintainer_directory import warm_maintainer_review_counts
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
     REVIEWS_PER_PAGE_LIMIT,
@@ -38,9 +42,14 @@ from mimir.subsystems_dashboard import (
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
-    recent_articles_in_subsystem,
+    recent_postings_in_subsystem,
 )
-from mimir.threading import active_threads, threads_for_day
+from mimir.subsystems_dashboard.recent import (
+    RECENT_POSTINGS_LIMIT,
+    RECENT_PREVIEW_LIMIT,
+    warm_postings,
+)
+from mimir.threading import THREADS_SINCE_MAX_DAYS, active_threads
 from mimir.web import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
@@ -48,7 +57,6 @@ from mimir.web import (
     sitemap_indexes_xml,
     warm_latest_archive_sitemaps,
 )
-from mimir.web.routes.dashboards import SUBSYSTEM_RECENT_PATCHES_LIMIT
 from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
 
 # Refresh-window used by warm-cache. See the call site in
@@ -140,11 +148,23 @@ def _build_slow_inbox_targets(
         ),
         (
             f"{inbox.name} threads_for_day (today)",
-            lambda s, ib=inbox: threads_for_day(s, ib, today),
+            lambda s, ib=inbox: warm_listing(threads_for_day(s, ib, today)),
         ),
         (
             f"{inbox.name} threads_for_day (yesterday)",
-            lambda s, ib=inbox: threads_for_day(s, ib, yesterday),
+            lambda s, ib=inbox: warm_listing(threads_for_day(s, ib, yesterday)),
+        ),
+        (
+            f"{inbox.name} listing current month",
+            lambda s, ib=inbox: warm_listing(
+                listing_for_month(s, ib, today.year, today.month)
+            ),
+        ),
+        (
+            f"{inbox.name} listing since maximum",
+            lambda s, ib=inbox: warm_listing(
+                listing_since(s, ib, today - timedelta(days=THREADS_SINCE_MAX_DAYS))
+            ),
         ),
         (
             f"{inbox.name} daily_volume (30d)",
@@ -239,8 +259,10 @@ def _build_inbox_targets(
 def _build_fast_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
-    """Fast tier global warm targets: `sitemap:index` alone, which
-    builds `/sitemap.xml` and `/messages-sitemap.xml` together (#964).
+    """Fast tier global warm targets: the front page's 30-day message
+    total (6 ms warm on production, 2026-11-03; #994), then `sitemap:index`,
+    which builds `/sitemap.xml` and `/messages-sitemap.xml` together (#964).
+    The total needs no `SITE_BASE_URL`; the sitemap does.
 
     It is the most expensive warm target there is (41 s cold in
     production on 2026-10-07, about 10 s after #640), so it looks out of place
@@ -254,16 +276,22 @@ def _build_fast_global_targets(
     against a 60 s worker timeout. The fast tier also warms it within
     a minute of boot, of a `cache.NAMESPACE_VERSION` bump and of a
     render-cap change (#589)."""
-    if not sitemap_base:
-        return []
-    return [("sitemap:index", lambda s, b=sitemap_base: sitemap_indexes_xml(s, b))]
+    targets: list[tuple[str, object]] = [
+        ("recent_message_total (30d)", lambda s: recent_message_total(s))
+    ]
+    if sitemap_base:
+        targets.append(
+            ("sitemap:index", lambda s, b=sitemap_base: sitemap_indexes_xml(s, b))
+        )
+    return targets
 
 
 def _build_slow_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
     """Slow tier global warm targets: `sitemap:meta`,
-    `sitemap:maintainers` and `most_active_subsystems_global (7d)`.
+    `sitemap:maintainers`, `most_active_subsystems_global (7d)` and
+    per-maintainer review counts.
 
     The aggregator reads per-inbox cache rows, so it MUST run after
     the per-inbox slow tier has populated those rows (the broker
@@ -289,6 +317,7 @@ def _build_slow_global_targets(
             lambda s: most_active_subsystems_global(s, days=7),
         )
     )
+    targets.append(("maintainer_review_counts", warm_maintainer_review_counts))
     return targets
 
 
@@ -301,10 +330,8 @@ def _build_global_targets(
     list. New scheduler-side callers use _build_fast_global_targets /
     _build_slow_global_targets directly.
 
-    Order is sitemap:index, sitemap:meta, sitemap:maintainers,
-    most_active_subsystems_global when sitemap_base is set, matching
-    the pre-split shape (which inserted the sitemap targets at the
-    front)."""
+    Sitemap targets come first when sitemap_base is set, followed by
+    the cross-inbox activity aggregator and maintainer review counts."""
     return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets(
         sitemap_base
     )
@@ -320,7 +347,7 @@ def _per_subsystem_warm_call(
     for the broker handler's reply payload.
 
     The helper args mirror the `subsystem_dashboard` route call sites
-    (same `SUBSYSTEM_RECENT_PATCHES_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
+    (same `RECENT_POSTINGS_LIMIT` / `REVIEWS_PER_PAGE_LIMIT`
     constants, same reviewer dedup) so the warmed cache keys match what
     the route reads. This is the broker handler's entry point for
     `warm_subsystem` (per-(inbox, subsystem) RPC dispatched at the
@@ -329,13 +356,15 @@ def _per_subsystem_warm_call(
     consistent.
     """
     warmed: list[str] = []
-    recent_articles_in_subsystem(
+    recent = recent_postings_in_subsystem(
         session,
         inbox,
         sub,
-        limit=SUBSYSTEM_RECENT_PATCHES_LIMIT,
+        limit=RECENT_POSTINGS_LIMIT,
+        preview_limit=RECENT_PREVIEW_LIMIT,
     )
-    warmed.append(f"{inbox.name}/{sub.name} recent_articles_in_subsystem")
+    warm_postings(recent)
+    warmed.append(f"{inbox.name}/{sub.name} recent_postings_in_subsystem")
     active_threads_in_subsystem(session, inbox, sub, days=7, limit=10)
     warmed.append(f"{inbox.name}/{sub.name} active_threads_in_subsystem")
     daily_volume_in_subsystem(session, inbox, sub, days=30)

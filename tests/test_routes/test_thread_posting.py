@@ -13,7 +13,7 @@ import re
 from sqlalchemy import event
 
 from mimir.models import Article, ArticleFile
-from tests.test_routes._helpers import _seed_subsystem, seed_thread_shape
+from tests.test_routes._helpers import _metadata_url, _seed_subsystem, seed_thread_shape
 
 KEY = "f0" * 20
 
@@ -78,7 +78,7 @@ def _visible(html):
 def test_cover_pages_show_the_posting_s_subsystems_and_maintainers(client, tmp_path):
     seeded = _seed(tmp_path)
     cover_url = seeded["cover@x"][1]
-    for url in (cover_url + "/t", cover_url):
+    for url in (cover_url + "/t", _metadata_url(cover_url)):
         html = client.get(url).get_data(as_text=True)
         visible = _visible(html)
         assert "foo driver" in visible and "bar fs" in visible, url
@@ -196,8 +196,10 @@ def test_article_paths_reads_the_posting_by_the_series_key_index(seeded_db):
 # patch page's 47 is since #844 Part 3, which dropped the card's own
 # landing query (the status line reads the pill's row). #1003 dropped the
 # canonical's "does the thread have another member" lookup: -1 on every
-# count.
-MESSAGE_PAGE_STATEMENTS = {"p1@x": (46, 20), "cover@x": (None, 18)}
+# count. #990 moved the state card, lifecycle pill, related patches and
+# related discussions to `/api/<inbox>/metadata/<id>`: the patch page's
+# full render drops 16, 46 to 30; the 304s are unchanged.
+MESSAGE_PAGE_STATEMENTS = {"p1@x": (30, 20), "cover@x": (None, 18)}
 
 
 def test_message_page_statement_budget(client, tmp_path):

@@ -10,6 +10,7 @@ from tests.test_routes._helpers import (
     _ingest_one_article,
     _json_ld_blocks,
     _meta_value,
+    _metadata_url,
     _seed_author_article,
     _seed_subsystem,
     _title_of,
@@ -63,44 +64,6 @@ def test_meta_index_has_inboxes_anchor(client):
     assert 'id="inboxes"' in r.data.decode()
 
 
-def test_meta_index_renders_cards_not_list(client):
-    """The inbox overview surfaces as a card grid: each inbox is an
-    `<a class="inbox-card">` block, not a `<li>` in a flat `<ul>`.
-    Pins the layout shape so a CSS refactor doesn't silently regress
-    back to the pre-1.19 list.
-    """
-    body = client.get("/").data.decode()
-    assert 'class="inbox-grid"' in body
-    assert 'class="inbox-card"' in body
-
-
-def test_meta_index_pinned_card_carries_badge(client, monkeypatch):
-    """Pinned inboxes render with a visible badge in addition to
-    sorting first. Pin marker supplements position-based signal so
-    the layout doesn't rely on order alone.
-
-    Assert against the rendered `<span class="inbox-card-pinned">`
-    opening tag rather than the class name on its own, the class
-    is also mentioned in the inline `<style>` block, so a substring
-    check there would pass even without the badge rendering."""
-    from mimir.config import settings
-
-    monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
-    body = client.get("/").data.decode()
-    assert '<span class="inbox-card-pinned"' in body
-
-
-def test_meta_index_no_pin_badge_when_no_pins(client, monkeypatch):
-    """Inverse: nothing renders the pin badge when no inbox is
-    pinned. Guards against the badge accidentally surfacing for
-    everyone."""
-    from mimir.config import settings
-
-    monkeypatch.setattr(settings, "pinned_inboxes", [])
-    body = client.get("/").data.decode()
-    assert '<span class="inbox-card-pinned"' not in body
-
-
 def test_meta_index_hero_image_has_substantive_alt(client):
     """The Ratatoskr hero image identifies the brand and isn't pure
     decoration; an empty alt leaves a screen-reader user without
@@ -119,38 +82,16 @@ def test_meta_index_hero_image_has_substantive_alt(client):
     assert m.group(1).strip(), f"hero image alt must not be empty; got {m.group(1)!r}"
 
 
-def test_meta_index_sparkline_renders_when_inbox_has_messages(client):
-    """Seeded inboxes have messages, so each card carries a
-    `<svg class="inbox-card-spark">` 30-day daily-volume sparkline.
-
-    Also guards the `spark_bars` macro wiring (`_sparkline.html`): the
-    <svg> wrapper lives in the template but the per-day `<rect>` bars now
-    come from the shared macro, so assert a real bar rendered, not just
-    an empty wrapper.
-    """
+def test_meta_index_row_link_targets_inbox_dashboard(client):
+    """Each inbox row links to the per-inbox dashboard."""
     body = client.get("/").data.decode()
-    assert 'class="inbox-card-spark"' in body
-    assert '<rect x="0"' in body and 'fill="currentColor"' in body
-
-
-def test_meta_index_card_link_targets_inbox_dashboard(client):
-    """Each card is wrapped in an `<a>` whose href is the per-inbox
-    dashboard. Whole-card click target."""
-    import re
-
-    body = client.get("/").data.decode()
-    # `<a class="inbox-card" ... href="/<name>/">` shape. Capture
-    # every card link.
-    hrefs = re.findall(
-        r'<a class="inbox-card"[^>]*href="(/[^"]+/)"',
-        body,
-    )
+    hrefs = re.findall(r'<a class="inbox-link" href="(/[^"]+/)"', body)
     assert "/alpha/" in hrefs
     assert "/beta/" in hrefs
 
 
 def test_meta_index_last_activity_reads_from_inbox_column(client):
-    """Front-page "Last activity" line reads `Inbox.last_article_date`
+    """The front-page "last activity" reads `Inbox.last_article_date`
     each render, not the 24h-cached `archive_stats` bundle. Pins #216:
     seeding (or warming) the `archive_stats:<inbox>` cache row should
     not lock the front-page string to the snapshot's max-date if
@@ -158,22 +99,31 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
 
     Strategy: prime the `archive_stats` cache by hitting the page
     once, then bump `Inbox.last_article_date` to a near-now value and
-    re-request. The visible relative-time string should reflect the
-    new value (a recent "m"/"h ago" stamp), not the conftest seed's
-    14-month-old date."""
+    re-request. The row's relative-time string should reflect the new
+    value (a recent "m"/"h ago" stamp), not the conftest seed's
+    old date."""
     from datetime import datetime, timedelta
 
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
+    from tests._dom import parse
+
+    def metas(body):
+        rows = parse(body).find("ul", id="inbox-list").find_all("li")
+        return {
+            li.find("a", cls="inbox-link").text(): li.find(
+                "span", cls="inbox-meta"
+            ).text()
+            for li in rows
+        }
 
     # First request warms the archive_stats cache row for both inboxes.
-    body_before = client.get("/").data.decode()
-    # Sanity check: conftest seed of 2024-03-01 surfaces as an absolute
-    # date in the visible card (>30d ago → `_relative_time` switches
-    # from "Nd ago" to "YYYY-MM-DD"), not a recent stamp.
-    assert "Last activity: 2024-03-01" in body_before
+    before = metas(client.get("/").data.decode())
+    # The conftest seed of 2024-03-01 is over 30 days old, so it shows as
+    # an absolute date (`_relative_time`), not a recent stamp.
+    assert before["alpha"].endswith("2024-03-01")
 
     # Bump alpha to "5 minutes ago" without touching the cache.
     five_min_ago = datetime.now(UTC) - timedelta(minutes=5)
@@ -182,14 +132,9 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
         ix.last_article_date = five_min_ago
         s.commit()
 
-    body_after = client.get("/").data.decode()
-    # alpha's card now reports a fresh activity stamp (5m ago); beta's
-    # is unchanged.
-    assert "Last activity: 5m ago" in body_after
-    # alpha's old date string is gone from alpha's card. (beta still
-    # carries it, so this asserts disappearance in alpha's region.)
-    alpha_card = body_after.split('href="/alpha/"')[1].split("</a>")[0]
-    assert "2024-03-01" not in alpha_card
+    after = metas(client.get("/").data.decode())
+    assert after["alpha"].endswith("5m ago")
+    assert after["beta"] == before["beta"]
 
 
 def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
@@ -235,17 +180,14 @@ def test_meta_index_no_subsystem_section_when_no_activity(client):
     assert "Active subsystems" not in text
 
 
-def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
-    client,
-    tmp_path,
-):
-    """Front-page subsystem cards carry the top M: maintainer's
-    name and a 7-day per-subsystem sparkline so they read as
-    real cards rather than just name + count."""
+def test_meta_index_subsystem_row_names_inbox_count_and_bar(client, tmp_path):
+    """An active-subsystem row: the lowercase name linking to the busiest
+    inbox's dashboard, that inbox, a bar and the 7-day count."""
     from datetime import datetime, timedelta
 
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+    from tests._dom import parse
 
     _seed_subsystem(
         "BCACHEFS",
@@ -260,7 +202,7 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
         tmp_path,
         "alpha",
         "bch-card@example.com",
-        subject="bcachefs card test",
+        subject="bcachefs row test",
         body=body,
     )
     with SessionLocal() as s:
@@ -268,89 +210,15 @@ def test_meta_index_subsystem_card_shows_maintainer_and_sparkline(
         art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
     _warm_active_subsystems()
-    text = client.get("/").data.decode()
-    # Maintainer line.
-    assert "maintained by Kent Overstreet" in text
-    # Per-card sparkline svg.
-    assert 'class="subsystem-card-spark"' in text
-
-
-def test_meta_index_subsystem_card_status_badge_when_non_default(
-    client,
-    tmp_path,
-):
-    """The Supported status surfaces as a corner badge; the default
-    "Maintained" doesn't (would render on every card → noise)."""
-    from datetime import datetime, timedelta
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Article
-
-    _seed_subsystem(
-        "BCACHEFS",
-        "Supported",
-        files=["fs/bcachefs/"],
-        maintainers=[("M", "Kent Overstreet", "kent@kernel.org")],
-    )
-    body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
-    )
-    art_id, _ = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "bch-status-card@example.com",
-        subject="status badge",
-        body=body,
-    )
-    with SessionLocal() as s:
-        art = s.get(Article, art_id)
-        art.date = datetime.now(UTC) - timedelta(hours=2)
-        s.commit()
-    _warm_active_subsystems()
-    text = client.get("/").data.decode()
-    # `class="subsystem-card-status">Supported<` shape, the class
-    # is also referenced in the inline <style>, so anchor on the
-    # opening tag with the status value to confirm it renders.
-    assert '<span class="subsystem-card-status">Supported</span>' in text
-
-
-def test_meta_index_subsystem_card_no_status_badge_for_default(
-    client,
-    tmp_path,
-):
-    """`Maintained` is the upstream default, most subsystems sit
-    at that value, so a badge on every card would be noise. Pin
-    the suppression so a future change doesn't accidentally
-    introduce that visual clutter."""
-    from datetime import datetime, timedelta
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Article
-
-    _seed_subsystem(
-        "BTRFS FILE SYSTEM",
-        "Maintained",
-        files=["fs/btrfs/"],
-        maintainers=[("M", "Chris Mason", "clm@fb.com")],
-    )
-    body = b"diff --git a/fs/btrfs/extent.c b/fs/btrfs/extent.c\n@@ -1 +1 @@\n-x\n+y\n"
-    art_id, _ = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "btrfs-card@example.com",
-        subject="default status",
-        body=body,
-    )
-    with SessionLocal() as s:
-        art = s.get(Article, art_id)
-        art.date = datetime.now(UTC) - timedelta(hours=2)
-        s.commit()
-    _warm_active_subsystems()
-    text = client.get("/").data.decode()
-    # Card present, but no rendered status badge for the
-    # Maintained value.
-    assert "btrfs file system" in text
-    assert '<span class="subsystem-card-status">' not in text
+    page = parse(client.get("/").data.decode())
+    rows = page.find("ul", cls="front-subsystems").find_all("li")
+    assert len(rows) == 1
+    link = rows[0].find("a")
+    assert link.text() == "bcachefs"
+    assert link.attrs["href"] == "/alpha/subsystem/bcachefs/"
+    assert rows[0].find("small", cls="front-row-meta").text() == "alpha"
+    assert rows[0].find("span", cls="count").text() == "1"
+    assert rows[0].find("rect").attrs["width"] == "100.0"
 
 
 def test_meta_index_pins_inbox_first(client, monkeypatch):
@@ -480,10 +348,8 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
     assert "bcachefs" in body
     assert "Supported" in body
     assert "Kent Overstreet" in body
-    # Maintainer address renders on the dashboard page (operator-
-    # facing surface; the per-patch header redacts it to keep that
-    # surface compact, the dashboard doesn't).
-    assert "kent.overstreet@kernel.org" in body
+    # The safe name links to the existing M-only profile.
+    assert 'href="/maintainers/kent.overstreet@kernel.org"' in body
     # The recent-patches list surfaces the seeded article.
     assert "bcachefs: tweak super" in body
 
@@ -525,7 +391,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
     assert r.status_code == 200
     text = r.data.decode()
     assert "Active reviewers" in text
-    assert "kent.overstreet@kernel.org" in text
+    assert "Kent Overstreet" in text
     # Allowlisted (@kernel.org) → clickable link to per-reviewer page.
     assert '/alpha/reviewer/kent.overstreet%40kernel.org"' in text
 
@@ -1035,7 +901,7 @@ def test_reviewer_view_lists_attestations(client, tmp_path):
     r = client.get("/alpha/reviewer/kent.overstreet@kernel.org")
     assert r.status_code == 200
     text = r.data.decode()
-    assert "kent.overstreet@kernel.org" in text
+    assert "Kent Overstreet" in text
     assert "patch with attestation" in text
     assert "Reviewed-by" in text
 
@@ -1251,7 +1117,7 @@ def test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
     html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
 
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
-    assert "reviewer.only@kernel.org" in html, "the reviewer should still be shown"
+    assert "Reviewer Person" in html, "the reviewer should still be shown"
     assert 'href="/maintainers/reviewer.only@kernel.org"' not in html
     # And the thing that actually matters: nothing linked from here 404s.
     assert client.get("/maintainers/kent.overstreet@kernel.org").status_code == 200
@@ -1277,9 +1143,12 @@ def test_message_page_keeps_a_maintainer_who_has_no_address(client, tmp_path):
         "noaddr@example.com",
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
-    html = client.get(url).get_data(as_text=True)
-    assert "No Address Person" in html
-    assert 'href="/maintainers/"' not in html
+    for destination in [url + "/t", _metadata_url(url)]:
+        response = client.get(destination)
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
+        assert "No Address Person" in html
+        assert 'href="/maintainers/"' not in html
 
 
 def test_subsystem_index_carries_its_own_meta_description_and_title(client):

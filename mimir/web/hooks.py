@@ -112,6 +112,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # hub with no entry here at all (so no explicit Cache-Control).
     "web.maintainer_view": "public, max-age=600",
     "web.message_id_lookup": "public, max-age=3600",
+    "web.message_id_lookup_form": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
     # web.message uses ETag-based conditional revalidation (set inside
     # the route handler). `no-cache` directs browsers + edges to ALWAYS
@@ -134,6 +135,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # The thread page's per-patch related list (#989): no validator, so a
     # short max-age matching its 300 s cache.
     "web.api_related_patches": "public, max-age=300",
+    # Independent per-message details, with live derived state (#990).
+    "web.api_message_metadata": "no-store",
     # Same ETag-revalidation posture: the validator moves with each
     # linux-next or Linus walk.
     "web.merge_window_page": "public, no-cache",

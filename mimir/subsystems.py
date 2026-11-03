@@ -53,7 +53,7 @@ from mimir.patch_series import same_posting
 
 # Per-subsystem dashboard helpers refresh at most once per hour. The
 # underlying joins (article_files × article_lists × articles for
-# `recent_articles_in_subsystem`, recursive CTE for
+# `recent_postings_in_subsystem`, recursive CTE for
 # `active_threads_in_subsystem`, trailer scan for
 # `active_reviewers_in_subsystem`) all cost seconds on hot
 # subsystems; a per-subsystem surface doesn't need the 5-minute
@@ -101,8 +101,9 @@ def is_addressable_subsystem_name(name: str) -> bool:
 def subsystem_path(inbox_name: str, name: str) -> str:
     """Site-relative URL for one subsystem's per-inbox dashboard.
 
-    The lowercased form is the URL convention (since 1.18.x); display
-    keeps MAINTAINERS' upstream casing. Shared because four templates
+    The lowercased form is the URL convention (since 1.18.x). Display is
+    lowercased too, by the `subsystem_label` filter, so the two spellings
+    are decided apart and neither follows the other. Shared because four templates
     plus the sitemap builder construct this, and a sitemap entry that
     does not match the link (or the page's own canonical) is a
     duplicate-URL signal rather than a clean one. Spaces in compound

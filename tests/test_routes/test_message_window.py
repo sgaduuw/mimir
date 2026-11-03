@@ -8,6 +8,7 @@ as before.
 
 import re
 
+import pytest
 from sqlalchemy import delete, event, select
 
 from mimir.config import settings
@@ -93,7 +94,7 @@ def test_thread_at_the_cap_renders_whole_and_one_more_windows(
     rows = _tree(client.get(whole["m0"][1]).get_data(as_text=True))
     assert _node_ids(rows) == [whole[f"m{i}"][0] for i in range(12)]
     assert not _gaps(rows)
-    assert not [r for r in rows if r[0] == "more"]
+    assert [r[2] for r in rows if r[0] == "more"] == [12]
 
     windowed = build_thread(tmp_path / "b", "beta", shape="fan_out", size=13)
     rows = _tree(client.get(windowed["m0"][1]).get_data(as_text=True))
@@ -245,8 +246,9 @@ def test_window_on_a_cyclic_thread_stops_the_walk_at_the_root(
     assert art_id in _node_ids(rows)
 
 
+@pytest.mark.parametrize("headers", [{}, {"HX-Request": "true"}])
 def test_window_falls_back_to_the_whole_thread_when_the_chain_disagrees(
-    client, tmp_path, monkeypatch, caplog
+    client, tmp_path, monkeypatch, caplog, headers
 ):
     """The column says m7 is in the thread, but its parent chain no longer
     reaches the root. The page renders the thread whole and says why."""
@@ -258,9 +260,17 @@ def test_window_falls_back_to_the_whole_thread_when_the_chain_disagrees(
         s.commit()
 
     with caplog.at_level("WARNING", logger="mimir.web.routes.message"):
-        rows = _tree(client.get(url).get_data(as_text=True))
+        response = client.get(url, headers=headers)
+        assert response.status_code == 200
+        html = response.get_data(as_text=True)
 
-    assert not [r for r in rows if r[0] in ("gap", "more")]
+    assert f'<article id="msg" data-article-id="{art_id}"' in html
+    if not headers:
+        rows = _tree(html)
+        assert not _gaps(rows)
+        assert _node_ids(rows) == [seeded[f"m{i}"][0] for i in range(7)]
+    pager = html.split('class="message-context"', 1)[1].split("</nav>", 1)[0]
+    assert pager.count('aria-disabled="true"') == 2
     hits = [
         r.getMessage()
         for r in caplog.records
@@ -473,7 +483,7 @@ def test_windowed_patch_thread_is_detected_from_the_whole_thread(
 ):
     """Only an elided message touches files. The thread is still a patch
     thread, so the related-discussions panel is not computed."""
-    import mimir.web.routes.message as message_route
+    import mimir.web.routes._message_metadata as message_route
 
     monkeypatch.setattr(settings, "thread_view_render_cap", 5)
     seeded = build_thread(tmp_path, "alpha", shape="fan_out", size=40)
@@ -488,12 +498,13 @@ def test_windowed_patch_thread_is_detected_from_the_whole_thread(
     )
     rows = _tree(client.get(seeded["m0"][1]).get_data(as_text=True))
     assert seeded["m39"][0] not in _node_ids(rows)  # precondition: elided
+    client.get(f"/api/alpha/metadata/{seeded['m0'][0]}")
     assert calls == []
 
     with SessionLocal() as s:
         s.execute(delete(ArticleFile))
         s.commit()
-    client.get(seeded["m0"][1])
+    client.get(f"/api/alpha/metadata/{seeded['m0'][0]}")
     assert len(calls) == 1  # the gate can open: it is not stuck shut
 
 
@@ -529,7 +540,7 @@ def test_windowed_orphans_exclude_the_whole_thread_through_the_column(
         s.commit()
         stranger_id = stranger.id
 
-    html = client.get(seeded["m0"][1]).get_data(as_text=True)
+    html = client.get(f"/api/alpha/metadata/{seeded['m0'][0]}").get_data(as_text=True)
     related = re.search(r"<h4>Possibly related.*?</ul>", html, re.DOTALL)
     assert related, "orphans panel missing"
     linked = {

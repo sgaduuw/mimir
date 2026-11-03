@@ -55,6 +55,45 @@ def series_rows_tag(rows) -> str:
     return _digest(repr(tuple(r)) for r in rows)
 
 
+def revision_groups_tag(session: Session, groups) -> str:
+    """Version the server-rendered timelines of every series in a thread.
+
+    One indexed read per batch of series, not per patch. The existing root
+    tag only covers the root's series; a nested posting can gain revisions
+    without changing this thread. Match the timeline's same-series rule,
+    including NULL heads, and carry ordering, slot and URL inputs.
+    """
+    groups = sorted(groups, key=lambda item: (item[0], item[1] or 0))
+    rows = []
+    for offset in range(0, len(groups), 200):
+        rows.extend(
+            session.execute(
+                select(
+                    Article.id,
+                    Article.patch_series_key,
+                    Article.patch_series_head_id,
+                    Article.patch_series_position,
+                    Article.patch_series_version,
+                    Article.date,
+                    Article.canonical_inbox_id,
+                    ArticleList.inbox_id,
+                    article_has_files(),
+                )
+                .outerjoin(ArticleList, ArticleList.article_id == Article.id)
+                .where(
+                    or_(
+                        *(
+                            same_series(key, head)
+                            for key, head in groups[offset : offset + 200]
+                        )
+                    )
+                )
+                .order_by(Article.id, ArticleList.inbox_id)
+            ).all()
+        )
+    return _digest(repr(tuple(row)) for row in rows)
+
+
 def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     """Everything a page renders ABOUT `article_id` that no message
     carries and no thread-shape signal covers.

@@ -137,4 +137,6 @@ def test_inbox_reply_count_links_to_the_thread_view(client, tmp_path):
         )
         s.commit()
     body = client.get("/alpha/").get_data(as_text=True)
-    assert f'<a href="{msg_path}/t">1 reply in 7d</a>' in body
+    assert (
+        f'<a href="{msg_path}/t" aria-label="1 reply in the last 7 days">1</a>' in body
+    )
