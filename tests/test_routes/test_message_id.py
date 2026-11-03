@@ -69,3 +69,103 @@ def test_global_message_id_lookup_falls_back_to_alphabetical(client):
 
 
 # Per-page meta description + Open Graph + Twitter Card tags
+
+
+# The bare `/m/?id=` form route (#984): same lookup as `/m/<id>`, reached
+# by a GET form, so the input arrives in a query string.
+
+
+def test_form_route_redirects_like_the_path_route(client):
+    by_path = client.get("/m/art3@example.com", follow_redirects=False)
+    by_form = client.get("/m/?id=art3@example.com", follow_redirects=False)
+    assert by_path.status_code == by_form.status_code == 301
+    assert by_form.headers["Location"] == by_path.headers["Location"]
+    assert by_form.headers["Cache-Control"].startswith("public")
+
+
+@pytest.mark.parametrize(
+    "typed",
+    [
+        "<art3@example.com>",
+        "mid:art3@example.com",
+        "https://lore.kernel.org/linux-fsdevel/art3@example.com/",
+        "/all/art3@example.com/",
+        "/r/art3@example.com",
+        "/alpha/art3@example.com/",
+    ],
+)
+def test_form_route_accepts_every_shape_the_normaliser_does(client, typed):
+    expected = client.get("/m/art3@example.com", follow_redirects=False)
+    r = client.get("/m/", query_string={"id": typed}, follow_redirects=False)
+    assert r.status_code == 301
+    assert r.headers["Location"] == expected.headers["Location"]
+
+
+@pytest.mark.parametrize("query", ["", "?id=", "?id=%20", "?id=no-such-id@x.org"])
+def test_form_route_404s_on_empty_or_unknown(client, query):
+    r = client.get("/m/" + query, follow_redirects=False)
+    assert r.status_code == 404
+    assert "Cache-Control" not in r.headers
+
+
+def test_form_route_never_redirects_to_the_typed_text(client):
+    """The Location comes from the database row, not from the input, so
+    the form cannot be turned into an open redirect."""
+    typed = "https://evil.example/x/art3@example.com/"
+    r = client.get("/m/", query_string={"id": typed}, follow_redirects=False)
+    assert r.status_code == 301
+    assert "evil.example" not in r.headers["Location"]
+    assert r.headers["Location"].startswith("/")
+
+
+@pytest.mark.parametrize("prefix", ["/m/", "/alpha/m/"])
+def test_path_routes_accept_a_bracketed_id(client, prefix):
+    """The path routes read through the normaliser too (a documented
+    widening: `%3C...%3E` used to 404)."""
+    r = client.get(prefix + "%3Cart1@example.com%3E", follow_redirects=False)
+    assert r.status_code == 301
+
+
+def test_path_routes_still_404_on_junk(client):
+    assert client.get("/m/%20", follow_redirects=False).status_code == 404
+    assert client.get("/alpha/m/%20", follow_redirects=False).status_code == 404
+
+
+def _render_form(client, **kwargs):
+    env = client.application.jinja_env
+    arg = ", ".join(f"{k}={k}" for k in kwargs)
+    source = (
+        '{% from "_message_id_form.html" import message_id_form %}'
+        f"{{{{ message_id_form({arg}) }}}}"
+    )
+    with client.application.test_request_context("/"):
+        return env.from_string(source).render(**kwargs)
+
+
+def test_form_partial_is_a_get_form_to_the_lookup_route(client):
+    from html.parser import HTMLParser
+
+    html = _render_form(client)
+    tags = []
+
+    class P(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            tags.append((tag, dict(attrs)))
+
+    P().feed(html)
+    form = next(a for t, a in tags if t == "form")
+    field = next(a for t, a in tags if t == "input")
+    assert form["action"] == "/m/"
+    assert form["method"] == "get"
+    assert field["name"] == "id"
+    assert field["maxlength"] == "998"
+    assert "style" not in form and "style" not in field
+    # The label points at the field.
+    label = next(a for t, a in tags if t == "label")
+    assert label["for"] == field["id"]
+
+
+def test_form_partial_escapes_the_prefill(client):
+    html = _render_form(client, value='"><script>alert(1)</script>')
+    assert "<script>" not in html
+    assert "&lt;script&gt;" in html
