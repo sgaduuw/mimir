@@ -578,6 +578,23 @@ def test_the_queue_is_one_list_of_disclosures(client, monkeypatch):
     assert "fold-box" not in html
 
 
+def test_list_tools_script_is_versioned(client, monkeypatch):
+    """Static files are cached for a day, so the script URL carries the
+    release (`?v=`), as `series-diff.js` does; an edit to it must not be
+    served stale."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from mimir import __version__
+
+    sources = [
+        s.attrs["src"]
+        for s in _page(client).find_all("script")
+        if "src" in s.attrs and s.attrs["src"].split("?")[0].endswith("/list-tools.js")
+    ]
+    assert len(sources) == 1
+    assert parse_qs(urlsplit(sources[0]).query) == {"v": [__version__]}
+
+
 def test_the_filter_ships_hidden_and_points_at_the_list(client, monkeypatch):
     import mimir.merge_window as mwmod
     from mimir.extensions import SessionLocal
@@ -591,7 +608,11 @@ def test_the_filter_ships_hidden_and_points_at_the_list(client, monkeypatch):
     box = controls.find("input")
     assert box.attrs["data-filter-input"] == "mw-subsystems"
     assert page.find("ul", id="mw-subsystems")
-    scripts = [s.attrs["src"] for s in page.find_all("script") if "src" in s.attrs]
+    scripts = [
+        s.attrs["src"].split("?")[0]
+        for s in page.find_all("script")
+        if "src" in s.attrs
+    ]
     assert [x for x in scripts if x.endswith("/js/list-tools.js")]
     assert not [x for x in scripts if "fold-box" in x]
 
@@ -1023,3 +1044,46 @@ def test_one_nameless_commit_does_not_erase_every_other_name(
         s.commit()
         mw = merge_window(s)
     assert sorted(_shown(mw)) == ["Jane Doe", "unknown sender"]
+
+
+def _bar_widths(client):
+    from tests._dom import parse
+
+    page = parse(client.get(MERGE_WINDOW_PATH).get_data(as_text=True))
+    return {
+        li.attrs["data-filter-text"]: li.find("rect").attrs["width"]
+        for li in page.find_all("li")
+        if li.attrs.get("data-filter-text") is not None
+    }
+
+
+def test_smaller_subsystem_bars_share_the_largest_scale(client):
+    """One scale for every bar on the page (#1000: "proportional to the
+    largest"): a 3-patch subsystem must not draw the same bar as a
+    30-patch one just because it sits in the smaller group."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        _seed_postings(s, {"ALPHA SUB": 30, "GAMMA": 3, "DELTA": 1})
+    assert _bar_widths(client) == {
+        "alpha sub": "100.0",
+        "gamma": "10.0",
+        "delta": "3.3",
+    }
+
+
+def test_the_no_subsystem_bucket_can_set_the_scale(client):
+    """`(no subsystem)` always lands in the smaller group, even when it is
+    the largest bucket. The scale is the largest of both lists, so no bar is
+    wider than its box (against the section's own maximum it drew 154%)."""
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        _seed_postings(s, {"NAMED": 26})
+        for n in range(40):
+            _article(s, f"loose{n}@x", days=n)
+            _commit(s, f"loose{n}@x", "linux-next")
+        s.commit()
+    widths = _bar_widths(client)
+    assert widths == {"(no subsystem)": "100.0", "named": "65.0"}
+    assert all(float(w) <= 100 for w in widths.values())

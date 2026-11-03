@@ -123,10 +123,11 @@
   <input id="mw-find-input" type="search" data-filter-input="mw-subsystems" autocomplete="off">
 </p>
 <ul class="mw-subsystems" id="mw-subsystems">
-  {% set largest = mw.sections[0].patches if mw.sections else 0 %}
+  {# One scale for every bar. `(no subsystem)` is always in `smaller` and can be the biggest bucket. #}
+  {% set largest = (mw.sections + mw.smaller)|map(attribute='patches')|max %}
   {% for sec in mw.sections %}{{ subsystem_row(sec, largest, loop.first) }}{% endfor %}
   {% if mw.smaller %}
-  <li data-filter-item data-filter-text="smaller subsystems">
+  <li data-filter-item>
     <details id="smaller-subsystems">
       <summary>
         <span class="mw-name">{{ mw.smaller|length }} smaller subsystem{{ '' if mw.smaller|length == 1 else 's' }}</span>
@@ -134,8 +135,7 @@
       </summary>
       <p><small>Subsystems with fewer than {{ section_min }} queued patches.</small></p>
       <ul class="mw-subsystems mw-subsystems-nested">
-        {% set smallest_max = mw.smaller|map(attribute='patches')|max %}
-        {% for sec in mw.smaller %}{{ subsystem_row(sec, smallest_max) }}{% endfor %}
+        {% for sec in mw.smaller %}{{ subsystem_row(sec, largest) }}{% endfor %}
       </ul>
     </details>
   </li>
@@ -159,5 +159,5 @@
 
 {% if not mw.window_open %}{{ pull_requests() }}{% endif %}
 </section>
-<script src="{{ url_for('static', filename='js/list-tools.js') }}" defer></script>
+<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>
 {% endblock %}
