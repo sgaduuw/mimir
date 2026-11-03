@@ -405,6 +405,17 @@ it as a multi-minute request hang. Tunable via
 `SQLITE_BUSY_TIMEOUT_MS` so an operator can lengthen it without code
 changes if the scheduler grows heavier writers.
 
+The broker knows when VACUUM is running, so new cache mutation RPCs
+are rejected immediately with `error="vacuum"`, before writer submission,
+rather than each occupying the cache worker for its five-second wait.
+The web tier treats that specific rejection as an expected skipped write;
+other broker failures still log warnings. A lock-protected active count
+keeps admission closed across overlapping VACUUM handlers, and the final
+exit logs the exact number of skipped RPCs, even after a failed VACUUM.
+The lock only protects admission state and counters, never writer
+submission or Future waits. An already-admitted write can still hit the
+ordinary timeout; this gate does not cancel it or pause other producers.
+
 **`busy_timeout` doesn't cover `SQLITE_BUSY_SNAPSHOT`**, a distinct
 error path SQLite raises when a transaction that started as a
 *reader* (taking a snapshot) tries to upgrade to a *writer* and
@@ -448,9 +459,9 @@ The invariant since v2.0.0:
   write a readonly database` rather than silently being lost.
 - **Cache writes from the web tier RPC into the broker** via the
   UNIX socket at `BROKER_SOCKET_PATH` (default `/data/.broker.sock`).
-  Best-effort: `BrokerUnavailable` is logged at warning and
-  swallowed, the page already rendered before `cache.set` was
-  called.
+  Best-effort: `BrokerUnavailable` is swallowed, quietly for expected
+  VACUUM cache rejections and with a warning for other failures. The
+  page already rendered before `cache.set` was called.
 - **Admin operations RPC into the broker** too. The historical
   `READ_ONLY_DB=true` toggle (used to quiesce the web tier for
   long admin writes) is gone, the broker's own queue serialises
@@ -1242,8 +1253,9 @@ field change bumps it. A bump cold-starts the whole cache once.
 (used by `warm-cache`).
 
 `cache.set` is **best-effort**: the web tier swallows
-`BrokerUnavailable` (any non-ok reply, writer busy included) and
-logs it. The page already rendered before `set` was called, so
+`BrokerUnavailable` (any non-ok reply, writer busy included). Expected
+VACUUM cache rejections are quiet; other failures log a warning. The
+page already rendered before `set` was called, so
 propagating the error would 500 a successful response; the next
 request just recomputes and tries again. A broker handler thread
 fires and forgets, so a writer error lands on a future nobody reads.
