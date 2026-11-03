@@ -24,6 +24,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The 404 page names the address it could not find and offers a way forward: the front page, the Message-ID lookup form (prefilled from a failed lookup, or from a path segment that holds an `@`), and, for an address like `/lkml/2026/10/1`, the inbox dashboard and the month, each only when that page exists. A message-shaped address says "This message isn't in the archive". The page stays noindex, uncached and cheap: an address that cannot be an inbox costs no query, and a database error still gives a plain 404 (#1002, #984).
+
 - The merge window page states whether the window is open, with a three-step release cycle, and shows pull requests to Linus as cards that lead with their count: "Waiting" (was Pending), "Merged", "Unclear" (was Unknown) and "Rejected". Each card lists its four newest subjects and keeps the rest in an "All N" disclosure. The queued patches are one list of subsystems with a proportional bar and a count, each opening to its series; a "Find a subsystem" box filters it when JavaScript is on. Subsystem names are lowercase, and the note on how patches are counted moves below the list. The fold-box controls and their script are gone (#1000).
 
 - `robots.txt` disallows `/m/` and `/*/m/`, which hold only redirects. A data migration adds both paths to an existing `*` stanza and keeps any path an operator added (#984).

@@ -1312,3 +1312,10 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .mw-subsystems summary .bar-meter { grid-column: 2 / -1; grid-row: 2; }
   .mw-subsystems summary .count { grid-column: 3; }
 }
+
+
+/* --- 404 page (#1002) --- */
+.error-code { margin: 0 0 .25rem; font-family: var(--pico-font-family-monospace); font-size: .85rem; color: var(--pico-muted-color); }
+.error-path { overflow-wrap: anywhere; }
+.error-links { margin-block: 1rem; max-width: 32rem; }
+.error-links a { display: flex; align-items: center; min-height: 2.75rem; }

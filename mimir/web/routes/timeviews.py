@@ -27,22 +27,22 @@ from mimir.threading import (
     since_window_start,
 )
 from mimir.web._blueprint import bp_web
-from mimir.web.urls import _get_inbox_or_404, listing_options, listing_url
-
-# Plausible bounds for an inbox archive: lkml itself goes back to ~1995.
-# Outside this range a year URL is almost certainly user error / scraper
-# noise; 404 is the right response.
-_MIN_ARCHIVE_YEAR = 1995
+from mimir.web.urls import (
+    _MIN_ARCHIVE_YEAR,
+    _get_inbox_or_404,
+    _max_archive_year,
+    _month_in_range,
+    _month_path,
+    _year_in_range,
+    listing_options,
+    listing_url,
+)
 
 # Cap for the month-archive thread list. A busy month on lkml has
 # thousands of threads; rendering all of them blows the response past
 # 1 MB. The view shows the most-recent N + the total-message count
 # from `monthly_volume` so context isn't lost.
 MONTH_THREAD_CAP = 100
-
-
-def _max_archive_year() -> int:
-    return datetime.now(UTC).year + 1
 
 
 def _daily_view(inbox_name: str, day: date_cls, heading: str):
@@ -164,7 +164,7 @@ def year_archive(inbox_name: str, year: int):
     """Year view for an inbox: 12 month rows with a per-month message
     count and a bar scaled to the busiest month. Rows with messages
     link to the month view."""
-    if year < _MIN_ARCHIVE_YEAR or year > _max_archive_year():
+    if not _year_in_range(year):
         abort(404)
     now = datetime.now(UTC)
     with SessionLocal() as session:
@@ -192,9 +192,7 @@ def year_archive(inbox_name: str, year: int):
 def month_archive(inbox_name: str, year: int, month: int):
     """Month view for an inbox: every thread with at least one
     message in (year, month), ordered by last activity desc."""
-    if year < _MIN_ARCHIVE_YEAR or year > _max_archive_year():
-        abort(404)
-    if month < 1 or month > 12:
+    if not _month_in_range(year, month):
         abort(404)
     selected, _ = listing_options(request.args)
     start = datetime(year, month, 1, tzinfo=UTC)
@@ -238,12 +236,12 @@ def month_archive(inbox_name: str, year: int, month: int):
         prev_label=(start - timedelta(days=1)).strftime("%B %Y"),
         next_label=datetime(next_year, next_month, 1, tzinfo=UTC).strftime("%B %Y"),
         prev_url=(
-            f"/{inbox.name}/{prev_year:04d}/{prev_month:02d}/"
+            _month_path(inbox.name, prev_year, prev_month)
             if prev_year >= _MIN_ARCHIVE_YEAR
             else None
         ),
         next_url=(
-            f"/{inbox.name}/{next_year:04d}/{next_month:02d}/"
+            _month_path(inbox.name, next_year, next_month)
             if next_year <= _max_archive_year()
             else None
         ),
