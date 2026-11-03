@@ -1,0 +1,38 @@
+Controller
+mimir is a personal project run by Eelco Wesemann (Netherlands). Privacy enquiries: ratatoskr@init1.nl.
+What mimir is
+A read-only web archive of public-inbox kernel mailing-list mirrors (lkml and related). There are no accounts. Every message displayed is already-public material from lore.kernel.org and the other public-inbox mirrors; mimir does not introduce any new disclosure.
+What gets stored in your browser
+Three Cloudflare cookies, set by the edge for security and availability:
+All three are strictly necessary for operating the service. Under the ePrivacy Directive (Art. 5(3)(b)) and EDPB guidance, strictly necessary cookies do not require consent. Cloudflare’s published cookie list documents them.
+Local storage preferences, set by mimir itself:
+Session storage, set by htmx, the page library mimir uses:
+No analytics. No tracking pixels. No advertising. No third-party embeds beyond the static-asset CDNs listed below.
+What gets processed server-side
+Standard HTTP request metadata, one log record per request:
+the time, a request ID, and how long the response took;
+your IP address;
+the request method and path, the response status, and the response size;
+your browser’s User-Agent, and the browser hints that Chromium-based browsers send with it (browser brand and version, mobile or not, operating system);
+the page you came from (Referer);
+the request-context headers browsers add (Sec-Fetch-*, Purpose, Sec-Purpose, HX-Request) and the content types and languages your browser accepts (Accept, Accept-Language);
+your country, when Cloudflare supplies it.
+Retained in operator-side logs for two days, then deleted. Used for abuse triage and debugging.
+Legal basis: legitimate interest (GDPR Art. 6(1)(f)) in operating and securing the service.
+Third parties in the request path
+Cloudflare (US) fronts mimir as an edge proxy and bot-mitigation layer. It sees your IP and request metadata. Cloudflare’s Data Processing Addendum and the EU Standard Contractual Clauses cover the EU-to-US transfer.
+jsdelivr.net and unpkg.com serve the two vendored frontend assets (Pico CSS, htmx). Visiting their CDNs reveals your IP to them. Both files are integrity-pinned (SRI), so their content cannot change without breaking the page.
+GitHub Container Registry hosts the deployment image. Not visitor-facing.
+Email-address redaction
+Visible HTML on message pages, and their Markdown versions, redact non-allowlisted sender addresses to <hidden> and DCO-trailer addresses to <redacted>. This is a friction layer, not a privacy guarantee. The same bytes are public via lore.kernel.org and every other public-inbox mirror; a determined scraper can fetch the original RFC 5322 message in a single HTTP call. The redaction aims to make casual scraping less rewarding, not to claim that mimir hides the addresses.
+Your rights
+Under GDPR Art. 15–22 you may:
+request access to data processed about you,
+request rectification or erasure,
+request restriction of or object to processing,
+request data portability.
+Email ratatoskr@init1.nl to exercise any of these. Identity verification may be needed before a response.
+Supervisory authority
+If you believe processing violates your rights, you may lodge a complaint with the Dutch supervisory authority: Autoriteit Persoonsgegevens, Den Haag.
+Changes
+Substantive changes to this notice are recorded in the CHANGELOG. The “last updated” date at the top reflects the most recent change.

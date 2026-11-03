@@ -624,8 +624,11 @@ def test_sitemap_index_is_fast_tier_other_sitemap_globals_slow(seeded_db):
 
     base = "https://example.test"
     fast = [label for label, _fn in _build_fast_global_targets(base)]
-    assert fast == ["sitemap:index"], fast
-    assert _build_fast_global_targets("") == []
+    assert fast == ["recent_message_total (30d)", "sitemap:index"], fast
+    # The total needs no SITE_BASE_URL, so it survives without one.
+    assert [label for label, _ in _build_fast_global_targets("")] == [
+        "recent_message_total (30d)"
+    ]
 
     slow = [label for label, _fn in _build_slow_global_targets(sitemap_base=base)]
     assert "sitemap:index" not in slow, slow
@@ -750,19 +753,16 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
             )
             for label in targets
         )
-    # Global fast tier hits sitemap:index + sitemap:meta with
+    # Global fast tier: the front page's 30-day total and sitemap:index, at
     # priority=0 (same tier-mapping as the per-inbox fan-out).
     assert global_captured, "no warm_global dispatch captured"
     for targets, priority in global_captured:
         assert priority == 0, (
             f"tier=fast warm_global must pass priority=0; got {priority}"
         )
-    assert all(
-        "sitemap" in label
-        for targets, _ in global_captured
-        if targets
-        for label in targets
-    )
+    assert [targets for targets, _ in global_captured] == [
+        ["recent_message_total (30d)", "sitemap:index"]
+    ]
     # Option A (2026-06-01): per-(inbox, subsystem) warm_subsystem RPCs
     # are slow-tier-only; fast tier must NOT dispatch them.
     assert subsystem_captured == [], (
@@ -1086,9 +1086,9 @@ def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, clien
     _add_late_inboxes(seeded_db)
     monkeypatch.setattr(settings, "pinned_inboxes", ["zz-pin", "yy-pin"])
     page = client.get("/").get_data(as_text=True)
-    cards = re.findall(r'<a class="inbox-card"[^>]*href="/([^/"]+)/"', page)
-    assert cards[:2] == ["zz-pin", "yy-pin"]
-    assert cards == _warm_order(monkeypatch)
+    names = re.findall(r'<a class="inbox-link" href="/([^/"]+)/"', page)
+    assert names[:2] == ["zz-pin", "yy-pin"]
+    assert names == _warm_order(monkeypatch)
 
 
 def test_maintainer_counts_warm_only_on_slow_and_all_global_targets(session):
@@ -1116,3 +1116,26 @@ def test_maintainer_counts_warm_only_on_slow_and_all_global_targets(session):
         with cache.ttl_extension(7200):
             slow["maintainer_review_counts"](session)
         assert cached_maintainer_review_counts("owner@kernel.org") == {}
+
+
+def test_recent_message_total_warms_on_the_fast_tier_only(session):
+    """The front page reads the 30-day total from the cache and never
+    computes it (#994): the per-minute fast tier fills it, and the slow tier
+    must not repeat it."""
+    from mimir import cache
+    from mimir.cli.cache import (
+        _build_fast_global_targets,
+        _build_global_targets,
+        _build_slow_global_targets,
+    )
+    from mimir.dashboard import cached_recent_message_total
+
+    label = "recent_message_total (30d)"
+    assert cached_recent_message_total() is None  # cold, and distinct from 0
+    for base in ("", "https://example.test"):
+        assert label not in dict(_build_slow_global_targets(base))
+        assert [lbl for lbl, _ in _build_global_targets(base)].count(label) == 1
+    # Run the real target through the ordinary cache writer.
+    with cache.ttl_extension(7200):
+        dict(_build_fast_global_targets(""))[label](session)
+    assert cached_recent_message_total() == 0  # the seed is dated 2024
