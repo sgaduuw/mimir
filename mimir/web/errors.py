@@ -27,13 +27,14 @@ passed into the template so `base.html` skips the canonical link
 content="noindex">` so crawlers don't index typo URLs.
 """
 
-from flask import render_template
+from flask import render_template, request
 from werkzeug.exceptions import NotFound
 
 from mimir.web._blueprint import bp_web
+from mimir.web.error_links import not_found_help
 
 
-def _render_error(status: int, title: str, detail: str) -> tuple:
+def _render_error(status: int, title: str, detail: str, **extra) -> tuple:
     return (
         render_template(
             "error.html",
@@ -41,6 +42,7 @@ def _render_error(status: int, title: str, detail: str) -> tuple:
             title=title,
             detail=detail,
             noindex=True,
+            **extra,
             # Inbox-scoped error pages would normally inherit
             # `current_inbox` from the route view that aborted; on a
             # pure unmatched-route 404 there is no `current_inbox`,
@@ -58,14 +60,16 @@ def _not_found(e):
     # when none is given, so that default counts as "no description".
     # The template autoescapes it.
     description = getattr(e, "description", None)
-    if description and description != NotFound.description:
-        return _render_error(404, "Not found", description)
+    if not description or description == NotFound.description:
+        description = (
+            "The page you requested isn't in this archive. "
+            "It may have been deleted, never existed, or the URL is "
+            "from a stale link."
+        )
+    # Only a 404 offers a way forward: a form and links built from the URL.
+    # 410 and 500 stay as they were, and a 500 must never touch the database.
     return _render_error(
-        404,
-        "Not found",
-        "The page you requested isn't in this archive. "
-        "It may have been deleted, never existed, or the URL is "
-        "from a stale link.",
+        404, "Not found", description, nf=not_found_help(request.path, request.args)
     )
 
 
