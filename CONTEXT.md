@@ -1111,6 +1111,16 @@ order).
 
 ### Series diff navigation (#999)
 
+Incomplete diff input (#985) names a series but not a comparison. It redirects
+to the supplied newer cover, the supplied older cover, or the earliest cover
+of the exact key/head. The indexed slot winner selects that cover; the shared
+advertised-URL resolver supplies its canonical conversation page and safe
+message fallback. No body fetch or heuristic patch match runs on this path.
+Invalid supplied values remain errors rather than becoming redirects. The
+robots bare-diff disallow ends in `$`: matching includes the query string,
+so actual sitemap comparison URLs remain crawlable. Its data migration
+appends only the missing rule and preserves operator settings.
+
 `web/series_diff_navigation.py` resolves the selected comparison and its links
 from one batch of indexed slots for the exact series key/head. `slot_winner`
 still chooses each slot before the existing subject/file fallback is tried.

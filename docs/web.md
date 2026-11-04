@@ -140,6 +140,13 @@ Unknown or unsupported profile addresses return 404.
 
 ### Series comparisons
 
+A comparison missing `from`, `to` or `pos` redirects (301) to an existing
+cover conversation: `to` when supplied, otherwise `from`, otherwise the
+earliest revision. Canonical inbox and containing thread page are retained;
+a message page is used when the thread cannot safely be advertised. Unknown
+series, heads or supplied revisions, self-diffs and invalid position/head
+values still return 404. The site emits complete comparison URLs.
+
 Series diff pages compare full message bodies, including commit explanations.
 Previous/Next and the position selector visit only resolvable comparisons.
 The selector's GET form works without JavaScript and preserves the exact

@@ -14,7 +14,11 @@ from mimir.patch_revisions import (
 )
 from mimir.patch_series import adjacent_versions, same_series, slot_winner
 from mimir.patches import article_has_files
-from mimir.web.urls import _canonical_inbox_names_for, _spell_series_diff_url
+from mimir.web.urls import (
+    _advertised_urls_for,
+    _canonical_inbox_names_for,
+    _spell_series_diff_url,
+)
 
 
 @dataclass(frozen=True)
@@ -107,6 +111,31 @@ class _SeriesComparisons:
             positions.update(p.position for p in self.patches(version))
         # Never range(max_position): mail can supply a very large sparse ordinal.
         return sorted(p for p in positions if 0 <= p < 2**63)
+
+
+def incomplete_series_destination(
+    session, inbox, series_key, head_id, from_version, to_version
+):
+    """Recover missing comparison inputs without guessing a comparison.
+
+    There is no standalone series page. Send the reader to a cover's
+    existing conversation, preserving canonical inbox/page and the shared
+    message fallback when no materialised thread destination exists.
+    """
+    series = _SeriesComparisons(session, inbox, series_key, head_id)
+    if not series.covers or any(
+        version and version not in series.covers
+        for version in (from_version, to_version)
+    ):
+        abort(404)
+    version = to_version or from_version
+    if not version:
+        version = min(series.revisions, key=lambda r: (r[0] is None, r[0], r[1]))[2]
+    cover = series.slots[version, 0]
+    target = _advertised_urls_for(session, [cover]).get(cover.id)
+    if target is None:
+        abort(404)
+    return target
 
 
 def load_series_diff_navigation(
