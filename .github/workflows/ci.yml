@@ -1,7 +1,7 @@
 name: ci
 
 on:
-  # CI is the pull-request gate: full lint/test/test-ft plus a docker
+  # CI is the pull-request gate: full lint/test/test-ft/browser plus a docker
   # build-verify on every PR. It runs on NO branch or tag push. The
   # release image is built + published by release.yml on v* tags, which
   # trusts this PR gate rather than re-running the suite. (develop is a
@@ -137,13 +137,50 @@ jobs:
       - name: Pytest
         run: uv run pytest -v
 
+
+  browser:
+    runs-on: ubuntu-latest
+    env:
+      SECRET_KEY: ci-dummy-key-not-for-real-use-1234567890
+      # Missing Playwright is a failure here; local pytest keeps optional skips.
+      MIMIR_BROWSER_REQUIRED: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.15'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          enable-cache: true
+          prune-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Chromium
+        run: uv run --frozen --with playwright playwright install --with-deps chromium
+
+      - name: Browser regressions
+        run: uv run --frozen --with playwright pytest -q --basetemp=browser-test-results tests/test_routes/test_browser_navigation.py tests/test_routes/test_browser_listing_layout.py
+
+      - name: Upload failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-failure-screenshots
+          path: browser-test-results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 7
+
   docker:
     # Build-verify only: confirms the image builds (Dockerfile / base
     # image / dep resolution) on every PR. It never logs in or pushes;
     # publishing is release.yml's job on v* tags. Skip on fork PRs (we
     # don't run untrusted fork build steps, and the build is single-arch).
     runs-on: ubuntu-latest
-    needs: [lint, test, test-ft]
+    needs: [lint, test, test-ft, browser]
     if: github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

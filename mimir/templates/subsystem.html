@@ -8,11 +8,11 @@
 {% macro patch_link(p, label=none) -%}
 {% if p.date and p.inbox_name %}<a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ label or p.subject|clean_subject or '(no subject)' }}</a>{% else %}<span>{{ label or p.subject|clean_subject or '(no subject)' }}</span>{% endif %}
 {%- endmacro %}
-{% macro triage_row(p, reviewed=false) -%}
+{% macro triage_row(p) -%}
 <li>
   {{ badges(lifecycle_status_by_id, p.article_id) }} {{ patch_link(p) }}
   {% if p.series_more %}<small>+{{ p.series_more }} more in this series</small>{% endif %}
-  <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}{% if reviewed %}{% set counts = review_counts.get(p.article_id, (0, 0)) %} · {{ counts[0] }} review trailer{{ '' if counts[0] == 1 else 's' }}, {{ counts[1] }} from {{ 'a maintainer' if counts[1] == 1 else 'maintainers' }}{% endif %}</small>
+  <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}</small>
 </li>
 {%- endmacro %}
 <div class="subsystem-dashboard">
@@ -34,8 +34,8 @@
         <h2 id="triage-heading">Reviewed, not picked up <small>({{ needs_attention|length }})</small></h2>
         <p class="subsystem-note">Review trailers in, no mainline landing or maintainer Ack. Oldest first.</p>
         {% if needs_attention %}
-        <ul class="subsystem-rows">{% for p in needs_attention[:5] %}{{ triage_row(p, true) }}{% endfor %}</ul>
-        {% if needs_attention|length > 5 %}<details class="subsystem-more"><summary>Show all {{ needs_attention|length }} ({{ needs_attention|length - 5 }} more)</summary><ul class="subsystem-rows">{% for p in needs_attention[5:] %}{{ triage_row(p, true) }}{% endfor %}</ul></details>{% endif %}
+        <ul class="subsystem-rows">{% for p in needs_attention[:5] %}{{ triage_row(p) }}{% endfor %}</ul>
+        {% if needs_attention|length > 5 %}<details class="subsystem-more"><summary>Show all {{ needs_attention|length }} ({{ needs_attention|length - 5 }} more)</summary><ul class="subsystem-rows">{% for p in needs_attention[5:] %}{{ triage_row(p) }}{% endfor %}</ul></details>{% endif %}
         {% else %}<p class="subsystem-empty">No reviewed patches awaiting pickup in this queue.</p>{% endif %}
       </section>
       <section aria-labelledby="active-heading">
