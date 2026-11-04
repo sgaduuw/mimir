@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Incomplete series-diff URLs redirect to an existing cover conversation instead of returning a 404. A robots data migration blocks only bare diff paths while preserving query-bearing sitemap comparisons and operator rules (#985).
 - Fresh-install and reset robots defaults now omit `Crawl-delay` and allow `ai-input`, matching the operator policy. Already-migrated installations keep their configured rules (#1009).
 - The task scheduler exits successfully on TERM or INT during idle waits and running tasks, forwarding termination to its owned CLI processes and background warm wrappers without recording interrupted runs as successful (#1007).
 - Cache writes from web requests are skipped immediately during VACUUM instead of queueing for repeated five-second timeouts. The broker logs one skipped-write summary, and expected maintenance rejections no longer warn for every cache key (#1043).

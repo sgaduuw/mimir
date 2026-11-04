@@ -110,7 +110,9 @@ still run while paused. Do not treat the sentinel as proof that the writer is id
 ## Crawler policy
 
 `/robots.txt` is generated from database rules. The default `*` stanza discourages
-crawling attachment URLs, internal search, and `/api/` partials. Inspect or edit it:
+crawling attachment URLs, internal search, `/api/` partials and bare series-diff
+paths. The end-anchored `/*/series/*/diff$` rule leaves query-bearing comparison
+URLs crawlable. Inspect or edit it:
 
 ```sh
 uv run mimir admin robots list
