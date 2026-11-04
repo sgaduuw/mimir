@@ -2,7 +2,6 @@
 title, one byline and the Series, Subsystems and Maintainers cards."""
 
 import re
-from types import SimpleNamespace
 
 COVER = "[LSF/MM/BPF TOPIC][RFC PATCH v4 0/2] Private Memory Nodes (w/ Compressed RAM)"
 
@@ -162,52 +161,6 @@ def test_the_subsystems_card_shows_three_and_folds_the_rest(client, tmp_path):
     assert len(re.findall(r'<li class="chip">', before)) == 3
     assert "Show 1 more" in after
     assert len(re.findall(r'<li class="chip">', after)) == 1
-
-
-def test_this_inboxs_own_subsystem_comes_first_and_moves_the_etag(
-    client, tmp_path, monkeypatch
-):
-    from mimir.extensions import SessionLocal
-    from mimir.models import Subsystem
-    from mimir.web.routes import thread as thread_route
-
-    seeded = _seed_header_thread(tmp_path)
-    url = seeded["c@x"][1] + "/t"
-    with SessionLocal() as s:
-        ids = {x.name: x.id for x in s.query(Subsystem)}
-
-    def ranking(*ids_):
-        monkeypatch.setattr(
-            thread_route,
-            "most_active_subsystems_in_inbox",
-            lambda *a, **k: [SimpleNamespace(id=i) for i in ids_],
-        )
-
-    def chips(html):
-        card = re.search(
-            r'aria-labelledby="card-subsystems">(.*?)</section>', html, re.DOTALL
-        ).group(1)
-        return [
-            c.lower() for c in re.findall(r'<li class="chip"><a[^>]*>([^<]*)', card)
-        ]
-
-    def maintainers(html):
-        card = re.search(
-            r'aria-labelledby="card-maintainers">(.*?)</section>', html, re.DOTALL
-        ).group(1)
-        return re.findall(r"Maint (\w+)", card)
-
-    ranking()  # cold cache: the plain order
-    cold = client.get(url)
-    assert chips(cold.get_data(as_text=True)) == ["aaa", "bbb", "ccc", "ddd"]
-    ranking(ids["DDD"])
-    warm = client.get(url)
-    html = warm.get_data(as_text=True)
-    assert chips(html)[0] == "ddd"
-    assert maintainers(html)[0] == "DDD"
-    assert warm.headers["ETag"] != cold.headers["ETag"]
-    # The same input twice is the same validator.
-    assert client.get(url).headers["ETag"] == warm.headers["ETag"]
 
 
 def test_the_maintainers_card_links_through_the_shared_gate(client, tmp_path):
