@@ -2727,13 +2727,18 @@ states and `mimir.fold.<id>` preference. Reading a page does not write a
 preference; saved choices still win, and unavailable storage falls back to
 compact. The summary identifies its date as the last reply.
 
-The thread view's header lists this inbox's busiest subsystem first (#989).
-That is `most_active_subsystems_in_inbox`'s top id for the last 7 days: a
-cached ranking, read before the ETag and never computed there
-(`compute_on_miss=False`), which moves with the inbox's traffic and not
-with the thread. Its id is in the ETag's content part, so a cold cache is
-the empty tag and the ETag moves when the cache warms. It costs one cache
-read on the 304.
+The thread view's header leads with every attributed subsystem whose
+MAINTAINERS `L:` contact matches the inbox's normalized list address (#1068).
+One uncached lookup through the address-first `subsystem_lists` primary key
+captures the matching IDs before the validator; an inbox without an address
+needs no lookup. The normalized address and sorted IDs enter the ETag's
+content part, also used by the rendered-state caches. Rendering reuses that
+same captured set to stable-partition existing hits. Both groups keep the
+matcher's order, maintainers keep their existing deduplication, and unrelated
+subsystems never join the header merely because they share a list address.
+Empty contacts, unknown addresses and no intersecting attribution retain the
+ordinary order. `rules_version` still carries MAINTAINERS content changes.
+Weekly activity rankings have no role in thread ownership or its validator.
 
 The thread view's outline (#989) lists the thread's first `OUTLINE_ROWS`
 messages on every page of a thread of at least `OUTLINE_MIN_MESSAGES`, and
