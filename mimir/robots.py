@@ -326,12 +326,16 @@ _DEFAULT_STAR_CRAWL_DELAY = None
 # Fresh and existing deploys get these via the e3aa78c72a8d and
 # 7484f4bf925c data migrations. Reset reads the constant below;
 # keep the migration additions and reset defaults in step.
+# The end-anchored series-diff rule blocks only a bare path; query-bearing
+# comparisons emitted by the sitemap remain crawlable (#985). The
+# b2cf46f509a8 migration appends it on fresh and existing upgrades.
 _DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
     "/*/attachment/",
     "/api/",
     "/*/search",
     "/m/",
     "/*/m/",
+    "/*/series/*/diff$",
 )
 _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
     "search": "yes",
