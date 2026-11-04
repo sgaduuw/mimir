@@ -37,6 +37,17 @@
     var none = name !== "all" && shown(name).length === 0;
     empty.textContent = name === "patches" ? "No patches on this page." : "No replies on this page.";
     empty.hidden = !none;
+    /* Each append replaces the boundary with the new page's metadata.
+     * A normal link keeps the selected tab in its fragment on arrival. */
+    var more = box.querySelector(".thread-more");
+    var href = more && more.getAttribute("data-next-" + name);
+    if (none && href) {
+      var link = document.createElement("a");
+      link.href = href;
+      link.textContent = name === "patches" ? "Next page with patches" : "Next page with replies";
+      empty.textContent += " ";
+      empty.appendChild(link);
+    }
   }
 
   function select(name, focus) {

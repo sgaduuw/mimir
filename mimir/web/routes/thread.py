@@ -905,7 +905,34 @@ def thread_view(
         # Full HTML classifies the CTE fallback's Article rows too.
         kinds = {row.id: message_kind(row) for row in ordered_rows}
         kind_counts = Counter(kinds.values())
-        show_tabs = total_count > 1 and kind_counts["patch"] > 0
+        # The root is context in every tab, never a second Patches entry.
+        nonroot_patch_ids = {
+            aid
+            for aid, kind in kinds.items()
+            if aid != root_node.id and kind == "patch"
+        }
+        kind_counts["patch"] = len(nonroot_patch_ids)
+        show_tabs = bool(nonroot_patch_ids)
+        # Use the same chronological boundaries as the indexed and CTE
+        # pages. Discussion shows every non-patch, including nested covers.
+        # Only onward links: a final page must not loop back to earlier ones.
+        next_kind_urls = {}
+        if show_tabs:
+            for i, row in enumerate(ordered_rows):
+                target_page = i // cap + 1
+                if row.id == root_node.id or not page < target_page <= total_pages:
+                    continue
+                tab = "patches" if row.id in nonroot_patch_ids else "discussion"
+                if tab not in next_kind_urls:
+                    next_kind_urls[tab] = (
+                        thread_page_url(
+                            root_node.id, root_node.date, inbox.name, target_page
+                        )
+                        + "#"
+                        + tab
+                    )
+                if len(next_kind_urls) == 2:
+                    break
         outline = (
             _outline_rows(
                 outline_nodes,
@@ -936,7 +963,7 @@ def thread_view(
                     "href": _message_href(root_node, inbox.name, i // cap + 1, row.id),
                 }
                 for i, row in enumerate(ordered_rows)
-                if kinds[row.id] == "patch"
+                if row.id in nonroot_patch_ids
             ]
         if representation == "full" or visible_covers:
             # One timeline read per series, including standalone and nested
@@ -995,6 +1022,7 @@ def thread_view(
         page=page,
         total_pages=total_pages,
         next_page_url=next_page_url,
+        next_kind_urls=next_kind_urls,
         prev_page_url=prev_page_url,
         remaining=remaining,
         page_size=cap,
