@@ -231,6 +231,11 @@ stale one it replaces, because its date vouches for it.
 ## Tests
 
 `uv run pytest` is the primary gate and runs in about two minutes.
+The `browser` CI job additionally installs Playwright/Chromium and runs
+`tests/test_routes/test_browser_navigation.py` and
+`tests/test_routes/test_browser_listing_layout.py`. Set
+`MIMIR_BROWSER_REQUIRED=1` for that required run; without it, local tests
+skip when Playwright is absent. CI uploads layout screenshots on failure.
 When changing parser logic, the cache encoder, dashboard helpers,
 canonical resolution, rendering, or route shapes, **add a test**
 rather than relying on manual checks: a regression in those layers
@@ -332,7 +337,7 @@ SemVer by what changed: PATCH for fixes and dependency refreshes,
 MINOR for behaviour, UX or new config, MAJOR for schema or interface
 breaks.
 
-CI is the gate on pull requests (`lint`, `test`, `test-ft`, a docker
+CI is the gate on pull requests (`lint`, `test`, `test-ft`, `browser`, a docker
 build-verify). Branch pushes are not triggers. A `v*` tag push is
 what builds and publishes the image, and it runs no tests: it trusts
 the green PR the tag sits on.

@@ -1229,3 +1229,80 @@ def test_root_files_still_serve_beside_the_bare_inbox_route(client):
     assert client.get("/robots.txt").status_code == 200
     assert client.get("/favicon.svg").status_code == 200
     assert client.get("/favicon.ico").status_code == 301
+
+
+def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
+    client, seeded_db
+):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Article, ArticleTrailer, Inbox
+    from tests._dom import parse
+    from tests.test_subsystems._helpers import _add_patch_article, _add_subsystem
+
+    with seeded_db() as session:
+        _add_subsystem(
+            session,
+            "COUNTS",
+            "Maintained",
+            ["drivers/counts/"],
+            maintainers=[
+                ("M", "Maintainer", "m@kernel.org"),
+                ("R", "Reviewer", "r@kernel.org"),
+            ],
+        )
+        # Repeated MAINTAINERS entries must not multiply a trailer event.
+        _add_subsystem(
+            session,
+            "OTHER",
+            "Maintained",
+            [],
+            maintainers=[("M", "Maintainer", "m@kernel.org")],
+        )
+        aid = _add_patch_article(session, "counts@x", ["drivers/counts/a.c"])
+        article = session.get(Article, aid)
+        article.subject = "[PATCH] review counts"
+        article.author = "Safe Author <private@example.net>"
+        article.date = datetime.now(UTC) - timedelta(days=20)
+        date = article.date.strftime("%Y-%m-%d")
+        for role, address in [
+            ("Reviewed-by", "m@kernel.org"),
+            ("Tested-by", "m@kernel.org"),
+            ("Reviewed-by", "r@kernel.org"),
+            ("Acked-by", "outside@example.net"),
+            ("Reported-by", "outside@example.net"),
+        ]:
+            session.add(
+                ArticleTrailer(
+                    article_id=aid,
+                    role=role,
+                    name="Person",
+                    address=address,
+                    address_normalized=address,
+                )
+            )
+        session.commit()
+        inbox_id = session.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        # Count trailer events, including repeated people and every review role.
+        assert (
+            _bulk_uncached(session, [aid], inbox_id)[aid].count_suffix
+            == ": 4 reviews, 3 by maintainers"
+        )
+    response = client.get("/alpha/subsystem/counts/")
+    assert response.status_code == 200
+    section = parse(response.get_data(as_text=True)).find(
+        "section", cls="subsystem-triage"
+    )
+    rows = section.find_all("li")
+    assert len(rows) == 1, "fixture must reach the actual reviewed queue"
+    assert (
+        rows[0].find("span", cls="badge-count").text()
+        == ": 4 reviews, 3 by maintainers"
+    )
+    assert (
+        rows[0].find("small", cls="subsystem-meta").text()
+        == date + " · Safe Author <hidden>"
+    )

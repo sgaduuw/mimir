@@ -53,10 +53,11 @@
   enhanceSelector();
   document.addEventListener("htmx:beforeRequest", resetSelector);
   document.addEventListener("htmx:afterSwap", function (event) {
-    if (event.detail.target.tagName !== "MAIN") return;
+    if (event.detail.elt.tagName !== "MAIN") return;
     syncDocument();
     var page = document.getElementById("series-diff");
-    if (page) page.focus({ preventScroll: true });
+    // History swaps lack request target details and retain their own focus.
+    if (page && event.detail.target) page.focus({ preventScroll: true });
   });
   document.addEventListener("htmx:historyRestore", syncDocument);
 })();
