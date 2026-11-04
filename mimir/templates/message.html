@@ -31,7 +31,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
 {# Three-state fold for the thread tree. State lives on <html data-thread-fold>
    and is set by thread-fold.js in the head before this section paints, so
    a localStorage pin doesn't cause a visible flash from the server's context
-   default (root → partial, deep → closed). #}
+   default (a compact tree on both roots and replies). #}
 <section class="thread-context"
          data-thread-root-id="{{ thread_root_id }}">
   <header class="thread-toolbar">
@@ -40,13 +40,13 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       <span class="thread-summary">
         {{ thread_total }} message{{ '' if thread_total == 1 else 's' }},
         {{ thread_summary.author_count }} author{{ '' if thread_summary.author_count == 1 else 's' }},
-        {{ thread_summary.last_activity_rel }}
+        last reply {{ thread_summary.last_activity_rel }}
       </span>
     </span>
     <span class="thread-toggle" aria-label="Thread tree fold state">
-      <button type="button" data-fold-set="closed" title="Collapse to summary" aria-label="Collapse to summary">▼</button>
-      <button type="button" data-fold-set="partial" title="Show tree in a scrollable box">≡</button>
-      <button type="button" data-fold-set="expanded" title="Expand inline">▤</button>
+      <button type="button" data-fold-set="closed" title="Collapse to summary">Summary</button>
+      <button type="button" data-fold-set="partial" title="Show tree in a scrollable box">Compact</button>
+      <button type="button" data-fold-set="expanded" title="Expand inline">Expanded</button>
     </span>
   </header>
   <div class="thread-box">

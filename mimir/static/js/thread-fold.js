@@ -32,7 +32,7 @@
     } catch (e) {
       /* private mode etc.; fall through to default. */
     }
-    var mode = pin || (ctx === "root" ? "partial" : "closed");
+    var mode = pin || "partial";
     html.setAttribute("data-thread-fold", mode);
   }
 

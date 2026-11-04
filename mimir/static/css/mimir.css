@@ -131,6 +131,7 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: 0.5rem;
   padding: 0.4rem 0.75rem;
   border: 1px solid var(--pico-muted-border-color);
@@ -143,58 +144,37 @@ ul.year-decade-list strong { display: inline-block; min-width: 4em; }
   font-weight: bold;
 }
 .thread-context .thread-toolbar .thread-summary { display: none; }
-/* The three-button toggle. Avoid Pico's [role="group"] pill component
-   it'd force width: 100% and split the buttons into equal-width bars. */
+/* Named fold states use the same underline treatment as thread tabs. */
 .thread-context .thread-toggle {
   display: inline-flex;
-  gap: 0;
+  gap: 0.25rem;
   flex: 0 0 auto;
 }
 .thread-context .thread-toggle > button {
-  /* defeat Pico's full-width block button defaults */
   display: inline-block;
   width: auto;
   min-width: 0;
+  min-height: 2.75rem;
   margin: 0;
-  padding: 0.15rem 0.55rem;
+  padding: 0.4rem 0.5rem;
   line-height: 1.1;
   font-size: 0.85rem;
-  background: var(--pico-background-color);
-  color: var(--pico-secondary);
-  border: 1px solid var(--pico-muted-border-color);
-  border-right-width: 0;
+  background: none;
+  color: var(--pico-muted-color);
+  border: 0;
+  border-bottom: 2px solid transparent;
   border-radius: 0;
+  box-shadow: none;
   cursor: pointer;
 }
-.thread-context .thread-toggle > button:first-child {
-  border-top-left-radius: var(--pico-border-radius);
-  border-bottom-left-radius: var(--pico-border-radius);
-}
-.thread-context .thread-toggle > button:last-child {
-  border-right-width: 1px;
-  border-top-right-radius: var(--pico-border-radius);
-  border-bottom-right-radius: var(--pico-border-radius);
-}
-.thread-context .thread-toggle > button:hover {
-  background: var(--pico-secondary-background);
-  color: var(--pico-secondary-inverse);
-}
+.thread-context .thread-toggle > button:hover,
 .thread-context .thread-toggle > button[aria-pressed="true"] {
-  background: var(--pico-secondary);
-  color: var(--pico-secondary-inverse);
-  border-color: var(--pico-secondary);
+  color: var(--pico-color);
+  border-bottom-color: var(--pico-primary);
 }
-/* The closed button is a disclosure triangle (#930): the templates render
-   ▼ (open, which is what a fresh page is), and a closed box swaps it for ▶
-   here. The text shrinks to nothing and ::before draws the replacement; the
-   button's aria-label keeps its accessible name. U+FE0E keeps ▶ text-style,
-   as ▶ has an emoji form; ▼ has none. */
-html[data-thread-fold="closed"] .thread-context .thread-toggle > button[data-fold-set="closed"] {
-  font-size: 0;
-}
-html[data-thread-fold="closed"] .thread-context .thread-toggle > button[data-fold-set="closed"]::before {
-  content: "\25B6\FE0E";
-  font-size: 0.85rem;
+.thread-context .thread-toggle > button:focus-visible {
+  outline: 2px solid var(--pico-primary);
+  outline-offset: 2px;
 }
 /* Tree list. `list-style: none` on the ul plus list-style-type on each li
    defeats Pico's marker styling (which leaks through `list-style: none`
