@@ -140,6 +140,16 @@ def is_list_address(
 _UNSAFE_ATTR_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
 
 
+def normalize_address(address: str) -> str:
+    """Shared address spelling, independent of list-host eligibility.
+
+    Scrub unsafe attribute characters, strip surrounding whitespace,
+    cap the address at 254 characters, then lowercase. Parsing and
+    deciding whether an address is a list remain the caller's job.
+    """
+    return _UNSAFE_ATTR_CHARS_RE.sub("", address).strip()[:254].lower()
+
+
 def extract_list_addresses(headers: dict[str, str]) -> list[str]:
     """Pull list-shaped addresses out of `To:` then `Cc:`, preserving
     order. Returned addresses are lowercased and deduplicated; the
@@ -177,16 +187,9 @@ def extract_list_addresses(headers: dict[str, str]) -> list[str]:
         # ParsedArticle's typed fields, not on the headers dict);
         # an address that survives this filter is safe to splice
         # into an HTML attribute under Jinja's autoescape.
-        cleaned = _UNSAFE_ATTR_CHARS_RE.sub("", addr).strip()
-        if not cleaned:
+        normalized = normalize_address(addr)
+        if not normalized:
             continue
-        # Cap per-address length so a pathological multi-KB
-        # localpart can't bloat the rendered tooltip beyond what a
-        # real reader sees in a few hundred chars. Real list
-        # addresses are well under 100 chars.
-        if len(cleaned) > 254:  # RFC 5321 path length cap
-            cleaned = cleaned[:254]
-        normalized = cleaned.lower()
         if normalized in seen:
             continue
         if not is_list_address(normalized):

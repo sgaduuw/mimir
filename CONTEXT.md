@@ -338,9 +338,9 @@ per-subsystem dashboards:
   `role`, `name`, `address`, `address_normalized`. Used to render
   per-message attestation + per-reviewer recent-activity.
 
-**MAINTAINERS index (3 tables)**, derived from the kernel tree's
-`MAINTAINERS` blob by `flask --app mimir update-mainline`. Refreshed
-in lockstep with the mainline pull:
+**MAINTAINERS index (4 tables)**, derived from the kernel tree's
+`MAINTAINERS` blob by `mimir update-mainline`. The broker replaces the
+projection when the blob changes or a reload is forced:
 
 - **`subsystems`**, one row per MAINTAINERS section (`name`,
   `status`).
@@ -349,6 +349,25 @@ in lockstep with the mainline pull:
 - **`subsystem_maintainers`**, per-subsystem `M:` / `R:` rows,
   carrying `role`, `name`, and `address`. Their addresses feed the
   maintainer-derived half of the allowlist union.
+- **`subsystem_lists`**, normalized `L:` contacts, keyed by
+  `(address, subsystem_id)` with a separate subsystem-id cascade index.
+  Several sections can share a list and one section can name several lists.
+  These contacts are independent of M:/R: personal-address allowlisting and
+  of the configurable To/Cc list-host eligibility filter. The normalization
+  helper is shared with canonical address extraction; each L value is parsed
+  separately and accepted using the admin bare-address rule, then deduplicated
+  within its section. All four tables and the rules cursor change in the same
+  composite writer operation. No web consumer uses the list table yet (#1068).
+
+The additive list migration does not reparse an unchanged blob. Populate via
+`update-mainline --skip-fetch --skip-commits --force --rewalk`: force bypasses
+the blob gate, rewalk bypasses the cadence gate, and skip-commits prevents a
+history replay. A second forced run preserves the mapping and advances the
+rules generation again. During mixed old/new writer operation an old replace
+deletes list rows through cascade, so verify the source/store mapping after
+the final new writer and again after rollback/re-upgrade. The new table stays
+in place for application rollback. The separate startup migration/ANALYZE
+path must fit measured deployment budgets; no population work runs at boot.
 
 **Mainline tree cursor (2 tables)**, for the future "applied as
 <sha>" link surface on patch pages:
