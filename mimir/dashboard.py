@@ -25,7 +25,7 @@ from mimir.pull_requests import PULL_LIKE
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
-RECENT_TOTAL_CACHE_TTL_SEC = 3600  # 1 hour, as `daily_volume`
+RECENT_TOTAL_CACHE_KEY = "recent_message_total:30"
 LISTING_CACHE_TTL_SEC = 300  # 5 minutes, trackers, pulls, stable, history
 
 # Recency floor for `latest_pull_requests` / `latest_stable_releases`.
@@ -330,17 +330,13 @@ def daily_volume(
     )
 
 
-def _recent_total_key(days: int) -> str:
-    return f"recent_message_total:{days}"
-
-
-def recent_message_total(session: Session, days: int = 30, force: bool = False) -> int:
-    """Messages in the last `days` UTC days, each counted once: a message
+def recent_message_total(session: Session, force: bool = False) -> int:
+    """Messages in the last 30 UTC days, each counted once: a message
     cross-posted to five lists is one `articles` row, where summing the
     per-inbox counts says five. Cached for an hour and warmed by the fast
     tier; the front page only ever reads it (`cached_recent_message_total`).
 
-    The window is `daily_volume`'s (today and the `days - 1` before it, by
+    The window is `daily_volume`'s (today and the 29 days before it, by
     UTC date), so the header total and the per-inbox figures describe one
     period, and a message dated in the future counts in neither. The count
     is a range scan over the covering `ix_articles_date`: 160,447 rows in
@@ -349,7 +345,7 @@ def recent_message_total(session: Session, days: int = 30, force: bool = False) 
 
     def compute() -> int:
         today = datetime.now(UTC).date()
-        start = today - timedelta(days=days - 1)
+        start = today - timedelta(days=29)
         end = today + timedelta(days=1)
         return session.execute(
             text("SELECT COUNT(*) FROM articles WHERE date >= :start AND date < :end"),
@@ -358,17 +354,17 @@ def recent_message_total(session: Session, days: int = 30, force: bool = False) 
 
     return cache.get_or_compute(
         session,
-        _recent_total_key(days),
-        RECENT_TOTAL_CACHE_TTL_SEC,
+        RECENT_TOTAL_CACHE_KEY,
+        DAILY_VOLUME_CACHE_TTL_SEC,
         compute,
         force=force,
     )
 
 
-def cached_recent_message_total(days: int = 30) -> int | None:
+def cached_recent_message_total() -> int | None:
     """The warmed total, or None when the cache is cold. The request never
     computes it, so a cold cache costs a missing figure, not a slow page."""
-    return cache.get(_recent_total_key(days))
+    return cache.get(RECENT_TOTAL_CACHE_KEY)
 
 
 def like_escape(s: str) -> str:

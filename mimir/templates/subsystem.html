@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pill.html" import status_pill %}
 {% from "_lifecycle_badges.html" import badges %}
 {% from "_sparkline.html" import spark_bars %}
 {% block title %}{{ subsystem.name|subsystem_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
@@ -19,7 +20,7 @@
     <div>
       <p class="subsystem-breadcrumb"><a href="/{{ inbox_name }}/">{{ inbox_name }}</a> / <a href="{{ inbox_name|subsystem_index_url }}">subsystems</a></p>
       <h1>{{ subsystem.name|subsystem_label }}</h1>
-      {% if subsystem.status %}<span class="subsystem-status{% if subsystem.status|lower == 'maintained' %} subsystem-status-maintained{% elif subsystem.status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ subsystem.status }}</span>{% endif %}
+      {{ status_pill(subsystem.status) }}
     </div>
     {% if spark and spark.days %}
     <div class="subsystem-volume"><small>Last 30 days</small>

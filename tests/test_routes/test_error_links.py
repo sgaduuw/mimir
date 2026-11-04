@@ -35,10 +35,10 @@ def _statements(client, path):
 
     event.listen(engine, "before_cursor_execute", grab)
     try:
-        client.get(path)
+        response = client.get(path)
     finally:
         event.remove(engine, "before_cursor_execute", grab)
-    return seen
+    return response, seen
 
 
 def test_every_404_offers_the_front_page_and_the_lookup_form(client):
@@ -107,10 +107,11 @@ def test_a_probe_costs_no_query_and_an_inbox_shaped_name_costs_one(client):
     """Paths that no route matches, so any inbox query is the 404 page's own
     (a route that matches `/<inbox>/...` looks the inbox up itself first)."""
     # The positive control first: the capture does see the lookup.
-    shaped = _statements(client, "/nosuch/x/y/z/w")
+    _, shaped = _statements(client, "/nosuch/x/y/z/w")
     assert len([s for s in shaped if "FROM inboxes" in s]) == 1
     for path in ("/.git/a/b/c/d", "/.env/x/y", "/a_b/c/d/e", "/Alpha/x/y/z/w"):
-        assert _statements(client, path) == [], path
+        _, seen = _statements(client, path)
+        assert seen == [], path
 
 
 def test_a_failing_lookup_still_renders_the_404(client, monkeypatch):
@@ -176,18 +177,7 @@ def test_410_page_has_no_form_and_no_lookup(client):
     def _gone():
         abort(410)
 
-    from mimir.extensions import engine
-
-    seen = []
-
-    def grab(conn, cursor, statement, parameters, context, executemany):
-        seen.append(statement)
-
-    event.listen(engine, "before_cursor_execute", grab)
-    try:
-        response = client.get("/_gone")
-    finally:
-        event.remove(engine, "before_cursor_execute", grab)
+    response, seen = _statements(client, "/_gone")
     assert response.status_code == 410
     assert (
         parse(response.get_data(as_text=True)).find_all("form", cls="message-id-form")
@@ -216,8 +206,6 @@ def test_the_month_route_and_the_404_agree_on_the_range(client):
 
 
 def test_500_renders_plain_with_no_lookup(client):
-    from mimir.extensions import engine
-
     app = client.application
     app.config["PROPAGATE_EXCEPTIONS"] = False
 
@@ -225,13 +213,7 @@ def test_500_renders_plain_with_no_lookup(client):
     def _boom():
         raise RuntimeError("boom")
 
-    seen = []
-    grab = lambda c, cur, st, p, ctx, em: seen.append(st)  # noqa: E731
-    event.listen(engine, "before_cursor_execute", grab)
-    try:
-        r = client.get("/_boom")
-    finally:
-        event.remove(engine, "before_cursor_execute", grab)
+    r, seen = _statements(client, "/_boom")
     html = r.get_data(as_text=True)
     assert r.status_code == 500
     assert "message-id-form" not in html and "error-code" not in html

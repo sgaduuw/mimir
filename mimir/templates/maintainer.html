@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pill.html" import status_pill %}
 {% set safe_name = profile.name|listing_name %}
 {% set display_name = safe_name if safe_name != 'unknown sender' else profile.address %}
 {% block title %}{{ display_name }} | Maintainers | {{ site_name }}{% endblock %}
@@ -19,7 +20,7 @@
   <ul class="maintainer-subsystems">
     {% for subsystem_name, status in profile.subsystems %}
     {# These cards have no inbox context; selecting a dashboard is deferred. #}
-    <li><strong>{{ subsystem_name|subsystem_label }}</strong>{% if status %}<span class="subsystem-status{% if status|lower == 'maintained' %} subsystem-status-maintained{% elif status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ status }}</span>{% endif %}</li>
+    <li><strong>{{ subsystem_name|subsystem_label }}</strong>{{ status_pill(status) }}</li>
     {% endfor %}
   </ul>
   {% else %}

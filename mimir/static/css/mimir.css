@@ -913,9 +913,9 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .subsystem-dashboard .subsystem-header > div { min-width: 0; }
 .subsystem-dashboard .subsystem-breadcrumb { font-size: .8rem; margin-bottom: .5rem; }
 .subsystem-dashboard h1 { margin-bottom: .4rem; overflow-wrap: anywhere; }
-.subsystem-dashboard .subsystem-status, .subsystem-index .subsystem-status, .maintainer-profile .subsystem-status, .merge-window .subsystem-status { display: inline-block; border-radius: 999px; padding: .15rem .6rem; font-size: .75rem; background: var(--pico-muted-background-color); color: var(--pico-muted-color); }
-.subsystem-dashboard .subsystem-status-maintained, .maintainer-profile .subsystem-status-maintained, .merge-window .subsystem-status-maintained { background: light-dark(#e3f3e8, #183b27); color: light-dark(#246238, #9dd7ae); }
-.subsystem-dashboard .subsystem-status-supported, .subsystem-index .subsystem-status-supported, .maintainer-profile .subsystem-status-supported { background: light-dark(#e5eefb, #19334f); color: light-dark(#24568c, #a8cefb); }
+.pill { display: inline-block; border-radius: 999px; padding: .15rem .6rem; font-size: .75rem; background: var(--pico-muted-background-color); color: var(--pico-muted-color); }
+.pill-maintained { background: light-dark(#e3f3e8, #183b27); color: light-dark(#246238, #9dd7ae); }
+.pill-supported { background: light-dark(#e5eefb, #19334f); color: light-dark(#24568c, #a8cefb); }
 .subsystem-dashboard .subsystem-volume { flex-shrink: 0; max-width: 100%; color: var(--pico-muted-color); }
 .subsystem-dashboard .subsystem-volume small { display: block; font-size: .7rem; }
 .subsystem-dashboard .subsystem-volume svg { display: block; max-width: 100%; color: var(--mimir-accent); }
