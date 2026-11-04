@@ -329,6 +329,8 @@ _DEFAULT_STAR_CRAWL_DELAY = None
 # The end-anchored series-diff rule blocks only a bare path; query-bearing
 # comparisons emitted by the sitemap remain crawlable (#985). The
 # b2cf46f509a8 migration appends it on fresh and existing upgrades.
+# The lore-shaped recovery aliases /r/ and /all/ are also input-only
+# redirects; c471af7e3d22 appends those prefixes without replacing edits.
 _DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
     "/*/attachment/",
     "/api/",
@@ -336,6 +338,8 @@ _DEFAULT_STAR_DISALLOW: tuple[str, ...] = (
     "/m/",
     "/*/m/",
     "/*/series/*/diff$",
+    "/r/",
+    "/all/",
 )
 _DEFAULT_STAR_CONTENT_SIGNALS: dict[str, str] = {
     "search": "yes",

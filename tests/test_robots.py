@@ -175,6 +175,8 @@ def test_reset_rules_drops_extras_and_reseeds_star():
         "/m/",
         "/*/m/",
         "/*/series/*/diff$",
+        "/r/",
+        "/all/",
     ]
     assert star.content_signals == {
         "search": "yes",
@@ -209,6 +211,8 @@ def test_render_matches_seeded_defaults():
         + "Disallow: /m/\n"
         + "Disallow: /*/m/\n"
         + "Disallow: /*/series/*/diff$\n"
+        + "Disallow: /r/\n"
+        + "Disallow: /all/\n"
         + "\n"
         + "Sitemap: https://example.com/sitemap.xml\n"
         + f"LLM-Context: {LLMS_URL}\n"
@@ -270,6 +274,8 @@ def test_render_emits_per_ua_stanzas():
         + "Disallow: /m/\n"
         + "Disallow: /*/m/\n"
         + "Disallow: /*/series/*/diff$\n"
+        + "Disallow: /r/\n"
+        + "Disallow: /all/\n"
         + "\n"
         + "User-agent: ClaudeBot\n"
         + "Crawl-delay: 20\n"
@@ -713,3 +719,99 @@ def test_bare_series_diff_migration_does_not_create_missing_star():
         session.commit()
     _run_migration(_SERIES_DIFF_MIGRATION)
     assert not _star_present()
+
+
+_LORE_ALIAS_MIGRATION = (
+    "c471af7e3d22",
+    "alembic/versions/c471af7e3d22_seed_robots_disallow_for_lore_aliases.py",
+)
+
+
+@pytest.mark.parametrize(
+    "stored", [None, "null", "[]", '["/operator/"]', '["/r/","/operator/","/all/"]']
+)
+def test_lore_alias_migration_preserves_policy_and_is_idempotent(stored):
+    import json
+
+    from sqlalchemy import text
+
+    from mimir.extensions import engine
+
+    robots.update_rule("*", crawl_delay=19, set_content_signal={"ai-input": "no"})
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE robots_rules SET disallow_paths=:paths WHERE user_agent='*'"),
+            {"paths": stored},
+        )
+    before = (json.loads(stored) if stored else None) or []
+    expected = before + [path for path in ("/r/", "/all/") if path not in before]
+    for _ in range(2):
+        _run_migration(_LORE_ALIAS_MIGRATION)
+        with SessionLocal() as session:
+            star = robots.get_rule(session, "*")
+            assert star.disallow_paths == expected
+            assert star.crawl_delay == 19
+            assert star.content_signals == {
+                "search": "yes",
+                "ai-input": "no",
+                "ai-train": "no",
+            }
+
+
+@pytest.mark.parametrize("name", ["r", "all"])
+def test_lore_alias_migration_rejects_existing_inbox_before_writing_rules(name):
+    from sqlalchemy import event
+
+    from mimir.extensions import engine
+    from mimir.models import Inbox
+
+    _set_star_paths(["/operator/"])
+    before = _star_paths()
+    assert not {"/r/", "/all/"} & set(before)
+    with SessionLocal() as session:
+        session.add(
+            Inbox(name=name, mirror_path="/unused", upstream_url="https://example.com")
+        )
+        session.commit()
+    writes = []
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE")):
+            writes.append(statement)
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        with pytest.raises(RuntimeError, match="old deployed version"):
+            _run_migration(_LORE_ALIAS_MIGRATION)
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert writes == []
+    assert _star_paths() == before
+
+
+def test_lore_alias_migration_leaves_missing_star_absent():
+    from sqlalchemy import delete
+
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as session:
+        session.execute(delete(RobotsRule))
+        session.commit()
+    _run_migration(_LORE_ALIAS_MIGRATION)
+    assert not _star_present()
+
+
+def test_lore_alias_defaults_block_only_recovery_prefixes():
+    robots.reset_rules()
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(session, [], LLMS_URL)
+    assert {"Disallow: /r/", "Disallow: /all/"} <= set(body.splitlines())
+    patterns = robots._DEFAULT_STAR_DISALLOW
+    for path in ("/r/id@x", "/all/id@x/"):
+        assert any(_blocked(pattern, path) for pattern in patterns)
+    assert not [
+        (pattern, path)
+        for pattern in patterns
+        for path in _EMITTED
+        if _blocked(pattern, path)
+    ]
