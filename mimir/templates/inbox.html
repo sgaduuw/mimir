@@ -3,7 +3,7 @@
 {% block title %}{{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}
 {%- if stats and stats.total -%}
-{{ inbox_name }} archive: {{ '{:,}'.format(stats.total) }} message{{ '' if stats.total == 1 else 's' }}{% if stats.first_date and stats.last_date %} from {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}, indexed and searchable.
+{{ inbox_name }} archive: {{ stats.total|format_count }} message{{ '' if stats.total == 1 else 's' }}{% if stats.first_date and stats.last_date %} from {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}, indexed and searchable.
 {%- else -%}
 {{ inbox_name }} archive on {{ site_name }}.
 {%- endif -%}
@@ -12,9 +12,9 @@
 <header class="inbox-header">
   <div>
     <h1>{{ inbox_name }} <small>archive</small></h1>
-    <p class="inbox-summary">{{ '{:,}'.format(stats.total if stats else 0) }} messages
+    <p class="inbox-summary">{{ (stats.total if stats else 0)|format_count }} messages
       {% if stats and stats.first_date %}<span>Since {{ stats.first_date.strftime('%Y-%m-%d') }}</span>{% endif %}
-      <span>{{ '{:,}'.format(spark.days|sum(attribute=1) if spark else 0) }} in the last 30 days</span>
+      <span>{{ (spark.days|sum(attribute=1) if spark else 0)|format_count }} in the last 30 days</span>
       <span>{% if stats and stats.last_date %}Latest {{ stats.last_date|relative_time }}{% elif stats and stats.total %}Latest date unknown{% else %}No messages yet{% endif %}</span>
     </p>
   </div>
@@ -95,8 +95,8 @@
       <ul class="inbox-compact-list inbox-subsystems">
         {% for s in active_subsystems %}
         {% set count = s.message_count or 0 %}
-        <li>{{ subsystem_link(s.name, s.inbox_name) }}<small>{{ count }} message{{ '' if count == 1 else 's' }} in 7d</small>
-          <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ count }} messages in the last 7 days"><rect class="bar-added" width="{{ 100 * count / max_messages if max_messages else 0 }}" height="6"/></svg></li>
+        <li>{{ subsystem_link(s.name, s.inbox_name) }}<small>{{ count|format_count }} message{{ '' if count == 1 else 's' }} in 7d</small>
+          <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ count|format_count }} messages in the last 7 days"><rect class="bar-added" width="{{ 100 * count / max_messages if max_messages else 0 }}" height="6"/></svg></li>
         {% endfor %}
       </ul>
       {% else %}<p><em>No recent subsystem activity available.</em></p>{% endif %}

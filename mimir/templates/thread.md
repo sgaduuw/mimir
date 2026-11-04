@@ -13,10 +13,10 @@
 {% endif %}
 {% if series_totals and series_totals[0] %}
 {% set _patches, _files, _ins, _dels = series_totals %}
-- Series: {{ _patches }} patch{{ '' if _patches == 1 else 'es' }}{% if _files %} touching {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif %}{% if _ins is not none %}, +{{ _ins }}/-{{ _dels }}{% endif +%}
+- Series: {{ _patches|format_count }} patch{{ '' if _patches == 1 else 'es' }}{% if _files %} touching {{ _files|format_count }} file{{ '' if _files == 1 else 's' }}{% endif %}{% if _ins is not none %}, +{{ _ins|format_count }}/-{{ _dels|format_count }}{% endif +%}
 {% endif %}
 {% if patch_state and patch_state.is_patch and lifecycle_status and (lifecycle_status.state.value != 'pending' or lifecycle_status.rollup) %}
-- Status: {{ lifecycle_status.pill_label|md_escape }}{% if lifecycle_status.rollup %}{{ ' · ' ~ (lifecycle_status.rollup|md_escape) }}{% endif %}{{ lifecycle_status.count_suffix|md_escape }}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
+- Status: {{ lifecycle_status.pill_label|md_escape }}{% if lifecycle_status.rollup %}{{ ' · ' ~ (lifecycle_status.rollup|md_escape) }}{% endif %}{% if lifecycle_status.count_suffix %} {{ lifecycle_status.count_suffix|md_escape }}{% endif %}{% if lifecycle_status.tooltip %} ({{ lifecycle_status.tooltip|md_escape }}){% endif +%}
 {% endif %}
 {% set status_sentence = lifecycle_status|status_line if patch_state and patch_state.is_patch else "" %}
 {% if status_sentence %}
@@ -27,7 +27,7 @@
 - {{ synthesis|md_escape }}
 {% endif %}
 - List: {{ inbox_name|md_escape }}
-- {{ total_count }} message{{ '' if total_count == 1 else 's' }}, {{ author_count }} author{{ '' if author_count == 1 else 's' }}
+- {{ total_count|format_count }} message{{ '' if total_count == 1 else 's' }}, {{ author_count|format_count }} author{{ '' if author_count == 1 else 's' }}
 - Page: {{ canonical_url }}
 {% if prev_page_url %}
 - Previous page: {{ site_base ~ prev_page_url|markdown_path }}

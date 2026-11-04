@@ -1289,7 +1289,7 @@ def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
         # Count trailer events, including repeated people and every review role.
         assert (
             _bulk_uncached(session, [aid], inbox_id)[aid].count_suffix
-            == ": 4 reviews, 3 by maintainers"
+            == " · 4 reviews, 3 by maintainers"
         )
     response = client.get("/alpha/subsystem/counts/")
     assert response.status_code == 200
@@ -1300,7 +1300,7 @@ def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
     assert len(rows) == 1, "fixture must reach the actual reviewed queue"
     assert (
         rows[0].find("span", cls="badge-count").text()
-        == ": 4 reviews, 3 by maintainers"
+        == "· 4 reviews, 3 by maintainers"
     )
     assert (
         rows[0].find("small", cls="subsystem-meta").text()
