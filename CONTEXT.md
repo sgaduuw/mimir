@@ -1651,6 +1651,26 @@ the renderer. The dict's *values* are the int-based URLs (built via
 Message-IDs not in the archive render as plain text rather than dead
 links.
 
+### Alternate recovery URLs (#1053, #1046)
+
+Pasted lore paths `/r/<id>` and `/all/<id>/` are acceptor-only aliases for the
+same global Message-ID lookup as `/m/<id>`. They never become link emitters.
+The shared inbox-name predicate reserves exact r/all names across config, CRUD,
+broker requests and error-help screens. Existing deployments must inventory
+both persisted names and effective bootstrap keys on the old image and resolve
+conflicts before upgrading: the new broker cannot rename a reserved source.
+A migration guard catches persisted conflicts before appending robots entries.
+The prefix rules only keep redundant lookup URLs out of the crawl; normal
+messages and query-bearing comparisons remain crawlable.
+
+Hyphenated date aliases perform no article lookup. They use `url_for` to spell
+the existing message/thread acceptor, which remains the one authority for date
+and membership. This promises an accepted slash-form URL, not byte-identical
+canonical month padding. A wrong-inbox message may recover through its existing
+redirect; a thread with no membership in that inbox remains404. Linked cross-
+posts keep the acceptor's inbox-specific conversation semantics. New aliases do
+not introduce a second canonical or identity policy.
+
 ## Canonical-inbox resolution (cross-posts)
 
 Same message, multiple inboxes (e.g. lkml + linux-fsdevel) is

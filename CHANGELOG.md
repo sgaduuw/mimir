@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Pasted lore-shaped `/r/<id>` and `/all/<id>/` URLs now use the existing canonical Message-ID lookup. Their input-only prefixes are disallowed for crawlers; exact inbox names `r` and `all` are reserved, with an old-version inventory/remediation prerequisite before upgrading (#1053).
+- Hyphenated year-month message and thread URLs now redirect to their existing slash-form routes. The destination retains date validation and inbox-specific behavior (#1046).
 - Incomplete series-diff URLs redirect to an existing cover conversation instead of returning a 404. A robots data migration blocks only bare diff paths while preserving query-bearing sitemap comparisons and operator rules (#985).
 - Fresh-install and reset robots defaults now omit `Crawl-delay` and allow `ai-input`, matching the operator policy. Already-migrated installations keep their configured rules (#1009).
 - The task scheduler exits successfully on TERM or INT during idle waits and running tasks, forwarding termination to its owned CLI processes and background warm wrappers without recording interrupted runs as successful (#1007).

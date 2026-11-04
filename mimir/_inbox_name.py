@@ -2,7 +2,8 @@
 
 A name flows into URL paths and cache-key fragments, so it must be
 URL-safe and `:`-free: lowercase, alphanumeric and hyphens, not starting
-or ending with a hyphen, at most 64 characters.
+or ending with a hyphen, at most 64 characters. Exact names `r` and `all`
+are reserved for lore-shaped recovery redirects.
 
 Its own module because `mimir.config` checks `INBOXES` keys against it
 at load (#747) and cannot import `mimir.inboxes`, which imports
@@ -11,7 +12,9 @@ at load (#747) and cannot import `mimir.inboxes`, which imports
 
 import re
 
-INBOX_NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+# Recovery routes own these exact top-level prefixes; similar names remain
+# valid. Keep the reservation here so config, CRUD and the wire agree.
+INBOX_NAME_RE = re.compile(r"^(?!(?:r|all)$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
 
 
 def inbox_path(name: str) -> str:
