@@ -222,7 +222,8 @@ def _refused_key(exc: ValidationError) -> str | None:
 
 
 @pytest.mark.parametrize(
-    "name", ["linux_arm_kernel", "Linux-ARM", "linux.arm", "-lkml", "a" * 65]
+    "name",
+    ["linux_arm_kernel", "Linux-ARM", "linux.arm", "-lkml", "r", "all", "a" * 65],
 )
 def test_settings_refuses_a_non_slug_inbox_key(name):
     """An INBOXES key becomes an inbox name in URLs and the database,

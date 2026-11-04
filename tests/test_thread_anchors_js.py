@@ -5,12 +5,13 @@ from pathlib import Path
 import pytest
 
 
-def test_thread_anchors_script():
+@pytest.mark.parametrize("controller", ["thread-anchors", "thread-fold", "thread-tabs"])
+def test_thread_controller_script(controller):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node is optional for JavaScript controller checks")
     result = subprocess.run(
-        [node, "--test", "tests/js/thread-anchors.test.cjs"],
+        [node, "--test", f"tests/js/{controller}.test.cjs"],
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,

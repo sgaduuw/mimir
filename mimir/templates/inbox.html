@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_search_field.html" import search_field %}
 {% block title %}{{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}
 {%- if stats and stats.total -%}
@@ -17,12 +18,10 @@
       <span>{% if stats and stats.last_date %}Latest {{ stats.last_date|relative_time }}{% elif stats and stats.total %}Latest date unknown{% else %}No messages yet{% endif %}</span>
     </p>
   </div>
-  <form method="get" action="/{{ inbox_name }}/search" role="search" class="search-form inbox-search">
-    <label for="inbox-query">Search subject or sender</label>
-    <fieldset role="group">
+  <form method="get" action="/{{ inbox_name }}/search" class="search-form inbox-search">
+    {% call search_field('inbox-query', 'Search subject or sender', 'Search') %}
       <input type="search" id="inbox-query" name="q" minlength="{{ search_min_len }}" maxlength="{{ search_max_len }}" placeholder="subject or sender …">
-      <button type="submit" class="secondary">Search</button>
-    </fieldset>
+    {% endcall %}
   </form>
 </header>
 <div class="inbox-dashboard">
@@ -31,7 +30,7 @@
       <h2 id="active-heading">Most active threads <small>(last 7 days)</small></h2>
       {% if active %}
       <table class="listing-table inbox-active">
-        <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies in 7d</th></tr></thead>
+        <thead><tr><th scope="col" class="listing-time">Last</th><th scope="col" class="listing-main">Thread</th><th scope="col" class="listing-count">Replies in 7d</th></tr></thead>
         <tbody>
         {% for t in active %}
           {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}

@@ -2,6 +2,228 @@
 
 from datetime import UTC, datetime
 
+import pytest
+
+from tests._dom import parse
+
+
+@pytest.mark.parametrize("child_patch", [False, True])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_patch_tabs_count_and_index_only_patches_besides_the_root(
+    client, tmp_path, child_patch, fallback
+):
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+    from mimir.patch_state import message_kind
+    from tests.test_routes._helpers import seed_thread_shape
+
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [("root@x", None), ("child@x", "root@x"), ("review@x", "root@x")],
+    )
+    with SessionLocal() as session:
+        root = session.get(Article, seeded["root@x"][0])
+        root.subject = "[PATCH] standalone root"
+        child = session.get(Article, seeded["child@x"][0])
+        child.subject = "[PATCH] additional patch" if child_patch else "Review"
+        assert message_kind(root) == "patch"
+        assert message_kind(child) == ("patch" if child_patch else "reply")
+        assert root.id != child.id
+        if fallback:
+            from sqlalchemy import update
+
+            session.execute(
+                update(ArticleList)
+                .where(ArticleList.article_id == seeded["review@x"][0])
+                .values(thread_root_id=None)
+            )
+        session.commit()
+    response = client.get(seeded["root@x"][1] + "/t")
+    assert response.status_code == 200
+    page = parse(response.get_data(as_text=True))
+    assert len(page.find_all("article", cls="thread-message")) == 3
+    assert len(page.find_all(cls="thread-tabs")) == int(child_patch)
+    index = page.find_all("li", **{"data-patch": str(seeded["root@x"][0])})
+    assert index == []
+    if child_patch:
+        assert page.find("button", **{"data-tab": "patches"}).text() == "Patches 1"
+        assert len(page.find_all("li", **{"data-patch": str(child.id)})) == 1
+    for mid in ("root@x", "review@x"):
+        message = client.get(seeded[mid][1])
+        assert message.status_code == 200
+        tree = parse(message.get_data(as_text=True)).find(cls="thread-context")
+        assert len(tree.find_all("li", **{"data-article-id": str(seeded[mid][0])})) == 1
+
+
+def _seed_tab_pages(tmp_path):
+    """Four pages at cap 2: root/reply, replies, patches, replies."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from tests.test_routes._helpers import seed_thread_shape
+
+    mids = ["root@x", "r0@x", "r1@x", "r2@x", "p1@x", "p2@x", "r3@x", "r4@x"]
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [(mid, None if i == 0 else "root@x") for i, mid in enumerate(mids)],
+    )
+    with SessionLocal() as session:
+        for position, mid in enumerate(("p1@x", "p2@x"), 1):
+            article = session.get(Article, seeded[mid][0])
+            article.subject = f"[PATCH v1 {position}/2] part {position}"
+            article.patch_series_key = "f" * 40
+            article.patch_series_version = "v1"
+            article.patch_series_position = position
+        session.commit()
+    return seeded
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+@pytest.mark.parametrize("tied_dates", [False, True])
+def test_empty_tabs_link_to_the_first_later_page_with_visible_content(
+    client, tmp_path, monkeypatch, fallback, tied_dates
+):
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_tab_pages(tmp_path)
+    if tied_dates:
+        from sqlalchemy import update
+
+        with SessionLocal() as session:
+            session.execute(
+                update(Article)
+                .where(Article.id.in_([aid for aid, _ in seeded.values()]))
+                .values(date=datetime(2024, 1, 5, tzinfo=UTC))
+            )
+            session.commit()
+    if fallback:
+        from sqlalchemy import update
+
+        with SessionLocal() as session:
+            session.execute(
+                update(ArticleList)
+                .where(ArticleList.article_id == seeded["r4@x"][0])
+                .values(thread_root_id=None)
+            )
+            session.commit()
+    base = seeded["root@x"][1] + "/t"
+    for number, next_discussion, next_patches in (
+        (1, 2, 3),
+        (2, 4, 3),
+        (3, 4, None),
+        (4, None, None),
+    ):
+        for headers in ({}, {"HX-Request": "true"}):
+            url = base if number == 1 else f"{base}/{number}"
+            response = client.get(url, headers=headers)
+            assert response.status_code == 200
+            page = parse(response.get_data(as_text=True))
+            assert len(page.find_all("article", cls="thread-message")) == 2
+            boundaries = page.find_all(cls="thread-more")
+            assert len(boundaries) == int(number < 4)
+            for tab, target_page in (
+                ("discussion", next_discussion),
+                ("patches", next_patches),
+            ):
+                href = (
+                    boundaries[0].attrs.get(f"data-next-{tab}") if boundaries else None
+                )
+                assert href == (f"{base}/{target_page}#{tab}" if target_page else None)
+                if href:
+                    target = client.get(href.partition("#")[0])
+                    assert target.status_code == 200
+                    target_dom = parse(target.get_data(as_text=True))
+                    cards = target_dom.find_all("article", cls="thread-message")
+                    assert any(
+                        "data-root" not in card.attrs
+                        and (card.attrs["data-kind"] == "patch") == (tab == "patches")
+                        for card in cards
+                    )
+                    assert (
+                        target_dom.find("link", rel="canonical")
+                        .attrs["href"]
+                        .endswith(f"{base}/{target_page}")
+                    )
+
+
+@pytest.mark.parametrize("hx", [False, True])
+@pytest.mark.parametrize("fallback", [False, True])
+def test_off_page_kind_change_revalidates_the_next_kind_link(
+    client, tmp_path, monkeypatch, hx, fallback
+):
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_tab_pages(tmp_path)
+    if fallback:
+        from sqlalchemy import update
+
+        with SessionLocal() as session:
+            session.execute(
+                update(ArticleList)
+                .where(ArticleList.article_id == seeded["r4@x"][0])
+                .values(thread_root_id=None)
+            )
+            session.commit()
+    base = seeded["root@x"][1] + "/t"
+    headers = {"HX-Request": "true"} if hx else {}
+    before = client.get(base + "/2", headers=headers)
+    assert before.status_code == 200
+    before_dom = parse(before.get_data(as_text=True))
+    assert before_dom.find(cls="thread-more").attrs["data-next-discussion"] == (
+        base + "/4#discussion"
+    )
+    headers["If-None-Match"] = before.headers["ETag"]
+    assert client.get(base + "/2", headers=headers).status_code == 304
+    with SessionLocal() as session:
+        patch = session.get(Article, seeded["p1@x"][0])
+        patch.patch_series_key = patch.patch_series_position = None
+        session.commit()
+    after = client.get(base + "/2", headers=headers)
+    assert after.status_code == 200
+    assert after.headers["ETag"] != before.headers["ETag"]
+    assert (
+        parse(after.get_data(as_text=True))
+        .find(cls="thread-more")
+        .attrs["data-next-discussion"]
+        == base + "/3#discussion"
+    )
+
+
+def test_next_discussion_page_can_contain_a_nested_cover(client, tmp_path, monkeypatch):
+    from mimir.config import settings
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+    from mimir.patch_state import message_kind
+
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_tab_pages(tmp_path)
+    with SessionLocal() as session:
+        for mid, position in (("r3@x", 0), ("r4@x", 1)):
+            article = session.get(Article, seeded[mid][0])
+            article.subject = f"[PATCH {position}/2] nested posting"
+            article.patch_series_key = "e" * 40
+            article.patch_series_version = "v1"
+            article.patch_series_position = position
+            assert message_kind(article) == ("cover" if position == 0 else "patch")
+        session.commit()
+    base = seeded["root@x"][1] + "/t"
+    page = parse(client.get(base + "/3").get_data(as_text=True))
+    assert (
+        page.find(cls="thread-more").attrs["data-next-discussion"]
+        == base + "/4#discussion"
+    )
+    target = parse(client.get(base + "/4").get_data(as_text=True))
+    assert [
+        c.attrs["data-kind"] for c in target.find_all("article", cls="thread-message")
+    ] == ["cover", "patch"]
+
 
 def test_thread_rows_share_the_page_order_and_the_page_rank(client, tmp_path):
     """`thread_rows` is read in the page's own order, so a message's index
@@ -617,6 +839,7 @@ def test_a_thread_without_replies_renders_a_zero_discussion_count(client, tmp_pa
 
     from mimir.extensions import SessionLocal
     from mimir.models import Article
+    from mimir.patch_state import message_kind
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(
@@ -631,14 +854,18 @@ def test_a_thread_without_replies_renders_a_zero_discussion_count(client, tmp_pa
             a.subject = subject
             a.patch_series_key = "n" * 40
             a.patch_series_position = position
+            # The existing 0/1 parser classifies both as patches. Only
+            # the distinct child belongs in the Patches count/index.
+            assert message_kind(a) == "patch"
         s.commit()
+    assert seeded["nr-cov@x"][0] != seeded["nr-p1@x"][0]
     html = client.get(seeded["nr-cov@x"][1] + "/t").get_data(as_text=True)
     counts = dict(
         re.findall(
             r'data-tab="(\w+)"[^>]*>[^<]*<span class="tab-count">([^<]*)</span>', html
         )
     )
-    assert counts == {"discussion": "0", "patches": "2", "all": "2"}
+    assert counts == {"discussion": "0", "patches": "1", "all": "2"}
 
 
 def test_the_related_heading_is_not_on_the_page_without_the_fragment(client, tmp_path):

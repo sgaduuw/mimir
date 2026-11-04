@@ -44,7 +44,7 @@ def test_active_listing_renders_landed_pill_for_landed_article(client, frozen_cl
         art.date = datetime.now(UTC) - timedelta(hours=1)
         s.commit()
         alpha_id = s.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
-        cache.delete(f"lifecycle_status:{art.id}:i{alpha_id}")
+        cache.delete(f"lifecycle_status_v2:{art.id}:i{alpha_id}")
 
     r = client.get("/alpha/")
     assert r.status_code == 200

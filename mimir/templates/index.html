@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_search_field.html" import search_field %}
 {% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
 {% block content %}
 {% from "_sparkline.html" import spark_bars %}
@@ -77,8 +78,9 @@
   <h2 id="inboxes">All {{ inbox_summaries|length }} inboxes</h2>
   {% if inbox_summaries %}
   <div class="front-controls" data-filter-controls hidden>
-    <label for="inbox-find">Find an inbox</label>
+    {% call search_field('inbox-find', 'Find an inbox') %}
     <input id="inbox-find" type="search" data-filter-input="inbox-list" autocomplete="off">
+    {% endcall %}
     <span class="front-sort">
       <button type="button" class="outline secondary" data-sort-button="default" data-sort-list="inbox-list" aria-pressed="true">A to Z</button>
       <button type="button" class="outline secondary" data-sort-button="active" data-sort-list="inbox-list" aria-pressed="false">Most active</button>

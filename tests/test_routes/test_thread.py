@@ -2451,9 +2451,8 @@ def test_thread_revisions_are_open_and_per_message_details_keep_their_fold(
 # card's own landing query is gone. #989 adds one statement before the
 # validator (the thread's series rows, filtered in SQL, for the digest)
 # and, on a 200 only, the whole thread's rows (`thread_rows`) for the
-# tabs and the Patches index: 34/16. The header lists this inbox's busiest
-# subsystem first, a cached ranking read before the validator (it is an
-# ETag input): one more statement on both, 35/17.
+# tabs and the Patches index: 34/16. The former activity-based header order
+# added a cached ranking read before the validator: 35/17.
 # The outline (#989, from five messages) adds no statement on page 1, which
 # reads its rows with its own slice, and one on pages 2 and up, on the 200 and
 # the 304, pinned in test_thread_outline.py. This two-message thread has no
@@ -2465,8 +2464,11 @@ def test_thread_revisions_are_open_and_per_message_details_keep_their_fold(
 # more on the 200 only: 38/17.
 # #990 adds one indexed revision_groups_tag batch read before the validator
 # on both responses, covering nested-series timelines too: 39/18.
-THREAD_VIEW_STATEMENTS_200 = 39
-THREAD_VIEW_STATEMENTS_304 = 18
+# #1068 removes that activity read. This inbox has no list address, so the
+# authoritative ownership lookup is skipped: 38/17. The address-present
+# case's one indexed read on each response is pinned in test_thread_list_ownership.
+THREAD_VIEW_STATEMENTS_200 = 38
+THREAD_VIEW_STATEMENTS_304 = 17
 
 
 def test_thread_view_statement_budget(client, tmp_path, monkeypatch):

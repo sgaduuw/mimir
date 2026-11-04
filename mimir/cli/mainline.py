@@ -62,11 +62,11 @@ def update_mainline_command(
     independent passes against the resulting tree:
 
     1. MAINTAINERS: read the file at HEAD, replace the
-       `subsystems` / `subsystem_paths` / `subsystem_maintainers`
+       `subsystems` / `subsystem_paths` / `subsystem_maintainers` / `subsystem_lists`
        tables transactionally. Skipped when the MAINTAINERS file
        itself hasn't changed since the last load, which is most
        ticks (`--force` overrides; for re-runs after a parser fix,
-       or to rebuild a triple that was emptied out-of-band). `--skip-maintainers` disables this
+       or to rebuild a projection that was emptied out-of-band). `--skip-maintainers` disables this
        pass entirely for the tick.
 
     2. Commit trailer walk: scan every commit since the last walker

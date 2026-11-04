@@ -56,9 +56,7 @@ def _warm_active_subsystems(inbox_name: str | None = None) -> None:
 
 def test_meta_index_has_inboxes_anchor(client):
     """`/` carries the `id="inboxes"` structural anchor. The content
-    of the inbox list -- and the pin-aware ordering -- is exercised
-    in `test_meta_index_pins_inbox_first`, which subsumes the older
-    presence-only checks for the alpha/beta links."""
+    and pin-aware ordering are checked in test_front_page.py."""
     r = client.get("/")
     assert r.status_code == 200
     assert 'id="inboxes"' in r.data.decode()
@@ -80,14 +78,6 @@ def test_meta_index_hero_image_has_substantive_alt(client):
     )
     assert m, "front-page ratatoskr <img> not found"
     assert m.group(1).strip(), f"hero image alt must not be empty; got {m.group(1)!r}"
-
-
-def test_meta_index_row_link_targets_inbox_dashboard(client):
-    """Each inbox row links to the per-inbox dashboard."""
-    body = client.get("/").data.decode()
-    hrefs = re.findall(r'<a class="inbox-link" href="(/[^"]+/)"', body)
-    assert "/alpha/" in hrefs
-    assert "/beta/" in hrefs
 
 
 def test_meta_index_last_activity_reads_from_inbox_column(client):
@@ -137,41 +127,6 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
     assert after["beta"] == before["beta"]
 
 
-def test_meta_index_renders_subsystem_chips_with_activity(client, tmp_path):
-    """Front page surfaces an "Active subsystems" teaser when one
-    or more subsystems have recent messages. Chips link to the
-    busiest inbox's per-subsystem dashboard (lowercased URL).
-    """
-    from datetime import datetime, timedelta
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import Article
-
-    _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    body = (
-        b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n"
-    )
-    art_id, _ = _ingest_one_article(
-        tmp_path,
-        "alpha",
-        "bch-front@example.com",
-        subject="bcachefs front-page test",
-        body=body,
-    )
-    with SessionLocal() as s:
-        art = s.get(Article, art_id)
-        art.date = datetime.now(UTC) - timedelta(hours=2)
-        s.commit()
-    _warm_active_subsystems()
-    text = client.get("/").data.decode()
-    assert "Active subsystems" in text
-    # Display name is lowercased on the chip; URL is also lowercase
-    # (subsystem URL canonicalisation since #110). The stored DB
-    # row keeps the upstream MAINTAINERS uppercase casing.
-    assert "bcachefs" in text
-    assert "/alpha/subsystem/bcachefs/" in text
-
-
 def test_meta_index_no_subsystem_section_when_no_activity(client):
     """Inverse: with no recent in-window articles the section is
     skipped entirely rather than rendering a stub."""
@@ -219,44 +174,6 @@ def test_meta_index_subsystem_row_names_inbox_count_and_bar(client, tmp_path):
     assert rows[0].find("small", cls="front-row-meta").text() == "alpha"
     assert rows[0].find("span", cls="count").text() == "1"
     assert rows[0].find("rect").attrs["width"] == "100.0"
-
-
-def test_meta_index_pins_inbox_first(client, monkeypatch):
-    """Seeded fixtures have alpha + beta. Without a pin, alpha shows
-    first (alphabetical). Pinning beta surfaces it ahead of alpha.
-    Subsumes the older presence-only "alpha + beta link" checks.
-
-    Use the first-anchor occurrence of each inbox link rather than
-    `.find()` against the raw body -- inbox names appear in CSS and
-    nav too, which means a brittle whole-body search would give the
-    wrong index ordering. Anchor on the `<a href="/<name>/">` pattern."""
-    import re
-
-    from mimir.config import settings
-
-    def first_inbox_link_order(body: str) -> list[str]:
-        # Each inbox dashboard link is exactly `href="/<name>/"`; capture
-        # them in document order, keep first appearance only.
-        seen: list[str] = []
-        for m in re.finditer(r'href="/([a-z0-9-]+)/"', body):
-            name = m.group(1)
-            if name in {"alpha", "beta"} and name not in seen:
-                seen.append(name)
-        return seen
-
-    monkeypatch.setattr(settings, "pinned_inboxes", [])
-    body = client.get("/").data.decode()
-    # Both seeded inboxes show up as anchors to their dashboard
-    # (without this, the order check below would still pass on an
-    # empty page after a routing/template break that swallowed the
-    # inbox loop).
-    assert 'href="/alpha/"' in body
-    assert 'href="/beta/"' in body
-    assert first_inbox_link_order(body) == ["alpha", "beta"]
-
-    monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
-    body = client.get("/").data.decode()
-    assert first_inbox_link_order(body) == ["beta", "alpha"]
 
 
 def test_inbox_dashboard_content(client, inbox_name):
@@ -1312,3 +1229,80 @@ def test_root_files_still_serve_beside_the_bare_inbox_route(client):
     assert client.get("/robots.txt").status_code == 200
     assert client.get("/favicon.svg").status_code == 200
     assert client.get("/favicon.ico").status_code == 301
+
+
+def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
+    client, seeded_db
+):
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import select
+
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Article, ArticleTrailer, Inbox
+    from tests._dom import parse
+    from tests.test_subsystems._helpers import _add_patch_article, _add_subsystem
+
+    with seeded_db() as session:
+        _add_subsystem(
+            session,
+            "COUNTS",
+            "Maintained",
+            ["drivers/counts/"],
+            maintainers=[
+                ("M", "Maintainer", "m@kernel.org"),
+                ("R", "Reviewer", "r@kernel.org"),
+            ],
+        )
+        # Repeated MAINTAINERS entries must not multiply a trailer event.
+        _add_subsystem(
+            session,
+            "OTHER",
+            "Maintained",
+            [],
+            maintainers=[("M", "Maintainer", "m@kernel.org")],
+        )
+        aid = _add_patch_article(session, "counts@x", ["drivers/counts/a.c"])
+        article = session.get(Article, aid)
+        article.subject = "[PATCH] review counts"
+        article.author = "Safe Author <private@example.net>"
+        article.date = datetime.now(UTC) - timedelta(days=20)
+        date = article.date.strftime("%Y-%m-%d")
+        for role, address in [
+            ("Reviewed-by", "m@kernel.org"),
+            ("Tested-by", "m@kernel.org"),
+            ("Reviewed-by", "r@kernel.org"),
+            ("Acked-by", "outside@example.net"),
+            ("Reported-by", "outside@example.net"),
+        ]:
+            session.add(
+                ArticleTrailer(
+                    article_id=aid,
+                    role=role,
+                    name="Person",
+                    address=address,
+                    address_normalized=address,
+                )
+            )
+        session.commit()
+        inbox_id = session.scalar(select(Inbox.id).where(Inbox.name == "alpha"))
+        # Count trailer events, including repeated people and every review role.
+        assert (
+            _bulk_uncached(session, [aid], inbox_id)[aid].count_suffix
+            == ": 4 reviews, 3 by maintainers"
+        )
+    response = client.get("/alpha/subsystem/counts/")
+    assert response.status_code == 200
+    section = parse(response.get_data(as_text=True)).find(
+        "section", cls="subsystem-triage"
+    )
+    rows = section.find_all("li")
+    assert len(rows) == 1, "fixture must reach the actual reviewed queue"
+    assert (
+        rows[0].find("span", cls="badge-count").text()
+        == ": 4 reviews, 3 by maintainers"
+    )
+    assert (
+        rows[0].find("small", cls="subsystem-meta").text()
+        == date + " · Safe Author <hidden>"
+    )

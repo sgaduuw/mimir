@@ -21,7 +21,7 @@ Per-issue-210 design choices:
   overlap, the route reports "couldn't pick" rather than guessing.
 """
 
-from flask import abort, render_template, request
+from flask import abort, redirect, render_template, request
 
 from mimir import cache
 from mimir.extensions import SessionLocal
@@ -34,7 +34,10 @@ from mimir.patch_revisions import (
 from mimir.store import read_first_readable
 from mimir.web._blueprint import bp_web
 from mimir.web.filters import _clean_subject_filter
-from mimir.web.series_diff_navigation import load_series_diff_navigation
+from mimir.web.series_diff_navigation import (
+    incomplete_series_destination,
+    load_series_diff_navigation,
+)
 from mimir.web.urls import (
     _canonical_url_for,
     _get_inbox_or_404,
@@ -73,22 +76,23 @@ def _message_url(article: Article) -> str:
 
 @bp_web.route("/<inbox_name>/series/<series_key>/diff")
 def series_diff(inbox_name: str, series_key: str):
-    """Render the diff between two revisions of a single patch
-    series position, or 404 with an actionable message if the
-    request can't be resolved."""
+    """Render a complete comparison or recover missing inputs via a cover.
+
+    Malformed or unknown supplied values remain 404s.
+    """
     from_version = request.args.get("from", "").strip()
     to_version = request.args.get("to", "").strip()
     pos_raw = request.args.get("pos", "").strip().lower()
-    if not from_version or not to_version or not pos_raw:
-        abort(404)
-    if from_version == to_version:
+    if from_version and from_version == to_version:
         # Self-diff is meaningless; surface as a 400-ish 404 rather
         # than rendering an empty diff page.
         abort(404)
 
     # Parse `pos`: `cover` (or `0`) for the cover letter, positive
     # integers for in-series patches. Reject anything else.
-    pos = 0 if pos_raw in ("cover", "0") else _positive_int_or_404(pos_raw)
+    pos = None
+    if pos_raw:
+        pos = 0 if pos_raw in ("cover", "0") else _positive_int_or_404(pos_raw)
 
     # `s`, the series head (#816): absent is the key's first series
     # (NULL head). Present, it must be the positive id `_series_diff_url`
@@ -99,6 +103,14 @@ def series_diff(inbox_name: str, series_key: str):
 
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
+
+        if not from_version or not to_version or not pos_raw:
+            return redirect(
+                incomplete_series_destination(
+                    session, inbox, series_key, head_id, from_version, to_version
+                ),
+                code=301,
+            )
 
         navigation = load_series_diff_navigation(
             session, inbox, series_key, head_id, from_version, to_version, pos

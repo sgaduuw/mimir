@@ -1,7 +1,7 @@
 {# The thread page's header (#989): where it sits, what it is called, who
    started it and when it last moved, then what it touches. Every figure
-   is one the page's validator already carries, bar the busiest
-   subsystem, which `thread.py` folds into the ETag. Vars: `root`,
+   and the list-contact ownership order are carried by the page's
+   validator in `thread.py`. Vars: `root`,
    `title_tags`, `title_text`, `total_count`, `author_count`,
    `last_activity`, `subsystem_hits`, `series_totals`. #}
 {% from "_subsystem_link.html" import maintainer_link, subsystem_link %}

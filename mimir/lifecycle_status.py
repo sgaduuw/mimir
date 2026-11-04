@@ -434,23 +434,6 @@ SELECT t.article_id,
 """).bindparams(bindparam("ids", expanding=True), _REVIEW_ROLES_PARAM)
 
 
-def review_trailer_counts(
-    session: Session, article_ids: list[int]
-) -> dict[int, tuple[int, int]]:
-    """Source trailer-event counts and the existing global M/R subset.
-
-    Keep dashboard prose independent of formatted badge suffixes and the
-    registered lifecycle cache shape. A repeated person still counts once
-    per trailer event, exactly as the lifecycle badge does.
-    """
-    counts = {}
-    if article_ids:
-        for row in session.execute(_REVIEWER_NAMES_SQL, {"ids": article_ids}):
-            total, maintainers = counts.get(row.article_id, (0, 0))
-            counts[row.article_id] = (total + 1, maintainers + row.is_maintainer)
-    return counts
-
-
 def _format_pill_label(state: LifecycleStatus, tree: str | None) -> str:
     """Build the uppercase pill label for a state. QUEUED reads
     `IN <TREE>` (kebab-case slug uppercased). LANDED / REVIEWED /
@@ -562,12 +545,12 @@ def _format_tooltip(
 
 
 def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
-    """Build the inline count suffix `: N (XM)` for the pill, or
-    None when the count is zero (`LANDED` with no reviews is just
-    `LANDED`, no suffix)."""
+    """Name the review counts without requiring readers to decode `M`."""
     if total == 0:
         return None
-    return f": {total} ({maintainer_count}M)"
+    reviews = "review" if total == 1 else "reviews"
+    maintainers = "a maintainer" if maintainer_count == 1 else "maintainers"
+    return f": {total} {reviews}, {maintainer_count} by {maintainers}"
 
 
 def _cover_rollup(own: LifecycleStatus, row) -> tuple[LifecycleStatus, str | None]:
@@ -742,7 +725,7 @@ def lifecycle_status_for_articles(
     article has one chip per inbox.
 
     Per-article cache rows with a 5-minute TTL. Cache key
-    `lifecycle_status:<id>:i<inbox_id>`, backed by `cache.get_many` so a
+    `lifecycle_status_v2:<id>:i<inbox_id>`, backed by `cache.get_many` so a
     single SELECT covers all hits. Misses are computed together in
     `_bulk_uncached`, a fixed number of statements however many ids. Empty input
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
@@ -764,7 +747,9 @@ def lifecycle_status_for_articles(
     if not article_ids:
         return {}
     suffix = f":i{inbox_id}" + (f":{state_key}" if state_key is not None else "")
-    key_to_id = {f"lifecycle_status:{a}{suffix}": a for a in article_ids}
+    # v2 leaves the pre-#1068 compact presentation strings to expire. The
+    # cached shape is unchanged, so other cache families need no reset.
+    key_to_id = {f"lifecycle_status_v2:{a}{suffix}": a for a in article_ids}
     hits = cache.get_many(list(key_to_id))
     out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
     missing_ids = [a for a in article_ids if a not in out]
@@ -772,7 +757,7 @@ def lifecycle_status_for_articles(
         computed = _bulk_uncached(session, missing_ids, inbox_id)
         for article_id, info in computed.items():
             cache.set(
-                f"lifecycle_status:{article_id}{suffix}",
+                f"lifecycle_status_v2:{article_id}{suffix}",
                 info,
                 ttl=LIFECYCLE_STATUS_TTL_SEC,
             )

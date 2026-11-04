@@ -67,8 +67,7 @@ _FAVICON_SVG = (
 @bp_web.route("/robots.txt")
 def robots_txt():
     """DB-backed robots.txt. Rows in `robots_rules` produce one
-    stanza each; the `*` row is seeded by the migration with the
-    same values the previous hardcoded template used. Operator
+    stanza each; migrations seed the `*` row. The operator
     mutates via `admin robots {add,update,remove,reset}`."""
     # Both indexes (#964): pages mimir adds, then message pages.
     base = _site_base()

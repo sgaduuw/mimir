@@ -4,8 +4,11 @@ import re
 from datetime import UTC, datetime
 from xml.etree import ElementTree as ET
 
+import pytest
+
 from mimir.subsystems import subsystem_path
 from mimir.subsystems_dashboard.activity import SubsystemActivity
+from tests._dom import parse
 
 
 def _activity(name, count, **kwargs):
@@ -84,16 +87,13 @@ def test_subsystem_index_aligns_visible_rows_counts_meters_and_links(
     assert [link.text for link in links] == ["arm/demo & drivers", "second"]
     assert "2 subsystems with patch activity" in body
     assert "HIDDEN" not in "".join(table.itertext())
-    assert [float(row.find("./td/svg/rect").attrib["width"]) for row in rows] == [
+    assert [float(row.find("./td/span/svg/rect").attrib["width"]) for row in rows] == [
         100,
         50,
     ]
-    assert [row.find("./td/strong").text for row in rows] == ["10", "5"]
+    assert [row.find("./td/span/strong").text for row in rows] == ["10", "5"]
     assert rows[0].find("./th/span").text == "Supported"
-    assert (
-        "subsystem-status-supported"
-        in rows[0].find("./th/span").attrib["class"].split()
-    )
+    assert "pill-supported" in rows[0].find("./th/span").attrib["class"].split()
     assert rows[1].find("./th/span") is None
     assert "".join(rows[0].findall("td")[1].itertext()).strip() == "Pat Example et al."
     assert "".join(rows[1].findall("td")[1].itertext()).strip() == "none listed"
@@ -110,8 +110,8 @@ def test_subsystem_index_handles_zero_counts_missing_metadata_and_escaped_names(
     body = _render(client, monkeypatch, [row])
     table = _table(body)
     assert "1 subsystem with patch activity" in body
-    assert float(table.find("./tbody/tr/td/svg/rect").attrib["width"]) == 0
-    assert table.find("./tbody/tr/td/strong").text == "0"
+    assert float(table.find("./tbody/tr/td/span/svg/rect").attrib["width"]) == 0
+    assert table.find("./tbody/tr/td/span/strong").text == "0"
     assert table.find("./tbody/tr/th/span").text == "Orphan"
     assert table.findall(".//b") == []
     assert "<b>Display Name</b>" in "".join(table.itertext())
@@ -126,3 +126,37 @@ def test_subsystem_index_with_only_unaddressable_rows_uses_empty_state(
     assert "No subsystem has seen patch activity" in body
     assert 'class="subsystem-index-table"' not in body
     assert "BAD" not in body
+
+
+@pytest.mark.parametrize(
+    ("status", "modifier"),
+    [
+        ("Maintained", "pill-maintained"),
+        ("mAiNtAiNeD", "pill-maintained"),
+        ("Supported", "pill-supported"),
+        ("Odd Fixes", None),
+        ('<script>alert("x")</script>', None),
+        (None, None),
+    ],
+)
+def test_status_pill_preserves_and_escapes_text(client, status, modifier):
+    template = client.application.jinja_env.from_string(
+        '{% from "_pill.html" import status_pill %}{{ status_pill(status) }}'
+    )
+    page = parse(template.render(status=status))
+    pills = page.find_all("span", cls="pill")
+    if status is None:
+        assert pills == []
+    else:
+        assert len(pills) == 1
+        assert pills[0].text() == status
+        assert pills[0].classes == ["pill"] + ([modifier] if modifier else [])
+        assert page.find_all("script") == []
+
+
+def test_subsystem_index_keeps_mixed_case_maintained_neutral(client, monkeypatch):
+    body = _render(client, monkeypatch, [_activity("EXAMPLE", 1, status="mAiNtAiNeD")])
+    pill = _table(body).find("./tbody/tr/th/span")
+    assert pill is not None
+    assert pill.text == "mAiNtAiNeD"
+    assert pill.attrib["class"].split() == ["pill"]

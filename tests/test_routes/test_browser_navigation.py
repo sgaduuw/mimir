@@ -2,6 +2,7 @@
 
 Run: uv run --frozen --with playwright pytest -q tests/test_routes/test_browser_navigation.py
 Install Chromium once: uv run --with playwright playwright install chromium
+CI sets MIMIR_BROWSER_REQUIRED=1 so a missing dependency fails rather than skips.
 """
 
 import re
@@ -11,11 +12,79 @@ import pytest
 from werkzeug.serving import make_server
 
 from mimir.config import settings
+from tests._browser import playwright_api
 from tests.test_routes._helpers import build_thread, seed_thread_shape
 
 
+@pytest.mark.parametrize("width", [390, 1280])
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_empty_thread_tabs_follow_later_pages_after_htmx_append(
+    client, tmp_path, monkeypatch, width, scheme
+):
+    from tests.test_routes.test_thread_tabs import _seed_tab_pages
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    monkeypatch.setattr(settings, "thread_view_render_cap", 2)
+    seeded = _seed_tab_pages(tmp_path)
+    root_path = seeded["root@x"][1] + "/t"
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(
+                viewport={"width": width, "height": 800}, color_scheme=scheme
+            )
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.goto(base + root_path + "#patches")
+            expect(page.locator(".tab-empty")).to_be_visible()
+            expect(page.locator(".tab-empty a")).to_have_attribute(
+                "href", root_path + "/3#patches"
+            )
+            for number in (2, 3):
+                with page.expect_response(
+                    lambda r: (
+                        r.url == base + root_path + f"/{number}"
+                        and r.request.headers.get("hx-request") == "true"
+                    )
+                ) as response:
+                    page.locator(".thread-more a").click()
+                assert response.value.status == 200
+                expect(page.locator(".thread-message")).to_have_count(number * 2)
+                expect(page.locator("#thread-messages")).to_have_attribute(
+                    "data-tab", "patches"
+                )
+                if number == 2:
+                    expect(page.locator(".tab-empty a")).to_have_attribute(
+                        "href", root_path + "/3#patches"
+                    )
+                else:
+                    expect(page.locator(".tab-empty")).to_be_hidden()
+            # Direct page navigation uses the tab fragment too, and only
+            # onward pages qualify. The final page must not loop backwards.
+            page.goto(base + root_path + "/3#discussion")
+            expect(page.locator(".tab-empty a")).to_have_attribute(
+                "href", root_path + "/4#discussion"
+            )
+            page.locator(".tab-empty a").click()
+            expect(page).to_have_url(base + root_path + "/4#discussion")
+            expect(page.locator(".tab-empty")).to_be_hidden()
+            page.locator('[role="tab"][data-tab="patches"]').click()
+            expect(page.locator(".tab-empty")).to_be_visible()
+            expect(page.locator(".tab-empty a")).to_have_count(0)
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            assert errors == []
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
 def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 5)
     messages = list(build_thread(tmp_path, "alpha", shape="fan_out", size=12).values())
@@ -190,7 +259,7 @@ def test_keyboard_j_stays_on_messages_in_a_windowed_thread(
 ):
     """A long thread is windowed (#798). Its gap and footer rows link to
     the thread view; j at the last message shown must not follow them."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 5)
     messages = list(build_thread(tmp_path, "alpha", shape="fan_out", size=30).values())
@@ -232,7 +301,7 @@ def test_an_in_page_jump_into_an_appended_page_names_that_page(
     a message on it scrolls in place (#1035), and the address bar names
     page 2: setting only the hash kept page 1's path, so a copied address
     or a reload lost the message (3.39.0 release review)."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
     messages = list(build_thread(tmp_path, "alpha", shape="chain", size=6).values())
@@ -285,7 +354,7 @@ def test_an_in_page_jump_opens_the_tab_that_holds_the_message(
     opens Discussion: the jump pushes the URL, which fires no hashchange,
     so thread-anchors.js sends one for thread-tabs.js. Written by the
     3.39.0 fix review, red with that dispatch removed."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     from mimir.extensions import SessionLocal
     from mimir.models import Article
@@ -350,7 +419,7 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
     view, rather than leaving the reader where the old tree was."""
     import mimir.web.routes.message as message_route
 
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     seeded = seed_thread_shape(
         tmp_path,
         "alpha",
@@ -384,6 +453,28 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
             )
             page.goto(base + root_url)
             assert page.evaluate("typeof htmx") == "object"
+            playwright.expect(page.locator("html")).to_have_attribute(
+                "data-thread-fold", "partial"
+            )
+            for mode, label in (
+                ("closed", "Summary"),
+                ("partial", "Compact"),
+                ("expanded", "Expanded"),
+            ):
+                button = page.locator(f'[data-fold-set="{mode}"]')
+                playwright.expect(button).to_have_text(label)
+                assert button.bounding_box()["height"] >= 44
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+            # Direct replies also start with a visible tree; first paint
+            # must not create a saved preference that overrides later views.
+            page.goto(base + reply_url)
+            playwright.expect(page.locator("html")).to_have_attribute(
+                "data-thread-fold", "partial"
+            )
+            assert (
+                page.evaluate(f"localStorage.getItem('mimir.fold.{root_id}')") is None
+            )
+            page.goto(base + root_url)
             assert (
                 page.locator("#msg").bounding_box()["y"]
                 < page.locator(".thread-context").bounding_box()["y"]
@@ -455,7 +546,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
     client, tmp_path, monkeypatch
 ):
     """Real HTMX DOM swaps must keep successive targets, history and chrome aligned."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     from sqlalchemy import select
 
@@ -524,6 +615,9 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
                     "data-position", str(pos)
                 )
                 expect(page.locator("#series-diff-position")).to_have_value(str(pos))
+                expect(
+                    page.locator('.series-diff-pager button[type="submit"]')
+                ).to_be_hidden()
                 expect(page.locator("main")).to_have_count(1)
                 expect(page.locator("html")).to_have_attribute(
                     "data-nav-up", f"/{inbox}/"
@@ -602,12 +696,9 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
             expect_position(1)
             page.unroute(base + path(3))
 
-            # Go remains a form submission; a requesting inbox can nominate another.
-            page.locator("#series-diff-position").evaluate(
-                "select => { select.value = '2'; }"
-            )
-            page.locator('.series-diff-pager button[type="submit"]').click()
-            expect_position(2, canonical_inbox="beta")
+            # The enhanced picker replaces Go, including after swaps and history.
+            page.locator("#series-diff-position").select_option("2")
+            expect_position(2, "beta")
             page.locator(".series-diff-pairs a").click()
             expect_position(2, older="v2", newer="v3")
             page.locator(".series-diff-overview a").first.click()
@@ -646,7 +737,7 @@ def test_a_revision_link_in_a_message_details_fragment_scrolls_in_place(
     page and the message's anchor. With the page already appended by HTMX,
     a click scrolls to it without loading the page again (#1035). Red with
     `.revisions-fold a` out of thread-anchors.js."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     from tests.test_routes.test_revision_links import _seed_with_repost
 

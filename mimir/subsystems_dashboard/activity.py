@@ -3,20 +3,18 @@ teaser and the per-inbox dashboard widget).
 
 The per-inbox helper is the heavy hitter: one bulk SQL + an
 inverted-index walk over MAINTAINERS rules + a single Python pass
-that aggregates per-subsystem counts and per-day buckets for the
-inline sparklines. The global helper composes per-inbox results.
+that aggregates per-subsystem counts. The global helper composes
+per-inbox results.
 """
 
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from datetime import date as date_cls
 
 from sqlalchemy import DateTime, bindparam, select, text
 from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
-from mimir.dashboard import DailyVolume
 from mimir.datetime_utils import coerce_dt
 from mimir.models import Inbox, Subsystem
 
@@ -41,21 +39,12 @@ class SubsystemActivity:
     in `subsystem_maintainers` for this subsystem. Empty string
     when MAINTAINERS lists no maintainer (rare; mostly Orphan
     sections). `multiple_maintainers` distinguishes single-name
-    from "et al." rendering on the card.
+    from "et al." rendering on the subsystem index.
 
     `status` is the verbatim `S:` field
     (`Supported` / `Maintained` / `Odd Fixes` / `Orphan` /
-    `Obsolete`); the front-page card only surfaces it when it
-    differs from the default `Maintained` (most subsystems sit
-    at that value, so a badge on every card would just be noise).
-
-    `spark` is a 7-day daily-volume series for this subsystem on
-    `inbox_name`. Drives the inline sparkline on the front-page
-    card. None when the subsystem has no supported globs (the
-    `daily_volume_in_subsystem` helper still returns a zero-
-    filled series in that case but we skip it on the cards to
-    avoid rendering a flat bar row for every wildcard-only
-    subsystem).
+    `Obsolete`). Maintainer and status fields serve the per-inbox
+    subsystem index; global ranking rows leave them at their defaults.
 
     Dataclass (not pydantic) for `mimir.cache` round-trip
     compatibility, matching the project convention for cached
@@ -69,7 +58,6 @@ class SubsystemActivity:
     maintainer_name: str = ""
     multiple_maintainers: bool = False
     status: str | None = None
-    spark: DailyVolume | None = None
 
 
 cache.register("SubsystemActivity", SubsystemActivity)
@@ -161,19 +149,12 @@ def _most_active_subsystems_in_inbox_full(
     Implementation: one bulk SQL pulls every (article_id, path, date)
     tuple in the recent window, an inverted-index walk over MAINTAINERS
     rules buckets paths into subsystems, and a single Python pass
-    aggregates per-subsystem counts + per-day buckets for the inline
-    sparkline.
+    aggregates per-subsystem counts.
     """
 
     def compute() -> list[SubsystemActivity]:
-        # Calendar-day window so the inline sparkline buckets line
-        # up with how `daily_volume_in_subsystem` would have queried
-        # them (today + (days-1) prior calendar days). The earlier
-        # rolling 168-hour window meant a message from 10am 7 days
-        # ago could be in the totals but the spark would render it
-        # in an off-by-one bucket. UTC because `Article.date` is the
-        # public-inbox commit time in UTC; `date.today()` would
-        # advance at *local* midnight and drop boundary-day articles.
+        # Match the dashboard's calendar-day window. UTC keeps local
+        # midnight from dropping boundary-day articles early.
         today = datetime.now(UTC).date()
         start_day = today - timedelta(days=days - 1)
         start = datetime.combine(start_day, datetime.min.time(), tzinfo=UTC)
@@ -185,10 +166,7 @@ def _most_active_subsystems_in_inbox_full(
         # The earlier shape ran one COUNT per subsystem (~1500 on
         # lkml), which blew through gunicorn's worker timeout cold
         # on the 1.19.0 production deploy. The 1.19.1 hotfix
-        # collapsed that to one bulk SQL + Python inverted-index
-        # walk; 1.19.2 also folds the inline sparkline buckets into
-        # the same loop so the surviving top-N rows don't fan out
-        # one `daily_volume_in_subsystem` call each.
+        # collapsed that to one bulk SQL + Python inverted-index walk.
         rows = session.execute(
             text(
                 """
@@ -255,19 +233,10 @@ def _most_active_subsystems_in_inbox_full(
                     out.update(prefix_map[key])
             return out
 
-        # Per-subsystem aggregation. `article_set` tracks distinct
-        # article_ids so a patch touching three files in the same
-        # subsystem counts once, matching the prior COUNT(*) over
-        # a deduplicated article_id IN (…) subquery. `day_buckets`
-        # accumulates per-day distinct article sets for the inline
-        # sparkline; building them here avoids a fan-out call to
-        # `daily_volume_in_subsystem` per surviving top-N row,
-        # which is what blew up cold in the 1.19.1 worker timeout.
+        # Distinct IDs keep a patch touching several files in one
+        # subsystem from counting more than once.
         counts: dict[int, set[int]] = defaultdict(set)
         last_activity: dict[int, datetime] = {}
-        day_buckets: dict[int, dict[date_cls, set[int]]] = defaultdict(
-            lambda: defaultdict(set)
-        )
         for r in rows:
             inc = matches_for(r.path, include_prefix, include_exact)
             if not inc:
@@ -277,10 +246,8 @@ def _most_active_subsystems_in_inbox_full(
             if not matched:
                 continue
             path_date = coerce_dt(r.art_date)
-            day_key = path_date.date()
             for sub_id in matched:
                 counts[sub_id].add(r.article_id)
-                day_buckets[sub_id][day_key].add(r.article_id)
                 prev = last_activity.get(sub_id)
                 if prev is None or path_date > prev:
                     last_activity[sub_id] = path_date
@@ -292,23 +259,6 @@ def _most_active_subsystems_in_inbox_full(
             counts.items(),
             key=lambda kv: (-len(kv[1]), -last_activity[kv[0]].timestamp()),
         )[:MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP]
-
-        def _spark_for(sub_id: int) -> DailyVolume:
-            """Zero-filled `days`-length series in the same shape
-            `daily_volume_in_subsystem` returns. Built from the
-            already-aggregated `day_buckets` for this subsystem."""
-            buckets = day_buckets.get(sub_id, {})
-            series = [
-                (
-                    start_day + timedelta(days=i),
-                    len(buckets.get(start_day + timedelta(days=i), set())),
-                )
-                for i in range(days)
-            ]
-            return DailyVolume(
-                days=series,
-                max_count=max((c for _, c in series), default=1),
-            )
 
         out: list[SubsystemActivity] = []
         for sub_id, article_set in ranked:
@@ -328,7 +278,6 @@ def _most_active_subsystems_in_inbox_full(
                     maintainer_name=top_maintainer,
                     multiple_maintainers=len(maintainers) > 1,
                     status=sub.status,
-                    spark=_spark_for(sub_id),
                 )
             )
         return out
@@ -429,17 +378,6 @@ def _most_active_subsystems_global_full(
                         "best_count": row.message_count,
                         "best_inbox": row.inbox_name,
                         "best_last_activity": row.last_activity,
-                        # Maintainer + status are subsystem-level
-                        # (not per-inbox), so first-seen wins and
-                        # later iterations don't override.
-                        "maintainer_name": row.maintainer_name,
-                        "multiple_maintainers": row.multiple_maintainers,
-                        "status": row.status,
-                        # Sparkline IS per-inbox; it follows the
-                        # best-inbox attribution below so the card
-                        # shows the sparkline for the inbox the
-                        # chip links to.
-                        "best_spark": row.spark,
                     }
                     continue
                 entry["total"] += row.message_count
@@ -450,7 +388,6 @@ def _most_active_subsystems_global_full(
                     entry["best_count"] = row.message_count
                     entry["best_inbox"] = row.inbox_name
                     entry["best_last_activity"] = row.last_activity
-                    entry["best_spark"] = row.spark
         out = [
             SubsystemActivity(
                 id=sub_id,
@@ -458,10 +395,6 @@ def _most_active_subsystems_global_full(
                 inbox_name=e["best_inbox"],
                 message_count=e["total"],
                 last_activity=e["best_last_activity"],
-                maintainer_name=e["maintainer_name"],
-                multiple_maintainers=e["multiple_maintainers"],
-                status=e["status"],
-                spark=e["best_spark"],
             )
             for sub_id, e in agg.items()
         ]

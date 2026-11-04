@@ -32,6 +32,8 @@ from mimir.inboxes import (
         "0a",
         "a0",
         "a-b",
+        "r-list",
+        "all-dev",
         "a" * 64,  # at the cap
     ],
 )
@@ -45,6 +47,8 @@ def test_validate_name_accepts(name):
         "",
         " ",
         "-",
+        "r",  # reserved lookup prefix
+        "all",
         "-foo",  # leading hyphen
         "foo-",  # trailing hyphen
         "Foo",  # uppercase

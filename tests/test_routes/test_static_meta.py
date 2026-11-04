@@ -75,7 +75,9 @@ def test_robots_txt_reset_restores_default_body(client):
     body = client.get("/robots.txt").get_data(as_text=True)
     assert "GPTBot" not in body
     assert "User-agent: *" in body
-    assert "Crawl-delay: 5" in body
+    lines = body.splitlines()
+    assert not any(line.startswith("Crawl-delay:") for line in lines)
+    assert "Content-Signal: search=yes, ai-input=yes, ai-train=no" in lines
     assert "Disallow: /*/attachment/" in body
 
 

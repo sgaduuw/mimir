@@ -37,7 +37,7 @@ from flask import (
 from sqlalchemy import select
 
 import mimir
-from mimir.canonical import fallback_canonical_name
+from mimir.canonical import fallback_canonical_name, normalize_address
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
@@ -45,6 +45,7 @@ from mimir.models import (
     Article,
     ArticleList,
     Inbox,
+    SubsystemList,
 )
 from mimir.parser import normalize_subject
 from mimir.patch_revisions import subject_tags
@@ -53,7 +54,6 @@ from mimir.patch_state import message_kind, patch_state_for_article, patch_timel
 from mimir.seo import _json_ld_thread
 from mimir.store import read_messages
 from mimir.subsystems import article_paths, is_cover, subsystems_for_paths
-from mimir.subsystems_dashboard import most_active_subsystems_in_inbox
 from mimir.threading import (
     dedupe_thread,
     find_thread_root,
@@ -587,16 +587,21 @@ def thread_view(
         # edge and every crawler holding a validator that pins the
         # exact "did $series land" text this release made canonical.
         state_tag = render_state_tag(session, article.id, root_msgid)
-        # The header cards list this inbox's own subsystem first, which is
-        # its busiest of the last 7 days: a cached ranking, read here and
-        # never computed (`compute_on_miss=False`, the request-path
-        # posture). It moves with activity, not with this thread, so its
-        # top id is an ETag input; a cold cache is the empty tag, and the
-        # ETag moves when it warms.
-        busiest = most_active_subsystems_in_inbox(
-            session, inbox, days=7, limit=1, compute_on_miss=False
+        # Capture authoritative list ownership once for both the validator
+        # and the header order. This indexed lookup stays uncached so inbox
+        # address edits and contact population/removal are visible on a 304.
+        list_address = normalize_address(inbox.list_address or "")
+        owned_subsystem_ids = (
+            set(
+                session.scalars(
+                    select(SubsystemList.subsystem_id).where(
+                        SubsystemList.address == list_address
+                    )
+                )
+            )
+            if list_address
+            else set()
         )
-        own_subsystem_id = busiest[0].id if busiest else None
         representation = "md" if markdown else "hx" if hx_request else "full"
         fallback_rows = []
         if all_nodes is not None and not markdown:
@@ -671,7 +676,7 @@ def thread_view(
             f"thread|{article.id}|{mimir.__version__}|{cap}|{membership_source}|"
             f"{total_count}|"
             f"{thread_max_date.isoformat() if thread_max_date else ''}|{state_tag}|"
-            f"{series_rows_tag(series_rows)}|{own_subsystem_id or ''}"
+            f"{series_rows_tag(series_rows)}|{list_address}|{sorted(owned_subsystem_ids)}"
         )
         content_key = hashlib.blake2s(content_input.encode(), digest_size=8).hexdigest()
         # What the cards say about each reply's parent, for the messages
@@ -761,10 +766,11 @@ def thread_view(
         subsystem_hits = subsystems_for_paths(
             session, [row[2] for row in root_paths if row[2]]
         )
-        # This inbox's own subsystem first (stable: the rest keep the
-        # matcher's order), so the Subsystems and Maintainers cards lead
-        # with what the list is about.
-        subsystem_hits = sorted(subsystem_hits, key=lambda h: h.id != own_subsystem_id)
+        # All list-owned matches lead; both groups retain the matcher's
+        # order. Ownership never introduces an otherwise unattributed hit.
+        subsystem_hits = sorted(
+            subsystem_hits, key=lambda h: h.id not in owned_subsystem_ids
+        )
         subsystem_names = [h.name for h in subsystem_hits]
         # Only for a cover: a single patch carries git's diffstat in its
         # own body, so a total there would copy lore. The patches' rows
@@ -905,7 +911,34 @@ def thread_view(
         # Full HTML classifies the CTE fallback's Article rows too.
         kinds = {row.id: message_kind(row) for row in ordered_rows}
         kind_counts = Counter(kinds.values())
-        show_tabs = total_count > 1 and kind_counts["patch"] > 0
+        # The root is context in every tab, never a second Patches entry.
+        nonroot_patch_ids = {
+            aid
+            for aid, kind in kinds.items()
+            if aid != root_node.id and kind == "patch"
+        }
+        kind_counts["patch"] = len(nonroot_patch_ids)
+        show_tabs = bool(nonroot_patch_ids)
+        # Use the same chronological boundaries as the indexed and CTE
+        # pages. Discussion shows every non-patch, including nested covers.
+        # Only onward links: a final page must not loop back to earlier ones.
+        next_kind_urls = {}
+        if show_tabs:
+            for i, row in enumerate(ordered_rows):
+                target_page = i // cap + 1
+                if row.id == root_node.id or not page < target_page <= total_pages:
+                    continue
+                tab = "patches" if row.id in nonroot_patch_ids else "discussion"
+                if tab not in next_kind_urls:
+                    next_kind_urls[tab] = (
+                        thread_page_url(
+                            root_node.id, root_node.date, inbox.name, target_page
+                        )
+                        + "#"
+                        + tab
+                    )
+                if len(next_kind_urls) == 2:
+                    break
         outline = (
             _outline_rows(
                 outline_nodes,
@@ -936,7 +969,7 @@ def thread_view(
                     "href": _message_href(root_node, inbox.name, i // cap + 1, row.id),
                 }
                 for i, row in enumerate(ordered_rows)
-                if kinds[row.id] == "patch"
+                if row.id in nonroot_patch_ids
             ]
         if representation == "full" or visible_covers:
             # One timeline read per series, including standalone and nested
@@ -995,6 +1028,7 @@ def thread_view(
         page=page,
         total_pages=total_pages,
         next_page_url=next_page_url,
+        next_kind_urls=next_kind_urls,
         prev_page_url=prev_page_url,
         remaining=remaining,
         page_size=cap,

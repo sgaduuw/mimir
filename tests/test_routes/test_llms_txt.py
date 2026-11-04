@@ -46,7 +46,7 @@ def test_llms_txt_restates_the_robots_txt_content_signal(client, change):
     from mimir import robots
 
     if change == "edited":
-        robots.update_rule("*", set_content_signal={"ai-input": "yes"})
+        robots.update_rule("*", set_content_signal={"ai-input": "no"})
     elif change == "cleared":
         robots.update_rule("*", clear_all_content_signals=True)
     robots_signal = _star_signal(client.get("/robots.txt").get_data(as_text=True))
@@ -55,7 +55,7 @@ def test_llms_txt_restates_the_robots_txt_content_signal(client, change):
         assert robots_signal is None
     else:
         assert robots_signal is not None
-        assert ("ai-input=yes" in robots_signal.split(", ")) == (change == "edited")
+        assert ("ai-input=no" in robots_signal.split(", ")) == (change == "edited")
     r = client.get("/llms.txt")
     assert r.status_code == 200  # a 404 has no signal either
     assert _llms_signal(r.get_data(as_text=True)) == robots_signal
