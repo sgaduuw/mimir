@@ -2,14 +2,16 @@
 
 People share Message-IDs in commit trailers, bug reports, lore links,
 IRC; the canonical /<inbox>/<YYYY>/<MM>/<article-id> URL requires
-knowing the date. Three routes 301-redirect to the canonical URL:
+knowing the date. These routes 301-redirect to a message URL:
 - `/m/<id>` → the article's canonical-inbox URL.
 - `/<inbox>/m/<id>` → the inbox-scoped URL (preserves the user's
   explicit choice; the destination page's `<link rel="canonical">`
   still points at the canonical for crawlers).
 - `/m/?id=<text>` → the same as `/m/<id>`, for a GET form (#984).
+- `/r/<id>` and `/all/<id>/` → the same global lookup, accepting pasted
+  lore shapes without emitting another URL spelling (#1053).
 
-All three read the ID through `normalise_message_id`, so what the form
+All lookup forms read the ID through `normalise_message_id`, so what the form
 accepts and what the routes accept cannot drift apart.
 """
 
@@ -89,6 +91,23 @@ def message_id_lookup(message_id: str):
     to the canonical destination.
     """
     return _lookup_global(message_id)
+
+
+@bp_web.route("/r/<path:message_id>")
+def message_id_lookup_alias(message_id: str):
+    """Accept a pasted lore r shape; the site never emits this alias."""
+    return _lookup_global(message_id)
+
+
+@bp_web.route("/all/<path:message_id>", merge_slashes=False)
+def message_id_lookup_all_alias(message_id: str):
+    """Consume one lore delimiter without normalizing the ID's slashes.
+
+    A terminal slash in an ID needs two slashes here: its own and the
+    alias delimiter. A trailing-slash route would normalize those into
+    another ID before this handler runs. This remains an input-only alias.
+    """
+    return _lookup_global(message_id.removesuffix("/"))
 
 
 def _lookup_global(raw: str | None):
