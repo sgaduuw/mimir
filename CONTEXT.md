@@ -1942,10 +1942,18 @@ afterthought:
 
 CI is two workflows with one job each kind. `ci.yml` is the **test
 gate** and runs on `pull_request` only (`[develop, main, release/*,
-hotfix/*]`): `lint` / `test` / `test-ft` plus a docker **build-verify**
+hotfix/*]`): `lint` / `test` / `test-ft` / `browser` plus a docker **build-verify**
 (`push: false`). `release.yml` is the **publish** and runs on `push:
 tags: ['v*']` only: it builds + publishes the GHCR image
 (`:vX.Y.Z`/`:X.Y.Z`/`:X.Y`/`:latest`) and runs no tests.
+
+The browser job runs Playwright with Chromium once, separately from the normal
+and free-threaded suites (#1078). `MIMIR_BROWSER_REQUIRED=1` makes a missing
+Playwright install fail instead of silently skipping the layout/navigation
+guards. Local pytest retains optional skips. Layout screenshots are saved under
+pytest's fixed CI temporary directory and uploaded on failure. Docker depends
+on the browser job as well as lint and both Python suites, so its successful
+build cannot precede the rendered checks.
 
 Why this shape (the reasoning, after two incremental cuts):
 

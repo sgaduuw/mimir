@@ -21,6 +21,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Subsystem triage rows state their review-event and maintainer counts once, in the shared lifecycle chip, while keeping the date and author below. Series-diff history restores no longer raise JavaScript errors from missing request-only event details (#1078).
+
 - Search, live-filter, Message-ID lookup and series-position fields share labelled controls, joined submit buttons and consistent sizing in both themes. Inbox search no longer squeezes its input, and the enhanced series picker hides its redundant Go button while retaining native submission without JavaScript (#1067).
 
 - Thread subsystem and maintainer cards lead with all attributed subsystems whose MAINTAINERS list contacts match the inbox address. Traffic rankings no longer determine ownership; missing contacts retain the usual attribution order. Address and contact changes revalidate both HTML and Markdown immediately (#1068).

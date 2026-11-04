@@ -2,6 +2,7 @@
 
 Run: uv run --frozen --with playwright pytest -q tests/test_routes/test_browser_navigation.py
 Install Chromium once: uv run --with playwright playwright install chromium
+CI sets MIMIR_BROWSER_REQUIRED=1 so a missing dependency fails rather than skips.
 """
 
 import re
@@ -11,6 +12,7 @@ import pytest
 from werkzeug.serving import make_server
 
 from mimir.config import settings
+from tests._browser import playwright_api
 from tests.test_routes._helpers import build_thread, seed_thread_shape
 
 
@@ -21,7 +23,7 @@ def test_empty_thread_tabs_follow_later_pages_after_htmx_append(
 ):
     from tests.test_routes.test_thread_tabs import _seed_tab_pages
 
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
     seeded = _seed_tab_pages(tmp_path)
@@ -82,7 +84,7 @@ def test_empty_thread_tabs_follow_later_pages_after_htmx_append(
 
 
 def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 5)
     messages = list(build_thread(tmp_path, "alpha", shape="fan_out", size=12).values())
@@ -257,7 +259,7 @@ def test_keyboard_j_stays_on_messages_in_a_windowed_thread(
 ):
     """A long thread is windowed (#798). Its gap and footer rows link to
     the thread view; j at the last message shown must not follow them."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 5)
     messages = list(build_thread(tmp_path, "alpha", shape="fan_out", size=30).values())
@@ -299,7 +301,7 @@ def test_an_in_page_jump_into_an_appended_page_names_that_page(
     a message on it scrolls in place (#1035), and the address bar names
     page 2: setting only the hash kept page 1's path, so a copied address
     or a reload lost the message (3.39.0 release review)."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
     messages = list(build_thread(tmp_path, "alpha", shape="chain", size=6).values())
@@ -352,7 +354,7 @@ def test_an_in_page_jump_opens_the_tab_that_holds_the_message(
     opens Discussion: the jump pushes the URL, which fires no hashchange,
     so thread-anchors.js sends one for thread-tabs.js. Written by the
     3.39.0 fix review, red with that dispatch removed."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     from mimir.extensions import SessionLocal
     from mimir.models import Article
@@ -417,7 +419,7 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
     view, rather than leaving the reader where the old tree was."""
     import mimir.web.routes.message as message_route
 
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     seeded = seed_thread_shape(
         tmp_path,
         "alpha",
@@ -544,7 +546,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
     client, tmp_path, monkeypatch
 ):
     """Real HTMX DOM swaps must keep successive targets, history and chrome aligned."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     from sqlalchemy import select
 
@@ -696,7 +698,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
 
             # The enhanced picker replaces Go, including after swaps and history.
             page.locator("#series-diff-position").select_option("2")
-            expect_position(2, canonical_inbox="beta")
+            expect_position(2, "beta")
             page.locator(".series-diff-pairs a").click()
             expect_position(2, older="v2", newer="v3")
             page.locator(".series-diff-overview a").first.click()
@@ -735,7 +737,7 @@ def test_a_revision_link_in_a_message_details_fragment_scrolls_in_place(
     page and the message's anchor. With the page already appended by HTMX,
     a click scrolls to it without loading the page again (#1035). Red with
     `.revisions-fold a` out of thread-anchors.js."""
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     expect = playwright.expect
     from tests.test_routes.test_revision_links import _seed_with_repost
 
