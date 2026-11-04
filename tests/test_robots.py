@@ -174,6 +174,7 @@ def test_reset_rules_drops_extras_and_reseeds_star():
         "/*/search",
         "/m/",
         "/*/m/",
+        "/*/series/*/diff$",
     ]
     assert star.content_signals == {
         "search": "yes",
@@ -207,6 +208,7 @@ def test_render_matches_seeded_defaults():
         + "Disallow: /*/search\n"
         + "Disallow: /m/\n"
         + "Disallow: /*/m/\n"
+        + "Disallow: /*/series/*/diff$\n"
         + "\n"
         + "Sitemap: https://example.com/sitemap.xml\n"
         + f"LLM-Context: {LLMS_URL}\n"
@@ -267,6 +269,7 @@ def test_render_emits_per_ua_stanzas():
         + "Disallow: /*/search\n"
         + "Disallow: /m/\n"
         + "Disallow: /*/m/\n"
+        + "Disallow: /*/series/*/diff$\n"
         + "\n"
         + "User-agent: ClaudeBot\n"
         + "Crawl-delay: 20\n"
@@ -634,7 +637,8 @@ _EMITTED = [
     "/lkml/subsystem/kernel-foo/",
     "/lkml/reviewer/someone@kernel.org",
     "/lkml/author/someone",
-    "/lkml/series/abc/diff",
+    "/lkml/series/abc/diff?from=v1&to=v2&pos=cover",
+    "/lkml/series/abc/diff?from=v1&to=v2&pos=cover&s=123",
     "/maintainers/someone@kernel.org",
     "/merge-window",
     "/privacy",
@@ -649,3 +653,63 @@ def test_default_disallow_blocks_the_lookup_and_nothing_a_reader_is_sent_to():
     assert _blocked("/*/m/", "/lkml/m/a@b")
     blocked = [(p, path) for p in patterns for path in _EMITTED if _blocked(p, path)]
     assert blocked == []
+
+
+def test_default_blocks_bare_series_diff_but_not_complete_comparisons():
+    pattern = "/*/series/*/diff$"
+    assert pattern in robots._DEFAULT_STAR_DISALLOW
+    assert _blocked(pattern, "/alpha/series/key/diff")
+    assert not _blocked(pattern, "/alpha/series/key/diff?from=v1&to=v2&pos=cover")
+
+
+_SERIES_DIFF_MIGRATION = (
+    "b2cf46f509a8",
+    "alembic/versions/b2cf46f509a8_seed_robots_disallow_for_bare_series_diffs.py",
+)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [None, "null", "[]", '["/operator/"]', '["/*/series/*/diff$","/operator/"]'],
+)
+def test_bare_series_diff_migration_preserves_custom_rules_and_is_idempotent(stored):
+    import json
+
+    from sqlalchemy import text
+
+    from mimir.extensions import engine
+
+    robots.update_rule("*", crawl_delay=19, set_content_signal={"ai-input": "no"})
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE robots_rules SET disallow_paths=:paths WHERE user_agent='*'"),
+            {"paths": stored},
+        )
+    before = json.loads(stored) if stored is not None else []
+    before = before or []
+    expected = (
+        before if "/*/series/*/diff$" in before else [*before, "/*/series/*/diff$"]
+    )
+    for _ in range(2):
+        _run_migration(_SERIES_DIFF_MIGRATION)
+        with SessionLocal() as session:
+            star = robots.get_rule(session, "*")
+            assert star.disallow_paths == expected
+            assert star.crawl_delay == 19
+            assert star.content_signals == {
+                "search": "yes",
+                "ai-input": "no",
+                "ai-train": "no",
+            }
+
+
+def test_bare_series_diff_migration_does_not_create_missing_star():
+    from sqlalchemy import delete
+
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as session:
+        session.execute(delete(RobotsRule))
+        session.commit()
+    _run_migration(_SERIES_DIFF_MIGRATION)
+    assert not _star_present()
