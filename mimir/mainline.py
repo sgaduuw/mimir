@@ -25,6 +25,7 @@ import subprocess
 from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import UTC, datetime
+from email.utils import getaddresses, parseaddr
 from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -37,6 +38,7 @@ from sqlalchemy.orm import Session
 
 from mimir import maintainers
 from mimir.broker.writes import WriteFuture, WriteOp
+from mimir.canonical import normalize_address
 from mimir.config import settings
 from mimir.datetime_utils import aware_utc
 
@@ -47,6 +49,7 @@ from mimir.models import (
     MainlineCommit,
     MainlineState,
     Subsystem,
+    SubsystemList,
     SubsystemMaintainer,
     SubsystemPath,
 )
@@ -734,16 +737,17 @@ def _submit_maintainers_replace(
     sub_rows: list[dict],
     path_rows_for: Callable[[list[int]], list[dict]],
     maintainer_rows_for: Callable[[list[int]], list[dict]],
+    list_rows_for: Callable[[list[int]], list[dict]],
     loaded: int,
 ) -> WriteFuture:
     """Compose one WriteOp that re-reads MainlineState on the
     writer connection (so the no-op decision and the write are one
-    transaction), and, when not a no-op, DELETEs the subsystems triple,
-    bulk-inserts the parsed rows wiring path/maintainer FKs to the
+    transaction), and, when not a no-op, DELETEs the subsystem projection,
+    bulk-inserts the parsed rows wiring path/maintainer/list FKs to the
     returned subsystem ids, and UPSERTs the cursor. Returns a future
     resolving to (ran: bool, loaded: int).
 
-    path_rows_for / maintainer_rows_for build their row dicts from the
+    The row builders use the
     RETURNING ids (subsystem rows are inserted with
     sort_by_parameter_order so ids align with sub_rows order)."""
 
@@ -765,7 +769,7 @@ def _submit_maintainers_replace(
 
         # Replace-all in one transaction. The cascade FK on
         # `subsystems.id` clears `subsystem_paths` +
-        # `subsystem_maintainers` via ON DELETE CASCADE; the writer
+        # `subsystem_maintainers` + `subsystem_lists` via ON DELETE CASCADE; the writer
         # connection carries `PRAGMA foreign_keys=ON` (registered via
         # _sqlite_pragmas on the writer engine) so the cascade fires.
         conn.execute(delete(Subsystem))
@@ -782,10 +786,13 @@ def _submit_maintainers_replace(
 
         path_rows = path_rows_for(sub_ids)
         maintainer_rows = maintainer_rows_for(sub_ids)
+        list_rows = list_rows_for(sub_ids)
         if path_rows:
             conn.execute(insert(SubsystemPath), path_rows)
         if maintainer_rows:
             conn.execute(insert(SubsystemMaintainer), maintainer_rows)
+        if list_rows:
+            conn.execute(insert(SubsystemList), list_rows)
 
         # UPSERT the MAINTAINERS rules cursor. Distinct from the
         # Link-trailer walker cursor (`commits_walked_to_sha`); only
@@ -814,8 +821,8 @@ def load_maintainers(
     force: bool = False,
 ) -> tuple[bool, int, str]:
     """Read MAINTAINERS at HEAD and replace the
-    `subsystems` / `subsystem_paths` / `subsystem_maintainers`
-    triple in one transaction. Returns
+    `subsystems` / `subsystem_paths` / `subsystem_maintainers` /
+    `subsystem_lists` projection in one transaction. Returns
     `(ran, subsystems_loaded, head_sha)`; `ran=False` when the
     MAINTAINERS blob's object id matches `last_commit_sha` and
     `force=False`.
@@ -823,14 +830,14 @@ def load_maintainers(
     Gated on the BLOB, not on HEAD. Linus's tree is pushed to many
     times a day and MAINTAINERS changes far more rarely, so gating on
     HEAD meant re-parsing the file and rewriting the whole ~15k-row
-    subsystems triple to identical values on most ticks. It also
+    subsystem projection to identical values on most ticks. It also
     rotated the subsystem-rule version the web tier folds into every
     message page's ETag (`web.routes._validators`), so the entire
     archive's validators moved on every push. The return value stays
     HEAD: that is what the operator-facing `mainline_head` reports.
 
     BEGIN IMMEDIATE: the reparse reads `MainlineState` then writes
-    the whole subsystems triple in one transaction, the exact
+    the whole subsystem projection in one transaction, the exact
     shape that trips SQLITE_BUSY_SNAPSHOT under concurrent cache
     writes."""
     # Scope the Repo to just the read of MAINTAINERS bytes. The
@@ -856,7 +863,7 @@ def load_maintainers(
 
     # Parse + build the row payloads BEFORE the write so the
     # writer-lock hold is short, then submit one composite WriteOp. The
-    # closures defer path/maintainer row construction until the
+    # closures defer path/maintainer/list row construction until the
     # RETURNING ids are known so FKs wire to the right subsystem.
     from mimir.broker import _context
 
@@ -864,6 +871,19 @@ def load_maintainers(
 
     parsed = maintainers.parse(blob_bytes)
     sub_rows = [{"name": sub.name, "status": sub.status} for sub in parsed]
+    list_addresses = []
+    for sub in parsed:
+        addresses = set()
+        # Parse each L value independently: one malformed line must not
+        # discard its valid siblings. Unlike To/Cc, L is authoritative
+        # and does not depend on the operator's list-host suffixes.
+        for value in sub.lists:
+            for _name, address in getaddresses([value]):
+                normalized = normalize_address(address)
+                # Same bare-address acceptance rule as admin inbox update.
+                if "@" in normalized and parseaddr(normalized)[1] == normalized:
+                    addresses.add(normalized)
+        list_addresses.append(sorted(addresses))
 
     def _path_rows_for(sub_ids: list[int]) -> list[dict]:
         rows: list[dict] = []
@@ -888,6 +908,13 @@ def load_maintainers(
                 )
         return rows
 
+    def _list_rows_for(sub_ids: list[int]) -> list[dict]:
+        return [
+            {"subsystem_id": sub_id, "address": address}
+            for sub_id, addresses in zip(sub_ids, list_addresses, strict=True)
+            for address in addresses
+        ]
+
     ran, loaded = _submit_maintainers_replace(
         writer,
         tree_name,
@@ -896,6 +923,7 @@ def load_maintainers(
         sub_rows,
         _path_rows_for,
         _maintainer_rows_for,
+        _list_rows_for,
         len(parsed),
     ).result()
     if not ran:
