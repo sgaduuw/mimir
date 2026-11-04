@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Store normalized MAINTAINERS `L:` list contacts separately from personal maintainer addresses, in the same atomic subsystem replacement. The additive migration requires an explicit forced MAINTAINERS reload to populate an unchanged blob; thread ordering is unchanged in this slice (#1068).
+
 ### Changed
 
 - Subsystem status pills share one macro, and all status and merge-window pills use the same styles. Unused activity sparkline data is removed from the cache payload; the new cache namespace starts cold and background warm-cache runs repopulate it (#1057, #1060).

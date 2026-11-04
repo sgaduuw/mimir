@@ -374,9 +374,9 @@ class ArticleTrailer(Base):
 
 class Subsystem(Base):
     """One MAINTAINERS section (e.g. "BCACHEFS"). Replaced wholesale
-    on every `update-mainline` tick, the upstream file is the
-    source of truth, mimir's table is a cached projection. The CLI
-    runs `DELETE FROM subsystems` (cascades to paths + maintainers)
+    when MAINTAINERS changes or a reload is forced. The upstream file
+    is the source of truth; mimir's table is a cached projection. The broker
+    runs `DELETE FROM subsystems` (cascades to paths, maintainers and lists)
     then re-inserts; idempotent and avoids drift if the upstream file
     renames or removes entries.
 
@@ -395,6 +395,9 @@ class Subsystem(Base):
         back_populates="subsystem", cascade="all, delete-orphan"
     )
     maintainers: Mapped[list[SubsystemMaintainer]] = relationship(
+        back_populates="subsystem", cascade="all, delete-orphan"
+    )
+    lists: Mapped[list[SubsystemList]] = relationship(
         back_populates="subsystem", cascade="all, delete-orphan"
     )
 
@@ -419,12 +422,9 @@ class SubsystemPath(Base):
 
 
 class SubsystemMaintainer(Base):
-    """One `M:` (maintainer) or `R:` (reviewer) entry. The list
-    address (MAINTAINERS' `L:` field) lives elsewhere, it's per-
-    subsystem, not per-person, and is captured as
-    `Subsystem.lists` in the parser dataclass. (Decided not to
-    schema it separately for slice 1; revisit if a downstream
-    surface needs the per-section list addresses indexed.)"""
+    """One personal `M:` (maintainer) or `R:` (reviewer) entry.
+    `L:` list contacts live separately in SubsystemList and do not
+    contribute to the personal-address display allowlist."""
 
     __tablename__ = "subsystem_maintainers"
 
@@ -441,6 +441,23 @@ class SubsystemMaintainer(Base):
     address: Mapped[str] = mapped_column(String, index=True)
 
     subsystem: Mapped[Subsystem] = relationship(back_populates="maintainers")
+
+
+class SubsystemList(Base):
+    """One normalized MAINTAINERS `L:` contact per subsystem.
+
+    A list can serve several sections, and a section can name several
+    lists. Address-first lookup supports inbox ownership; the separate
+    subsystem index supports the replace-all delete cascade.
+    """
+
+    __tablename__ = "subsystem_lists"
+
+    address: Mapped[str] = mapped_column(String, primary_key=True)
+    subsystem_id: Mapped[int] = mapped_column(
+        ForeignKey("subsystems.id", ondelete="CASCADE"), primary_key=True, index=True
+    )
+    subsystem: Mapped[Subsystem] = relationship(back_populates="lists")
 
 
 class MainlineState(Base):
