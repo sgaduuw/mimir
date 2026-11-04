@@ -856,8 +856,17 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 /* Keep sender lists and posting notes within the subject column. */
 .listing-detail { overflow-wrap: anywhere; }
 .listing-series { display: block; }
-.search-form input[type="search"] { border-radius: var(--pico-border-radius); min-height: 44px; }
-.search-form button { min-height: 44px; }
+/* Resolve the site radius before Pico assigns search inputs their own 5rem. */
+.search-field { --mimir-field-radius: var(--pico-border-radius); min-width: 0; width: 100%; }
+.search-field > label { display: block; margin-bottom: .25rem; font-size: .85rem; color: var(--pico-muted-color); }
+.search-field input:not([type="hidden"]), .search-field select {
+  --pico-border-radius: var(--mimir-field-radius);
+  min-width: 0; min-height: 2.75rem; margin: 0;
+}
+.search-field-group { margin: 0; }
+.search-field-group > button { flex: 0 0 auto; width: auto; min-height: 2.75rem; margin: 0; padding-inline: 1rem; }
+.search-field button[hidden] { display: none; }
+.search-field-group:has(> button[hidden]) > select { border-radius: var(--mimir-field-radius); }
 
 /* Inbox dashboard: one reading column with compact cached highlights. */
 .inbox-header { display: flex; align-items: start; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
@@ -866,9 +875,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .inbox-header h1 small { font-size: .55em; color: var(--pico-muted-color); }
 .inbox-summary { margin: 0; color: var(--pico-muted-color); font-size: .8rem; }
 .inbox-summary span { display: inline-block; margin-right: .75rem; }
-.inbox-search { flex: 0 1 22rem; margin: 0; }
-.inbox-search label { font-size: .8rem; }
-.inbox-search fieldset { margin-bottom: 0; }
+.inbox-search { flex: 0 1 32rem; min-width: min(100%, 22rem); max-width: 32rem; margin: 0; }
 .inbox-dashboard { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); gap: 1.5rem; }
 .inbox-main, .inbox-sidebar { min-width: 0; }
 .inbox-dashboard section { margin-bottom: 1.5rem; }
@@ -900,7 +907,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .inbox-subsystems .bar-meter { margin-top: .3rem; }
 @media (max-width: 767px) {
   .inbox-header { flex-direction: column; }
-  .inbox-search { flex: auto; width: 100%; }
+  .inbox-search { flex: auto; width: 100%; max-width: none; }
   .inbox-dashboard { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
   .inbox-active .listing-subject { display: block; min-height: 44px; align-content: center; }
   .inbox-active .badge { white-space: normal; }
@@ -1030,10 +1037,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .series-diff-pairs { justify-content: flex-start; flex-wrap: wrap; gap: .35rem .75rem; font-size: .8rem; }
 .series-diff-pairs a { display: inline-flex; min-height: 44px; align-items: center; }
 .series-diff-pager { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: .75rem; margin-top: 1rem; }
-.series-diff-pager form { display: flex; justify-content: center; align-items: center; gap: .5rem; min-width: 0; margin: 0; }
-.series-diff-pager label { margin: 0; font-size: .85rem; }
-.series-diff-pager select { min-width: 0; width: auto; max-width: 14rem; }
-.series-diff-pager select, .series-diff-pager button { min-height: 44px; margin: 0; padding-block: .35rem; font-size: .85rem; }
+.series-diff-pager form { min-width: 0; width: 100%; max-width: 32rem; margin: 0 auto; }
 .series-diff-step { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; padding: .35rem .65rem; border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); font-size: .85rem; text-decoration: none; }
 .series-diff-step[aria-disabled] { color: var(--pico-muted-color); }
 .series-diff-note { font-size: .75rem; color: var(--pico-muted-color); margin: .5rem 0; }
@@ -1061,18 +1065,13 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .series-diff-box .diff-text { padding-right: .75rem; }
 @media (max-width: 767px) {
   .series-diff-pager { gap: .5rem; }
-  .series-diff-pager form { grid-column: 1 / -1; grid-row: 1; justify-content: flex-start; }
-  .series-diff-pager select { flex: 1; max-width: none; }
+  .series-diff-pager form { grid-column: 1 / -1; grid-row: 1; }
   .series-diff-pager > .series-diff-step:last-child { grid-column: 3; }
 }
 
 
 /* --- Message-ID lookup form (_message_id_form.html, #984) --- */
 .message-id-form { margin-block: 1rem; }
-.message-id-form label { font-size: .85rem; color: var(--pico-muted-color); }
-.message-id-form-row { display: flex; flex-wrap: wrap; gap: .5rem; }
-.message-id-form-row input { flex: 1 1 16rem; min-width: 0; min-height: 2.75rem; margin: 0; }
-.message-id-form-row button { flex: 0 0 auto; min-height: 2.75rem; margin: 0; width: auto; }
 
 
 /* --- Privacy notice (#1001) --- */
@@ -1136,7 +1135,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 
 /* The queue: a name, a bar and a count per row, native <details> for the
    series under it. */
-.mw-find input { max-width: 24rem; min-height: 2.75rem; }
+.mw-find { max-width: 32rem; margin-bottom: 1rem; }
 /* Pico colours a summary through these two variables: ink, not muted. */
 .mw-subsystems { list-style: none; margin: 0; padding: 0; --pico-accordion-close-summary-color: var(--pico-color); --pico-accordion-open-summary-color: var(--pico-color); }
 .mw-subsystems > li { list-style: none; margin: 0; padding: 0; border-bottom: 1px solid var(--pico-muted-border-color); }
@@ -1203,10 +1202,9 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 }
 
 /* One line per inbox, three columns wide. */
-.front-controls { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem 1rem; margin-bottom: 1rem; }
+.front-controls { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem 1rem; margin-bottom: 1rem; }
 .front-controls[hidden] { display: none; }
-.front-controls label { font-size: .85rem; color: var(--pico-muted-color); }
-.front-controls input { flex: 1 1 14rem; max-width: 20rem; min-height: 2.75rem; margin: 0; }
+.front-controls .search-field { flex: 1 1 14rem; max-width: 32rem; }
 .front-sort { display: inline-flex; gap: .5rem; }
 .front-sort button { margin: 0; min-height: 2.75rem; width: auto; }
 /* The pressed one is marked by weight and a heavier edge, not colour alone. */

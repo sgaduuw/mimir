@@ -613,6 +613,9 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
                     "data-position", str(pos)
                 )
                 expect(page.locator("#series-diff-position")).to_have_value(str(pos))
+                expect(
+                    page.locator('.series-diff-pager button[type="submit"]')
+                ).to_be_hidden()
                 expect(page.locator("main")).to_have_count(1)
                 expect(page.locator("html")).to_have_attribute(
                     "data-nav-up", f"/{inbox}/"
@@ -691,11 +694,8 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
             expect_position(1)
             page.unroute(base + path(3))
 
-            # Go remains a form submission; a requesting inbox can nominate another.
-            page.locator("#series-diff-position").evaluate(
-                "select => { select.value = '2'; }"
-            )
-            page.locator('.series-diff-pager button[type="submit"]').click()
+            # The enhanced picker replaces Go, including after swaps and history.
+            page.locator("#series-diff-position").select_option("2")
             expect_position(2, canonical_inbox="beta")
             page.locator(".series-diff-pairs a").click()
             expect_position(2, older="v2", newer="v3")

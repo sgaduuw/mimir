@@ -1173,6 +1173,17 @@ after a swap or a history restore. The keyboard controller clicks live pager
 anchors, and the theme controller reinitializes the replaced control. Failed
 selection requests keep the selected position naming the body still on screen.
 
+Search, live-filter, Message-ID lookup and series-position controls share the
+`_search_field.html` call-block macro (#1067). It owns the label and optional
+joined group, while callers retain native input/select attributes and form
+parameters. Labels sit outside Pico's flex groups. The wrapper resolves the
+site radius before a search input assigns its own Pico radius. Secondary
+submit buttons share Pico's contrasting palette; filters remain hidden until
+`list-tools.js` initializes. The series picker hides Go only after its change
+handler is installed, including swapped/restored forms; without JavaScript,
+the native GET form remains complete. This navigation markup is outside the
+rendered-diff cache, so changing it needs no body-cache key version.
+
 ### Materialised thread roots (2026-07-28)
 
 The materialised-column approach was considered and rejected for

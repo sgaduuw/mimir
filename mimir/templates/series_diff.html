@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_search_field.html" import search_field %}
 {% block title %}{{ heading }} | series | {{ site_name }}{% endblock %}
 {% block meta_description %}{{ series_subject|clean_subject }}: what changed in the {{ position_label }} between {{ diff.from_version }} and {{ diff.to_version }}, on the {{ inbox_name }} archive.{% endblock %}
 {% block page_scripts %}<script src="{{ url_for('static', filename='js/series-diff.js') }}?v={{ mimir_version }}" defer></script>{% endblock %}
@@ -30,12 +31,12 @@
     <form method="get" action="{{ navigation.form_action }}">
       <input type="hidden" name="from" value="{{ diff.from_version }}">
       <input type="hidden" name="to" value="{{ diff.to_version }}">
-      <label for="series-diff-position">Showing</label>
+      {% call search_field('series-diff-position', 'Showing', 'Go') %}
       <select id="series-diff-position" name="pos" data-series-diff-select aria-describedby="series-diff-extent">
         {% for entry in navigation.positions %}<option value="{{ 'cover' if entry.position == 0 else entry.position }}" data-url="{{ entry.url }}"{% if entry.position == diff.position %} selected{% endif %}>{{ entry.label }}</option>{% endfor %}
       </select>
+      {% endcall %}
       {% if navigation.head_id is not none %}<input type="hidden" name="s" value="{{ navigation.head_id }}">{% endif %}
-      <button type="submit">Go</button>
     </form>
     {% if navigation.next_url %}{% set next_position = navigation.positions|selectattr("url", "equalto", navigation.next_url)|first %}<a class="series-diff-step" href="{{ navigation.next_url }}" rel="next">Next: {{ next_position.label|lower }}</a>{% else %}<span class="series-diff-step" aria-disabled="true">Next</span>{% endif %}
   </nav>

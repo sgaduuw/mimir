@@ -21,6 +21,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Search, live-filter, Message-ID lookup and series-position fields share labelled controls, joined submit buttons and consistent sizing in both themes. Inbox search no longer squeezes its input, and the enhanced series picker hides its redundant Go button while retaining native submission without JavaScript (#1067).
+
 - Thread subsystem and maintainer cards lead with all attributed subsystems whose MAINTAINERS list contacts match the inbox address. Traffic rankings no longer determine ownership; missing contacts retain the usual attribution order. Address and contact changes revalidate both HTML and Markdown immediately (#1068).
 - Thread tabs and the Patches index count only patches besides the root. Empty tabs link to the next page with matching content, including after loading more messages. Message pages initially show a compact thread tree, preserve saved fold choices, and label their Summary, Compact and Expanded controls; the collapsed summary identifies the last reply (#1068).
 - Shared listing columns now fit compact dates, count labels and complete trailer roles, day headings align left, and author pages omit the empty Details column. Allowlisted address-only senders retain their address, review badges spell out counts, and archive counts, subsystem bars, maintainer avatars and message cards follow the shared presentation (#1068).
