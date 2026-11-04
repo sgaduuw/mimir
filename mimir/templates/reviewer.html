@@ -26,7 +26,7 @@
   ({{ _parts|join(', ') }})
 </small></p>
 
-<table class="listing-table"><thead><tr><th scope="col">Last</th><th scope="col">Message</th><th scope="col">Trailer</th></tr></thead><tbody>
+<table class="listing-table"><thead><tr><th scope="col" class="listing-date">Last</th><th scope="col" class="listing-main">Message</th><th scope="col" class="listing-role">Trailer</th></tr></thead><tbody>
 {% for e in entries %}
 {% set row_id = e.article_id %}{% set row_subject = e.subject %}
 {% set row_author = reviewer_authors.get(e.article_id) if reviewer_authors is defined else none %}

@@ -35,7 +35,7 @@ Search the {{ inbox_name }} archive by subject or author.
     {% if truncated %}Capped at {{ result_cap }}; refine the query for more.{% endif %}
   </small></p>
   <table class="listing-table search-results">
-    <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Matches</th></tr></thead>
+    <thead><tr><th scope="col" class="listing-date">Last</th><th scope="col" class="listing-main">Thread</th><th scope="col" class="listing-count">Matches</th></tr></thead>
     <tbody>
     {% for group in results %}
       {% set a = group.representative %}

@@ -410,7 +410,7 @@ def test_the_markdown_status_line_is_the_html_pill_text(client, tmp_path, shape)
     assert re.fullmatch(
         r"PENDING · 1 of 2 landed"
         if shape == "cover-rollup"
-        else r"REVIEWED: 1 \(0M\)",
+        else r"REVIEWED: 1 review, 0 by maintainers",
         pill,
     )
     want = pill + (f" ({tip})" if tip else "")
