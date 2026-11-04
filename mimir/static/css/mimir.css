@@ -351,7 +351,7 @@ pre.body-text-block {
    row holds together down to 320 px. Rows are at least 44 px tall. */
 .year-rows {
   max-width: 900px;
-  margin: 0 auto;
+  margin: 0;
   padding: 0;
 }
 .year-row {
@@ -405,6 +405,10 @@ pre.body-text-block {
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
 }
+
+/* Review counts read as words; wrap between words on narrow listing rows. */
+.badge[class*="badge-lifecycle-"] { flex-wrap: wrap; max-width: 100%; white-space: normal; overflow-wrap: normal; }
+.badge-count { min-width: 0; white-space: normal; }
 
 .badge-dot {
   display: inline-block;
@@ -839,6 +843,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .mail-header dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 0.25rem 0.75rem; }
 .mail-header dt { color: var(--pico-muted-color); }
 .mail-header dd { margin: 0; overflow-wrap: anywhere; }
+#msg { border: 1px solid var(--pico-muted-border-color); border-radius: var(--pico-border-radius); box-shadow: none; }
 #msg h1 { overflow-wrap: anywhere; }
 .thread-message-details { margin-block: 0.5rem; font-size: 0.875rem; }
 @media (width < 768px) {
@@ -847,30 +852,28 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .thread-context .thread-list li > a { display: inline-flex; align-items: center; min-height: 2.75rem; }
 }
 
-/* Shared archive listings keep the subject readable at phone width. */
-.listing-table { width: 100%; table-layout: fixed; }
-.listing-table th:first-child, .listing-time { width: 4.5rem; }
-.listing-table th:last-child, .listing-count { width: 5.5rem; text-align: right; }
+/* Let compact date/count columns fit their content. Only the subject wraps. */
+.listing-table { width: 100%; table-layout: auto; }
+.listing-table thead th { white-space: nowrap; }
+.listing-time, .listing-date, .listing-count, .listing-role { width: 1%; white-space: nowrap; overflow-wrap: normal; }
+.listing-count, .listing-role { text-align: right; }
+.listing-main { overflow-wrap: anywhere; }
 .listing-table td { vertical-align: top; }
-.listing-time, .listing-count { font-variant-numeric: tabular-nums; }
-.listing-time, .listing-detail { color: var(--pico-muted-color); font-size: .85rem; }
+.listing-time, .listing-date, .listing-count { font-variant-numeric: tabular-nums; }
+.listing-time, .listing-date, .listing-detail { color: var(--pico-muted-color); font-size: .85rem; }
 .listing-subject { font-family: var(--pico-font-family-monospace); font-weight: 700; overflow-wrap: anywhere; text-decoration: none; }
 .listing-subject:hover { text-decoration: underline; }
-.listing-count { font-weight: 700; overflow-wrap: anywhere; }
-.listing-count .badge { white-space: normal; }
-.listing-day th { padding-top: 1.25rem; }
+.listing-count { font-weight: 700; }
+.listing-role .badge { white-space: nowrap; letter-spacing: 0; }
+.listing-day th { padding-top: 1.25rem; text-align: left; }
 .listing-filters ul { flex-wrap: wrap; gap: .5rem; }
 .listing-filters a { min-height: 44px; display: inline-flex; align-items: center; }
 .listing-filters [aria-current="page"] { font-weight: 700; text-decoration: underline; }
 @media (max-width: 480px) {
-  .listing-table th:first-child, .listing-time { width: 3.25rem; }
-  .listing-table th:last-child, .listing-count { width: 4rem; }
   .listing-table td, .listing-table th { padding-inline: .25rem; }
 }
 
-.listing-date { display: block; overflow-wrap: anywhere; }
-
-/* Keep sender lists and posting notes within the fixed listing columns. */
+/* Keep sender lists and posting notes within the subject column. */
 .listing-detail { overflow-wrap: anywhere; }
 .listing-series { display: block; }
 .search-form input[type="search"] { border-radius: var(--pico-border-radius); min-height: 44px; }
@@ -893,7 +896,6 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .inbox-dashboard h2 small { font-size: .75em; font-weight: 400; }
 .inbox-active { font-size: .85rem; }
 .inbox-active th, .inbox-active td { padding: .45rem .35rem; }
-.inbox-active th:last-child, .inbox-active .listing-count { width: 5.75rem; }
 .inbox-active .listing-count a { display: inline-block; min-height: 44px; }
 .inbox-active .listing-detail { font-size: .75rem; }
 .inbox-section-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: .25rem 1rem; }
@@ -920,7 +922,6 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .inbox-header { flex-direction: column; }
   .inbox-search { flex: auto; width: 100%; }
   .inbox-dashboard { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
-  .inbox-active th:last-child, .inbox-active .listing-count { width: 4rem; }
   .inbox-active .listing-subject { display: block; min-height: 44px; align-content: center; }
   .inbox-active .badge { white-space: normal; }
   .recent-list .recent-row { grid-template-columns: 5.5rem minmax(0, 1fr); }
@@ -961,7 +962,6 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .subsystem-dashboard .subsystem-quiet > summary small { font-weight: 400; color: var(--pico-muted-color); }
 .subsystem-dashboard .subsystem-active { font-size: .85rem; }
 .subsystem-dashboard .subsystem-active th, .subsystem-dashboard .subsystem-active td { padding: .45rem .35rem; }
-.subsystem-dashboard .subsystem-active th:last-child, .subsystem-dashboard .subsystem-active .listing-count { width: 5.75rem; }
 .subsystem-dashboard .subsystem-active .listing-count a { display: inline-block; min-height: 44px; }
 .subsystem-dashboard .subsystem-active .listing-detail { font-size: .75rem; }
 .subsystem-dashboard .subsystem-sidebar { font-size: .8rem; border-left: 1px solid var(--pico-muted-border-color); padding-left: 1.25rem; }
@@ -969,7 +969,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .subsystem-dashboard .subsystem-people li, .subsystem-dashboard .subsystem-files li, .subsystem-dashboard .subsystem-reviewers li { list-style: none; margin: 0; padding: .3rem 0; overflow-wrap: anywhere; }
 .subsystem-dashboard .subsystem-people a { display: inline-block; min-height: 44px; align-content: center; }
 .subsystem-dashboard .subsystem-files code { padding: 0; background: transparent; font-size: .75rem; overflow-wrap: anywhere; }
-.subsystem-dashboard .subsystem-files kbd { font-size: .65rem; }
+.subsystem-dashboard .subsystem-files small { color: var(--pico-muted-color); }
 .subsystem-dashboard .subsystem-review-legend { font-size: .65rem; margin-bottom: .5rem; }
 .subsystem-dashboard .subsystem-reviewed-key::before, .subsystem-dashboard .subsystem-other-key::before { content: ""; display: inline-block; width: .5rem; height: .5rem; margin-right: .25rem; background: var(--mimir-accent); }
 .subsystem-dashboard .subsystem-other-key::before { background: var(--pico-muted-color); }
@@ -984,7 +984,6 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .subsystem-dashboard .subsystem-columns { grid-template-columns: minmax(0, 1fr); gap: 1rem; }
   .subsystem-dashboard .subsystem-sidebar { border-left: 0; padding-left: 0; border-top: 1px solid var(--pico-muted-border-color); padding-top: 1rem; }
   .subsystem-dashboard .subsystem-triage { padding: .75rem; }
-  .subsystem-dashboard .subsystem-active th:last-child, .subsystem-dashboard .subsystem-active .listing-count { width: 4rem; }
   .subsystem-dashboard .listing-subject { display: block; min-height: 44px; align-content: center; }
   .subsystem-dashboard .badge { white-space: normal; }
 }
@@ -1003,7 +1002,9 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .subsystem-index-table tbody th > a { display: flex; align-items: center; min-height: 44px; font-weight: 600; text-decoration: none; }
 .subsystem-index-table tbody th > a:hover { text-decoration: underline; }
 .subsystem-index-table .subsystem-index-count { font-variant-numeric: tabular-nums; text-align: right; }
-.subsystem-index-count .bar-meter { height: .3rem; margin-bottom: .3rem; }
+.subsystem-index-meter { display: flex; align-items: center; gap: .5rem; }
+.subsystem-index-meter .bar-meter { flex: 1; min-width: 0; height: .3rem; margin: 0; }
+.subsystem-index-meter strong { flex-shrink: 0; }
 .subsystem-index-table time { font-variant-numeric: tabular-nums; }
 @media (max-width: 767px) {
   /* Explicit table roles retain relationships when CSS stacks the cells. */
@@ -1013,7 +1014,7 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
   .subsystem-index-table tbody th, .subsystem-index-table td { display: block; padding: .2rem 0; border: 0; }
   .subsystem-index-table td::before { content: attr(data-label) ": "; color: var(--pico-muted-color); font-size: .75rem; }
   .subsystem-index-table .subsystem-index-count { text-align: left; }
-  .subsystem-index-count .bar-meter { max-width: 12rem; margin: .25rem 0; }
+  .subsystem-index-meter { max-width: 15rem; }
 }
 
 

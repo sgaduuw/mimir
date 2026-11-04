@@ -7,7 +7,7 @@
 <section class="maintainer-profile">
   <header class="maintainer-heading">
     {% set words = display_name.split() %}
-    <span class="maintainer-initials" aria-hidden="true">{{ (words[0][0] ~ (words[-1][0] if words|length > 1 else ''))|upper }}</span>
+    <span class="avatar maintainer-initials" aria-hidden="true">{{ (words[0][0] ~ (words[-1][0] if words|length > 1 else ''))|upper }}</span>
     <div>
       <h1>{{ display_name }}</h1>
       <p><code>{{ profile.address }}</code> · Maintainer of {{ profile.subsystems|length }} subsystem{{ '' if profile.subsystems|length == 1 else 's' }} · Reviews seen in {{ review_inboxes|length }} inbox{{ '' if review_inboxes|length == 1 else 'es' }}</p>

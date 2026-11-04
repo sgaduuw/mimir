@@ -41,7 +41,7 @@
         <h2 id="active-heading">Most active threads <small>(last 7 days)</small></h2>
         {% if active %}
         <table class="listing-table subsystem-active">
-          <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies in 7d</th></tr></thead>
+          <thead><tr><th scope="col" class="listing-time">Last</th><th scope="col" class="listing-main">Thread</th><th scope="col" class="listing-count">Replies in 7d</th></tr></thead>
           <tbody>{% for t in active %}
             {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}
             {% set row_time = t.last_activity %}{% set row_replies = t.reply_count %}{% set row_reply_label = true %}
@@ -95,7 +95,7 @@
       </section>
       {% endfor %}
       <section><h2>Files</h2>
-        {% if subsystem.paths %}<ul class="subsystem-files">{% for p in subsystem.paths %}<li><kbd>{{ 'X' if p.is_exclude else 'F' }}</kbd> <code>{{ p.glob }}</code></li>{% endfor %}</ul>{% else %}<p class="subsystem-empty">No file rules listed.</p>{% endif %}
+        {% if subsystem.paths %}<ul class="subsystem-files">{% for p in subsystem.paths %}<li>{% if p.is_exclude %}<small>excluding</small> {% endif %}<code>{{ p.glob }}</code></li>{% endfor %}</ul>{% else %}<p class="subsystem-empty">No file rules listed.</p>{% endif %}
       </section>
       <section><h2>Active reviewers <small>(last 30 days)</small></h2>
         {% if reviewers %}
@@ -106,7 +106,7 @@
           {% set total = r.total or 0 %}{% set roles = r.role_counts or {} %}
           {% set reviewed = [[(roles.get('Reviewed-by', 0) or 0), 0]|max, total]|min %}{% set other = [total - reviewed, 0]|max %}
           <li><div class="subsystem-reviewer-heading"><strong>{% if r.address|is_allowlisted_address and r.address_normalized|is_addressable_reviewer %}<a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ label if label != 'unknown sender' else 'Unnamed reviewer' }}</a>{% else %}{{ label if label != 'unknown sender' else 'Unnamed reviewer' }}{% endif %}</strong><span class="count">{{ total }}</span></div>
-            <svg class="subsystem-review-bar" viewBox="0 0 100 8" aria-hidden="true"><rect class="subsystem-reviewed-segment" x="0" y="0" width="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" height="8"/><rect class="subsystem-other-segment" x="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" y="0" width="{{ other / max_total * 100 if max_total > 0 else 0 }}" height="8"/></svg>
+            <svg class="subsystem-review-bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect class="subsystem-reviewed-segment" x="0" y="0" width="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" height="8"/><rect class="subsystem-other-segment" x="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" y="0" width="{{ other / max_total * 100 if max_total > 0 else 0 }}" height="8"/></svg>
             <small>{{ reviewed }} Reviewed-by, {{ other }} other trailer{{ '' if other == 1 else 's' }}{% if r.last_seen %} · last on {{ r.last_seen.strftime('%Y-%m-%d') }}{% endif %}</small>
           </li>
         {% endfor %}</ul>
