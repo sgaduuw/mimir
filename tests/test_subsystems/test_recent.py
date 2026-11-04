@@ -345,7 +345,8 @@ def test_dashboard_disclosures_source_counts_and_unusable_links(
     assert before.count("<li>") == 5
     assert after.count("<li>") == 5
     assert "<summary>Show all 10 (5 more)</summary>" in after
-    assert "4 review trailers, 4 from maintainers" in html
+    assert "4 reviews, 4 by maintainers" in html
+    assert "review trailers," not in triage_html
     assert "false formatted suffix" not in html
     assert "Showing first 30 of 35 matching patches" in html
     children = re.search(

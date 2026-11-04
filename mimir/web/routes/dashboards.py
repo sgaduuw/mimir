@@ -28,7 +28,7 @@ from mimir.dashboard import (
 from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
-from mimir.lifecycle_status import lifecycle_status_for_articles, review_trailer_counts
+from mimir.lifecycle_status import lifecycle_status_for_articles
 from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import (
@@ -423,9 +423,6 @@ def subsystem_dashboard(inbox_name: str, name: str):
         lifecycle_status_by_id = lifecycle_status_for_articles(
             session, subsystem_ids, inbox.id
         )
-        review_counts = review_trailer_counts(
-            session, [p.article_id for p in needs_attention]
-        )
     return render_template(
         "subsystem.html",
         inbox_name=inbox.name,
@@ -446,7 +443,6 @@ def subsystem_dashboard(inbox_name: str, name: str):
         recent=recent,
         recent_limit=RECENT_POSTINGS_LIMIT,
         preview_limit=RECENT_PREVIEW_LIMIT,
-        review_counts=review_counts,
         active=active,
         spark=spark,
         reviewers=reviewers,

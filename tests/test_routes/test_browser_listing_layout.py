@@ -2,17 +2,18 @@
 
 Run with the same Playwright setup as test_browser_navigation.py. Screenshots
 are written to pytest's temporary directory, whose path is printed with -s.
+CI sets MIMIR_BROWSER_REQUIRED=1 and uploads those screenshots on failure.
 """
 
 from datetime import UTC, datetime
 from threading import Thread
 from types import SimpleNamespace
 
-import pytest
 from flask import render_template
 from werkzeug.serving import make_server
 
 from mimir.lifecycle_status import LifecycleStatusInfo, _format_count_suffix
+from tests._browser import playwright_api
 from tests._dom import parse
 
 
@@ -110,7 +111,7 @@ def test_layout_samples_exercise_long_values_and_all_listing_shapes(client):
 
 
 def test_listing_layout_at_desktop_and_phone_widths(client, tmp_path):
-    playwright = pytest.importorskip("playwright.sync_api")
+    playwright = playwright_api()
     pages = presentation_pages(client)
     app = client.application
     app.add_url_rule("/_layout/<name>", view_func=lambda name: pages[name])
@@ -152,10 +153,18 @@ def test_listing_layout_at_desktop_and_phone_widths(client, tmp_path):
                               for (const el of table.querySelectorAll(
                                 'thead th, time, .listing-count, .listing-role .badge'
                               )) {
-                                const r = document.createRange();
-                                r.selectNodeContents(el);
-                                const tops = new Set(Array.from(r.getClientRects())
-                                  .filter(x => x.height > 0).map(x => Math.round(x.top)));
+                                // Element ranges include the 44px link box as well
+                                // as its centered text. Only glyph rects describe lines.
+                                const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+                                const tops = new Set();
+                                let node;
+                                while ((node = walker.nextNode())) {
+                                  if (!node.textContent.trim()) continue;
+                                  const r = document.createRange();
+                                  r.selectNodeContents(node);
+                                  for (const rect of r.getClientRects())
+                                    if (rect.height > 0) tops.add(Math.round(rect.top));
+                                }
                                 if (tops.size > 1) errors.push('wrapped: ' + el.textContent.trim());
                               }
                               for (const heading of table.querySelectorAll('.listing-day th'))
