@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Shared listing columns now fit compact dates, count labels and complete trailer roles, day headings align left, and author pages omit the empty Details column. Allowlisted address-only senders retain their address, review badges spell out counts, and archive counts, subsystem bars, maintainer avatars and message cards follow the shared presentation (#1068).
+- Merge-window series rows display lowercase subsystem names. The privacy notice's displayed update date is corrected to 3 November 2026; its approved wording is unchanged (#1068).
 - Pasted lore-shaped `/r/<id>` and `/all/<id>/` URLs now use the existing canonical Message-ID lookup. Their input-only prefixes are disallowed for crawlers; exact inbox names `r` and `all` are reserved, with an old-version inventory/remediation prerequisite before upgrading (#1053).
 - Hyphenated year-month message and thread URLs now redirect to their existing slash-form routes. The destination retains date validation and inbox-specific behavior (#1046).
 - Incomplete series-diff URLs redirect to an existing cover conversation instead of returning a 404. A robots data migration blocks only bare diff paths while preserving query-bearing sitemap comparisons and operator rules (#985).

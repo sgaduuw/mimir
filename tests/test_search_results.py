@@ -246,7 +246,7 @@ def test_warm_message_cache_still_sees_membership_repairs(client, seeded_db):
         assert search_articles(s, inbox, "repair-term") == cached
     second = client.get("/alpha/search?q=repair-term")
     assert second.get_data(as_text=True).count('class="listing-row"') == 1
-    assert "2 matching messages" in second.get_data(as_text=True)
+    assert "2 matches" in second.get_data(as_text=True)
     assert first.headers["Cache-Control"] == second.headers["Cache-Control"]
     assert "ETag" not in second.headers
 
@@ -278,7 +278,7 @@ def test_route_cap_precedes_grouping_and_badges_use_representative(
     body = client.get("/alpha/search?q=cap-term").get_data(as_text=True)
     assert body.count('class="listing-row"') == 1
     assert "The 100 newest matching messages" in body
-    assert "100 matching messages" in body
+    assert "100 matches" in body
     assert "refine the query" in body
     assert calls == [[matches[0].id]]
     assert (
@@ -352,7 +352,7 @@ def test_fallback_singletons_use_current_message_url(client, seeded_db):
         )
     body = client.get("/alpha/search?q=fallback-term").get_data(as_text=True)
     assert body.count('class="listing-row"') == 2
-    assert body.count("1 matching message</a>") == 2
+    assert body.count("1 match</a>") == 2
     for match in matches:
         assert body.count(f'href="{_msg_path(match.id, match.date, inbox.name)}"') == 2
     assert '/t"' not in body
