@@ -288,6 +288,8 @@ def test_inbox_name_fields_reject_non_slug_names(build):
     metacharacters into an op that composes the value into SQL or a
     filesystem path. A well-formed name still passes."""
     assert build("lkml")
-    for bad in ("LKML", "a b", "-x", "x-", "../etc", "%", "a" * 65):
+    assert build("r-list")
+    assert build("all-dev")
+    for bad in ("LKML", "a b", "-x", "x-", "../etc", "%", "r", "all", "a" * 65):
         with pytest.raises(ValidationError):
             build(bad)

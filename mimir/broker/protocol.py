@@ -39,7 +39,7 @@ def _validate_inbox_name(v: str) -> str:
     if not INBOX_NAME_RE.fullmatch(v):
         raise ValueError(
             "name must be lowercase alphanumeric/hyphen, "
-            "1 to 64 chars, not starting or ending with a hyphen"
+            "1 to 64 chars, not starting or ending with a hyphen; r and all are reserved"
         )
     return v
 

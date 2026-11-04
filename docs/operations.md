@@ -135,6 +135,30 @@ an enforcement mechanism. Use `admin robots --help` for the command list.
 shows in both files. There is no separate rule for agents: a fetch made on a
 user's behalf is governed by that signal as configured.
 
+### Reserved inbox names for lore redirects
+
+Exact inbox names `r` and `all` are reserved for `/r/<id>` and `/all/<id>/`
+recovery routes. Similar names such as `r-list` and `all-dev` remain valid.
+Before deploying the release that introduces these routes, run both inventories
+inside the OLD deployment environment, using its normal container wrapper:
+
+```sh
+mimir admin inbox list
+python -c 'from mimir.config import settings; print("\n".join(sorted(settings.inboxes)))'
+```
+
+Inspect the full persisted inbox list and every effective bootstrap key for
+exact `r` or `all`. Public page links are not a complete inventory. Resolve any
+conflict with the old version's admin rename workflow (`mimir admin inbox update
+--help`) and matching configuration before upgrading. The new broker rejects
+reserved names even as the source of a rename, so a failed new deployment is
+not the place to perform that remediation. The migration fails before changing
+robots rules if a persisted conflict remains; it never renames or deletes data.
+
+The default wildcard robots stanza disallows `/r/` and `/all/`, since the site
+only accepts these aliases and never emits them. Its append-only data migration
+retains custom paths, delays and content signals; no operator reset is needed.
+
 ## IndexNow
 
 IndexNow notifications are disabled by default. To enable them, set

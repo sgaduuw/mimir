@@ -103,9 +103,11 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/author/<substring>` | Author activity |
 | `/<inbox>/reviewer/<address>` | Review activity |
 | `/m/<message-id>` | Redirect to the canonical message URL |
+| `/r/<message-id>`, `/all/<message-id>/` | Accept pasted lore shapes through the same global Message-ID lookup; input-only aliases, never emitted by the site |
 | `/m/?id=<text>` | The same lookup for a GET form. Accepts a bare ID, `<id>`, `mid:<id>`, or a lore-style URL or path ending in the ID; a miss is a 404 |
 | `/<inbox>/m/<message-id>` | Message lookup restricted to an inbox |
 | `/<inbox>/<YYYY>/<MM>/<id>` | Message and thread tree |
+| `/<inbox>/<YYYY>-<MM>-<id>`, `.../<YYYY>-<MM>-<id>/t` | Recovery aliases redirect (301) to the existing slash-form message or thread route |
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t` | First page of a whole thread |
 | `/<inbox>/<YYYY>/<MM>/<root-id>/t/<page>` | Subsequent thread page |
 | `/<inbox>/<YYYY>/<MM>/<id>.md`, `.../<root-id>/t.md`, `.../<root-id>/t/<page>.md` | The message page or a thread page as Markdown |
@@ -121,6 +123,21 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
 | `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
+
+The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
+form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias
+consumes exactly one terminal delimiter; an ID that itself ends with a slash
+therefore needs two terminal slashes. Other ID slashes are preserved. Exact
+inbox names `r` and `all` are reserved for these recovery inputs.
+
+Hyphenated date aliases only build the existing slash-form route with `url_for`.
+That first hop performs no database lookup and drops unrelated query arguments.
+The destination owns date and inbox validity: wrong dates remain 404, message
+pages can recover a wrong inbox through their existing canonical redirect,
+and thread pages still require membership in the selected inbox. Linked
+cross-posts retain the destination view's existing inbox-specific behavior.
+These aliases are accepted inputs, never another spelling emitted by links or
+sitemaps. There are no hyphenated Markdown or paginated-thread aliases.
 
 Daily, month and since listings accept `?filter=patches`, `?filter=unanswered`
 or `?filter=pulls`; omitting the filter shows all threads. Unanswered means

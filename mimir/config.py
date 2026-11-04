@@ -226,7 +226,7 @@ class Settings(BaseSettings):
                 raise ValueError(
                     f"INBOXES key {name!r} must be a slug: lowercase letters, "
                     "digits and hyphens, 1 to 64 characters, not starting or "
-                    "ending with a hyphen. Inbox names are in URLs and the "
+                    "ending with a hyphen; r and all are reserved. Inbox names are in URLs and the "
                     "database, so they are not renamed as TREES keys are."
                 )
         return v

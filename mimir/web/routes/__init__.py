@@ -6,6 +6,7 @@ registration before `create_app` registers the blueprint.
 """
 
 from mimir.web.routes import (
+    alternate_urls,  # noqa: F401
     api,  # noqa: F401
     attachments,  # noqa: F401
     dashboards,  # noqa: F401
