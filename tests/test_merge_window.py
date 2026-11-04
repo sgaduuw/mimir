@@ -603,7 +603,7 @@ def test_the_filter_ships_hidden_and_points_at_the_list(client, monkeypatch):
     with SessionLocal() as s:
         _seed_postings(s, {"KERNEL FOO": 1})
     page = _page(client)
-    controls = page.find("p", cls="mw-find")
+    controls = page.find("div", cls="mw-find")
     assert "hidden" in controls.attrs
     box = controls.find("input")
     assert box.attrs["data-filter-input"] == "mw-subsystems"
