@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Subsystem status pills share one macro, and all status and merge-window pills use the same styles. Unused activity sparkline data is removed from the cache payload; the new cache namespace starts cold and background warm-cache runs repopulate it (#1057, #1060).
+
 ### Fixed
 
 - Thread tabs and the Patches index count only patches besides the root. Empty tabs link to the next page with matching content, including after loading more messages. Message pages initially show a compact thread tree, preserve saved fold choices, and label their Summary, Compact and Expanded controls; the collapsed summary identifies the last reply (#1068).

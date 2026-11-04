@@ -1,6 +1,6 @@
 """Tests for mimir/subsystems_dashboard/activity.py: cross-
 inbox 'most active subsystems' aggregations and the
-carrying of top-maintainer / status / sparkline metadata."""
+carrying of top-maintainer and status metadata."""
 
 from datetime import UTC, datetime, time, timedelta
 
@@ -211,20 +211,6 @@ def test_most_active_subsystems_marks_multiple_maintainers(seeded_db):
     assert out[0].multiple_maintainers is True
     # First M: by id order wins the display slot.
     assert out[0].maintainer_name == "Jakub Kicinski"
-
-
-def test_most_active_subsystems_carries_sparkline(seeded_db):
-    """7-day daily-volume sparkline rides on the SubsystemActivity
-    row so the front-page card can render it without an extra
-    helper call per card."""
-    with seeded_db() as s:
-        _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
-        _add_recent_thread_root(s, "spark@x", ["fs/bcachefs/super.c"])
-        s.commit()
-        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
-        out = most_active_subsystems_in_inbox(s, alpha, force=True)
-    assert out[0].spark is not None
-    assert len(out[0].spark.days) == 7  # 7-day series
 
 
 # ----- compute_on_miss request-path guard (1.36.2) ---------------------
