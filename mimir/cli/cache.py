@@ -277,7 +277,7 @@ def _build_fast_global_targets(
     a minute of boot, of a `cache.NAMESPACE_VERSION` bump and of a
     render-cap change (#589)."""
     targets: list[tuple[str, object]] = [
-        ("recent_message_total (30d)", lambda s: recent_message_total(s))
+        ("recent_message_total (30d)", recent_message_total)
     ]
     if sitemap_base:
         targets.append(
