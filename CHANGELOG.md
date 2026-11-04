@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- Store normalized MAINTAINERS `L:` list contacts separately from personal maintainer addresses, in the same atomic subsystem replacement. The additive migration requires an explicit forced MAINTAINERS reload to populate an unchanged blob; thread ordering is unchanged in this slice (#1068).
+- Store normalized MAINTAINERS `L:` list contacts separately from personal maintainer addresses, in the same atomic subsystem replacement. The additive migration requires an explicit forced MAINTAINERS reload to populate an unchanged blob (#1068).
 
 ### Changed
 
@@ -21,6 +21,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Thread subsystem and maintainer cards lead with all attributed subsystems whose MAINTAINERS list contacts match the inbox address. Traffic rankings no longer determine ownership; missing contacts retain the usual attribution order. Address and contact changes revalidate both HTML and Markdown immediately (#1068).
 - Thread tabs and the Patches index count only patches besides the root. Empty tabs link to the next page with matching content, including after loading more messages. Message pages initially show a compact thread tree, preserve saved fold choices, and label their Summary, Compact and Expanded controls; the collapsed summary identifies the last reply (#1068).
 - Shared listing columns now fit compact dates, count labels and complete trailer roles, day headings align left, and author pages omit the empty Details column. Allowlisted address-only senders retain their address, review badges spell out counts, and archive counts, subsystem bars, maintainer avatars and message cards follow the shared presentation (#1068).
 - Merge-window series rows display lowercase subsystem names. The privacy notice's displayed update date is corrected to 3 November 2026; its approved wording is unchanged (#1068).
