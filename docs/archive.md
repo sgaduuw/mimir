@@ -169,8 +169,10 @@ final new broker is running. Old writers remove these rows through the normal
 replacement cascade without repopulating them, so repeat the check after a
 rollback/re-upgrade. Keep the additive table when rolling application code
 back; do not downgrade a live shared database. Migrate/populate once per
-database, not per web replica. This storage change does not yet alter thread
-ordering.
+database, not per web replica, and upgrade the broker/schema before the web
+readers. Thread headers lead with attributed subsystems whose list contacts
+match the inbox address. Missing contacts retain the ordinary attribution
+order; traffic rankings do not substitute for list ownership.
 
 The broker runs ANALYZE after migrations before readiness. Include its measured
 cost on a current database copy in the deployment startup budget; do not add
