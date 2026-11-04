@@ -31,7 +31,7 @@
       <h2 id="active-heading">Most active threads <small>(last 7 days)</small></h2>
       {% if active %}
       <table class="listing-table inbox-active">
-        <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies in 7d</th></tr></thead>
+        <thead><tr><th scope="col" class="listing-time">Last</th><th scope="col" class="listing-main">Thread</th><th scope="col" class="listing-count">Replies in 7d</th></tr></thead>
         <tbody>
         {% for t in active %}
           {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}

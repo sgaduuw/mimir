@@ -19,7 +19,7 @@
   {{ results|length }} message{{ '' if results|length == 1 else 's' }}
   {% if truncated %} · capped at {{ result_cap }} most-recent{% endif %}.
 </small></p>
-<table class="listing-table"><thead><tr><th scope="col">Last</th><th scope="col">Message</th><th scope="col">Details</th></tr></thead><tbody>
+<table class="listing-table"><thead><tr><th scope="col" class="listing-date">Last</th><th scope="col" class="listing-main">Message</th></tr></thead><tbody>
 {% for a in results %}
 {% set row_id = a.id %}{% set row_subject = a.subject %}{% set row_author = a.author %}
 {% set row_time = a.date %}{% set row_url = a|msg_url(inbox_name) %}

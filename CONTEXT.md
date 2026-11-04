@@ -1249,7 +1249,7 @@ Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
 match and age out via `purge_expired`. Most keys name no release:
-`patch_state`, the page-level `lifecycle_status:...:{state_key}`,
+`patch_state`, the page-level `lifecycle_status_v2:...:{state_key}`,
 `merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
 pills, sitemaps and dashboards do not. So an older release reads a
 newer one's rows on rollback or while both run during a deploy, and can
@@ -2997,8 +2997,8 @@ varies by colour-coded dot, six heat states from same-day "hot"
 to dormant. An unanswered post under 14 days old
 (`DORMANT_AFTER_DAYS`) has no chip on its header: it has not had time
 to be answered. Lifecycle varies by pill label + colour, five states
-plus an inline count `: N (XM)` for review-trailer total +
-maintainer-subset. Per-reviewer names live in the pill's tooltip
+plus inline review-trailer and maintainer counts written as words.
+Per-reviewer names live in the pill's tooltip
 (commit hash + timestamp on the leading line; one reviewer per
 line, M-prefix on maintainers).
 
@@ -3020,10 +3020,13 @@ keeps everything; only the rendering changed.
 
 **Counts in the pill itself, not just the tooltip.** Real
 maintainer triage often wants the count at-a-glance:
-`REVIEWED: 12 (4M)` immediately reads as "heavily reviewed,
-maintainer attention has reached it" without hovering. Hover then
-surfaces the per-reviewer names. Two tiers of detail, each one
-interaction step deeper.
+`REVIEWED: 12 reviews, 4 by maintainers` says how many review
+trailers there are and how many came from maintainers, without
+hovering. The earlier `12 (4M)` shorthand was opaque to new readers
+(#1068). These are trailer counts, not deduplicated people. Hover
+then surfaces the per-reviewer names. The v2 lifecycle cache key
+keeps the older compact strings out of the new presentation without
+changing the cached shape or invalidating unrelated cache families.
 
 The lifecycle pill's tooltip leading line carries the commit
 hash + timestamp only, the tree name is already on the pill
@@ -3039,7 +3042,7 @@ timeline primitive that the old lifecycle-timeline section
 used, repurposed for the per-revision view. Single-revision
 patches get no fold at all.
 
-The trailers line is dropped entirely. The pill's `: N (XM)`
+The trailers line is dropped entirely. The pill's review-count
 suffix carries the count; the tooltip carries the names.
 Per-role breakdown (Reviewed-by vs. Acked-by vs. Tested-by)
 intentionally collapses into one number, readers needing the

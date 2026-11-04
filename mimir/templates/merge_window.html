@@ -74,7 +74,7 @@
       {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
       &middot; {{ row.inbox_name }}
       {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}
-      {%- if row.also %} &middot; touches {{ row.also|join(', ') }}{% endif %}</small>
+      {%- if row.also %} &middot; touches {{ row.also|map('subsystem_label')|join(', ') }}{% endif %}</small>
   </li>
   {% endfor %}
 </ul>

@@ -84,11 +84,11 @@ def test_subsystem_index_aligns_visible_rows_counts_meters_and_links(
     assert [link.text for link in links] == ["arm/demo & drivers", "second"]
     assert "2 subsystems with patch activity" in body
     assert "HIDDEN" not in "".join(table.itertext())
-    assert [float(row.find("./td/svg/rect").attrib["width"]) for row in rows] == [
+    assert [float(row.find("./td/span/svg/rect").attrib["width"]) for row in rows] == [
         100,
         50,
     ]
-    assert [row.find("./td/strong").text for row in rows] == ["10", "5"]
+    assert [row.find("./td/span/strong").text for row in rows] == ["10", "5"]
     assert rows[0].find("./th/span").text == "Supported"
     assert (
         "subsystem-status-supported"
@@ -110,8 +110,8 @@ def test_subsystem_index_handles_zero_counts_missing_metadata_and_escaped_names(
     body = _render(client, monkeypatch, [row])
     table = _table(body)
     assert "1 subsystem with patch activity" in body
-    assert float(table.find("./tbody/tr/td/svg/rect").attrib["width"]) == 0
-    assert table.find("./tbody/tr/td/strong").text == "0"
+    assert float(table.find("./tbody/tr/td/span/svg/rect").attrib["width"]) == 0
+    assert table.find("./tbody/tr/td/span/strong").text == "0"
     assert table.find("./tbody/tr/th/span").text == "Orphan"
     assert table.findall(".//b") == []
     assert "<b>Display Name</b>" in "".join(table.itertext())

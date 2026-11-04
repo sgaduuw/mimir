@@ -22,8 +22,10 @@
           {% if s.status and s.status != 'Maintained' %}<span class="subsystem-status{% if s.status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ s.status }}</span>{% endif %}
         </th>
         <td role="cell" class="subsystem-index-count" data-label="Messages, 7 days">
+          <span class="subsystem-index-meter">
           <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="{{ 100 * s.message_count / max_messages if max_messages else 0 }}" height="6"/></svg>
           <strong>{{ s.message_count }}</strong>
+          </span>
         </td>
         {% set maintainer = s.maintainer_name|listing_name %}
         <td role="cell" data-label="Maintainer">{{ maintainer if maintainer != 'unknown sender' else 'none listed' }}{{ ' et al.' if maintainer != 'unknown sender' and s.multiple_maintainers }}</td>
