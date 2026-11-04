@@ -9,7 +9,7 @@
    shape `message.py` uses to serve one URL as two representations.
 
    Vars: `messages` (list of (node, parsed, url)), `next_page_url`,
-   `remaining`, `page_size`. `page_size` is passed rather than
+   `next_kind_urls`, `remaining`, `page_size`. `page_size` is passed rather than
    hardcoded: a literal here said "Next 200" while the cap was 100, so
    the control promised a number the next page did not deliver. #}
 {% for node, parsed, url in messages %}
@@ -77,7 +77,8 @@
    because those messages are reachable elsewhere; here the link is the
    crawl path to the rest of the conversation, which is the decision
    this template has carried since the overflow list it replaced. #}
-<div class="thread-more">
+<div class="thread-more"
+  {%- for tab, href in next_kind_urls.items() %} data-next-{{ tab }}="{{ href }}"{% endfor %}>
   <a href="{{ next_page_url }}"
      hx-get="{{ next_page_url }}"
      hx-target="closest .thread-more"
