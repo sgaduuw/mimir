@@ -112,6 +112,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # hub with no entry here at all (so no explicit Cache-Control).
     "web.maintainer_view": "public, max-age=600",
     "web.message_id_lookup": "public, max-age=3600",
+    "web.message_id_lookup_alias": "public, max-age=3600",
+    "web.message_id_lookup_all_alias": "public, max-age=3600",
     "web.message_id_lookup_form": "public, max-age=3600",
     "web.message_id_lookup_inbox": "public, max-age=3600",
     # web.message uses ETag-based conditional revalidation (set inside

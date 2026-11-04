@@ -753,7 +753,7 @@ def test_robots_reset_via_broker_reseeds_defaults(seeded_db):
     with SessionLocal() as s:
         rules = svc.list_rules(s)
     assert [r.user_agent for r in rules] == ["*"]
-    assert rules[0].crawl_delay == 5
+    assert rules[0].crawl_delay is None
     # Reseeds from `_DEFAULT_STAR_DISALLOW`; reference the constant so
     # this pins "reset restores the defaults" rather than a snapshot of
     # what the defaults happened to be.

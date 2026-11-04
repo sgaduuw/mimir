@@ -110,7 +110,9 @@ still run while paused. Do not treat the sentinel as proof that the writer is id
 ## Crawler policy
 
 `/robots.txt` is generated from database rules. The default `*` stanza discourages
-crawling attachment URLs, internal search, and `/api/` partials. Inspect or edit it:
+crawling attachment URLs, internal search, `/api/` partials and bare series-diff
+paths. The end-anchored `/*/series/*/diff$` rule leaves query-bearing comparison
+URLs crawlable. Inspect or edit it:
 
 ```sh
 uv run mimir admin robots list
@@ -122,7 +124,8 @@ uv run mimir admin robots update '*' --set-content-signal ai-train=yes
 ```
 
 Content Signals support `search`, `ai-input`, and `ai-train`, each `yes` or `no`.
-Defaults are `search=yes, ai-input=no, ai-train=no`. Omit a key to express no
+Defaults are `search=yes, ai-input=yes, ai-train=no`, with no crawl delay.
+Crawler budgets provide backoff. Omit a key to express no
 preference; use `--clear-content-signal KEY` or `--clear-all-content-signals`
 to remove settings. The `*` stanza cannot be deleted. `admin robots reset --yes`
 restores defaults, replacing custom rules. These are crawler instructions, not
@@ -131,6 +134,30 @@ an enforcement mechanism. Use `admin robots --help` for the command list.
 `/llms.txt` repeats the `*` stanza's Content-Signal as is, so a change to it
 shows in both files. There is no separate rule for agents: a fetch made on a
 user's behalf is governed by that signal as configured.
+
+### Reserved inbox names for lore redirects
+
+Exact inbox names `r` and `all` are reserved for `/r/<id>` and `/all/<id>/`
+recovery routes. Similar names such as `r-list` and `all-dev` remain valid.
+Before deploying the release that introduces these routes, run both inventories
+inside the OLD deployment environment, using its normal container wrapper:
+
+```sh
+mimir admin inbox list
+python -c 'from mimir.config import settings; print("\n".join(sorted(settings.inboxes)))'
+```
+
+Inspect the full persisted inbox list and every effective bootstrap key for
+exact `r` or `all`. Public page links are not a complete inventory. Resolve any
+conflict with the old version's admin rename workflow (`mimir admin inbox update
+--help`) and matching configuration before upgrading. The new broker rejects
+reserved names even as the source of a rename, so a failed new deployment is
+not the place to perform that remediation. The migration fails before changing
+robots rules if a persisted conflict remains; it never renames or deletes data.
+
+The default wildcard robots stanza disallows `/r/` and `/all/`, since the site
+only accepts these aliases and never emits them. Its append-only data migration
+retains custom paths, delays and content signals; no operator reset is needed.
 
 ## IndexNow
 

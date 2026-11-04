@@ -61,7 +61,7 @@ def validate_name(name: str) -> str:
     if not INBOX_NAME_RE.fullmatch(name):
         raise InboxValidationError(
             f"name {name!r} must be lowercase alphanumeric/hyphen, "
-            "1 64 chars, not starting or ending with a hyphen"
+            "1 64 chars, not starting or ending with a hyphen; r and all are reserved"
         )
     return name
 

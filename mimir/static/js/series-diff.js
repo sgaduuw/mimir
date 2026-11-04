@@ -2,9 +2,18 @@
 (function () {
   "use strict";
 
+  function enhanceSelector() {
+    var select = document.getElementById("series-diff-position");
+    if (!select) return;
+    // The change handler navigates; keep the submit button as the no-JS fallback.
+    var button = select.form.querySelector('button[type="submit"]');
+    if (button) button.hidden = true;
+  }
+
   function syncDocument() {
     var page = document.getElementById("series-diff");
     if (!page) return;
+    enhanceSelector();
     var data = page.dataset;
     document.title = data.pageTitle;
     document.querySelector('link[rel="canonical"]').href = data.canonical;
@@ -41,12 +50,14 @@
       }
     }
   });
+  enhanceSelector();
   document.addEventListener("htmx:beforeRequest", resetSelector);
   document.addEventListener("htmx:afterSwap", function (event) {
-    if (event.detail.target.tagName !== "MAIN") return;
+    if (event.detail.elt.tagName !== "MAIN") return;
     syncDocument();
     var page = document.getElementById("series-diff");
-    if (page) page.focus({ preventScroll: true });
+    // History swaps lack request target details and retain their own focus.
+    if (page && event.detail.target) page.focus({ preventScroll: true });
   });
   document.addEventListener("htmx:historyRestore", syncDocument);
 })();

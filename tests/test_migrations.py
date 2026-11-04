@@ -27,6 +27,53 @@ TREE_KEY_REVISION = "13b7f3111e00"
 BACKFILL_RUNS_REVISION = "11e653c445d0"
 WALKED_COUNTS_REVISION = "1496642cb923"
 LIST_ADDRESS_REVISION = "9b2878b4f911"
+SUBSYSTEM_LISTS_REVISION = "d7e8a9b0c1d2"
+
+
+def test_subsystem_list_contacts_upgrade_constraints_and_disposable_downgrade(tmp_path):
+    db = tmp_path / "subsystem-lists.db"
+    result = _alembic(db, "c471af7e3d22")
+    assert result.returncode == 0, result.stderr
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO subsystems(id,name) VALUES(1,'A'),(2,'B')")
+    result = _alembic(db, SUBSYSTEM_LISTS_REVISION)
+    assert result.returncode == 0, result.stderr
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys=ON")
+        assert conn.execute("SELECT count(*) FROM subsystem_lists").fetchone()[0] == 0
+        cols = conn.execute("PRAGMA table_info(subsystem_lists)").fetchall()
+        assert [(c[1], c[5]) for c in cols] == [("address", 1), ("subsystem_id", 2)]
+        assert (
+            conn.execute(
+                "PRAGMA index_info(ix_subsystem_lists_subsystem_id)"
+            ).fetchone()[2]
+            == "subsystem_id"
+        )
+        conn.executemany(
+            "INSERT INTO subsystem_lists VALUES(?,?)",
+            [
+                ("list@example.org", 1),
+                ("list@example.org", 2),
+                ("other@example.org", 1),
+            ],
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO subsystem_lists VALUES('list@example.org',1)")
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute("INSERT INTO subsystem_lists VALUES('missing@example.org',99)")
+        conn.execute("DELETE FROM subsystems WHERE id=1")
+        assert conn.execute("SELECT * FROM subsystem_lists").fetchall() == [
+            ("list@example.org", 2)
+        ]
+    result = _alembic(db, "c471af7e3d22", "downgrade")
+    assert result.returncode == 0, result.stderr
+    with sqlite3.connect(db) as conn:
+        assert not conn.execute(
+            "SELECT name FROM sqlite_master WHERE name='subsystem_lists'"
+        ).fetchall()
+        assert conn.execute("SELECT name FROM subsystems").fetchall() == [("B",)]
+    result = _alembic(db, SUBSYSTEM_LISTS_REVISION)
+    assert result.returncode == 0, result.stderr
 
 
 def _alembic(

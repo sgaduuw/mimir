@@ -1,0 +1,10 @@
+{# Keep native input/select attributes at the caller; share their label and group. #}
+{% macro search_field(id, label, button=none) -%}
+<div class="search-field">
+  <label for="{{ id }}">{{ label }}</label>
+  {% if button %}<fieldset class="search-field-group" role="group">{% endif %}
+    {{ caller() }}
+    {% if button %}<button type="submit" class="secondary">{{ button }}</button>
+  </fieldset>{% endif %}
+</div>
+{%- endmacro %}

@@ -116,6 +116,11 @@ long cadences. Failures remain eligible for retry. Set `SCHEDULER_VERBOSE=-v`
 for more detail. Only the fast warm runs as the initial background pre-flight;
 slow warming follows the periodic loop. See [maintenance and pausing](../docs/operations.md#pause-scheduled-work).
 
+TERM and INT request a normal scheduler stop with exit status zero. The scheduler
+forwards TERM to its active CLI command and background warm wrappers. An
+interrupted run does not advance its success sentinel. Work already accepted
+by the separate broker can continue; stopping the scheduler does not cancel it.
+
 ## Access logs
 
 Mimir emits one JSON access record per request, including unmatched routes.

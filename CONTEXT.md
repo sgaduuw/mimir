@@ -338,9 +338,9 @@ per-subsystem dashboards:
   `role`, `name`, `address`, `address_normalized`. Used to render
   per-message attestation + per-reviewer recent-activity.
 
-**MAINTAINERS index (3 tables)**, derived from the kernel tree's
-`MAINTAINERS` blob by `flask --app mimir update-mainline`. Refreshed
-in lockstep with the mainline pull:
+**MAINTAINERS index (4 tables)**, derived from the kernel tree's
+`MAINTAINERS` blob by `mimir update-mainline`. The broker replaces the
+projection when the blob changes or a reload is forced:
 
 - **`subsystems`**, one row per MAINTAINERS section (`name`,
   `status`).
@@ -349,6 +349,25 @@ in lockstep with the mainline pull:
 - **`subsystem_maintainers`**, per-subsystem `M:` / `R:` rows,
   carrying `role`, `name`, and `address`. Their addresses feed the
   maintainer-derived half of the allowlist union.
+- **`subsystem_lists`**, normalized `L:` contacts, keyed by
+  `(address, subsystem_id)` with a separate subsystem-id cascade index.
+  Several sections can share a list and one section can name several lists.
+  These contacts are independent of M:/R: personal-address allowlisting and
+  of the configurable To/Cc list-host eligibility filter. The normalization
+  helper is shared with canonical address extraction; each L value is parsed
+  separately and accepted using the admin bare-address rule, then deduplicated
+  within its section. All four tables and the rules cursor change in the same
+  composite writer operation. No web consumer uses the list table yet (#1068).
+
+The additive list migration does not reparse an unchanged blob. Populate via
+`update-mainline --skip-fetch --skip-commits --force --rewalk`: force bypasses
+the blob gate, rewalk bypasses the cadence gate, and skip-commits prevents a
+history replay. A second forced run preserves the mapping and advances the
+rules generation again. During mixed old/new writer operation an old replace
+deletes list rows through cascade, so verify the source/store mapping after
+the final new writer and again after rollback/re-upgrade. The new table stays
+in place for application rollback. The separate startup migration/ANALYZE
+path must fit measured deployment budgets; no population work runs at boot.
 
 **Mainline tree cursor (2 tables)**, for the future "applied as
 <sha>" link surface on patch pages:
@@ -405,6 +424,17 @@ it as a multi-minute request hang. Tunable via
 `SQLITE_BUSY_TIMEOUT_MS` so an operator can lengthen it without code
 changes if the scheduler grows heavier writers.
 
+The broker knows when VACUUM is running, so new cache mutation RPCs
+are rejected immediately with `error="vacuum"`, before writer submission,
+rather than each occupying the cache worker for its five-second wait.
+The web tier treats that specific rejection as an expected skipped write;
+other broker failures still log warnings. A lock-protected active count
+keeps admission closed across overlapping VACUUM handlers, and the final
+exit logs the exact number of skipped RPCs, even after a failed VACUUM.
+The lock only protects admission state and counters, never writer
+submission or Future waits. An already-admitted write can still hit the
+ordinary timeout; this gate does not cancel it or pause other producers.
+
 **`busy_timeout` doesn't cover `SQLITE_BUSY_SNAPSHOT`**, a distinct
 error path SQLite raises when a transaction that started as a
 *reader* (taking a snapshot) tries to upgrade to a *writer* and
@@ -448,9 +478,9 @@ The invariant since v2.0.0:
   write a readonly database` rather than silently being lost.
 - **Cache writes from the web tier RPC into the broker** via the
   UNIX socket at `BROKER_SOCKET_PATH` (default `/data/.broker.sock`).
-  Best-effort: `BrokerUnavailable` is logged at warning and
-  swallowed, the page already rendered before `cache.set` was
-  called.
+  Best-effort: `BrokerUnavailable` is swallowed, quietly for expected
+  VACUUM cache rejections and with a warning for other failures. The
+  page already rendered before `cache.set` was called.
 - **Admin operations RPC into the broker** too. The historical
   `READ_ONLY_DB=true` toggle (used to quiesce the web tier for
   long admin writes) is gone, the broker's own queue serialises
@@ -1100,6 +1130,16 @@ order).
 
 ### Series diff navigation (#999)
 
+Incomplete diff input (#985) names a series but not a comparison. It redirects
+to the supplied newer cover, the supplied older cover, or the earliest cover
+of the exact key/head. The indexed slot winner selects that cover; the shared
+advertised-URL resolver supplies its canonical conversation page and safe
+message fallback. No body fetch or heuristic patch match runs on this path.
+Invalid supplied values remain errors rather than becoming redirects. The
+robots bare-diff disallow ends in `$`: matching includes the query string,
+so actual sitemap comparison URLs remain crawlable. Its data migration
+appends only the missing rule and preserves operator settings.
+
 `web/series_diff_navigation.py` resolves the selected comparison and its links
 from one batch of indexed slots for the exact series key/head. `slot_winner`
 still chooses each slot before the existing subject/file fallback is tried.
@@ -1132,6 +1172,17 @@ article so `series-diff.js` can restore the document head and upward navigation
 after a swap or a history restore. The keyboard controller clicks live pager
 anchors, and the theme controller reinitializes the replaced control. Failed
 selection requests keep the selected position naming the body still on screen.
+
+Search, live-filter, Message-ID lookup and series-position controls share the
+`_search_field.html` call-block macro (#1067). It owns the label and optional
+joined group, while callers retain native input/select attributes and form
+parameters. Labels sit outside Pico's flex groups. The wrapper resolves the
+site radius before a search input assigns its own Pico radius. Secondary
+submit buttons share Pico's contrasting palette; filters remain hidden until
+`list-tools.js` initializes. The series picker hides Go only after its change
+handler is installed, including swapped/restored forms; without JavaScript,
+the native GET form remains complete. This navigation markup is outside the
+rendered-diff cache, so changing it needs no body-cache key version.
 
 ### Materialised thread roots (2026-07-28)
 
@@ -1228,7 +1279,7 @@ Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
 match and age out via `purge_expired`. Most keys name no release:
-`patch_state`, the page-level `lifecycle_status:...:{state_key}`,
+`patch_state`, the page-level `lifecycle_status_v2:...:{state_key}`,
 `merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
 pills, sitemaps and dashboards do not. So an older release reads a
 newer one's rows on rollback or while both run during a deploy, and can
@@ -1242,8 +1293,9 @@ field change bumps it. A bump cold-starts the whole cache once.
 (used by `warm-cache`).
 
 `cache.set` is **best-effort**: the web tier swallows
-`BrokerUnavailable` (any non-ok reply, writer busy included) and
-logs it. The page already rendered before `set` was called, so
+`BrokerUnavailable` (any non-ok reply, writer busy included). Expected
+VACUUM cache rejections are quiet; other failures log a warning. The
+page already rendered before `set` was called, so
 propagating the error would 500 a successful response; the next
 request just recomputes and tries again. A broker handler thread
 fires and forgets, so a writer error lands on a future nobody reads.
@@ -1629,6 +1681,26 @@ the renderer. The dict's *values* are the int-based URLs (built via
 Message-IDs not in the archive render as plain text rather than dead
 links.
 
+### Alternate recovery URLs (#1053, #1046)
+
+Pasted lore paths `/r/<id>` and `/all/<id>/` are acceptor-only aliases for the
+same global Message-ID lookup as `/m/<id>`. They never become link emitters.
+The shared inbox-name predicate reserves exact r/all names across config, CRUD,
+broker requests and error-help screens. Existing deployments must inventory
+both persisted names and effective bootstrap keys on the old image and resolve
+conflicts before upgrading: the new broker cannot rename a reserved source.
+A migration guard catches persisted conflicts before appending robots entries.
+The prefix rules only keep redundant lookup URLs out of the crawl; normal
+messages and query-bearing comparisons remain crawlable.
+
+Hyphenated date aliases perform no article lookup. They use `url_for` to spell
+the existing message/thread acceptor, which remains the one authority for date
+and membership. This promises an accepted slash-form URL, not byte-identical
+canonical month padding. A wrong-inbox message may recover through its existing
+redirect; a thread with no membership in that inbox remains404. Linked cross-
+posts keep the acceptor's inbox-specific conversation semantics. New aliases do
+not introduce a second canonical or identity policy.
+
 ## Canonical-inbox resolution (cross-posts)
 
 Same message, multiple inboxes (e.g. lkml + linux-fsdevel) is
@@ -1870,10 +1942,18 @@ afterthought:
 
 CI is two workflows with one job each kind. `ci.yml` is the **test
 gate** and runs on `pull_request` only (`[develop, main, release/*,
-hotfix/*]`): `lint` / `test` / `test-ft` plus a docker **build-verify**
+hotfix/*]`): `lint` / `test` / `test-ft` / `browser` plus a docker **build-verify**
 (`push: false`). `release.yml` is the **publish** and runs on `push:
 tags: ['v*']` only: it builds + publishes the GHCR image
 (`:vX.Y.Z`/`:X.Y.Z`/`:X.Y`/`:latest`) and runs no tests.
+
+The browser job runs Playwright with Chromium once, separately from the normal
+and free-threaded suites (#1078). `MIMIR_BROWSER_REQUIRED=1` makes a missing
+Playwright install fail instead of silently skipping the layout/navigation
+guards. Local pytest retains optional skips. Layout screenshots are saved under
+pytest's fixed CI temporary directory and uploaded on failure. Docker depends
+on the browser job as well as lint and both Python suites, so its successful
+build cannot precede the rendered checks.
 
 Why this shape (the reasoning, after two incremental cuts):
 
@@ -2150,6 +2230,24 @@ default for a fresh `/data` volume and for the first deploy
 carrying the change. Sentinels are only touched on successful runs
 so a transient failure doesn't push the next retry out by a full
 cadence.
+
+The scheduler handles TERM and INT as normal stops with exit status zero
+(#1007). Task commands and sleeps run as tracked asynchronous children
+while the scheduler waits, so a shell trap can act promptly instead of
+waiting for a foreground command. Initial and slow warm wrappers install
+their own forwarding traps because POSIX asynchronous subshells reset
+caught traps. A short deferred-stop window covers child launch and PID
+capture; either requested stop signal forwards TERM, since asynchronous
+commands can inherit SIGINT ignored. Interrupted runs exit before touching
+a successful-completion sentinel. Completed background jobs are reaped and
+removed from tracking on subsequent ticks.
+
+This is scheduler orchestration cleanup, not a broker cancellation protocol
+or a graceful drain. Already accepted RPCs can continue in the separate
+broker. The stop path does not wait indefinitely for a child that ignores
+TERM; container teardown remains responsible for uncooperative descendants.
+Portable shell PID tracking does not provide an atomic process-identity
+guarantee across every launch/exit timing.
 
 Companion: the broker runs a full-sample `ANALYZE`
 immediately after `alembic upgrade head`
@@ -2631,13 +2729,35 @@ revisions need no input of their own: they are built only for the
 root's series when the root is a cover, and `render_state_tag` digests
 every position of that series.
 
-The thread view's header lists this inbox's busiest subsystem first (#989).
-That is `most_active_subsystems_in_inbox`'s top id for the last 7 days: a
-cached ranking, read before the ETag and never computed there
-(`compute_on_miss=False`), which moves with the inbox's traffic and not
-with the thread. Its id is in the ETag's content part, so a cold cache is
-the empty tag and the ETag moves when the cache warms. It costs one cache
-read on the 304.
+The root remains context in every tab (#1068). Tab eligibility and the
+Patches count/index use only additional patches; Discussion retains its
+existing reply count. Empty tabs link forward to the next page containing
+a visible non-root message, using the already-read chronological rows and
+the same indexed or CTE page boundaries. Nested covers are visible in
+Discussion. The latest `.thread-more` boundary carries those URLs through
+HTMX appends. The cap, membership, immutable message dates/subjects and
+mutable series columns already cover their inputs in the validator;
+warm-cache tests change an off-page kind and require a new ETag and link
+in both full and HTMX responses, on both membership paths.
+
+Message-page trees default to compact on roots and replies (#1068).
+Summary, Compact and Expanded retain the existing closed/partial/expanded
+states and `mimir.fold.<id>` preference. Reading a page does not write a
+preference; saved choices still win, and unavailable storage falls back to
+compact. The summary identifies its date as the last reply.
+
+The thread view's header leads with every attributed subsystem whose
+MAINTAINERS `L:` contact matches the inbox's normalized list address (#1068).
+One uncached lookup through the address-first `subsystem_lists` primary key
+captures the matching IDs before the validator; an inbox without an address
+needs no lookup. The normalized address and sorted IDs enter the ETag's
+content part, also used by the rendered-state caches. Rendering reuses that
+same captured set to stable-partition existing hits. Both groups keep the
+matcher's order, maintainers keep their existing deduplication, and unrelated
+subsystems never join the header merely because they share a list address.
+Empty contacts, unknown addresses and no intersecting attribution retain the
+ordinary order. `rules_version` still carries MAINTAINERS content changes.
+Weekly activity rankings have no role in thread ownership or its validator.
 
 The thread view's outline (#989) lists the thread's first `OUTLINE_ROWS`
 messages on every page of a thread of at least `OUTLINE_MIN_MESSAGES`, and
@@ -2937,8 +3057,8 @@ varies by colour-coded dot, six heat states from same-day "hot"
 to dormant. An unanswered post under 14 days old
 (`DORMANT_AFTER_DAYS`) has no chip on its header: it has not had time
 to be answered. Lifecycle varies by pill label + colour, five states
-plus an inline count `: N (XM)` for review-trailer total +
-maintainer-subset. Per-reviewer names live in the pill's tooltip
+plus inline review-trailer and maintainer counts written as words.
+Per-reviewer names live in the pill's tooltip
 (commit hash + timestamp on the leading line; one reviewer per
 line, M-prefix on maintainers).
 
@@ -2960,10 +3080,13 @@ keeps everything; only the rendering changed.
 
 **Counts in the pill itself, not just the tooltip.** Real
 maintainer triage often wants the count at-a-glance:
-`REVIEWED: 12 (4M)` immediately reads as "heavily reviewed,
-maintainer attention has reached it" without hovering. Hover then
-surfaces the per-reviewer names. Two tiers of detail, each one
-interaction step deeper.
+`REVIEWED: 12 reviews, 4 by maintainers` says how many review
+trailers there are and how many came from maintainers, without
+hovering. The earlier `12 (4M)` shorthand was opaque to new readers
+(#1068). These are trailer counts, not deduplicated people. Hover
+then surfaces the per-reviewer names. The v2 lifecycle cache key
+keeps the older compact strings out of the new presentation without
+changing the cached shape or invalidating unrelated cache families.
 
 The lifecycle pill's tooltip leading line carries the commit
 hash + timestamp only, the tree name is already on the pill
@@ -2979,7 +3102,7 @@ timeline primitive that the old lifecycle-timeline section
 used, repurposed for the per-revision view. Single-revision
 patches get no fold at all.
 
-The trailers line is dropped entirely. The pill's `: N (XM)`
+The trailers line is dropped entirely. The pill's review-count
 suffix carries the count; the tooltip carries the names.
 Per-role breakdown (Reviewed-by vs. Acked-by vs. Tested-by)
 intentionally collapses into one number, readers needing the

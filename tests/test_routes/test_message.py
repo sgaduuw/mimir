@@ -7,11 +7,9 @@ identity contract)."""
 
 import re
 from datetime import UTC, timedelta
-from pathlib import Path
 
 import pytest
 
-import mimir
 from mimir.config import settings
 from mimir.rendering.body import MAX_QUOTE_DEPTH
 from tests.test_routes._helpers import (
@@ -296,7 +294,7 @@ def test_message_page_thread_fold_context_is_root_when_viewing_root(
 ):
     """Viewing the thread root sets data-thread-context="root" on
     <html>; the controller script reads that and defaults the fold
-    state to `partial` (vs `closed` for a deep reply). The thread-
+    state to `partial`, as it does for a deep reply. The thread-
     root id is the integer Article.id, not the RFC 822 Message-ID
     -- the latter would leak email-shaped tokens that the visible
     redaction was supposed to hide."""
@@ -315,8 +313,8 @@ def test_message_page_thread_fold_context_is_deep_for_replies(
     tmp_path,
 ):
     """Viewing any non-root message in a thread sets
-    data-thread-context="deep" -- the controller defaults to `closed`
-    so the body gets full real estate."""
+    data-thread-context="deep"; the controller's compact default still
+    leaves the tree available alongside the message."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
     root_id = msgs["root"][0]
     body = client.get(msgs["nested"][1]).data.decode()
@@ -434,6 +432,7 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     assert "3 messages" in summary_text
     assert "1 author" in summary_text
     assert "1 authors" not in summary_text  # singular form
+    assert "last reply " in summary_text
     # Seeded thread is dated in Jan 2024 (commit_time fixed in
     # `_seed_three_message_thread`); the render falls back to an
     # absolute date beyond the 30-day relative window. Match any
@@ -446,34 +445,17 @@ def test_message_page_thread_fold_toolbar_summary_counts_match(
     )
 
 
-def test_message_page_closed_fold_button_renders_open_triangle(client, tmp_path):
-    """Pages render partial, so the closed button shows ▼ on first paint
-    (#930); CSS swaps it to ▶ when the box is closed. The title doubles as
-    aria-label so the glyph never becomes the accessible name."""
+def test_message_page_fold_buttons_name_the_three_states(client, tmp_path):
+    from tests._dom import parse
+
     msgs = _seed_three_message_thread(tmp_path, "alpha")
-    body = client.get(msgs["root"][1]).data.decode()
-    assert re.search(
-        r'data-fold-set="closed" title="([^"]+)" aria-label="\1">▼</button>', body
-    )
-    assert "▶" not in body
-
-
-def test_thread_closed_state_css_swaps_to_right_triangle():
-    """The ▶ lives in CSS: dropping the closed-state rule leaves ▼ on a
-    closed thread box (#930)."""
-    css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
-    rule = re.search(
-        r'html\[data-thread-fold="closed"\][^{}]*\[data-fold-set="closed"\]::before\s*'
-        r'\{[^}]*content:\s*"\\25B6\\FE0E"',
-        css,
-    )
-    assert rule
-    # The ▼ stays in the HTML; without this rule a closed box shows both.
-    assert re.search(
-        r'html\[data-thread-fold="closed"\][^{}]*\[data-fold-set="closed"\][^{}]*'
-        r"\{\s*font-size:\s*0;",
-        css,
-    )
+    for _, url, _ in msgs.values():
+        toolbar = parse(client.get(url).get_data(as_text=True)).find(
+            cls="thread-toggle"
+        )
+        assert [
+            (b.attrs["data-fold-set"], b.text()) for b in toolbar.find_all("button")
+        ] == [("closed", "Summary"), ("partial", "Compact"), ("expanded", "Expanded")]
 
 
 def test_message_page_thread_fold_links_carry_htmx_attrs(

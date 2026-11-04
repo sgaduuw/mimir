@@ -1,0 +1,3 @@
+{% macro status_pill(status, maintained_style=true) -%}
+{% if status %}<span class="pill{% if maintained_style and status|lower == 'maintained' %} pill-maintained{% elif status|lower == 'supported' %} pill-supported{% endif %}">{{ status }}</span>{% endif %}
+{%- endmacro %}

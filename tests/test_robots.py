@@ -113,6 +113,9 @@ def test_update_rule_sets_crawl_delay():
 
 
 def test_update_rule_clear_crawl_delay_writes_null():
+    robots.update_rule("*", crawl_delay=5)
+    with SessionLocal() as session:
+        assert robots.get_rule(session, "*").crawl_delay == 5
     robots.update_rule("*", clear_crawl_delay=True)
     with SessionLocal() as session:
         rule = robots.get_rule(session, "*")
@@ -164,18 +167,21 @@ def test_reset_rules_drops_extras_and_reseeds_star():
         rules = robots.list_rules(session)
     assert [r.user_agent for r in rules] == ["*"]
     star = rules[0]
-    assert star.crawl_delay == 5
+    assert star.crawl_delay is None
     assert star.disallow_paths == [
         "/*/attachment/",
         "/api/",
         "/*/search",
         "/m/",
         "/*/m/",
+        "/*/series/*/diff$",
+        "/r/",
+        "/all/",
     ]
     assert star.content_signals == {
         "search": "yes",
         "ai-train": "no",
-        "ai-input": "no",
+        "ai-input": "yes",
     }
 
 
@@ -187,7 +193,8 @@ LLMS_URL = "https://example.com/llms.txt"
 def test_render_matches_seeded_defaults():
     """Default body after migration: preamble (because content_signals
     is non-empty on the seeded `*` row), then `*` stanza with
-    Content-Signal/Crawl-delay/Disallow, then Sitemap."""
+    Content-Signal/Disallow, then Sitemap."""
+    robots.reset_rules()
     with SessionLocal() as session:
         body = robots.render_robots_txt(
             session,
@@ -197,13 +204,15 @@ def test_render_matches_seeded_defaults():
     assert body == (
         robots._ROBOTS_PREAMBLE
         + "User-agent: *\n"
-        + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
-        + "Crawl-delay: 5\n"
+        + "Content-Signal: search=yes, ai-input=yes, ai-train=no\n"
         + "Disallow: /*/attachment/\n"
         + "Disallow: /api/\n"
         + "Disallow: /*/search\n"
         + "Disallow: /m/\n"
         + "Disallow: /*/m/\n"
+        + "Disallow: /*/series/*/diff$\n"
+        + "Disallow: /r/\n"
+        + "Disallow: /all/\n"
         + "\n"
         + "Sitemap: https://example.com/sitemap.xml\n"
         + f"LLM-Context: {LLMS_URL}\n"
@@ -258,13 +267,15 @@ def test_render_emits_per_ua_stanzas():
     expected = (
         robots._ROBOTS_PREAMBLE
         + "User-agent: *\n"
-        + "Content-Signal: search=yes, ai-input=no, ai-train=no\n"
-        + "Crawl-delay: 5\n"
+        + "Content-Signal: search=yes, ai-input=yes, ai-train=no\n"
         + "Disallow: /*/attachment/\n"
         + "Disallow: /api/\n"
         + "Disallow: /*/search\n"
         + "Disallow: /m/\n"
         + "Disallow: /*/m/\n"
+        + "Disallow: /*/series/*/diff$\n"
+        + "Disallow: /r/\n"
+        + "Disallow: /all/\n"
         + "\n"
         + "User-agent: ClaudeBot\n"
         + "Crawl-delay: 20\n"
@@ -380,7 +391,7 @@ def test_update_rule_set_content_signal_upserts():
     assert rule.content_signals["ai-train"] == "yes"
     # Other seeded keys untouched.
     assert rule.content_signals["search"] == "yes"
-    assert rule.content_signals["ai-input"] == "no"
+    assert rule.content_signals["ai-input"] == "yes"
 
 
 def test_update_rule_clear_content_signal_drops_specific_keys():
@@ -420,7 +431,7 @@ def test_reset_rules_reseeds_content_signals():
     assert rule.content_signals == {
         "search": "yes",
         "ai-train": "no",
-        "ai-input": "no",
+        "ai-input": "yes",
     }
 
 
@@ -444,7 +455,7 @@ _MESSAGE_ID_MIGRATION = (
 )
 
 
-def _run_migration(migration=_API_SEARCH_MIGRATION) -> None:
+def _run_migration(migration=_API_SEARCH_MIGRATION, *, db_engine=None) -> None:
     """Drive a migration's upgrade against the test DB.
 
     `Operations.context` installs the global `op` proxy the migration
@@ -464,10 +475,38 @@ def _run_migration(migration=_API_SEARCH_MIGRATION) -> None:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
-    with engine.begin() as conn:
+    with (db_engine if db_engine is not None else engine).begin() as conn:
         ctx = MigrationContext.configure(conn)
         with Operations.context(ctx):
             module.upgrade()
+
+
+def test_fresh_robots_seeds_render_current_policy():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
+    fresh = create_engine("sqlite://")
+    try:
+        for revision, filename in [
+            ("cc79e4a44a23", "add_robots_rules_table"),
+            ("82e825291162", "add_robots_rules_content_signals"),
+        ]:
+            _run_migration(
+                (revision, f"alembic/versions/{revision}_{filename}.py"),
+                db_engine=fresh,
+            )
+        with Session(fresh) as session:
+            star = robots.get_rule(session, "*")
+            assert star is not None
+            assert star.disallow_paths == ["/*/attachment/"]
+            body = robots.render_robots_txt(session, [], LLMS_URL)
+        stanza = body.split("User-agent: *\n", 1)[1].split("\n\n", 1)[0].splitlines()
+        assert stanza == [
+            "Content-Signal: search=yes, ai-input=yes, ai-train=no",
+            "Disallow: /*/attachment/",
+        ]
+    finally:
+        fresh.dispose()
 
 
 def _star_paths() -> list[str]:
@@ -604,7 +643,8 @@ _EMITTED = [
     "/lkml/subsystem/kernel-foo/",
     "/lkml/reviewer/someone@kernel.org",
     "/lkml/author/someone",
-    "/lkml/series/abc/diff",
+    "/lkml/series/abc/diff?from=v1&to=v2&pos=cover",
+    "/lkml/series/abc/diff?from=v1&to=v2&pos=cover&s=123",
     "/maintainers/someone@kernel.org",
     "/merge-window",
     "/privacy",
@@ -619,3 +659,159 @@ def test_default_disallow_blocks_the_lookup_and_nothing_a_reader_is_sent_to():
     assert _blocked("/*/m/", "/lkml/m/a@b")
     blocked = [(p, path) for p in patterns for path in _EMITTED if _blocked(p, path)]
     assert blocked == []
+
+
+def test_default_blocks_bare_series_diff_but_not_complete_comparisons():
+    pattern = "/*/series/*/diff$"
+    assert pattern in robots._DEFAULT_STAR_DISALLOW
+    assert _blocked(pattern, "/alpha/series/key/diff")
+    assert not _blocked(pattern, "/alpha/series/key/diff?from=v1&to=v2&pos=cover")
+
+
+_SERIES_DIFF_MIGRATION = (
+    "b2cf46f509a8",
+    "alembic/versions/b2cf46f509a8_seed_robots_disallow_for_bare_series_diffs.py",
+)
+
+
+@pytest.mark.parametrize(
+    "stored",
+    [None, "null", "[]", '["/operator/"]', '["/*/series/*/diff$","/operator/"]'],
+)
+def test_bare_series_diff_migration_preserves_custom_rules_and_is_idempotent(stored):
+    import json
+
+    from sqlalchemy import text
+
+    from mimir.extensions import engine
+
+    robots.update_rule("*", crawl_delay=19, set_content_signal={"ai-input": "no"})
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE robots_rules SET disallow_paths=:paths WHERE user_agent='*'"),
+            {"paths": stored},
+        )
+    before = json.loads(stored) if stored is not None else []
+    before = before or []
+    expected = (
+        before if "/*/series/*/diff$" in before else [*before, "/*/series/*/diff$"]
+    )
+    for _ in range(2):
+        _run_migration(_SERIES_DIFF_MIGRATION)
+        with SessionLocal() as session:
+            star = robots.get_rule(session, "*")
+            assert star.disallow_paths == expected
+            assert star.crawl_delay == 19
+            assert star.content_signals == {
+                "search": "yes",
+                "ai-input": "no",
+                "ai-train": "no",
+            }
+
+
+def test_bare_series_diff_migration_does_not_create_missing_star():
+    from sqlalchemy import delete
+
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as session:
+        session.execute(delete(RobotsRule))
+        session.commit()
+    _run_migration(_SERIES_DIFF_MIGRATION)
+    assert not _star_present()
+
+
+_LORE_ALIAS_MIGRATION = (
+    "c471af7e3d22",
+    "alembic/versions/c471af7e3d22_seed_robots_disallow_for_lore_aliases.py",
+)
+
+
+@pytest.mark.parametrize(
+    "stored", [None, "null", "[]", '["/operator/"]', '["/r/","/operator/","/all/"]']
+)
+def test_lore_alias_migration_preserves_policy_and_is_idempotent(stored):
+    import json
+
+    from sqlalchemy import text
+
+    from mimir.extensions import engine
+
+    robots.update_rule("*", crawl_delay=19, set_content_signal={"ai-input": "no"})
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE robots_rules SET disallow_paths=:paths WHERE user_agent='*'"),
+            {"paths": stored},
+        )
+    before = (json.loads(stored) if stored else None) or []
+    expected = before + [path for path in ("/r/", "/all/") if path not in before]
+    for _ in range(2):
+        _run_migration(_LORE_ALIAS_MIGRATION)
+        with SessionLocal() as session:
+            star = robots.get_rule(session, "*")
+            assert star.disallow_paths == expected
+            assert star.crawl_delay == 19
+            assert star.content_signals == {
+                "search": "yes",
+                "ai-input": "no",
+                "ai-train": "no",
+            }
+
+
+@pytest.mark.parametrize("name", ["r", "all"])
+def test_lore_alias_migration_rejects_existing_inbox_before_writing_rules(name):
+    from sqlalchemy import event
+
+    from mimir.extensions import engine
+    from mimir.models import Inbox
+
+    _set_star_paths(["/operator/"])
+    before = _star_paths()
+    assert not {"/r/", "/all/"} & set(before)
+    with SessionLocal() as session:
+        session.add(
+            Inbox(name=name, mirror_path="/unused", upstream_url="https://example.com")
+        )
+        session.commit()
+    writes = []
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().upper().startswith(("UPDATE", "INSERT", "DELETE")):
+            writes.append(statement)
+
+    event.listen(engine, "before_cursor_execute", grab)
+    try:
+        with pytest.raises(RuntimeError, match="old deployed version"):
+            _run_migration(_LORE_ALIAS_MIGRATION)
+    finally:
+        event.remove(engine, "before_cursor_execute", grab)
+    assert writes == []
+    assert _star_paths() == before
+
+
+def test_lore_alias_migration_leaves_missing_star_absent():
+    from sqlalchemy import delete
+
+    from mimir.models import RobotsRule
+
+    with SessionLocal() as session:
+        session.execute(delete(RobotsRule))
+        session.commit()
+    _run_migration(_LORE_ALIAS_MIGRATION)
+    assert not _star_present()
+
+
+def test_lore_alias_defaults_block_only_recovery_prefixes():
+    robots.reset_rules()
+    with SessionLocal() as session:
+        body = robots.render_robots_txt(session, [], LLMS_URL)
+    assert {"Disallow: /r/", "Disallow: /all/"} <= set(body.splitlines())
+    patterns = robots._DEFAULT_STAR_DISALLOW
+    for path in ("/r/id@x", "/all/id@x/"):
+        assert any(_blocked(pattern, path) for pattern in patterns)
+    assert not [
+        (pattern, path)
+        for pattern in patterns
+        for path in _EMITTED
+        if _blocked(pattern, path)
+    ]

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pill.html" import status_pill %}
 {% from "_lifecycle_badges.html" import badges %}
 {% from "_sparkline.html" import spark_bars %}
 {% block title %}{{ subsystem.name|subsystem_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
@@ -7,11 +8,11 @@
 {% macro patch_link(p, label=none) -%}
 {% if p.date and p.inbox_name %}<a href="{{ msg_path(p.article_id, p.date, p.inbox_name) }}">{{ label or p.subject|clean_subject or '(no subject)' }}</a>{% else %}<span>{{ label or p.subject|clean_subject or '(no subject)' }}</span>{% endif %}
 {%- endmacro %}
-{% macro triage_row(p, reviewed=false) -%}
+{% macro triage_row(p) -%}
 <li>
   {{ badges(lifecycle_status_by_id, p.article_id) }} {{ patch_link(p) }}
   {% if p.series_more %}<small>+{{ p.series_more }} more in this series</small>{% endif %}
-  <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}{% if reviewed %}{% set counts = review_counts.get(p.article_id, (0, 0)) %} · {{ counts[0] }} review trailer{{ '' if counts[0] == 1 else 's' }}, {{ counts[1] }} from {{ 'a maintainer' if counts[1] == 1 else 'maintainers' }}{% endif %}</small>
+  <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}</small>
 </li>
 {%- endmacro %}
 <div class="subsystem-dashboard">
@@ -19,7 +20,7 @@
     <div>
       <p class="subsystem-breadcrumb"><a href="/{{ inbox_name }}/">{{ inbox_name }}</a> / <a href="{{ inbox_name|subsystem_index_url }}">subsystems</a></p>
       <h1>{{ subsystem.name|subsystem_label }}</h1>
-      {% if subsystem.status %}<span class="subsystem-status{% if subsystem.status|lower == 'maintained' %} subsystem-status-maintained{% elif subsystem.status|lower == 'supported' %} subsystem-status-supported{% endif %}">{{ subsystem.status }}</span>{% endif %}
+      {{ status_pill(subsystem.status) }}
     </div>
     {% if spark and spark.days %}
     <div class="subsystem-volume"><small>Last 30 days</small>
@@ -33,15 +34,15 @@
         <h2 id="triage-heading">Reviewed, not picked up <small>({{ needs_attention|length }})</small></h2>
         <p class="subsystem-note">Review trailers in, no mainline landing or maintainer Ack. Oldest first.</p>
         {% if needs_attention %}
-        <ul class="subsystem-rows">{% for p in needs_attention[:5] %}{{ triage_row(p, true) }}{% endfor %}</ul>
-        {% if needs_attention|length > 5 %}<details class="subsystem-more"><summary>Show all {{ needs_attention|length }} ({{ needs_attention|length - 5 }} more)</summary><ul class="subsystem-rows">{% for p in needs_attention[5:] %}{{ triage_row(p, true) }}{% endfor %}</ul></details>{% endif %}
+        <ul class="subsystem-rows">{% for p in needs_attention[:5] %}{{ triage_row(p) }}{% endfor %}</ul>
+        {% if needs_attention|length > 5 %}<details class="subsystem-more"><summary>Show all {{ needs_attention|length }} ({{ needs_attention|length - 5 }} more)</summary><ul class="subsystem-rows">{% for p in needs_attention[5:] %}{{ triage_row(p) }}{% endfor %}</ul></details>{% endif %}
         {% else %}<p class="subsystem-empty">No reviewed patches awaiting pickup in this queue.</p>{% endif %}
       </section>
       <section aria-labelledby="active-heading">
         <h2 id="active-heading">Most active threads <small>(last 7 days)</small></h2>
         {% if active %}
         <table class="listing-table subsystem-active">
-          <thead><tr><th scope="col">Last</th><th scope="col">Thread</th><th scope="col">Replies in 7d</th></tr></thead>
+          <thead><tr><th scope="col" class="listing-time">Last</th><th scope="col" class="listing-main">Thread</th><th scope="col" class="listing-count">Replies in 7d</th></tr></thead>
           <tbody>{% for t in active %}
             {% set row_id = t.id %}{% set row_subject = t.subject %}{% set row_author = t.author %}
             {% set row_time = t.last_activity %}{% set row_replies = t.reply_count %}{% set row_reply_label = true %}
@@ -95,7 +96,7 @@
       </section>
       {% endfor %}
       <section><h2>Files</h2>
-        {% if subsystem.paths %}<ul class="subsystem-files">{% for p in subsystem.paths %}<li><kbd>{{ 'X' if p.is_exclude else 'F' }}</kbd> <code>{{ p.glob }}</code></li>{% endfor %}</ul>{% else %}<p class="subsystem-empty">No file rules listed.</p>{% endif %}
+        {% if subsystem.paths %}<ul class="subsystem-files">{% for p in subsystem.paths %}<li>{% if p.is_exclude %}<small>excluding</small> {% endif %}<code>{{ p.glob }}</code></li>{% endfor %}</ul>{% else %}<p class="subsystem-empty">No file rules listed.</p>{% endif %}
       </section>
       <section><h2>Active reviewers <small>(last 30 days)</small></h2>
         {% if reviewers %}
@@ -106,7 +107,7 @@
           {% set total = r.total or 0 %}{% set roles = r.role_counts or {} %}
           {% set reviewed = [[(roles.get('Reviewed-by', 0) or 0), 0]|max, total]|min %}{% set other = [total - reviewed, 0]|max %}
           <li><div class="subsystem-reviewer-heading"><strong>{% if r.address|is_allowlisted_address and r.address_normalized|is_addressable_reviewer %}<a href="/{{ inbox_name }}/reviewer/{{ r.address_normalized|urlencode }}">{{ label if label != 'unknown sender' else 'Unnamed reviewer' }}</a>{% else %}{{ label if label != 'unknown sender' else 'Unnamed reviewer' }}{% endif %}</strong><span class="count">{{ total }}</span></div>
-            <svg class="subsystem-review-bar" viewBox="0 0 100 8" aria-hidden="true"><rect class="subsystem-reviewed-segment" x="0" y="0" width="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" height="8"/><rect class="subsystem-other-segment" x="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" y="0" width="{{ other / max_total * 100 if max_total > 0 else 0 }}" height="8"/></svg>
+            <svg class="subsystem-review-bar" viewBox="0 0 100 8" preserveAspectRatio="none" aria-hidden="true"><rect class="subsystem-reviewed-segment" x="0" y="0" width="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" height="8"/><rect class="subsystem-other-segment" x="{{ reviewed / max_total * 100 if max_total > 0 else 0 }}" y="0" width="{{ other / max_total * 100 if max_total > 0 else 0 }}" height="8"/></svg>
             <small>{{ reviewed }} Reviewed-by, {{ other }} other trailer{{ '' if other == 1 else 's' }}{% if r.last_seen %} · last on {{ r.last_seen.strftime('%Y-%m-%d') }}{% endif %}</small>
           </li>
         {% endfor %}</ul>

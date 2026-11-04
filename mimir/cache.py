@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # type's fields fails `test_a_cached_field_change_bumps_the_namespace`
 # until this is bumped: an older release reads the cache on rollback.
 # Plain container values and encoder changes still need a bump by hand.
-NAMESPACE_VERSION = 4
+NAMESPACE_VERSION = 5
 
 # Proactive-refresh window threaded through to `get_or_compute` via a
 # context manager. Set by warm-cache so a still-fresh row that's about
@@ -323,7 +323,8 @@ def set(key: str, value: Any, ttl: int) -> None:
     """Best-effort cache write.
 
     Outside the broker, forwards the write over RPC. `BrokerUnavailable`
-    is logged + swallowed: the page already rendered before we got here,
+    is swallowed (quietly for expected VACUUM rejections, logged otherwise):
+    the page already rendered before we got here,
     so a failed cache write must not propagate, it'd 500 a successful
     response. Next request recomputes.
 
@@ -357,7 +358,11 @@ def set(key: str, value: Any, ttl: int) -> None:
         # `mimir.broker.client` → `mimir.cache` for tests that stub
         # the client out, and lets unit tests for the cache module
         # run without spinning up a broker).
-        from mimir.broker.client import BrokerUnavailable, get_broker_client
+        from mimir.broker.client import (
+            BrokerCacheWriteSkipped,
+            BrokerUnavailable,
+            get_broker_client,
+        )
         from mimir.broker.protocol import CacheSetRequest
 
         # Apply the extension here, before crossing the wire: the
@@ -372,6 +377,8 @@ def set(key: str, value: Any, ttl: int) -> None:
             get_broker_client().call(
                 CacheSetRequest(key=nskey, value_json=payload, ttl=wire_ttl)
             )
+        except BrokerCacheWriteSkipped:
+            pass
         except BrokerUnavailable as exc:
             logger.warning("broker write failed for %s: %s", nskey, exc)
         return
@@ -486,17 +493,19 @@ def _delete_routed(
     via_writer: Callable[[Any], Any],
 ) -> int:
     """Run a cache delete where it belongs: RPC to the broker from
-    outside it (`BrokerUnavailable` is logged and counts as 0 rows,
-    the entries age out via TTL), the active WriterThread inside it.
+    outside it (`BrokerUnavailable` counts as 0 rows and is logged unless
+    VACUUM deliberately skipped the write; entries age out via TTL), the active WriterThread inside it.
 
     `rpc` is a thunk rather than a request object so each
     `get_broker_client().call(<Model>(...))` stays literal in this file,
     where `test_web_tier_rpcs_all_route_to_the_cache_queue` reads it."""
     if _should_dispatch_to_broker():
-        from mimir.broker.client import BrokerUnavailable
+        from mimir.broker.client import BrokerCacheWriteSkipped, BrokerUnavailable
 
         try:
             return rpc().get("rows_deleted", 0)
+        except BrokerCacheWriteSkipped:
+            return 0
         except BrokerUnavailable as exc:
             logger.warning(failure_msg, *failure_args, exc)
             return 0
@@ -571,7 +580,7 @@ def purge_expired() -> int:
 
     Outside the broker, forwards to the broker daemon, which owns the
     cache table's data lifecycle end-to-end (writes + purge). On
-    `BrokerUnavailable`, log + return 0; the broker's own internal
+    `BrokerUnavailable`, return 0 and log unless VACUUM skipped the write; the broker's own internal
     periodic purge thread will catch up. Inside the broker the purge
     goes through the active WriterThread.
     """
@@ -590,7 +599,8 @@ def delete(key: str) -> int:
     deleted (0 or 1).
 
     Outside the broker, forwards over RPC; `BrokerUnavailable` is
-    logged and returns 0 (cached value still ages out via TTL). Inside
+    logged unless VACUUM skipped the write, and returns 0 (the cached value
+    still ages out via TTL). Inside
     the broker the delete goes through the active WriterThread, the
     sole writer.
     """
@@ -620,7 +630,8 @@ def delete_for_inbox(inbox_name: str) -> int:
     cases that would need escaping can't occur.
 
     Outside the broker, forwards over RPC; `BrokerUnavailable` is
-    logged and returns 0. Inside the broker the delete goes through the
+    logged unless VACUUM skipped the write, and returns 0. Inside the broker
+    the delete goes through the
     active WriterThread.
     """
     from mimir.broker.client import get_broker_client
