@@ -519,10 +519,10 @@ def test_header_shows_the_state_and_the_cycle(
 
     monkeypatch.setattr(mwmod, "linus_tag", lambda path: tag)
     page = _page(client)
-    pills = page.find_all("span", cls="subsystem-status")
+    pills = page.find_all("span", cls="pill")
     assert [p.text() for p in pills] == ([pill] if pill else [])
     if pill:
-        assert ("subsystem-status-maintained" in pills[0].classes) == (tag == "v7.3")
+        assert ("pill-maintained" in pills[0].classes) == (tag == "v7.3")
     strips = page.find_all("ol", cls="mw-cycle")
     assert len(strips) == (1 if steps else 0)
     if steps:

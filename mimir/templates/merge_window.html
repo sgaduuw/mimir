@@ -88,8 +88,8 @@
    because Linus picks major bumps by hand (see `merge_window._window`). #}
 {% if mw.linus_release %}
 <p>
-  {%- if mw.window_open %}<span class="subsystem-status subsystem-status-maintained">Open since {{ mw.linus_release }}</span>
-  {%- else %}<span class="subsystem-status">Closed until {{ mw.linus_release }} is released</span>{% endif %}
+  {%- if mw.window_open %}<span class="pill pill-maintained">Open since {{ mw.linus_release }}</span>
+  {%- else %}<span class="pill">Closed until {{ mw.linus_release }} is released</span>{% endif %}
 </p>
 {% if mw.window_open %}
   {% set steps = [(mw.linus_release ~ ' released', 'done'), ('Merge window', 'now'), ('rc1 closes the window', 'next')] %}
