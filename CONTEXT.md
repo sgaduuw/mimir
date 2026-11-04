@@ -2691,6 +2691,23 @@ revisions need no input of their own: they are built only for the
 root's series when the root is a cover, and `render_state_tag` digests
 every position of that series.
 
+The root remains context in every tab (#1068). Tab eligibility and the
+Patches count/index use only additional patches; Discussion retains its
+existing reply count. Empty tabs link forward to the next page containing
+a visible non-root message, using the already-read chronological rows and
+the same indexed or CTE page boundaries. Nested covers are visible in
+Discussion. The latest `.thread-more` boundary carries those URLs through
+HTMX appends. The cap, membership, immutable message dates/subjects and
+mutable series columns already cover their inputs in the validator;
+warm-cache tests change an off-page kind and require a new ETag and link
+in both full and HTMX responses, on both membership paths.
+
+Message-page trees default to compact on roots and replies (#1068).
+Summary, Compact and Expanded retain the existing closed/partial/expanded
+states and `mimir.fold.<id>` preference. Reading a page does not write a
+preference; saved choices still win, and unavailable storage falls back to
+compact. The summary identifies its date as the last reply.
+
 The thread view's header lists this inbox's busiest subsystem first (#989).
 That is `most_active_subsystems_in_inbox`'s top id for the last 7 days: a
 cached ranking, read before the ETag and never computed there
