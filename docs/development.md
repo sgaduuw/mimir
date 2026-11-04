@@ -28,20 +28,27 @@ uv run pytest
 
 Run each command directly and check its exit status. Lint and formatting are
 separate gates, and both include tests. CI also tests the free-threaded Python
-build and verifies that the container image builds.
+build, runs the browser checks below in a required job, and verifies that the
+container image builds.
 
 The explicit Ruff rules live in [pyproject.toml](../pyproject.toml). Format only
 touched files while working to keep unrelated changes out of a diff. For a
 regression, demonstrate that the test fails before the fix.
 
-The optional browser check uses Chromium and real CDN assets against a temporary
-local database and Git mirror. It covers HTMX swaps, keyboard navigation, history,
-load-more controls, failed requests, and links with JavaScript disabled:
+Browser checks use Chromium and real CDN assets against a temporary local
+database and Git mirror. They cover listing layout at desktop and phone widths
+in both themes, HTMX swaps, keyboard navigation, history, load-more controls,
+failed requests, and links with JavaScript disabled:
 
 ```sh
 uv run --frozen --with playwright playwright install chromium
-uv run --frozen --with playwright pytest -q tests/test_routes/test_browser_navigation.py
+MIMIR_BROWSER_REQUIRED=1 uv run --frozen --with playwright pytest -q tests/test_routes/test_browser_navigation.py tests/test_routes/test_browser_listing_layout.py
 ```
+
+The dedicated CI job installs Chromium and sets `MIMIR_BROWSER_REQUIRED=1`, so
+missing Playwright fails instead of skipping. It uploads layout screenshots on
+failure and must pass before the Docker verification job. Ordinary local
+`uv run pytest` keeps these checks optional when Playwright is absent.
 
 ## Data model
 
