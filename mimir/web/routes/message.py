@@ -23,6 +23,7 @@ from mimir.models import (
     Inbox,
 )
 from mimir.msgid_url import msgid_from_url
+from mimir.parser import normalize_subject
 from mimir.rendering import URL_OR_MSGID_RE
 from mimir.seo import _json_ld_message
 from mimir.store import MessageNotFound, read_message
@@ -449,6 +450,10 @@ def message(
         # The window's rows include gap rows; everything below that
         # asks about messages asks about these.
         thread_nodes = [n for n in thread if isinstance(n, ThreadNode)]
+        root_key = normalize_subject(root.subject)
+        thread_heading_ids = {
+            n.id for n in thread_nodes if normalize_subject(n.subject) != root_key
+        }
 
         # Build URLs for thread nodes (avoids per-node template logic).
         thread_urls = {
@@ -661,6 +666,7 @@ def message(
             thread=thread,
             thread_total=thread_total,
             thread_root_id=root.id,
+            thread_heading_ids=thread_heading_ids,
             thread_more_url=thread_more_url,
             hidden_replies=window.hidden_replies if window is not None else {},
             thread_urls=thread_urls,

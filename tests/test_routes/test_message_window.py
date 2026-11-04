@@ -42,16 +42,27 @@ def _tree(html: str) -> list[tuple]:
         href = re.search(r'href="([^"]*)"', inner)
         href = href.group(1) if href else None
         if "thread-gap" in attrs:
-            m = re.search(r"(\d+) more (messages?|repl(?:y|ies))\b", inner)
-            rows.append(("gap", depth, int(m.group(1)), href, m.group(2)))
+            m = re.search(r"([\d,]+) more (messages?|repl(?:y|ies))\b", inner)
+            rows.append(
+                ("gap", depth, int(m.group(1).replace(",", "")), href, m.group(2))
+            )
         elif "thread-all" in attrs:
-            total = int(re.search(r"View all (\d+) messages", inner).group(1))
+            total = int(
+                re.search(r"View all ([\d,]+) messages", inner)
+                .group(1)
+                .replace(",", "")
+            )
             rows.append(("more", None, total, href))
         elif "data-article-id" in attrs:
             art_id = int(re.search(r'data-article-id="(\d+)"', attrs).group(1))
-            replies = re.search(r"\+(\d+) repl(?:y|ies)\b", inner)
+            replies = re.search(r"\+([\d,]+) repl(?:y|ies)\b", inner)
             rows.append(
-                ("node", depth, art_id, int(replies.group(1)) if replies else 0)
+                (
+                    "node",
+                    depth,
+                    art_id,
+                    int(replies.group(1).replace(",", "")) if replies else 0,
+                )
             )
         else:
             rows.append(("other", depth, None, href))

@@ -11,7 +11,7 @@
 {% macro triage_row(p) -%}
 <li>
   {{ badges(lifecycle_status_by_id, p.article_id) }} {{ patch_link(p) }}
-  {% if p.series_more %}<small>+{{ p.series_more }} more in this series</small>{% endif %}
+  {% if p.series_more %}<small>+{{ p.series_more|format_count }} more in this series</small>{% endif %}
   <small class="subsystem-meta">{{ p.date.strftime('%Y-%m-%d') if p.date else 'Unknown date' }} · {{ p.author|safe_from }}</small>
 </li>
 {%- endmacro %}
@@ -59,15 +59,15 @@
       <section aria-labelledby="recent-heading">
         <h2 id="recent-heading">Recent patches</h2>
         {% if recent %}
-        <p class="subsystem-note">Latest {{ recent|length }} posting{{ '' if recent|length == 1 else 's' }} or standalone patch{{ '' if recent|length == 1 else 'es' }}{% if recent|length >= recent_limit %} (up to {{ recent_limit }}){% endif %}, newest first. Counts below cover matching patches in {{ inbox_name }} touching this subsystem.</p>
+        <p class="subsystem-note">Latest {{ recent|length|format_count }} posting{{ '' if recent|length == 1 else 's' }} or standalone patch{{ '' if recent|length == 1 else 'es' }}{% if recent|length >= recent_limit %} (up to {{ recent_limit|format_count }}){% endif %}, newest first. Counts below cover matching patches in {{ inbox_name }} touching this subsystem.</p>
         <ul class="subsystem-rows subsystem-postings">
           {% for posting in recent %}{% set p = posting.representative %}
           <li>
             {% if posting.children %}
             <details class="subsystem-posting">
-              <summary><strong>{% if not posting.cover %}Posting without cover: {% endif %}{{ posting.title|clean_subject or '(no subject)' }}</strong> <small>{{ posting.version }} · {{ posting.matching_count }} matching patch{{ '' if posting.matching_count == 1 else 'es' }}</small></summary>
+              <summary><strong>{% if not posting.cover %}Posting without cover: {% endif %}{{ posting.title|clean_subject or '(no subject)' }}</strong> <small>{{ posting.version }} · {{ posting.matching_count|format_count }} matching patch{{ '' if posting.matching_count == 1 else 'es' }}</small></summary>
               {% if posting.cover %}<p class="subsystem-posting-status"><small>Entire posting:</small> {% set status = lifecycle_status_by_id.get(posting.status_id) %}{% if status and status.state.value == 'pending' and not status.rollup %}<small>Pending</small>{% else %}{{ badges(lifecycle_status_by_id, posting.status_id) }}{% endif %} {{ patch_link(posting.cover, 'Open cover letter') }}<small class="subsystem-meta">Lifecycle progress covers the full posting, including patches outside this subsystem and inbox.</small></p>{% else %}<p class="subsystem-note">No cover letter available; no entire-posting lifecycle rollup.</p>{% endif %}
-              {% if posting.matching_count > posting.children|length %}<p class="subsystem-note">Showing first {{ posting.children|length }} of {{ posting.matching_count }} matching patches (preview limited to {{ preview_limit }}).</p>{% endif %}
+              {% if posting.matching_count > posting.children|length %}<p class="subsystem-note">Showing first {{ posting.children|length|format_count }} of {{ posting.matching_count|format_count }} matching patches (preview limited to {{ preview_limit|format_count }}).</p>{% endif %}
               <ul class="subsystem-children">{% for child in posting.children %}<li>{{ patch_link(child) }} <small>{{ child.date.strftime('%Y-%m-%d') if child.date else 'Unknown date' }}</small></li>{% endfor %}</ul>
             </details>
             {% else %}{{ badges(lifecycle_status_by_id, posting.status_id) }} {{ patch_link(p) }}{% endif %}

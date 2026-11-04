@@ -4,7 +4,7 @@
 {% block content %}
 <h1>Since {{ since.strftime('%Y-%m-%d') }}</h1>
 {% if capped %}<p><small>Window capped at {{ max_days }} days; showing activity from {{ effective_since.strftime('%Y-%m-%d') }} onward.</small></p>{% endif %}
-<p>{{ total_messages }} message{{ "" if total_messages == 1 else "s" }} {% if selected_filter == 'all' %}across {{ matching_threads }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if truncated %} Showing the {{ max_threads }} most recently active threads.{% endif %}</p>
+<p>{{ total_messages|format_count }} message{{ "" if total_messages == 1 else "s" }} {% if selected_filter == 'all' %}across {{ matching_threads|format_count }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads|format_count }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if truncated %} Showing the {{ max_threads|format_count }} most recently active threads.{% endif %}</p>
 {% include "_listing_filters.html" %}
 {% set group_days = true %}{% include "_listing_threads.html" %}
 {% endblock %}

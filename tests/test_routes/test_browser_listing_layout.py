@@ -101,7 +101,7 @@ def test_layout_samples_exercise_long_values_and_all_listing_shapes(client):
         page = parse(html)
         assert len(page.find_all("tr", cls="listing-row")) == 2, name
         assert page.find("span", cls="badge-count").text() == (
-            ": 1234 reviews, 12 by maintainers"
+            "· 1,234 reviews, 12 by maintainers"
         )
     reviewer = parse(pages["reviewer"])
     assert reviewer.find_all("td", cls="listing-role")[0].text() == (
@@ -177,4 +177,153 @@ def test_listing_layout_at_desktop_and_phone_widths(client, tmp_path):
     finally:
         server.shutdown()
         thread.join(timeout=5)
+        server.server_close()
+
+
+def polish_pages(client):
+    """Real template samples for inline marks, chip punctuation, headers and year layout."""
+    when = datetime(2026, 11, 4, 12, tzinfo=UTC)
+    row = SimpleNamespace(
+        id=111,
+        article_id=111,
+        inbox_name="alpha",
+        subject="memfd_pin_folios()",
+        author="Ann Author <ann@example.org>",
+        date=when,
+        last_activity=when,
+        reply_count=1234,
+    )
+    with client.application.test_request_context("/alpha/"):
+        search = render_template(
+            "search.html",
+            inbox_name="alpha",
+            current_inbox="alpha",
+            query="folio",
+            min_len=2,
+            max_len=200,
+            matching_count=1234,
+            results=[
+                SimpleNamespace(
+                    representative=row,
+                    root_id=row.id,
+                    destination_date=when,
+                    authors=[row.author],
+                    count=1234,
+                    positions=[],
+                    version="v1",
+                )
+            ],
+            lifecycle_status_by_id={
+                111: LifecycleStatusInfo(
+                    state_value="reviewed",
+                    pill_label="REVIEWED",
+                    count_suffix=_format_count_suffix(1234, 12),
+                )
+            },
+        )
+        year = render_template(
+            "year.html",
+            inbox_name="alpha",
+            current_inbox="alpha",
+            year=2026,
+            volume=SimpleNamespace(
+                total=596487, months=[(1, 596487)] + [(m, 0) for m in range(2, 13)]
+            ),
+            is_current_year=True,
+            current_month=11,
+            prev_year=2025,
+            next_year=2027,
+        )
+    return {"search": search, "year": year}
+
+
+def test_polish_samples_exercise_midword_mark_and_year_total(client):
+    pages = polish_pages(client)
+    client.application.add_url_rule(
+        "/_polish/<name>", view_func=lambda name: pages[name]
+    )
+    search = parse(client.get("/_polish/search").get_data(as_text=True))
+    subject = search.find("a", cls="listing-subject")
+    assert subject.text() == "memfd_pin_folios()"
+    assert subject.find("mark").text() == "folio"
+    badge = search.find("span", cls="badge-lifecycle-reviewed")
+    assert badge.text() == "REVIEWED · 1,234 reviews, 12 by maintainers"
+    year = parse(client.get("/_polish/year").get_data(as_text=True))
+    total = year.find("p", cls="year-total")
+    assert total.text() == "596,487 messages so far this year"
+    assert year.find("nav", cls="year-nav").find_all("small") == []
+
+
+def test_inline_marks_chips_headers_and_year_alignment(client, tmp_path):
+    playwright = playwright_api()
+    pages = polish_pages(client)
+    app = client.application
+    app.add_url_rule("/_polish/<name>", view_func=lambda name: pages[name])
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            for width in (1280, 390):
+                page.set_viewport_size({"width": width, "height": 900})
+                for theme in ("light", "dark"):
+                    for name in pages:
+                        page.goto(
+                            f"http://127.0.0.1:{server.server_port}/_polish/{name}"
+                        )
+                        page.evaluate(
+                            "theme => document.documentElement.dataset.theme=theme",
+                            theme,
+                        )
+                        assert page.evaluate(
+                            "getComputedStyle(document.documentElement).getPropertyValue('--pico-font-family')"
+                        ).strip()
+                        page.screenshot(
+                            path=str(tmp_path / f"polish-{name}-{width}-{theme}.png"),
+                            full_page=True,
+                        )
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= innerWidth"
+                        ), (name, width, theme)
+                        if name == "search":
+                            subject = page.locator(".listing-subject")
+                            assert subject.text_content() == "memfd_pin_folios()"
+                            assert subject.locator("mark").evaluate(
+                                "e => [getComputedStyle(e).paddingLeft,getComputedStyle(e).paddingRight]"
+                            ) == ["0px", "0px"]
+                            headers = page.locator(
+                                ".listing-table thead th"
+                            ).evaluate_all(
+                                "cells => cells.map(e => [getComputedStyle(e).fontSize,getComputedStyle(e).color])"
+                            )
+                            assert len(headers) == 3 and all(
+                                style == headers[0] for style in headers
+                            ), headers
+                            badge = " ".join(
+                                page.locator(".badge-lifecycle-reviewed")
+                                .text_content()
+                                .split()
+                            )
+                            assert (
+                                badge == "REVIEWED · 1,234 reviews, 12 by maintainers"
+                            )
+                            assert ":" not in badge
+                        else:
+                            positions = page.evaluate("""() => {
+                              const selectors=['h1','.year-total','.year-rows','.year-nav'];
+                              const boxes=selectors.map(s => document.querySelector(s).getBoundingClientRect());
+                              return {left:boxes.map(b => b.left),width:boxes.slice(2).map(b => b.width),
+                                afterHeading:document.querySelector('.year-total').previousElementSibling.tagName==='H1'};
+                            }""")
+                            assert positions["afterHeading"]
+                            assert (
+                                max(positions["left"]) - min(positions["left"]) < 1
+                            ), positions
+                            assert (
+                                abs(positions["width"][0] - positions["width"][1]) < 1
+                            ), positions
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
         server.server_close()
