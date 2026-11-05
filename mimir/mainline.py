@@ -824,6 +824,30 @@ def _submit_maintainers_replace(
     )
 
 
+def _mailmap_rows(data: bytes) -> list[dict]:
+    """Lowercased `{old_address, address}` rows from `.mailmap` bytes.
+
+    Parsed line by line because this runs inside the same try block as
+    the Linus commit walk: one line that raises would freeze MAINTAINERS
+    reloads and the walk on every tick. Like git, skip a line dulwich
+    cannot parse or that lacks a canonical or an old address. An address
+    mapped to itself is no redirect. The last entry wins when an old
+    address appears on several lines."""
+    pairs: dict[str, str] = {}
+    for line in data.splitlines():
+        try:
+            parsed = list(read_mailmap(io.BytesIO(line)))
+        except ValueError:
+            continue
+        for canonical, old in parsed:
+            if old is None or not old[1] or not canonical[1]:
+                continue
+            pairs[old[1].decode("utf-8", "replace").lower()] = (
+                canonical[1].decode("utf-8", "replace").lower()
+            )
+    return [{"old_address": o, "address": n} for o, n in pairs.items() if o != n]
+
+
 def load_maintainers(
     tree_path: Path,
     tree_name: str = "linus",
@@ -889,21 +913,6 @@ def load_maintainers(
     writer = _context.get_active_writer()
 
     parsed = maintainers.parse(blob_bytes)
-    # Only lines that name a retired address map anything, and an
-    # address mapped to itself is no redirect. A dict keeps the last
-    # entry for an old address that appears on several lines.
-    mailmap_pairs = {
-        old[1].decode("utf-8", "replace").lower(): canonical[1]
-        .decode("utf-8", "replace")
-        .lower()
-        for canonical, old in read_mailmap(io.BytesIO(mailmap_bytes))
-        if old is not None
-    }
-    mailmap_rows = [
-        {"old_address": old, "address": new}
-        for old, new in mailmap_pairs.items()
-        if old != new
-    ]
     sub_rows = [{"name": sub.name, "status": sub.status} for sub in parsed]
     list_addresses = []
     for sub in parsed:
@@ -918,6 +927,7 @@ def load_maintainers(
                 if "@" in normalized and parseaddr(normalized)[1] == normalized:
                     addresses.add(normalized)
         list_addresses.append(sorted(addresses))
+    mailmap_rows = _mailmap_rows(mailmap_bytes)
 
     def _path_rows_for(sub_ids: list[int]) -> list[dict]:
         rows: list[dict] = []
