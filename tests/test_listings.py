@@ -272,6 +272,9 @@ def test_listing_query_plan_uses_scoped_membership(seeded_db):
                     datetime(2024, 4, 1, tzinfo=UTC),
                 ),
                 "WITH RECURSIVE",
+                required_sql=(
+                    "article_lists al INDEXED BY sqlite_autoindex_article_lists_1",
+                ),
             )
     assert "SEARCH al USING INDEX ix_article_lists_inbox_id (inbox_id=?)" in plan
     assert "SEARCH a USING INDEX ix_articles_message_id (message_id=?)" in plan

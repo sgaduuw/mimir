@@ -151,14 +151,16 @@ def articles_reviewed_by(
         # ever names a linked inbox (#646). Resolving it in SQL with
         # COALESCE(canon.name, ...) skipped the membership check and
         # emitted URLs that 404.
+        # The index requirement alone still permits an inbox-first loop.
+        # CROSS JOIN keeps role/address matches outside article membership.
         rows = session.execute(
             text(
                 """
                 SELECT a.id AS article_id, a.message_id, a.subject,
                        a.date AS art_date, t.role
-                FROM article_trailers t
-                JOIN articles a ON a.id = t.article_id
-                JOIN article_lists al ON al.article_id = a.id
+                FROM article_trailers t INDEXED BY ix_article_trailers_role_addr
+                CROSS JOIN articles a ON a.id = t.article_id
+                CROSS JOIN article_lists al ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id
                   AND t.role IN :roles
                   AND t.address_normalized IN :addrs
