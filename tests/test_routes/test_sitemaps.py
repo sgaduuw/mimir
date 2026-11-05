@@ -441,8 +441,6 @@ def test_inbox_sitemap_lists_thread_roots_not_replies(client):
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     root = ET.fromstring(client.get("/alpha/2024/sitemap.xml").get_data())
     locs = {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
-    root = ET.fromstring(client.get("/alpha/2024/messages-sitemap.xml").get_data())
-    locs |= {u.find("s:loc", ns).text for u in root.findall("s:url", ns)}
 
     assert any(loc.endswith(f"/{art1_id}/t") for loc in locs)
     # The reply appears nowhere, neither as a thread URL nor a bare
@@ -471,13 +469,12 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
     rows carry synthetic commit_shas and so 404 on the message page.
     """
     import re
-    import xml.etree.ElementTree as ET
 
     from sqlalchemy import select, update
 
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList, Inbox
-    from mimir.thread_roots import seed_roots
+    from mimir.thread_roots import drive_passes, seed_roots
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(
@@ -507,40 +504,37 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
 
     _clear_sitemap_cache()
 
-    # Both trees (#964): the per-inbox file, and every alpha archive file
-    # either index lists.
-    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
-    files = [
-        path
-        for index in ("/sitemap.xml", "/messages-sitemap.xml")
-        for path in _index_paths(client, index)
-        if path.startswith("/alpha/2")
-    ]
-    trees: dict[str, str] = {}
-    priorities = {}
-    for path in files:
-        root = ET.fromstring(client.get(path).get_data())
-        for u in root:
-            loc = u.find("s:loc", ns).text.replace("http://localhost", "")
-            trees[loc] = path
-            priorities[loc] = u.find("s:priority", ns).text
-    locs = list(trees)
-
-    # A root still being backfilled is listed by its message URL, so it
-    # belongs to the message tree, and its thread view is in neither.
     root_url = seeded["mb-root@x"][1]
-    assert "/messages-" in trees[root_url], trees.get(root_url)
-    assert root_url + "/t" not in trees
+
+    def listed() -> dict[str, str]:
+        """`{path: priority}` over every alpha archive file."""
+        out = {}
+        for path in _index_paths(client, "/sitemap.xml"):
+            if not path.startswith("/alpha/2"):
+                continue
+            for loc, _lastmod, priority in _urls(client, path):
+                out[loc.replace("http://localhost", "")] = priority
+        return out
+
+    def root_entries(locs) -> list[str]:
+        return [
+            loc
+            for loc in locs
+            if re.fullmatch(re.escape(root_url) + r"(/t(/\d+)?)?", loc)
+        ]
+
+    # A root still being backfilled is in no sitemap (#1089): its message
+    # URL is not advertised, and listing its `/t` would advertise a URL
+    # its own messages disclaim.
+    locs = listed()
+    assert root_entries(locs) == [], root_entries(locs)
 
     checked = 0
-    for loc in locs:
+    for loc, priority in locs.items():
         page = loc.removesuffix("/t")
         if page not in ours:
             continue  # conftest rows have synthetic blobs and 404
-        # The priority follows the branch taken, which is the URL listed:
-        # mid-backfill an unrankable multi-message thread is listed by
-        # its root MESSAGE url and so ranks as a message, not as `/t`.
-        assert priorities[loc] == ("0.9" if loc.endswith("/t") else "0.3"), loc
+        assert priority == "0.9" and loc.endswith("/t"), loc
         html = client.get(page).get_data(as_text=True)
         m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
         assert m, f"{page} emitted no canonical"
@@ -550,8 +544,14 @@ def test_sitemap_is_coherent_midway_through_a_backfill(client, tmp_path):
             f"canonical is {canonical}"
         )
         checked += 1
-
     assert checked, "no ingested thread reached the sitemap; test proves nothing"
+
+    # Once the backfill reaches it, the root appears in its `/t` file.
+    with SessionLocal() as s:
+        drive_passes(lambda fn: fn(s, alpha.id))
+        s.commit()
+    _clear_sitemap_cache()
+    assert root_entries(listed()) == [root_url + "/t"]
 
 
 def _active_thread(article_id, *, reply_count, subject="A thread"):
@@ -846,8 +846,7 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
     """Pages are `LIMIT`/`OFFSET` slices, so an unstable or
     non-deterministic order silently drops and duplicates URLs across
     the boundary. Assert the union is exactly the whole month and the
-    intersection is empty, across pages AND across the `/t` and message
-    trees (#964), which share page numbers.
+    intersection is empty, across pages.
 
     Page size is monkeypatched rather than seeding 45,000 threads; the
     boundary behaviour is what matters and it is size-independent.
@@ -861,27 +860,19 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
     ids = []
     for i in range(5):
         when = datetime(2019, 4, 1 + i, tzinfo=UTC)
-        # Odd roots head a thread, even ones are still being backfilled
-        # (the message tree's only entries since #1003): both trees get
-        # URLs on more than one page.
-        if i % 2:
-            mirror = tmp_path / f"m{i}"
-            mirror.mkdir()
-            edges = [(f"pg{i}@x", None), (f"pg{i}r@x", f"pg{i}@x")]
-            art_id = seed_thread_shape(mirror, "alpha", edges)[f"pg{i}@x"][0]
-            _set_article_date(art_id, when)
-        else:
-            art_id, _url = _seed_backfilling_root(tmp_path, f"pg{i}", when)
+        mirror = tmp_path / f"m{i}"
+        mirror.mkdir()
+        edges = [(f"pg{i}@x", None), (f"pg{i}r@x", f"pg{i}@x")]
+        art_id = seed_thread_shape(mirror, "alpha", edges)[f"pg{i}@x"][0]
+        _set_article_date(art_id, when)
         ids.append(art_id)
 
     _clear_sitemap_cache()
     pages = []
     for name in ("sitemap.xml", "sitemap-2.xml", "sitemap-3.xml"):
         threads = _locs(client, f"/alpha/2019/04/{name}")
-        singles = _locs(client, f"/alpha/2019/04/messages-{name}")
         assert all(loc.endswith("/t") for loc in threads), threads
-        assert not any(loc.endswith("/t") for loc in singles), singles
-        pages.append(threads + singles)
+        pages.append(threads)
 
     assert [len(p) for p in pages] == [2, 2, 1], pages
     seen = [loc for page in pages for loc in page]
@@ -889,12 +880,10 @@ def test_month_sitemap_pages_are_disjoint_and_complete(client, tmp_path, monkeyp
     assert {re.search(r"/(\d+)(/t)?$", loc)[1] for loc in seen} == {
         str(i) for i in ids
     }, seen
-    assert sum(loc.endswith("/t") for loc in seen) == 2, seen
 
     # One past the end is absent, not an empty urlset a crawler would
     # keep re-fetching.
-    for name in ("sitemap-4.xml", "messages-sitemap-4.xml"):
-        assert client.get(f"/alpha/2019/04/{name}").status_code == 404, name
+    assert client.get("/alpha/2019/04/sitemap-4.xml").status_code == 404
 
 
 def test_sitemap_index_enumerates_every_month_page(client, tmp_path, monkeypatch):
@@ -951,10 +940,9 @@ def test_month_sitemap_is_scoped_to_its_inbox(client, tmp_path):
         loc.endswith(f"/{art_id}/t")
         for loc in _locs(client, "/alpha/2013/02/sitemap.xml")
     )
-    for name in ("sitemap.xml", "messages-sitemap.xml"):
-        assert client.get(f"/beta/2013/02/{name}").status_code == 404, (
-            f"alpha's thread leaked into beta's month {name}"
-        )
+    assert client.get("/beta/2013/02/sitemap.xml").status_code == 404, (
+        "alpha's thread leaked into beta's month"
+    )
 
 
 def test_month_sitemap_pages_stay_disjoint_when_dates_collide(
@@ -1061,10 +1049,9 @@ def test_month_sitemap_excludes_the_first_instant_of_the_next_month(client, tmp_
     _set_article_date(edge_id, datetime(2020, 7, 1, 0, 0, 0, tzinfo=UTC))
 
     _clear_sitemap_cache()
-    for name in ("sitemap.xml", "messages-sitemap.xml"):
-        assert client.get(f"/alpha/2020/06/{name}").status_code == 404, (
-            f"a root dated midnight on 1 July leaked into June's {name}"
-        )
+    assert client.get("/alpha/2020/06/sitemap.xml").status_code == 404, (
+        "a root dated midnight on 1 July leaked into June's sitemap"
+    )
     assert any(
         loc.endswith(f"/{edge_id}/t")
         for loc in _locs(client, "/alpha/2020/07/sitemap.xml")
@@ -1702,8 +1689,7 @@ def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
     canonical exists to suppress. Normalisation is the crawler's to do
     and it is charged as a duplicate.
 
-    Every file that lists either kind is checked (#964): each alpha
-    archive file in both indexes.
+    Every archive file the index lists for alpha is checked.
     """
     from mimir.config import settings
     from tests.test_routes._helpers import seed_thread_shape
@@ -1718,8 +1704,7 @@ def test_sitemap_loc_is_byte_identical_to_the_pages_own_canonical(
 
     files = [
         path
-        for index in ("/sitemap.xml", "/messages-sitemap.xml")
-        for path in _index_paths(client, index)
+        for path in _index_paths(client, "/sitemap.xml")
         if path.startswith("/alpha/2")
     ]
     body = "".join(client.get(path).get_data(as_text=True) for path in files)
@@ -1805,11 +1790,6 @@ def test_every_thread_page_emitter_agrees_byte_for_byte(client, tmp_path, monkey
     assert len(advertised) == 3, advertised
     page1, page2 = advertised[0], advertised[1]
     assert page1.endswith("/t") and page2.endswith("/t/2"), advertised
-    # 0. The message tree publishes none of them.
-    assert not any(
-        f"/{root_id}" in loc
-        for loc in _locs(client, f"/alpha/{year}/messages-sitemap.xml")
-    )
 
     # Which advertised page actually renders `m3`. Derived by fetching,
     # never by recomputing the rank: a shared miscalculation would make
@@ -1919,16 +1899,14 @@ def test_sitemap_index_coarsens_small_years_and_preserves_months(
             for entry in root.findall("s:sitemap", ns)
         }
 
-    def both(path):
-        """Both trees of one archive file (#964)."""
-        return _locs(client, path) + _locs(client, _message_sibling(path))
-
     paths = advertised()
     assert "/alpha/2012/sitemap.xml" in paths
     assert "/alpha/2012/01/sitemap.xml" not in paths
     assert "/alpha/2012/12/sitemap.xml" not in paths
-    months = both("/alpha/2012/01/sitemap.xml") + both("/alpha/2012/12/sitemap.xml")
-    year = both("/alpha/2012/sitemap.xml")
+    months = _locs(client, "/alpha/2012/01/sitemap.xml") + _locs(
+        client, "/alpha/2012/12/sitemap.xml"
+    )
+    year = _locs(client, "/alpha/2012/sitemap.xml")
     assert len(year) == len(set(year)) == 3  # Two thread pages plus singleton.
     # All three in the thread tree: the singleton has a `/t` too (#1003).
     assert len(_locs(client, "/alpha/2012/sitemap.xml")) == 3
@@ -1951,9 +1929,9 @@ def test_sitemap_index_coarsens_small_years_and_preserves_months(
         "/alpha/2012/07/sitemap.xml",
         "/alpha/2012/12/sitemap.xml",
     } <= paths
-    pages = both("/alpha/2012/sitemap.xml")
+    pages = _locs(client, "/alpha/2012/sitemap.xml")
     assert len(pages) == len(set(pages)) == 4
-    assert set(pages) == set(months + both("/alpha/2012/07/sitemap.xml"))
+    assert set(pages) == set(months + _locs(client, "/alpha/2012/07/sitemap.xml"))
     assert client.get("/alpha/2012/sitemap-2.xml").status_code == 404
 
 
@@ -2324,7 +2302,7 @@ def _drop_index_cache():
     from mimir import cache
     from mimir.seo.sitemaps import settings
 
-    cache.delete(f"sitemap:indexsplit:{settings.thread_view_render_cap}")
+    cache.delete(f"sitemap:index:{settings.thread_view_render_cap}")
 
 
 @pytest.mark.parametrize("granularity", ["year", "month"])
@@ -2333,8 +2311,7 @@ def test_index_lastmod_for_archive_child_is_its_cached_max(
 ):
     """A reply to an old thread moves the child's own `<lastmod>`; the
     index entry for that child carries the same date once the child is
-    cached, and carries none while it is not (#847). The message index
-    does the same for its sibling, from its own half (#964)."""
+    cached, and carries none while it is not (#847)."""
     from datetime import datetime
 
     import mimir.seo.sitemaps as sm
@@ -2348,28 +2325,26 @@ def test_index_lastmod_for_archive_child_is_its_cached_max(
     )
     _set_article_date(seeded["old@x"][0], datetime(2012, 1, 5, tzinfo=UTC))
     _set_article_date(seeded["reply@x"][0], datetime(2026, 3, 9, tzinfo=UTC))
-    # The message sibling's one entry: a root still being backfilled (#1003).
-    _seed_backfilling_root(tmp_path, "other", datetime(2012, 6, 1, tzinfo=UTC))
-    child, singles = (
-        ("/alpha/2012/sitemap.xml", "/alpha/2012/messages-sitemap.xml")
+    # A second 2012 root, so the month layout has a second month to list.
+    other = tmp_path / "other"
+    other.mkdir()
+    other_id = seed_thread_shape(other, "alpha", [("other@x", None)])["other@x"][0]
+    _set_article_date(other_id, datetime(2012, 6, 1, tzinfo=UTC))
+    child = (
+        "/alpha/2012/sitemap.xml"
         if granularity == "year"
-        else ("/alpha/2012/01/sitemap.xml", "/alpha/2012/06/messages-sitemap.xml")
+        else "/alpha/2012/01/sitemap.xml"
     )
     _clear_sitemap_cache()
 
     cold = _index_lastmods(client)
-    cold_singles = _index_lastmods(client, "/messages-sitemap.xml")
     assert child in cold, "the child must be listed"
     assert cold[child] is None, "precondition: child uncached, so no lastmod"
-    assert cold_singles[singles] is None, "precondition: sibling uncached"
 
     expected = _max_child_lastmod(client, child)  # also caches the child
     assert expected == "2026-03-09"
-    expected_singles = _max_child_lastmod(client, singles)
-    assert expected_singles == "2012-06-01"
     _drop_index_cache()
     assert _index_lastmods(client)[child] == expected
-    assert _index_lastmods(client, "/messages-sitemap.xml")[singles] == expected_singles
 
 
 def test_index_reads_cached_children_in_bounded_batches(client, tmp_path, monkeypatch):
@@ -2587,13 +2562,11 @@ def _expected_priority(path):
         return "0.2"
     if re.fullmatch(r".*/t(/\d+)?", path):
         return "0.9"
-    if re.fullmatch(r"/[^/]+/\d{4}/\d{2}/\d+", path):
-        return "0.3"
     raise AssertionError(f"no priority rule for {path}")
 
 
 def test_every_emitted_priority_matches_the_table(client, tmp_path):
-    """Crawl both indexes and every urlset they list, and check each
+    """Crawl the index and every urlset it lists, and check each
     URL's priority against the table for its kind. The index itself
     carries none: `<priority>` is not valid in a `<sitemapindex>`."""
     import xml.etree.ElementTree as ET
@@ -2617,27 +2590,24 @@ def test_every_emitted_priority_matches_the_table(client, tmp_path):
         "pr@example.com",
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
-    # The only kind left with a message URL (0.3) since #1003.
-    _seed_backfilling_root(tmp_path, "prio")
     warm_subsystem_activity("alpha")
     _clear_sitemap_cache()
     warm_subsystem_activity("alpha")
 
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     seen = {}
-    for index_path in ("/sitemap.xml", "/messages-sitemap.xml"):
-        index = ET.fromstring(client.get(index_path).get_data())
-        assert index.findall(".//s:sitemap/s:priority", ns) == []
-        for sm in index.findall("s:sitemap", ns):
-            child = urlparse(sm.find("s:loc", ns).text).path
-            for path, priority in _urlset_priorities(client, child).items():
-                assert priority == _expected_priority(path), (child, path, priority)
-                seen[path] = priority
+    index = ET.fromstring(client.get("/sitemap.xml").get_data())
+    assert index.findall(".//s:sitemap/s:priority", ns) == []
+    for sm in index.findall("s:sitemap", ns):
+        child = urlparse(sm.find("s:loc", ns).text).path
+        for path, priority in _urlset_priorities(client, child).items():
+            assert priority == _expected_priority(path), (child, path, priority)
+            seen[path] = priority
 
     # Every kind in the table was actually crawled, or this proves
     # nothing about the kinds that never showed up.
     assert {"/", "/merge-window", "/llms.txt"} <= set(seen)
-    assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.3", "0.2", "0.1"}
+    assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.2", "0.1"}
     assert any(p.endswith("/t") for p in seen), "no /t page crawled"
     assert any(p.startswith("/maintainers/") for p in seen)
     assert "/alpha/subsystem/bcachefs/" in seen
@@ -2809,12 +2779,6 @@ def _index_paths(client, path):
     ]
 
 
-def _message_sibling(path):
-    """`/a/2012/sitemap-2.xml` -> `/a/2012/messages-sitemap-2.xml`."""
-    head, name = path.rsplit("/", 1)
-    return f"{head}/messages-{name}"
-
-
 def _urls(client, path):
     """`(loc, lastmod, priority)` for each `<url>` of one urlset."""
     import xml.etree.ElementTree as ET
@@ -2831,238 +2795,6 @@ def _urls(client, path):
         )
         for u in root.findall("s:url", _NS)
     ]
-
-
-def _single_tree_page(path):
-    """What one archive file listed before the split: every root entry of
-    that page, `/t` and message alike, read from the shared builder
-    without any kind filter."""
-    from sqlalchemy import select
-
-    import mimir.seo.sitemaps as sm
-    from mimir.extensions import SessionLocal
-    from mimir.models import Inbox
-
-    inbox_name, year, month, page = _ARCHIVE_CHILD.fullmatch(path).groups()
-    year, page = int(year), int(page or 1)
-    with SessionLocal() as s:
-        inbox = s.scalar(select(Inbox).where(Inbox.name == inbox_name))
-        ids = list(
-            s.scalars(
-                sm._archive_roots_query(inbox, year, int(month) if month else None)
-            )
-        )
-        roots = sm.SITEMAP_URLS_PER_PAGE
-        if month is None:
-            # A year pages by URL, after expanding every root.
-            entries = []
-            for off in range(0, len(ids), roots):
-                entries += sm._archive_entries(
-                    s, inbox, ids[off : off + roots], "http://localhost"
-                )
-            urls = sm.SITEMAP_MAX_URLS
-            entries = entries[(page - 1) * urls : page * urls]
-        else:
-            # A month pages by root.
-            entries = sm._archive_entries(
-                s, inbox, ids[(page - 1) * roots : page * roots], "http://localhost"
-            )
-    return [(e.loc, e.lastmod, f"{e.priority:.1f}") for e in entries]
-
-
-def _seed_mixed_buckets(tmp_path):
-    """A year file and a two-page month, each holding threads and a root
-    still being backfilled, and the month single-message threads too.
-    Call with `SITEMAP_URLS_PER_PAGE` 2 and render cap 2. Returns article
-    ids by message id."""
-    from datetime import datetime
-
-    from sqlalchemy import update
-
-    from mimir.extensions import SessionLocal
-    from mimir.models import ArticleList
-    from tests.test_routes._helpers import seed_thread_shape
-
-    def chain(prefix, n):
-        return [(f"{prefix}0@x", None)] + [
-            (f"{prefix}{i}@x", f"{prefix}{i - 1}@x") for i in range(1, n)
-        ]
-
-    shapes = {
-        # 2012: two roots, so the index lists a year file.
-        "y12t": (chain("y12t", 5), datetime(2012, 3, 4, tzinfo=UTC)),
-        "y12s": (chain("y12s", 2), datetime(2012, 8, 1, tzinfo=UTC)),
-        # 2013-05: four roots, so two month pages.
-        "m13t": (chain("m13t", 3), datetime(2013, 5, 2, tzinfo=UTC)),
-        "m13s": ([("m13s0@x", None)], datetime(2013, 5, 3, tzinfo=UTC)),
-        "m13u": (chain("m13u", 3), datetime(2013, 5, 4, tzinfo=UTC)),
-        "m13v": ([("m13v0@x", None)], datetime(2013, 5, 5, tzinfo=UTC)),
-    }
-    ids = {}
-    for name, (edges, when) in shapes.items():
-        (tmp_path / name).mkdir()
-        seeded = seed_thread_shape(tmp_path / name, "alpha", edges)
-        ids.update({mid: art for mid, (art, _url) in seeded.items()})
-        _set_article_date(ids[f"{name}0@x"], when)
-    # y12s's and m13u's last replies are still awaiting the backfill, so
-    # their roots are unrankable and listed as messages although they head
-    # threads. Since #1003 nothing else is in the message tree.
-    with SessionLocal() as s:
-        s.execute(
-            update(ArticleList)
-            .where(ArticleList.article_id.in_([ids["y12s1@x"], ids["m13u2@x"]]))
-            .values(thread_root_id=None)
-        )
-        s.commit()
-    return ids
-
-
-def test_the_two_trees_partition_what_the_single_tree_listed(
-    client, tmp_path, monkeypatch
-):
-    """The decisive check for #964: for every archive file, the `/t` file
-    and its message sibling are disjoint and together list exactly what
-    the one file listed before the split, `<lastmod>` and `<priority>`
-    included. Both indexes name the same files and page numbers."""
-    from collections import Counter
-
-    import mimir.seo.sitemaps as sm
-
-    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
-    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
-    ids = _seed_mixed_buckets(tmp_path)
-    _clear_sitemap_cache()
-
-    high = [
-        p for p in _index_paths(client, "/sitemap.xml") if _ARCHIVE_CHILD.fullmatch(p)
-    ]
-    messages = _index_paths(client, "/messages-sitemap.xml")
-    assert messages == [_message_sibling(p) for p in high]
-
-    checked = set()
-    both_nonempty = 0
-    for path in high:
-        threads = _urls(client, path)
-        singles = _urls(client, _message_sibling(path))
-        assert not set(threads) & set(singles), path
-        assert Counter(threads + singles) == Counter(_single_tree_page(path)), path
-        assert all(loc.endswith("/t") or "/t/" in loc for loc, _, _ in threads)
-        both_nonempty += bool(threads and singles)
-        checked.add(path)
-
-    # Preconditions: both granularities, both pages, and both trees.
-    assert {
-        "/alpha/2012/sitemap.xml",
-        "/alpha/2013/05/sitemap.xml",
-        "/alpha/2013/05/sitemap-2.xml",
-    } <= checked, checked
-    assert both_nonempty >= 2, both_nonempty
-    unrankable = f"http://localhost/alpha/2013/05/{ids['m13u0@x']}"
-    assert any(
-        unrankable in [loc for loc, _, _ in _urls(client, _message_sibling(p))]
-        for p in checked
-    ), "the root mid-backfill is not in the message tree"
-
-
-def test_the_split_reads_the_kind_tag_and_nothing_else(monkeypatch):
-    """Slice 1 tagged each root entry and left the tag untested. The tag
-    is the one predicate: `_archive_entries` sets it, the split
-    reads it. A loc that looks like `/t` but is tagged a message must
-    stay a message, so a filter on the URL shape fails here."""
-    from datetime import datetime
-
-    import mimir.seo.sitemaps as sm
-
-    monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
-    when = datetime(2020, 1, 2, tzinfo=UTC)
-    # The three lookups are stubbed, in the `sitemaps` namespace the code
-    # reads them from, so the roots' classes are the input; the session
-    # only has to answer the one `(id, date)` query. Root 1 is a
-    # single-message thread, root 2 a two-page thread, root 3 unrankable.
-    monkeypatch.setattr(sm, "_thread_last_activity", lambda *a: {})
-    monkeypatch.setattr(sm, "_thread_message_counts", lambda *a: {2: 3, 3: 3})
-    monkeypatch.setattr(sm, "unmaterialised_roots", lambda *a: {3})
-
-    class _Rows:
-        def all(self):
-            return [(1, when), (2, when), (3, when)]
-
-    class _Session:
-        def execute(self, _stmt):
-            return _Rows()
-
-    entries = sm._archive_entries(
-        _Session(), SimpleNamespace(id=1, name="alpha"), [1, 2, 3], ""
-    )
-    assert [(e.loc, e.kind) for e in entries] == [
-        ("/alpha/2020/01/1/t", sm.KIND_THREAD),
-        ("/alpha/2020/01/2/t", sm.KIND_THREAD),
-        ("/alpha/2020/01/2/t/2", sm.KIND_THREAD),
-        ("/alpha/2020/01/3", sm.KIND_MESSAGE),
-    ]
-
-    disguised = [
-        sm.SitemapEntry("/x/1/t", "2020-01-05", sm.PRIORITY_MESSAGE, sm.KIND_MESSAGE),
-        sm.SitemapEntry("/x/2", "2020-01-04", sm.PRIORITY_PAGE, sm.KIND_THREAD),
-    ]
-    threads, singles = sm._split_by_kind(entries + disguised)
-    assert re.findall(r"<loc>([^<]+)</loc>", threads.body) == [
-        "/alpha/2020/01/1/t",
-        "/alpha/2020/01/2/t",
-        "/alpha/2020/01/2/t/2",
-        "/x/2",
-    ]
-    assert re.findall(r"<loc>([^<]+)</loc>", singles.body) == [
-        "/alpha/2020/01/3",
-        "/x/1/t",
-    ]
-    assert (threads.last_modified, singles.last_modified) == (
-        "2020-01-04",
-        "2020-01-05",
-    )
-
-
-def test_an_empty_tree_file_is_an_empty_urlset_not_a_404(client, tmp_path):
-    """The index names both files for every bucket, so a bucket with no
-    root still being backfilled serves an empty message urlset (since
-    #1003 a single-message thread is in the `/t` file). A 404 there would
-    be a broken link in the index."""
-    from datetime import datetime
-
-    from tests.test_routes._helpers import seed_thread_shape
-
-    seeded = seed_thread_shape(tmp_path, "alpha", [("lonely@x", None)])
-    _set_article_date(seeded["lonely@x"][0], datetime(2014, 2, 3, tzinfo=UTC))
-    _clear_sitemap_cache()
-    assert "/alpha/2014/sitemap.xml" in _index_paths(client, "/sitemap.xml")
-    assert [loc for loc, _, _ in _urls(client, "/alpha/2014/sitemap.xml")] == [
-        f"http://localhost/alpha/2014/02/{seeded['lonely@x'][0]}/t"
-    ]
-    assert _urls(client, "/alpha/2014/messages-sitemap.xml") == []
-    for path in ("/alpha/2014/02/sitemap.xml", "/alpha/2014/02/messages-sitemap.xml"):
-        assert client.get(path).status_code == 200, path
-    # Past the end is still absent in both trees.
-    for path in ("/alpha/2014/sitemap-2.xml", "/alpha/2014/messages-sitemap-2.xml"):
-        assert client.get(path).status_code == 404, path
-
-
-def test_message_tree_routes_send_cache_control_and_validate_segments(client):
-    from datetime import datetime
-
-    _redate(art2=datetime(2017, 5, 3, tzinfo=UTC))
-    _clear_sitemap_cache()
-    for path in ("/messages-sitemap.xml", "/beta/2017/05/messages-sitemap.xml"):
-        response = client.get(path)
-        assert response.status_code == 200, path
-        assert response.headers.get("Cache-Control") == "public, max-age=300", path
-        assert "Last-Modified" not in response.headers
-    for bad in (
-        "/alpha/2024/13/messages-sitemap.xml",
-        "/alpha/0/messages-sitemap.xml",
-        "/alpha/2024/06/messages-sitemap-0.xml",
-        "/missing/2024/messages-sitemap.xml",
-    ):
-        assert client.get(bad).status_code == 404, bad
 
 
 def test_the_inbox_sitemap_lists_hub_pages_only(client):
@@ -3115,22 +2847,20 @@ def _warm_alpha(today):
 
 
 def _assert_warm_dates(client, files, stamp):
-    """Each file is dated `stamp` in the index of the tree its roots are
-    in, and undated in neither index before the warm reached it."""
-    threads = _index_lastmods(client)
-    singles = _index_lastmods(client, "/messages-sitemap.xml")
+    """Each file is dated `stamp` in the index, and was undated before the
+    warm reached it."""
+    lastmods = _index_lastmods(client)
     for path in files:
-        dates = {threads[path], singles[_message_sibling(path)]}
-        assert dates - {None} == {stamp}, (path, dates)
+        assert lastmods[path] == stamp, (path, lastmods[path])
 
 
 @pytest.mark.parametrize("granularity", ["year", "month"])
-def test_the_slow_warm_dates_the_current_period_in_both_indexes(
+def test_the_slow_warm_dates_the_current_period_in_the_index(
     client, tmp_path, monkeypatch, granularity
 ):
     """The newest threads are in the current period's archive file. The
     slow-tier `sitemap:inbox:<name>` target warms that file, every page
-    of it, through the route's own cache keys, so both indexes date it
+    of it, through the route's own cache keys, so the index dates it
     rather than leaving it undated until a crawler happens to fetch it
     (#964 slice 3, which dropped the warmed recent-thread list)."""
     from datetime import UTC, date, datetime
@@ -3161,8 +2891,7 @@ def test_the_slow_warm_dates_the_current_period_in_both_indexes(
 
     _warm_alpha(date(2025, 3, 15))
     _drop_index_cache()
-    # Every page is dated in the tree its root belongs to. Without the
-    # warm, all of them are undated.
+    # Without the warm, every page is undated.
     _assert_warm_dates(client, current, "2025-03-15")
 
 
@@ -3291,15 +3020,11 @@ def test_the_slow_warm_pages_one_snapshot_of_the_current_month(
     assert listed == want, listed
 
 
-def test_a_paged_year_keeps_both_trees_on_one_page_numbering(
+def test_a_paged_year_pages_by_url_with_no_gap_or_overlap(
     client, tmp_path, monkeypatch
 ):
-    """A year that outgrows one file pages by URL. The pages are cut from
-    both trees together and then split, so page N of each tree is one half
-    of the pre-split page N. Cutting each tree on its own would number the
-    message pages differently, which the partition test cannot see
-    because its year never pages. (Granny, #964 slice 2 review.)"""
-    from collections import Counter
+    """A year that outgrows one file pages by URL: every URL lands on
+    exactly one page, and the page after the last is a 404."""
     from datetime import datetime
 
     import mimir.seo.sitemaps as sm
@@ -3307,33 +3032,66 @@ def test_a_paged_year_keeps_both_trees_on_one_page_numbering(
 
     monkeypatch.setattr(sm, "SITEMAP_MAX_URLS", 2)
     monkeypatch.setattr(sm.settings, "thread_view_render_cap", 2)
-    # Message, thread (one /t page), message, message: 4 URLs, 2 pages.
+    # Three single-page threads and a two-message one: 4 URLs, 2 pages.
     shapes = [
         ([("yp-a@x", None)], 1),
         ([("yp-b@x", None), ("yp-b1@x", "yp-b@x")], 2),
         ([("yp-c@x", None)], 3),
         ([("yp-d@x", None)], 4),
     ]
+    ids = set()
     for edges, month in shapes:
         root = edges[0][0]
         (tmp_path / root).mkdir()
         seeded = seed_thread_shape(tmp_path / root, "alpha", edges)
+        ids.add(seeded[root][0])
         _set_article_date(seeded[root][0], datetime(2012, month, 1, tzinfo=UTC))
     _clear_sitemap_cache()
 
-    for path in ("/alpha/2012/sitemap.xml", "/alpha/2012/sitemap-2.xml"):
-        threads = _urls(client, path)
-        singles = _urls(client, _message_sibling(path))
-        assert Counter(threads + singles) == Counter(_single_tree_page(path)), path
-    for path in ("/alpha/2012/sitemap-3.xml", "/alpha/2012/messages-sitemap-3.xml"):
-        assert client.get(path).status_code == 404, path
+    pages = [
+        [loc for loc, _, _ in _urls(client, path)]
+        for path in ("/alpha/2012/sitemap.xml", "/alpha/2012/sitemap-2.xml")
+    ]
+    assert [len(p) for p in pages] == [2, 2], pages
+    seen = [loc for page in pages for loc in page]
+    assert {int(re.search(r"/(\d+)/t$", loc)[1]) for loc in seen} == ids, seen
+    assert client.get("/alpha/2012/sitemap-3.xml").status_code == 404
 
 
-def test_both_indexes_cost_one_month_counts_pass(client, monkeypatch):
-    """Both indexes come from one build and one cache row, so serving both
-    runs `_month_counts`, the slow part of the index, once per inbox. A
-    second build would double the fast-tier warm. (Granny, #964 slice 2
-    review.)"""
+@pytest.mark.parametrize("granularity", ["year", "month"])
+def test_a_bucket_of_roots_all_mid_backfill_is_an_empty_urlset_not_a_404(
+    client, tmp_path, monkeypatch, granularity
+):
+    """The index names a file by its root count, and a root still being
+    backfilled is listed nowhere (#1089), so a bucket of only such roots
+    is an empty urlset. A 404 there would be a broken link in the index."""
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+
+    if granularity == "month":
+        monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    _seed_backfilling_root(tmp_path, "wait", datetime(2014, 2, 3, tzinfo=UTC))
+    if granularity == "month":
+        # A second month, so the index lists months, not the year.
+        (tmp_path / "w2").mkdir()
+        _seed_backfilling_root(tmp_path / "w2", "w2", datetime(2014, 5, 3, tzinfo=UTC))
+    _clear_sitemap_cache()
+    file = (
+        "/alpha/2014/sitemap.xml"
+        if granularity == "year"
+        else "/alpha/2014/02/sitemap.xml"
+    )
+    assert file in _index_paths(client, "/sitemap.xml")
+    assert _urls(client, file) == []
+    # Past the end is still absent.
+    assert client.get(file.replace("sitemap.xml", "sitemap-2.xml")).status_code == 404
+
+
+def test_the_index_costs_one_month_counts_pass(client, monkeypatch):
+    """Building the index runs `_month_counts`, the slow part of it, once
+    per inbox, and serving it again reads the cache row. (Granny, #964
+    slice 2 review.)"""
     from sqlalchemy import func, select
 
     import mimir.seo.sitemaps as sm
@@ -3346,8 +3104,8 @@ def test_both_indexes_cost_one_month_counts_pass(client, monkeypatch):
         sm, "_month_counts", lambda s, ib: calls.append(ib.name) or real(s, ib)
     )
     _clear_sitemap_cache()
-    for path in ("/sitemap.xml", "/messages-sitemap.xml", "/sitemap.xml"):
-        assert client.get(path).status_code == 200, path
+    for _ in range(2):
+        assert client.get("/sitemap.xml").status_code == 200
     with SessionLocal() as s:
         inboxes = s.scalar(select(func.count()).select_from(Inbox))
     assert inboxes >= 1, "precondition: an inbox to count"
@@ -3385,8 +3143,7 @@ def test_single_message_thread_is_byte_identical_across_every_emitter(client, tm
     """#1003: a single-message thread has a `/t` like every other thread,
     and every surface that names its canonical names that `/t` in the same
     bytes: the message page's canonical, the thread page's own canonical,
-    the sitemap `<loc>`, IndexNow and the shared URL helper. The message
-    tree no longer lists it."""
+    the sitemap `<loc>`, IndexNow and the shared URL helper."""
     from mimir import indexnow
     from mimir.extensions import SessionLocal
     from mimir.models import Article
@@ -3414,13 +3171,11 @@ def test_single_message_thread_is_byte_identical_across_every_emitter(client, tm
             client.get(solo_url + "/t").get_data(as_text=True)
         ),
         "sitemap": mine(f"/alpha/{year}/sitemap.xml"),
-        "messages sitemap": mine(f"/alpha/{year}/messages-sitemap.xml"),
         "indexnow": pushed,
     } == {
         "message canonical": thread_url,
         "thread canonical": thread_url,
         "sitemap": [thread_url],
-        "messages sitemap": [],
         "indexnow": [thread_url],
     }
 
@@ -3430,7 +3185,7 @@ def test_singleton_without_a_thread_root_keeps_its_message_url(client, tmp_path)
     reindex or a stalled backfill) has nothing the column can rank, so it
     makes no `/t` claim: its page stays self-canonical and IndexNow
     announces the message URL. The archive lists only self-rooted roots,
-    so it is in neither sitemap tree, before #1003 and after it."""
+    so it is in no sitemap."""
     from sqlalchemy import update
 
     from mimir import indexnow
@@ -3455,8 +3210,7 @@ def test_singleton_without_a_thread_root_keeps_its_message_url(client, tmp_path)
     year = solo_url.split("/")[2]
     listed = [
         loc
-        for name in ("sitemap.xml", "messages-sitemap.xml")
-        for loc in _locs(client, f"/alpha/{year}/{name}")
+        for loc in _locs(client, f"/alpha/{year}/sitemap.xml")
         if f"/{solo_id}" in loc
     ]
     msg_url = f"http://localhost{solo_url}"
@@ -3465,3 +3219,46 @@ def test_singleton_without_a_thread_root_keeps_its_message_url(client, tmp_path)
         "indexnow": pushed,
         "listed": listed,
     } == {"message canonical": msg_url, "indexnow": [msg_url], "listed": []}
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/messages-sitemap.xml",
+        "/alpha/2024/messages-sitemap.xml",
+        "/alpha/2024/messages-sitemap-2.xml",
+        "/alpha/2024/06/messages-sitemap.xml",
+        "/alpha/2024/06/messages-sitemap-2.xml",
+        # Gone is gone: even a URL no inbox or date could ever match.
+        "/missing/0/13/messages-sitemap-0.xml",
+    ],
+)
+def test_the_retired_message_sitemaps_are_gone(client, path):
+    """#1089: every `messages-sitemap*.xml` URL a crawler learned answers
+    410, which tells it to drop the URL, where a 404 invites a retry."""
+    assert client.get(path).status_code == 410, path
+
+
+def test_the_index_lists_exactly_the_archive_files_that_exist(client):
+    """Retiring the message half must not move the `/t` files: the index
+    names every `_archive_files` entry of alpha, and nothing with a
+    `messages-` prefix."""
+    from sqlalchemy import select
+
+    import mimir.seo.sitemaps as sm
+    from mimir.extensions import SessionLocal
+    from mimir.models import Inbox
+
+    _clear_sitemap_cache()
+    with SessionLocal() as s:
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        expected = {
+            f"/alpha/{year:04d}/"
+            + ("" if month is None else f"{month:02d}/")
+            + ("sitemap.xml" if page == 1 else f"sitemap-{page}.xml")
+            for year, month, page in sm._archive_files(s, alpha)
+        }
+    listed = _index_paths(client, "/sitemap.xml")
+    assert expected, "precondition: alpha has archive files"
+    assert {p for p in listed if p.startswith("/alpha/2")} == expected
+    assert not [p for p in listed if "messages-" in p], listed

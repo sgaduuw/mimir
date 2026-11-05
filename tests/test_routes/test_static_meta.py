@@ -14,10 +14,9 @@ def test_robots_txt(client):
     assert r.mimetype == "text/plain"
     body = r.get_data(as_text=True)
     assert "User-agent: *" in body
-    # Both indexes (#964), in this order, each exactly once.
+    # One index since #1089: the messages index is retired.
     assert re.findall(r"^Sitemap: (.*)$", body, re.MULTILINE) == [
         "http://localhost/sitemap.xml",
-        "http://localhost/messages-sitemap.xml",
     ]
 
 

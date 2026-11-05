@@ -151,7 +151,9 @@ def test_every_sitemap_endpoint_is_exempt_and_edge_cached():
     sitemap route left out of both lists is budgeted like a page and sent
     with no Cache-Control, and nothing failed (#846)."""
     endpoints = {rule.endpoint for rule in create_app().url_map.iter_rules()}
-    sitemaps = {e for e in endpoints if "sitemap" in e}
+    # The retired message sitemaps (#1089) abort 410: an error response
+    # takes no Cache-Control, and a crawler re-fetching it is budgeted.
+    sitemaps = {e for e in endpoints if "sitemap" in e} - {"web.messages_sitemap_gone"}
     assert len(sitemaps) >= 6, sitemaps  # precondition: the predicate finds them
     assert sitemaps <= EXEMPT_ENDPOINTS, sitemaps - EXEMPT_ENDPOINTS
     assert sitemaps <= hooks._CACHE_CONTROL_BY_ENDPOINT.keys()
