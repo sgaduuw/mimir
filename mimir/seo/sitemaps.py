@@ -873,20 +873,35 @@ def sitemap_index_xml(
     def compute() -> SitemapPayload:
         per_inbox_latest = _per_inbox_latest_date(session)
         global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
-        entries: list[tuple[str, str | None]] = [
+        # Tiers, because a crawler that reads only the first N children
+        # (AhrefsBot stops at 999) should spend them on the most valuable
+        # files: site, then hubs, then archive files, newest period first.
+        site: list[tuple[str, str | None]] = [
             (f"{base}/meta-sitemap.xml", global_latest),
+            # Reuse global_latest as the maintainers urlset's lastmod: it's
+            # free (already computed above) and a reasonable proxy for
+            # "maintainer-relevant activity changed" without an extra
+            # per-maintainer date query.
+            (f"{base}/sitemap-maintainers.xml", global_latest),
+            # No lastmod: dating a page would mean building it.
+            *(
+                (f"{base}/sitemap-series-diffs-{b}.xml", None)
+                for b in SERIES_DIFF_BUCKETS
+            ),
         ]
+        hubs: list[tuple[str, str | None]] = []
+        archive: list[tuple[tuple, str, str | None]] = []
         inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
         for inbox in inboxes:
             # The per-inbox file of hub pages.
-            entries.append(
+            hubs.append(
                 (
                     f"{base}/{inbox.name}/sitemap.xml",
                     per_inbox_latest.get(inbox.name),
                 )
             )
-            # (directory, file name, key, is_year)
-            children: list[tuple[str, str, str, bool]] = []
+            # (directory, file name, key, is_year, sort key)
+            children: list[tuple[str, str, str, bool, tuple]] = []
             for year, month, page in _archive_files(session, inbox):
                 children.append(
                     (
@@ -897,6 +912,9 @@ def sitemap_index_xml(
                         if month is None
                         else _month_page_key(inbox.name, year, month, page),
                         month is None,
+                        # Newest period first, a year file ranking as its
+                        # last month; then inbox, then page.
+                        (-year, -(month or 12), inbox.name, page),
                     )
                 )
             # lastmod = the child's cached last_modified; an uncached child
@@ -905,22 +923,16 @@ def sitemap_index_xml(
             # Batched: each cached child is a whole body.
             for start in range(0, len(children), _INDEX_READ_BATCH):
                 batch = children[start : start + _INDEX_READ_BATCH]
-                cached = cache.get_many([key for _, _, key, _ in batch])
-                for directory, name, key, is_year in batch:
+                cached = cache.get_many([key for _, _, key, _, _ in batch])
+                for directory, name, key, is_year, order in batch:
                     child = cached.get(key)
                     if child is not None and is_year:
                         child = _unpack_year_pages(child)[0]  # `name` is page 1
-                    entries.append((directory + name, child and child.last_modified))
-        # Reuse global_latest as the maintainers urlset's lastmod: it's
-        # free (already computed above) and a reasonable proxy for
-        # "maintainer-relevant activity changed" without an extra
-        # per-maintainer date query.
-        entries.append((f"{base}/sitemap-maintainers.xml", global_latest))
-        # No lastmod: dating a page would mean building it.
-        entries.extend(
-            (f"{base}/sitemap-series-diffs-{bucket}.xml", None)
-            for bucket in SERIES_DIFF_BUCKETS
-        )
+                    archive.append(
+                        (order, directory + name, child and child.last_modified)
+                    )
+        archive.sort(key=lambda a: a[0])
+        entries = site + hubs + [(loc, lastmod) for _, loc, lastmod in archive]
         return SitemapPayload(_build_sitemap_index_xml(entries), global_latest)
 
     return cache.get_or_compute(
@@ -1286,6 +1298,9 @@ def inbox_sitemap_xml(
                 )
             )
 
+        # Highest priority first, for crawlers that read only a prefix.
+        # Stable, so each tier keeps its newest-first order.
+        entries.sort(key=lambda e: -e.priority)
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
             last_modified=inbox_latest,
@@ -1294,7 +1309,7 @@ def inbox_sitemap_xml(
     return cache.get_or_compute(
         session,
         # Hub pages only, so the render cap is not in the key (#964).
-        f"sitemap:inboxhubs:{inbox.name}",
+        f"sitemap:inboxhubs2:{inbox.name}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,
