@@ -6,12 +6,15 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 
+from mimir.datetime_utils import aware_utc
 from mimir.models import (
     Article,
     ArticleFile,
     ArticleList,
     ArticleTrailer,
     Inbox,
+    Mailmap,
+    MainlineState,
 )
 from mimir.subsystems_dashboard import (
     active_reviewers_in_subsystem,
@@ -680,3 +683,78 @@ def test_articles_reviewed_by_seeks_the_trailer_index(seeded_db):
     assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
         plan
     )
+
+
+HIDDEN = "jic23@corp.example"
+CANON = "jonathan.cameron@kernel.org"
+
+
+def _seed_split_reviewer(s):
+    """One person under two addresses (the #986 shape) plus a bystander
+    with fewer attestations than the two halves combined."""
+    sub = _add_subsystem(s, "CXL", "Supported", files=["drivers/cxl/"])
+    for n in range(3):
+        _add_recent_patch_with_trailers(
+            s,
+            f"hidden{n}@x",
+            ["drivers/cxl/a.c"],
+            [("Reviewed-by", "Jonathan Cameron", HIDDEN)],
+            days_ago=n,
+        )
+    _add_recent_patch_with_trailers(
+        s,
+        "canon@x",
+        ["drivers/cxl/b.c"],
+        [("Acked-by", "Jonathan Cameron", CANON)],
+        days_ago=5,
+    )
+    for n in range(2):
+        _add_recent_patch_with_trailers(
+            s,
+            f"other{n}@x",
+            ["drivers/cxl/c.c"],
+            [("Reviewed-by", "Other", "other@kernel.org")],
+            days_ago=1,
+        )
+    s.add(Mailmap(old_address=HIDDEN, address=CANON))
+    s.commit()
+    return sub
+
+
+def test_active_reviewers_merges_addresses_that_mailmap_maps_together(seeded_db):
+    with seeded_db() as s:
+        sub = _seed_split_reviewer(s)
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+
+    assert [r.address_normalized for r in out] == [CANON, "other@kernel.org"]
+    merged = out[0]
+    assert merged.total == 4
+    assert merged.role_counts == {"Reviewed-by": 3, "Acked-by": 1}
+    # The newest trailer is the hidden address, so a verbatim address
+    # here would be the non-allowlisted one.
+    assert merged.address == CANON
+    assert aware_utc(merged.last_seen) > datetime.now(UTC) - timedelta(days=1)
+
+
+def test_active_reviewers_cache_follows_a_mailmap_reload(seeded_db):
+    """The mapping is an input of the cached list. A reload moves the
+    rules version (`MainlineState.last_commit_sha`) in the same
+    transaction as the new pairs, and the cache key must carry it. The
+    first call is a plain cached one: a test that forced it would not
+    see a stale row."""
+    with seeded_db() as s:
+        sub = _seed_split_reviewer(s)
+        s.query(Mailmap).delete()
+        s.merge(MainlineState(tree_name="linus", last_commit_sha="m1:a"))
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        before = active_reviewers_in_subsystem(s, alpha, sub)
+        assert len(before) == 3, "precondition: unmapped, the person is split"
+
+        s.add(Mailmap(old_address=HIDDEN, address=CANON))
+        s.merge(MainlineState(tree_name="linus", last_commit_sha="m1:b"))
+        s.commit()
+        after = active_reviewers_in_subsystem(s, alpha, sub)
+
+    assert [r.address_normalized for r in after] == [CANON, "other@kernel.org"]
