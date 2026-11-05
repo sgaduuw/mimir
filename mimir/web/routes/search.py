@@ -8,12 +8,13 @@ here.
 
 from urllib.parse import quote
 
-from flask import abort, render_template, request
+from flask import abort, redirect, render_template, request
 from sqlalchemy import select
 
 from mimir.dashboard import author_recent, search_articles
 from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.mailmap import canonical_address
 from mimir.models import Article
 from mimir.search_results import group_search_results
 from mimir.seo import _json_ld_author, _json_ld_search
@@ -22,6 +23,7 @@ from mimir.subsystems_dashboard import (
     articles_reviewed_by,
 )
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _is_allowlisted
 from mimir.web.urls import (
     _get_inbox_or_404,
     _site_base,
@@ -131,6 +133,11 @@ def author_view(inbox_name: str, sub: str):
     )
 
 
+def _reviewer_path(inbox_name: str, address: str) -> str:
+    """One spelling for the page's canonical URL and the redirect to it."""
+    return f"/{inbox_name}/reviewer/{quote(address, safe='@')}"
+
+
 @bp_web.route("/<inbox_name>/reviewer/<path:address>")
 def reviewer_view(inbox_name: str, address: str):
     """Per-reviewer attestation listing: every patch in `inbox_name`
@@ -152,6 +159,19 @@ def reviewer_view(inbox_name: str, address: str):
     address_normalized = address.lower()
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
+        # A retired address `.mailmap` maps now lives on the canonical
+        # address's page, which includes its trailers (#1087). Redirect
+        # only to an address the templates would link to, so a Location
+        # header never names a hidden one; otherwise serve this page.
+        mapped = canonical_address(session, address_normalized)
+        if (
+            mapped is not None
+            and is_addressable_reviewer_address(mapped)
+            and _is_allowlisted(mapped)
+            # One hop: a target that is itself retired would chain or loop.
+            and canonical_address(session, mapped) is None
+        ):
+            return redirect(_reviewer_path(inbox.name, mapped), code=301)
         entries = articles_reviewed_by(
             session,
             inbox,
@@ -176,9 +196,7 @@ def reviewer_view(inbox_name: str, address: str):
     for e in entries:
         role_counts[e.role] = role_counts.get(e.role, 0) + 1
     base = _site_base()
-    canonical_url = (
-        f"{base}/{inbox.name}/reviewer/{quote(address_normalized, safe='@')}"
-    )
+    canonical_url = base + _reviewer_path(inbox.name, address_normalized)
     return render_template(
         "reviewer.html",
         inbox_name=inbox.name,

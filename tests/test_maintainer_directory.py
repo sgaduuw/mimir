@@ -5,7 +5,13 @@ from sqlalchemy import select
 
 from mimir import cache
 from mimir.maintainer_directory import all_maintainers, maintainer_profile
-from mimir.models import Article, ArticleTrailer, Subsystem, SubsystemMaintainer
+from mimir.models import (
+    Article,
+    ArticleTrailer,
+    Mailmap,
+    Subsystem,
+    SubsystemMaintainer,
+)
 
 
 def _add_subsystem(session, name, status, maintainers):
@@ -222,12 +228,16 @@ def test_review_count_warmer_filters_owners_and_refreshes_existing_keys(
     )
     _add_trailer(session, "art1@example.com", "alice@kernel.org")
     session.commit()
-    assert directory.cached_maintainer_review_counts("alice@kernel.org") is None
+    assert (
+        directory.cached_maintainer_review_counts(session, "alice@kernel.org") is None
+    )
     directory.warm_maintainer_review_counts(session)
-    assert directory.cached_maintainer_review_counts("ALICE@KERNEL.ORG") == {"alpha": 1}
-    assert directory.cached_maintainer_review_counts("empty@kernel.org") == {}
+    assert directory.cached_maintainer_review_counts(session, "ALICE@KERNEL.ORG") == {
+        "alpha": 1
+    }
+    assert directory.cached_maintainer_review_counts(session, "empty@kernel.org") == {}
     keys = [
-        key for key in cache.keys() if key.startswith("maintainer:review_counts_v1:")
+        key for key in cache.keys() if key.startswith("maintainer:review_counts_v2:")
     ]
     assert len(keys) == 2
 
@@ -245,15 +255,63 @@ def test_review_count_warmer_filters_owners_and_refreshes_existing_keys(
     session.commit()
     _add_subsystem(session, "NEW", "Maintained", [("M", "New", "new@kernel.org")])
     session.commit()
-    assert directory.cached_maintainer_review_counts("new@kernel.org") is None
+    assert directory.cached_maintainer_review_counts(session, "new@kernel.org") is None
     # Existing slow-warmer context refreshes near expiry without a new policy.
     now = cache._now()
     monkeypatch.setattr(cache, "_now", lambda: now + 3599)
     with cache.refresh_window(450):
         directory.warm_maintainer_review_counts(session)
     assert calls == ["alice@kernel.org", "empty@kernel.org", "new@kernel.org"]
-    assert directory.cached_maintainer_review_counts("new@kernel.org") == {}
-    assert directory.cached_maintainer_review_counts("alice@kernel.org") == {
+    assert directory.cached_maintainer_review_counts(session, "new@kernel.org") == {}
+    assert directory.cached_maintainer_review_counts(session, "alice@kernel.org") == {
         "alpha": 1,
         "beta": 1,
     }
+
+
+def test_profile_and_counts_merge_the_addresses_mailmap_maps_together(session):
+    """Review activity under a retired address belongs to the maintainer's
+    current one (#1087). The retired address is the only one on art2, so
+    without the mapping beta would be missing."""
+    from mimir.maintainer_directory import maintainer_review_counts_query
+
+    _add_subsystem(
+        session, "BCACHEFS", "Supported", maintainers=[("M", "Kent", "kent@kernel.org")]
+    )
+    _add_trailer(session, "art1@example.com", "kent@kernel.org")  # alpha
+    _add_trailer(session, "art2@example.com", "kent@corp.example")  # beta
+    session.add(Mailmap(old_address="kent@corp.example", address="kent@kernel.org"))
+    session.commit()
+
+    profile = maintainer_profile(session, "kent@kernel.org", force=True)
+
+    assert profile is not None
+    assert profile.review_inboxes == ["alpha", "beta"]
+    assert maintainer_review_counts_query(session, "kent@kernel.org") == {
+        "alpha": 1,
+        "beta": 1,
+    }
+
+
+def test_profile_cache_follows_a_mailmap_reload(session):
+    """The mapping is an input of the cached profile, so its key carries
+    the rules version. The first call is a plain cached one."""
+    from mimir.models import MainlineState
+
+    _add_subsystem(
+        session, "BCACHEFS", "Supported", maintainers=[("M", "Kent", "kent@kernel.org")]
+    )
+    _add_trailer(session, "art1@example.com", "kent@kernel.org")  # alpha
+    _add_trailer(session, "art2@example.com", "kent@corp.example")  # beta
+    session.merge(MainlineState(tree_name="linus", last_commit_sha="m1:a"))
+    session.commit()
+    assert maintainer_profile(session, "kent@kernel.org").review_inboxes == ["alpha"]
+
+    session.add(Mailmap(old_address="kent@corp.example", address="kent@kernel.org"))
+    session.merge(MainlineState(tree_name="linus", last_commit_sha="m1:b"))
+    session.commit()
+
+    assert maintainer_profile(session, "kent@kernel.org").review_inboxes == [
+        "alpha",
+        "beta",
+    ]

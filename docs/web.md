@@ -103,7 +103,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/<YYYY>/`, `/<inbox>/<YYYY>/<MM>/` | Year and month archives |
 | `/<inbox>/search?q=<query>` | Search subject and author |
 | `/<inbox>/author/<substring>` | Author activity |
-| `/<inbox>/reviewer/<address>` | Review activity |
+| `/<inbox>/reviewer/<address>` | Review activity, including trailers under retired addresses the kernel's `.mailmap` maps to it; a retired address redirects (301) to the canonical one when that is a linkable address |
 | `/m/<message-id>` | Redirect to the canonical message URL |
 | `/r/<message-id>`, `/all/<message-id>/` | Accept pasted lore shapes through the same global Message-ID lookup; input-only aliases, never emitted by the site |
 | `/m/?id=<text>` | The same lookup for a GET form. Accepts a bare ID, `<id>`, `mid:<id>`, or a lore-style URL or path ending in the ID; a miss is a 404 |

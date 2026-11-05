@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from sqlalchemy import select
 
 from mimir.datetime_utils import aware_utc
+from mimir.mailmap import rules_version
 from mimir.models import (
     Article,
     ArticleFile,
@@ -235,7 +236,9 @@ def test_articles_reviewed_by_caches_for_one_hour(seeded_db):
         # caches the empty list and we're inspecting the TTL the
         # cache row was set with.
         articles_reviewed_by(s, alpha, "noone@example.com", limit=100)
-        nskey = _ns("articles_reviewed_by:alpha:noone@example.com:100")
+        nskey = _ns(
+            f"articles_reviewed_by:alpha:noone@example.com:100:{rules_version(s)}"
+        )
         row = s.execute(select(CacheEntry).where(CacheEntry.key == nskey)).scalar_one()
 
     delta = row.expires_at - int(time.time())
@@ -758,3 +761,38 @@ def test_active_reviewers_cache_follows_a_mailmap_reload(seeded_db):
         after = active_reviewers_in_subsystem(s, alpha, sub)
 
     assert [r.address_normalized for r in after] == [CANON, "other@kernel.org"]
+
+
+def test_articles_reviewed_by_includes_trailers_under_a_mapped_old_address(
+    seeded_db,
+):
+    """The canonical address's page lists the attestations made under
+    every address `.mailmap` maps to it (#1087)."""
+    with seeded_db() as s:
+        _seed_split_reviewer(s)
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        entries = articles_reviewed_by(s, alpha, CANON, force=True)
+        # Precondition: the hidden address really holds trailers of its own.
+        hidden_rows = s.query(ArticleTrailer).filter_by(address_normalized=HIDDEN)
+        assert hidden_rows.count() == 3
+
+    assert sorted(e.role for e in entries) == ["Acked-by"] + ["Reviewed-by"] * 3
+
+
+def test_articles_reviewed_by_cache_follows_a_mailmap_reload(seeded_db):
+    """Same contract as the dashboard list: the rules version is part of
+    the key. The first call is a plain cached one, not forced."""
+    with seeded_db() as s:
+        _seed_split_reviewer(s)
+        s.query(Mailmap).delete()
+        s.merge(MainlineState(tree_name="linus", last_commit_sha="m1:a"))
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        assert len(articles_reviewed_by(s, alpha, CANON)) == 1, "precondition: split"
+
+        s.add(Mailmap(old_address=HIDDEN, address=CANON))
+        s.merge(MainlineState(tree_name="linus", last_commit_sha="m1:b"))
+        s.commit()
+        after = articles_reviewed_by(s, alpha, CANON)
+
+    assert len(after) == 4
