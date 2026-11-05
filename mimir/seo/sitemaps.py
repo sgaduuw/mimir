@@ -697,12 +697,16 @@ def _month_root_ids(
     return ids
 
 
+# Rows live up to 30 days (archive_sitemap_ttl), edge copies a week: a change
+# to what these files list must rename the key, and its release must purge
+# the sitemap paths at the edge.
 def _year_pages_key(inbox_name: str, year: int) -> str:
     return (
         f"sitemap:yearpages:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
     )
 
 
+# Same rule as `_year_pages_key`: rename on a content change, purge the edge.
 def _month_page_key(inbox_name: str, year: int, month: int, page: int) -> str:
     return (
         f"sitemap:monthpages:{inbox_name}:{year:04d}-{month:02d}:{page}"
@@ -795,7 +799,10 @@ def archive_sitemap_xml(
     The index's page count and this bounds check are derived from
     separate cache entries with independent TTLs, so for at most one
     TTL after a month's root count changes the index can name a page
-    that 404s, or omit one that exists. Bounded and self-correcting;
+    that 404s, or omit one that exists. For an old month that window is
+    up to 30 days when the count crosses a 20,000-root page boundary,
+    because the index counts from SQL hourly while this check reads the
+    cached root list. Bounded and self-correcting;
     the alternative is a shared cache generation, which is a lot of
     machinery for a transient soft error on a sitemap.
     """

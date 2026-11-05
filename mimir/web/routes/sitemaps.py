@@ -28,7 +28,9 @@ day's first article happened to bump the date past the cached value.
 Dropping the HTTP validator makes each fetch a full 200; the per-URL
 `<lastmod>` inside the XML stays the crawler-facing freshness signal,
 and the per-endpoint `Cache-Control: max-age=300` (set in hooks.py)
-still lets edges cache briefly and re-fetch fresh.
+still lets browsers and crawlers cache briefly and re-fetch fresh. The
+archive files also send `Cloudflare-CDN-Cache-Control`, so Cloudflare's
+edge keeps them for up to a week (#1088).
 """
 
 from datetime import UTC, datetime

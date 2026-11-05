@@ -228,10 +228,14 @@ when the index advertises a year. The retired `/messages-sitemap.xml` and
 `messages-sitemap*.xml` files answer 410. See [sitemaps.py](../mimir/seo/sitemaps.py) for
 page-size and protocol bounds.
 
-Sitemap origin caches last one hour and include the thread render cap
-where pagination depends on it. Responses have no ETag or Last-Modified
-validator and permit five minutes of downstream caching. Message and thread
-pages instead use ETags with revalidation.
+Archive sitemap files are cached at the origin by the age of the period they
+cover: one hour for the open and previous period, then a week, two weeks, and
+30 days once the period ended over a year ago. They also send
+`Cloudflare-CDN-Cache-Control` with that TTL capped at a week. Other sitemap
+origin caches last one hour. Keys include the thread render cap where
+pagination depends on it. Responses have no ETag or Last-Modified validator and
+send `Cache-Control: public, max-age=300` downstream. Message and thread pages
+instead use ETags with revalidation.
 
 ## Site metadata and probes
 
