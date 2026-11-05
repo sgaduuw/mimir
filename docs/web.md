@@ -26,7 +26,9 @@ query to find older matches.
 
 A message page shows a mail header, body and attachments, followed by its
 thread overview. The context bar links to the whole thread and offers
-Previous and Next controls. These controls and the thread overview keep
+Previous and Next controls. Overview rows show the sender and date; subjects
+appear only when they differ from the thread's topic after reply-prefix
+normalization. These controls and the thread overview keep
 working without JavaScript; with HTMX, navigation replaces the message and
 scrolls back to its header. In a
 thread longer than one thread-view page, the tree shows the part around the

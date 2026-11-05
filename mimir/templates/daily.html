@@ -4,7 +4,7 @@
 {% block content %}
 <h1>{{ heading }}</h1>
 <p><a href="/{{ inbox_name }}/{{ '%04d' % day.year }}/{{ '%02d' % day.month }}/">{{ day.strftime('%Y-%m-%d') }}</a></p>
-<p>{{ total_messages }} message{{ "" if total_messages == 1 else "s" }} {% if selected_filter == 'all' %}across {{ matching_threads }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if matching_threads %} Showing {{ first_thread }}–{{ last_thread }}.{% endif %}</p>
+<p>{{ total_messages|format_count }} message{{ "" if total_messages == 1 else "s" }} {% if selected_filter == 'all' %}across {{ matching_threads|format_count }} thread{{ '' if matching_threads == 1 else 's' }}{% else %}in this window. {{ matching_threads|format_count }} matching thread{{ '' if matching_threads == 1 else 's' }}{% endif %}.{% if matching_threads %} Showing {{ first_thread|format_count }}–{{ last_thread|format_count }}.{% endif %}</p>
 {% include "_listing_filters.html" %}
 {% include "_listing_threads.html" %}
 <nav aria-label="Listing pages"><ul>{% if previous_page %}<li><a href="{{ previous_page }}" rel="prev">Previous 100</a></li>{% endif %}</ul><ul>{% if next_page %}<li><a href="{{ next_page }}" rel="next">Next 100</a></li>{% endif %}</ul></nav>

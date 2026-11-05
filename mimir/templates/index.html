@@ -46,8 +46,8 @@
       <a class="front-card" href="/{{ ix.name }}/">
         <span class="front-card-name">{{ ix.name }}</span>
         <span class="front-card-when">last {{ ix.last_activity_rel }}</span>
-        <p class="count front-card-count">{{ '{:,}'.format(ix.messages_30d) }}</p>
-        <span class="front-card-sub">messages in 30 days{% if ix.stats.first_date %}, of {{ '{:,}'.format(ix.stats.total) }} since {{ ix.stats.first_date.year }}{% endif %}</span>
+        <p class="count front-card-count">{{ ix.messages_30d|format_count }}</p>
+        <span class="front-card-sub">messages in 30 days{% if ix.stats.first_date %}, of {{ ix.stats.total|format_count }} since {{ ix.stats.first_date.year }}{% endif %}</span>
         {# Same 30-day series the cards always had: currentColor and
            opacity, so the bars follow the theme. #}
         <svg class="front-card-spark" viewBox="0 0 186 24" preserveAspectRatio="none"

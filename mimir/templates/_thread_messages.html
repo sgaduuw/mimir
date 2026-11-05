@@ -83,7 +83,7 @@
      hx-get="{{ next_page_url }}"
      hx-target="closest .thread-more"
      hx-swap="outerHTML">
-    Next {{ [remaining, page_size]|min }} of {{ remaining }} remaining
+    Next {{ [remaining, page_size]|min|format_count }} of {{ remaining|format_count }} remaining
   </a>
 </div>
 {% endif %}
