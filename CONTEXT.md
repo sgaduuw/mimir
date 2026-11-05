@@ -2307,6 +2307,10 @@ Replaced with a UNION of independent range-seek branches:
 `arch/x86_64/` is the literal byte it is under `>=`/`<`, so no
 escape machinery is needed), `path = :exact` per exact path. Each
 branch is independently sargable against `ix_article_files_path`.
+Each branch also requires that index with `INDEXED BY`: SQLite 3.54
+otherwise chooses a full scan of the article/path covering index for a
+directory range inside the recent-postings UNION (#1093). The correlated
+EXISTS sibling below deliberately keeps its article-first access path.
 The per-row NOT(exclude) predicate moves into each branch so the
 X: semantics ride along on already-narrowed rows. NETWORKING cold
 miss drops to ~400 ms (25x), ARM/APPLE to ~7 ms (1000x).

@@ -685,11 +685,24 @@ def test_articles_reviewed_by_seeks_the_trailer_index(seeded_db):
             s,
             lambda: articles_reviewed_by(s, alpha, "x@y", force=True),
             "article_trailers",
+            required_sql=(
+                "article_trailers t INDEXED BY ix_article_trailers_role_addr",
+                "CROSS JOIN articles",
+                "CROSS JOIN article_lists",
+            ),
         )
     # The role equality, not a skip-scan (ANY(role)) the stats allow.
     assert "ix_article_trailers_role_addr (role=? AND address_normalized=?)" in plan, (
         plan
     )
+    # Merely selecting this index can still seek it once per inbox member.
+    assert plan.splitlines()[0].startswith(
+        "SEARCH t USING INDEX ix_article_trailers_role_addr"
+    ), plan
+    assert (
+        "SEARCH al USING COVERING INDEX sqlite_autoindex_article_lists_1 (article_id=? AND inbox_id=?)"
+        in plan
+    ), plan
 
 
 HIDDEN = "jic23@corp.example"
