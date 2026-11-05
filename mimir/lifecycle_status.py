@@ -121,7 +121,10 @@ _REVIEW_ROLES_PARAM = bindparam(
 # subset). The maintainer flag is an EXISTS on LOWER(sm.address) =
 # t.address_normalized, not a JOIN: an address is listed once per
 # MAINTAINERS section, so a join multiplies each trailer by the number
-# of sections its reviewer sits in (#800). The
+# of sections its reviewer sits in (#800). A trailer under a retired
+# address that `.mailmap` maps to a maintainer's counts as that
+# maintainer (#1087); the LEFT JOIN is on the mailmap primary key, so it
+# multiplies nothing either. The
 # `at_review` CTE is the cheap "any review trailer exists" predicate
 # that still drives the REVIEWED state classification (kept distinct
 # from rc so the state derivation doesn't pay the COUNT cost when
@@ -203,9 +206,11 @@ rc AS (
     SELECT t.article_id,
            COUNT(*) AS review_total,
            SUM(EXISTS (SELECT 1 FROM subsystem_maintainers sm
-                        WHERE LOWER(sm.address) = t.address_normalized
+                        WHERE LOWER(sm.address) =
+                              COALESCE(m.address, t.address_normalized)
                           AND sm.role IN ('M', 'R'))) AS review_maintainer
       FROM article_trailers t
+      LEFT JOIN mailmap m ON m.old_address = t.address_normalized
      WHERE t.article_id IN :ids
        AND t.role IN :review_roles
      GROUP BY t.article_id
@@ -425,9 +430,10 @@ _REVIEWER_NAMES_SQL = text("""
 SELECT t.article_id,
        t.name,
        EXISTS (SELECT 1 FROM subsystem_maintainers sm
-                WHERE LOWER(sm.address) = t.address_normalized
+                WHERE LOWER(sm.address) = COALESCE(m.address, t.address_normalized)
                   AND sm.role IN ('M', 'R')) AS is_maintainer
   FROM article_trailers t
+  LEFT JOIN mailmap m ON m.old_address = t.address_normalized
  WHERE t.article_id IN :ids
    AND t.role IN :review_roles
  ORDER BY t.article_id, t.id ASC
