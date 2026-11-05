@@ -2234,3 +2234,42 @@ def test_a_mailmap_change_alone_reloads_the_mapping(seeded_db, tmp_path):
     )
     assert _mailmap_rows() == {"old@example.org": "new@kernel.org"}
     assert cursor() != first, "the rules version did not move"
+
+
+@pytest.mark.parametrize(
+    "bad_line",
+    [
+        b"no angle brackets here",
+        b"Unterminated <new@x",
+        b"Name <new@x> <>",
+        b"<> <old@x>",
+        b"<>",
+    ],
+)
+def test_a_malformed_mailmap_line_does_not_stop_the_good_ones(
+    seeded_db, tmp_path, bad_line
+):
+    """`load_maintainers` shares a try block with the Linus commit walk,
+    so one line that raises would freeze MAINTAINERS reloads and the
+    walk on every tick. Git skips such lines; so do we."""
+    from mimir.mainline import load_maintainers
+
+    path = tmp_path / "tree.git"
+    repo = _bare_repo(path)
+    _commit_maintainers(
+        repo,
+        b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n",
+        mailmap=(
+            b"First <first@kernel.org> <first@old.example>\n"
+            + bad_line
+            + b"\nLast <last@kernel.org> <last@old.example>\n"
+        ),
+        ts=1700000000,
+    )
+    repo.close()
+
+    assert load_maintainers(path, tree_name="linus")[0]
+    assert _mailmap_rows() == {
+        "first@old.example": "first@kernel.org",
+        "last@old.example": "last@kernel.org",
+    }
