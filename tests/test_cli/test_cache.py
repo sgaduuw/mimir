@@ -210,7 +210,8 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
         f"recent_postings_v1:alpha:{sub_id}:30:30",
         f"active_threads_in_subsystem:alpha:{sub_id}:7:10",
         f"daily_volume_in_subsystem:alpha:{sub_id}:30",
-        f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10",
+        # Trailing segment is the rules version, empty here (no load).
+        f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10:",
     ]
     from mimir.cache import _ns
 

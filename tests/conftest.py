@@ -282,6 +282,7 @@ def _reset_db():
         Inbox,
         InboxAddressObservation,
         IngestState,
+        Mailmap,
         MainlineCommit,
         MainlineState,
         ParseFailure,
@@ -305,6 +306,7 @@ def _reset_db():
         s.execute(delete(CacheEntry))
         s.execute(delete(MainlineCommit))
         s.execute(delete(MainlineState))
+        s.execute(delete(Mailmap))
         # Subsystem cascades to subsystem_paths + subsystem_maintainers
         # via ON DELETE CASCADE (FKs declared on the child tables).
         s.execute(delete(Subsystem))

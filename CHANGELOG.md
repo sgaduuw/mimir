@@ -11,8 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to a current maintainer still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
+
 ### Fixed
 
+- The subsystem dashboard's "Active reviewers" list shows one row per person when the kernel's `.mailmap` maps several of their addresses together, with the attestation counts added up. The row shows the canonical address (or its hidden placeholder), never a retired one. The reviewer page, maintainer profile review activity and lifecycle pill counts still count one address (#986).
 - Hyphenated message and thread URLs redirect with canonical month padding. Invalid years and months return 404 directly (#1083).
 - Archive count prose uses thousands separators, search highlights stay joined inside identifiers, and lifecycle chips use a middle-dot separator with matching Markdown wording. Listing headers keep consistent typography, year totals align with their rows, and message overviews show subjects only for changed topics while preserving safe sender display and navigation. Rapid series-diff navigation keeps using HTMX instead of reloading the document (#1081).
 

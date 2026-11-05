@@ -1306,3 +1306,47 @@ def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
         rows[0].find("small", cls="subsystem-meta").text()
         == date + " · Safe Author <hidden>"
     )
+
+
+def test_subsystem_dashboard_links_a_merged_reviewer_to_the_canonical_address(
+    client,
+):
+    """The merged row's newest trailer is the hidden address. The row
+    must carry the canonical address, so it links to the canonical
+    reviewer page, and the hidden address appears in no href."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Mailmap
+    from tests.test_subsystems._helpers import (
+        _add_recent_patch_with_trailers,
+        _add_subsystem,
+    )
+
+    hidden = "jic23@corp.example"
+    canon = "jonathan.cameron@kernel.org"
+    with SessionLocal() as s:
+        _add_subsystem(s, "CXL", "Supported", files=["drivers/cxl/"])
+        _add_recent_patch_with_trailers(
+            s,
+            "link@x",
+            ["drivers/cxl/a.c"],
+            [("Reviewed-by", "Jonathan Cameron", hidden)],
+        )
+        _add_recent_patch_with_trailers(
+            s,
+            "link2@x",
+            ["drivers/cxl/b.c"],
+            [("Reviewed-by", "Jonathan Cameron", canon)],
+            days_ago=3,
+        )
+        s.add(Mailmap(old_address=hidden, address=canon))
+        s.commit()
+
+    text = client.get("/alpha/subsystem/cxl/").data.decode()
+    # Precondition: one merged row carrying both attestations.
+    assert text.count('class="subsystem-reviewer-heading"') == 1
+    assert '<span class="count">2</span>' in text
+    # The retired address appears nowhere in the page, not just in hrefs.
+    assert "corp.example" not in text
+    assert "jic23" not in text
+    hrefs = re.findall(r'href="(/alpha/reviewer/[^"]*)"', text)
+    assert hrefs == ["/alpha/reviewer/jonathan.cameron%40kernel.org"], hrefs

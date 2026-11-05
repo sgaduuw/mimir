@@ -7,7 +7,14 @@ import re
 import pytest
 from sqlalchemy import select
 
-from mimir.models import Article, ArticleTrailer, Subsystem, SubsystemMaintainer
+from mimir.maintainer_directory import maintainer_path
+from mimir.models import (
+    Article,
+    ArticleTrailer,
+    Mailmap,
+    Subsystem,
+    SubsystemMaintainer,
+)
 from tests.test_routes._helpers import _json_ld_blocks
 
 
@@ -454,3 +461,45 @@ def test_profile_counts_use_one_snapshot_and_never_aggregate_in_requests(
     owner.role = "R"
     session.commit()
     assert client.get("/maintainers/ada@kernel.org").status_code == 404
+
+
+def _seed_retired_address(session, *, target="edumazet@kernel.org", maintainer=True):
+    if maintainer:
+        _add_subsystem(
+            session,
+            "NETWORKING",
+            "Maintained",
+            maintainers=[("M", "Eric Dumazet", "Edumazet@Kernel.org")],
+        )
+    session.add(Mailmap(old_address="edumazet@google.com", address=target))
+    session.commit()
+
+
+def test_a_retired_address_redirects_to_the_current_profile(client, session):
+    _seed_retired_address(session)
+
+    r = client.get("/maintainers/edumazet@google.com")
+    assert r.status_code == 301
+    assert r.headers["Location"] == maintainer_path("edumazet@kernel.org")
+    assert client.get(r.headers["Location"]).status_code == 200
+
+
+def test_a_retired_address_redirects_whatever_its_case(client, session):
+    _seed_retired_address(session)
+
+    r = client.get("/maintainers/EDumazet@Google.COM")
+    assert r.status_code == 301
+    assert r.headers["Location"] == "/maintainers/edumazet@kernel.org"
+
+
+def test_a_retired_address_mapped_to_a_non_maintainer_stays_404(client, session):
+    _seed_retired_address(session, maintainer=False)
+
+    assert client.get("/maintainers/edumazet@google.com").status_code == 404
+
+
+def test_unmapped_and_current_addresses_do_not_redirect(client, session):
+    _seed_retired_address(session)
+
+    assert client.get("/maintainers/nobody@example.org").status_code == 404
+    assert client.get("/maintainers/edumazet@kernel.org").status_code == 200
