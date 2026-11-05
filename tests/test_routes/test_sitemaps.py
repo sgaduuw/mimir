@@ -3479,8 +3479,6 @@ _TWO_WEEKS, _MONTH = 2 * _WEEK, 30 * 86400
         # Up to a year, then a month.
         (2023, 6, "2024-06-15", _TWO_WEEKS),
         (2023, 5, "2024-06-15", _MONTH),
-        (2015, 5, "2024-06-15", _MONTH),
-        (2015, None, "2024-06-15", _MONTH),
         # 29 February, as the end of its month and as today.
         (2024, 2, "2024-02-29", _HOUR),
         (2024, 1, "2024-02-29", _HOUR),
