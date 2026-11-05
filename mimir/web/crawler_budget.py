@@ -118,6 +118,7 @@ EXEMPT_ENDPOINTS = frozenset(
         "web.series_diff_sitemap",
         "web.inbox_sitemap",
         "web.archive_sitemap",
+        "web.messages_sitemap_gone",
         "web.healthz",
         "web.readyz",
     }

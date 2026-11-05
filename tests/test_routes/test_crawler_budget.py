@@ -151,12 +151,28 @@ def test_every_sitemap_endpoint_is_exempt_and_edge_cached():
     sitemap route left out of both lists is budgeted like a page and sent
     with no Cache-Control, and nothing failed (#846)."""
     endpoints = {rule.endpoint for rule in create_app().url_map.iter_rules()}
-    # The retired message sitemaps (#1089) abort 410: an error response
-    # takes no Cache-Control, and a crawler re-fetching it is budgeted.
-    sitemaps = {e for e in endpoints if "sitemap" in e} - {"web.messages_sitemap_gone"}
+    sitemaps = {e for e in endpoints if "sitemap" in e}
     assert len(sitemaps) >= 6, sitemaps  # precondition: the predicate finds them
     assert sitemaps <= EXEMPT_ENDPOINTS, sitemaps - EXEMPT_ENDPOINTS
-    assert sitemaps <= hooks._CACHE_CONTROL_BY_ENDPOINT.keys()
+    # The retired message sitemaps (#1089) answer 410, and an error response
+    # takes no Cache-Control (`_add_cache_headers` sets it on 2xx/3xx only).
+    gone = {"web.messages_sitemap_gone"}
+    assert sitemaps - gone <= hooks._CACHE_CONTROL_BY_ENDPOINT.keys()
+
+
+@pytest.mark.parametrize(
+    "path", ["/messages-sitemap.xml", "/alpha/2024/06/messages-sitemap-2.xml"]
+)
+def test_retired_message_sitemaps_answer_410_to_a_crawler_over_budget(
+    client, monkeypatch, path
+):
+    """#1089: a crawler over budget still learns the URL is gone. A 429
+    asks it to come back, the retry the 410 exists to stop, and an
+    admitted 410 spends a token a real page needed."""
+    _install(monkeypatch, _gate(Clock(), total=1, uas={"Applebot": 100}))
+    _get(client, "/", APPLEBOT)
+    assert _get(client, "/", APPLEBOT).status_code == 429  # precondition
+    assert _get(client, path, APPLEBOT).status_code == 410
 
 
 def test_defaults_gate_nothing(client):
