@@ -684,6 +684,8 @@ def _month_root_ids(
     broker, which is the single SQLite writer for the whole system and
     is already the contended resource.
     """
+    # Rows live up to 30 days (archive_sitemap_ttl): rename this key when the
+    # root query changes, as for `_year_pages_key`.
     key = f"sitemap:monthids:{inbox.name}:{year:04d}-{month:02d}"
     if not force:
         cached = cache.get(key)
