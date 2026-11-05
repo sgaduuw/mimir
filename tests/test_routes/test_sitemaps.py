@@ -3422,3 +3422,27 @@ def test_ordering_changes_neither_the_index_nor_the_hub_loc_set(
         "/alpha/2026/02/",
         "/alpha/2026/03/",
     }
+
+
+def test_sitemap_index_ranks_a_future_dated_year_last(client, tmp_path, monkeypatch):
+    """A mis-dated mail (lore carries 2037s, see `_archive_lastmod`) names
+    a period after today. Its file is the least useful one to a capped
+    crawler, so it must not lead the archive tier."""
+    from datetime import datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    _seed_archive_order_fixture(tmp_path, monkeypatch)
+    sub = tmp_path / "future"
+    sub.mkdir()
+    seeded = seed_thread_shape(sub, "beta", [("typo@x", None)])
+    _set_article_date(seeded["typo@x"][0], datetime(2099, 1, 5, tzinfo=UTC))
+    _clear_sitemap_cache()
+
+    archive = [
+        p
+        for p in _index_paths(client, "/sitemap.xml")
+        if re.search(r"/(19|20)\d\d/", p)
+    ]
+    assert archive[0] == "/beta/2026/sitemap.xml", archive
+    assert archive[-1] == "/beta/2099/sitemap.xml", archive
