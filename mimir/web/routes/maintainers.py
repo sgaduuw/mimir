@@ -8,7 +8,8 @@ passed as `None` to `render_template`, which base.html already treats
 as falsy (no inbox nav links rendered, no atom-feed `<link>`).
 """
 
-from flask import abort, render_template
+from flask import abort, redirect, render_template
+from sqlalchemy import select
 
 from mimir.extensions import SessionLocal
 from mimir.maintainer_directory import (
@@ -18,6 +19,7 @@ from mimir.maintainer_directory import (
     maintainer_path,
     maintainer_profile,
 )
+from mimir.models import Mailmap
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
 
@@ -59,6 +61,14 @@ def maintainer_view(address: str):
     with SessionLocal() as session:
         profile = maintainer_profile(session, address_normalized)
         if profile is None:
+            # A retired address that the kernel's `.mailmap` maps to a
+            # current `M:` address keeps its indexed URL alive. One hop,
+            # and only on this path, so live profiles pay nothing.
+            mapped = session.scalar(
+                select(Mailmap.address).where(Mailmap.old_address == address_normalized)
+            )
+            if mapped is not None and maintainer_profile(session, mapped) is not None:
+                return redirect(maintainer_path(mapped), code=301)
             abort(404)
 
     review_counts = cached_maintainer_review_counts(address_normalized)

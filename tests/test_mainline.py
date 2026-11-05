@@ -954,10 +954,12 @@ def test_load_maintainers_closes_repo_at_function_exit(
     assert exit_calls, "Repo.__exit__ was not called during load_maintainers"
 
 
-def _commit_maintainers(repo, maintainers_bytes, *, parent=None, other=None, ts):
+def _commit_maintainers(
+    repo, maintainers_bytes, *, parent=None, other=None, mailmap=None, ts
+):
     """Add a commit whose tree holds `maintainers_bytes` as MAINTAINERS
-    and, optionally, `other` bytes as an unrelated file. Returns the
-    commit id."""
+    and, optionally, `other` bytes as an unrelated file and `mailmap`
+    bytes as `.mailmap`. Returns the commit id."""
     from dulwich.objects import Blob
 
     tree = Tree()
@@ -968,6 +970,10 @@ def _commit_maintainers(repo, maintainers_bytes, *, parent=None, other=None, ts)
         other_blob = Blob.from_string(other)
         repo.object_store.add_object(other_blob)
         tree.add(b"Makefile", 0o100644, other_blob.id)
+    if mailmap is not None:
+        mailmap_blob = Blob.from_string(mailmap)
+        repo.object_store.add_object(mailmap_blob)
+        tree.add(b".mailmap", 0o100644, mailmap_blob.id)
     repo.object_store.add_object(tree)
     commit = Commit()
     commit.tree = tree.id
@@ -2144,3 +2150,87 @@ def test_cache_writes_drain_between_mainline_batches(seeded_db, tmp_path, writer
         "stall); a >5 s tail suggests the walker is holding the "
         "writer lock across batches instead of committing per batch."
     )
+
+
+def _mailmap_rows():
+    from mimir.extensions import SessionLocal
+    from mimir.models import Mailmap
+
+    with SessionLocal() as s:
+        return dict(s.execute(select(Mailmap.old_address, Mailmap.address)).all())
+
+
+def test_a_mailmap_change_alone_reloads_the_mapping(seeded_db, tmp_path):
+    """`.mailmap` is a second input to the rules load. Gating on the
+    MAINTAINERS blob alone would keep serving the old pairs until
+    MAINTAINERS happened to change. Both directions: an unchanged pair
+    of blobs does not reload, a `.mailmap`-only edit does and moves the
+    rules version the page ETags carry."""
+    from mimir.extensions import SessionLocal
+    from mimir.mainline import load_maintainers
+    from mimir.models import MainlineState
+
+    def cursor():
+        with SessionLocal() as s:
+            return s.scalar(
+                select(MainlineState.last_commit_sha).where(
+                    MainlineState.tree_name == "linus"
+                )
+            )
+
+    maintainers = b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n"
+    path = tmp_path / "tree.git"
+    repo = _bare_repo(path)
+    c1 = _commit_maintainers(
+        repo,
+        maintainers,
+        mailmap=(
+            b"# comment\n"
+            b"Eric Dumazet <EDUMAZET@kernel.org> <edumazet@Google.com>\n"
+            b"Name Only <nameonly@example.org>\n"
+            b"Same <same@example.org> <SAME@example.org>\n"
+        ),
+        ts=1700000000,
+    )
+    repo.close()
+
+    assert load_maintainers(path, tree_name="linus")[0]
+    # Lowercased both sides; a line with no old address and an identity
+    # mapping carry no redirect and are dropped.
+    assert _mailmap_rows() == {"edumazet@google.com": "edumazet@kernel.org"}
+    first = cursor()
+
+    # HEAD moves, both blobs identical: no reload.
+    repo = Repo(str(path))
+    c2 = _commit_maintainers(
+        repo,
+        maintainers,
+        parent=c1,
+        other=b"# unrelated",
+        mailmap=(
+            b"# comment\n"
+            b"Eric Dumazet <EDUMAZET@kernel.org> <edumazet@Google.com>\n"
+            b"Name Only <nameonly@example.org>\n"
+            b"Same <same@example.org> <SAME@example.org>\n"
+        ),
+        ts=1700000100,
+    )
+    repo.close()
+    assert not load_maintainers(path, tree_name="linus")[0]
+    assert cursor() == first
+
+    # MAINTAINERS untouched, `.mailmap` gains a pair.
+    repo = Repo(str(path))
+    _commit_maintainers(
+        repo,
+        maintainers,
+        parent=c2,
+        mailmap=b"New <new@kernel.org> <old@example.org>\n",
+        ts=1700000200,
+    )
+    repo.close()
+    assert load_maintainers(path, tree_name="linus")[0], (
+        "a .mailmap-only change did not reload"
+    )
+    assert _mailmap_rows() == {"old@example.org": "new@kernel.org"}
+    assert cursor() != first, "the rules version did not move"
