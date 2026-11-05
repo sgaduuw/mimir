@@ -1350,3 +1350,96 @@ def test_subsystem_dashboard_links_a_merged_reviewer_to_the_canonical_address(
     assert "jic23" not in text
     hrefs = re.findall(r'href="(/alpha/reviewer/[^"]*)"', text)
     assert hrefs == ["/alpha/reviewer/jonathan.cameron%40kernel.org"], hrefs
+
+
+_RETIRED = "jic23@corp.example"
+_CURRENT = "jonathan.cameron@kernel.org"
+
+
+def _seed_retired_reviewer(*, current=_CURRENT):
+    """One person under a retired, non-allowlisted address and `current`,
+    with `.mailmap` joining them (#1087)."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Mailmap
+    from tests.test_subsystems._helpers import _add_recent_patch_with_trailers
+
+    with SessionLocal() as s:
+        _add_recent_patch_with_trailers(
+            s, "ret1@x", ["a.c"], [("Reviewed-by", "J C", _RETIRED)]
+        )
+        _add_recent_patch_with_trailers(
+            s, "ret2@x", ["b.c"], [("Acked-by", "J C", current)], days_ago=2
+        )
+        s.add(Mailmap(old_address=_RETIRED, address=current))
+        s.commit()
+
+
+def test_reviewer_page_merges_a_mapped_old_address_into_the_canonical_one(client):
+    _seed_retired_reviewer()
+
+    r = client.get(f"/alpha/reviewer/{_CURRENT}")
+
+    assert r.status_code == 200
+    text = r.data.decode()
+    assert "2 attestations" in text
+    assert "1 Acked-by" in text and "1 Reviewed-by" in text
+    assert "corp.example" not in text and "jic23" not in text
+
+
+def test_a_retired_reviewer_address_redirects_to_the_canonical_page(client):
+    _seed_retired_reviewer()
+
+    for path in (f"/alpha/reviewer/{_RETIRED}", f"/alpha/reviewer/{_RETIRED.upper()}"):
+        r = client.get(path)
+        assert r.status_code == 301, path
+        assert r.headers["Location"] == f"/alpha/reviewer/{_CURRENT}"
+    assert client.get(r.headers["Location"]).status_code == 200
+
+
+def test_a_retired_reviewer_address_is_not_redirected_to_a_hidden_one(client):
+    """Never name a non-allowlisted address in a Location header: the old
+    page is served as it was before the mapping existed."""
+    hidden_canonical = "someone@other.example"
+    _seed_retired_reviewer(current=hidden_canonical)
+
+    r = client.get(f"/alpha/reviewer/{_RETIRED}")
+
+    assert r.status_code == 200
+    assert "Location" not in r.headers
+    assert "other.example" not in r.data.decode()
+    assert "1 attestation" in r.data.decode()
+
+
+def test_an_unmapped_reviewer_address_is_not_redirected(client):
+    _seed_retired_reviewer()
+
+    r = client.get("/alpha/reviewer/nobody@kernel.org")
+
+    assert r.status_code == 200
+
+
+def test_a_reviewer_mapping_that_chains_or_loops_is_not_redirected(client):
+    """`.mailmap` is one hop. If the target is itself a retired address
+    (a chain, or a loop in an inconsistent file) a redirect would hop on
+    or never end, and the target page would not hold the first address's
+    trailers, so both pages are served as they are."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Mailmap
+
+    _seed_retired_reviewer()
+    with SessionLocal() as s:
+        s.add(Mailmap(old_address=_CURRENT, address=_RETIRED))
+        s.commit()
+
+    assert client.get(f"/alpha/reviewer/{_RETIRED}").status_code == 200
+    assert client.get(f"/alpha/reviewer/{_CURRENT}").status_code == 200
+
+
+def test_a_reviewer_address_the_route_cannot_serve_is_not_a_redirect_target(client):
+    """Allowlisted by structure but not an address the reviewer route
+    accepts: a Location there would be a 404."""
+    _seed_retired_reviewer(current="bad/addr@kernel.org")
+
+    r = client.get(f"/alpha/reviewer/{_RETIRED}")
+
+    assert r.status_code == 200

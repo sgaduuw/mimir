@@ -1095,3 +1095,79 @@ def test_tied_commits_tooltip_matches_the_status_evidence(session, tree_name):
     info = lifecycle_status_for_articles(session, [art.id], _lkml(session))[art.id]
     assert info.commit_sha == "a" * 40  # precondition: the tie is broken by sha
     assert info.tooltip.split(" · ")[0] == info.commit_sha[:12]
+
+
+def test_a_mapped_old_address_counts_as_its_maintainer(session):
+    """The pill's maintainer count follows `.mailmap` (#1087): a trailer
+    under a retired address belongs to the maintainer it maps to, in the
+    count and in the tooltip's `M` line."""
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Mailmap, Subsystem, SubsystemMaintainer
+
+    art = _seed_article(session, "mapped@x")
+    sub = Subsystem(name="TEST", status="Maintained")
+    session.add(sub)
+    session.commit()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id, role="M", name="Bob", address="bob@kernel.org"
+        )
+    )
+    for addr, name in (
+        ("bob@kernel.org", "Bob"),
+        ("bob@corp.example", "Bob Old"),
+        ("carol@example.com", "Carol"),
+    ):
+        session.add(
+            ArticleTrailer(
+                article_id=art.id,
+                role="Reviewed-by",
+                name=name,
+                address=addr,
+                address_normalized=addr,
+            )
+        )
+    session.commit()
+    before = _bulk_uncached(session, [art.id], _lkml(session))[art.id]
+    assert before.count_suffix == " · 3 reviews, 1 by a maintainer", "precondition"
+
+    session.add(Mailmap(old_address="bob@corp.example", address="bob@kernel.org"))
+    session.commit()
+    info = _bulk_uncached(session, [art.id], _lkml(session))[art.id]
+
+    assert info.count_suffix == " · 3 reviews, 2 by maintainers"
+    assert (info.tooltip or "").splitlines() == ["M Bob", "M Bob Old", "Carol"]
+
+
+def test_a_maintainer_address_that_mailmap_maps_elsewhere_still_counts(session):
+    """MAINTAINERS and `.mailmap` are edited independently. A review under
+    an address MAINTAINERS still lists keeps its `M` even when `.mailmap`
+    maps that address to one MAINTAINERS does not list."""
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Mailmap, Subsystem, SubsystemMaintainer
+
+    art = _seed_article(session, "listed@x")
+    sub = Subsystem(name="TEST", status="Maintained")
+    session.add(sub)
+    session.commit()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id, role="M", name="Bob", address="bob@old.example"
+        )
+    )
+    session.add(
+        ArticleTrailer(
+            article_id=art.id,
+            role="Reviewed-by",
+            name="Bob",
+            address="bob@old.example",
+            address_normalized="bob@old.example",
+        )
+    )
+    session.add(Mailmap(old_address="bob@old.example", address="bob@kernel.org"))
+    session.commit()
+
+    info = _bulk_uncached(session, [art.id], _lkml(session))[art.id]
+
+    assert info.count_suffix == " · 1 review, 1 by a maintainer"
+    assert (info.tooltip or "").splitlines() == ["M Bob"]

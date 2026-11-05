@@ -12,12 +12,13 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import DateTime, bindparam, select, text
+from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import coerce_dt
-from mimir.models import Inbox, MainlineState, Subsystem
+from mimir.mailmap import identity_addresses, rules_version
+from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 from mimir.trailers import INDEXED_TRAILER_ROLES
@@ -116,9 +117,12 @@ def articles_reviewed_by(
     `address_normalized` is matched exactly against
     `article_trailers.address_normalized` (already lowercased at
     ingest); callers should `.lower()` before passing if the input
-    came from a URL or untrusted source.
+    came from a URL or untrusted source. Trailers under any address
+    `.mailmap` maps to it count too (#1087), so the canonical address's
+    page is the whole person. The match stays an IN list on the
+    indexed column, not a join, so it still seeks (#831).
 
-    Cached per `(inbox.name, address, limit)` for
+    Cached per `(inbox.name, address, limit, rules version)` for
     `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` (1 hour), matching the rest
     of the per-subsystem dashboard fan-out the warm cycle drives
     through this helper. Earlier (1.42.0 and prior) the TTL was
@@ -135,6 +139,8 @@ def articles_reviewed_by(
     result, since the SQL matches `address_normalized`. Pinned by
     `test_every_production_caller_keys_articles_reviewed_by_on_a_lowercased_address`.
     """
+
+    version = rules_version(session)
 
     def compute() -> list[ReviewEntry]:
         # Deferred: `mimir.web` imports this package at load time.
@@ -155,14 +161,17 @@ def articles_reviewed_by(
                 JOIN article_lists al ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id
                   AND t.role IN :roles
-                  AND t.address_normalized = :addr
+                  AND t.address_normalized IN :addrs
                 ORDER BY a.date DESC
                 LIMIT :limit
                 """
-            ).bindparams(bindparam("roles", expanding=True)),
+            ).bindparams(
+                bindparam("roles", expanding=True),
+                bindparam("addrs", expanding=True),
+            ),
             {
                 "inbox_id": inbox.id,
-                "addr": address_normalized,
+                "addrs": identity_addresses(session, address_normalized),
                 # Every stored role: no row changes, the index can seek (#831).
                 "roles": list(INDEXED_TRAILER_ROLES),
                 "limit": limit,
@@ -184,7 +193,7 @@ def articles_reviewed_by(
 
     return cache.get_or_compute(
         session,
-        f"articles_reviewed_by:{inbox.name}:{address_normalized}:{limit}",
+        f"articles_reviewed_by:{inbox.name}:{address_normalized}:{limit}:{version}",
         SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
         compute,
         force=force,
@@ -224,9 +233,7 @@ def active_reviewers_in_subsystem(
     # The rules version moves with every MAINTAINERS or `.mailmap`
     # reload (same transaction as the new pairs), so keying on it keeps
     # a mailmap refresh from serving stale merged rows.
-    rules_version = session.scalar(
-        select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
-    )
+    version = rules_version(session)
 
     def compute() -> list[ReviewerStat]:
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="arss")
@@ -307,7 +314,7 @@ def active_reviewers_in_subsystem(
     return cache.get_or_compute(
         session,
         f"active_reviewers_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}"
-        f":{rules_version or ''}",
+        f":{version}",
         SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
         compute,
         force=force,
