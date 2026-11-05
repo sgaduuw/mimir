@@ -12,12 +12,12 @@ from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import DateTime, bindparam, text
+from sqlalchemy import DateTime, bindparam, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir.datetime_utils import coerce_dt
-from mimir.models import Inbox, Subsystem
+from mimir.models import Inbox, MainlineState, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
 from mimir.trailers import INDEXED_TRAILER_ROLES
@@ -40,7 +40,8 @@ class ReviewerStat:
 
     `address_normalized` is the lowercased address used for grouping
     and as the stable per-author identity (slice 3 will key URLs off
-    it).
+    it). Addresses that `.mailmap` maps to one canonical address share
+    a row keyed on, and showing, that canonical address.
 
     `role_counts` is `{role: n}` summed across the window, e.g.
     `{"Reviewed-by": 12, "Acked-by": 4, "Tested-by": 1}`. `total`
@@ -220,6 +221,13 @@ def active_reviewers_in_subsystem(
     the same TTL as the threads helper.
     """
 
+    # The rules version moves with every MAINTAINERS or `.mailmap`
+    # reload (same transaction as the new pairs), so keying on it keeps
+    # a mailmap refresh from serving stale merged rows.
+    rules_version = session.scalar(
+        select(MainlineState.last_commit_sha).where(MainlineState.tree_name == "linus")
+    )
+
     def compute() -> list[ReviewerStat]:
         path_filter = _subsystem_path_filter_sql(subsystem, prefix="arss")
         if path_filter is None:
@@ -231,14 +239,20 @@ def active_reviewers_in_subsystem(
         # date DESC so the in-Python aggregator sees the freshest
         # attestation per reviewer first; that's the row whose
         # `name` / `address` we keep as the display surface.
+        # `.mailmap` (public, from the kernel tree) says which addresses
+        # are one person. `identity` is the canonical address when the
+        # trailer's own address is mapped, else the address itself.
         rows = session.execute(
             text(
                 f"""
-                SELECT t.role, t.name, t.address, t.address_normalized,
+                SELECT t.role, t.name, t.address,
+                       COALESCE(m.address, t.address_normalized) AS identity,
+                       m.address IS NOT NULL AS mapped,
                        a.date AS art_date
                 FROM article_trailers t
                 JOIN articles a ON a.id = t.article_id
                 JOIN article_lists al ON al.article_id = a.id
+                LEFT JOIN mailmap m ON m.old_address = t.address_normalized
                 WHERE al.inbox_id = :inbox_id
                   AND a.date >= :start
                   AND a.id IN ({path_sql})
@@ -254,7 +268,7 @@ def active_reviewers_in_subsystem(
 
         agg: dict[str, dict] = {}
         for r in rows:
-            key = r.address_normalized
+            key = r.identity
             entry = agg.get(key)
             if entry is None:
                 # First (= most recent) row for this reviewer wins
@@ -267,9 +281,16 @@ def active_reviewers_in_subsystem(
                     "last_seen": coerce_dt(r.art_date),
                 }
                 agg[key] = entry
+            if r.mapped:
+                # A merged row shows the canonical address, never the
+                # retired one: the link between the two is public via
+                # `.mailmap`, but a non-allowlisted address must not be
+                # displayed, and the canonical one goes through the
+                # usual render-time redaction.
+                entry["address"] = key
             entry["role_counts"][r.role] += 1
-            # Older rows can't lift `last_seen` (we sorted DESC) so
-            # only the first-seen value matters; no max() needed.
+            # Older rows can't lift `last_seen` (we sorted DESC, also
+            # across merged addresses) so the first-seen value is the max.
 
         stats = [
             ReviewerStat(
@@ -289,7 +310,8 @@ def active_reviewers_in_subsystem(
 
     return cache.get_or_compute(
         session,
-        f"active_reviewers_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}",
+        f"active_reviewers_in_subsystem:{inbox.name}:{subsystem.id}:{days}:{limit}"
+        f":{rules_version or ''}",
         SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
         compute,
         force=force,

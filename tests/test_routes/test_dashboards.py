@@ -1306,3 +1306,46 @@ def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
         rows[0].find("small", cls="subsystem-meta").text()
         == date + " · Safe Author <hidden>"
     )
+
+
+def test_subsystem_dashboard_never_shows_an_address_merged_into_a_canonical_one(
+    client,
+):
+    """Merging a hidden address into its `.mailmap` canonical address
+    must not publish the hidden one anywhere in the page. The merged
+    row carries the canonical address and goes through the usual
+    redaction; the retired one is not in the HTML at all."""
+    from mimir.extensions import SessionLocal
+    from mimir.models import Mailmap
+    from tests.test_subsystems._helpers import (
+        _add_recent_patch_with_trailers,
+        _add_subsystem,
+    )
+
+    hidden = "jic23@corp.example"
+    with SessionLocal() as s:
+        _add_subsystem(s, "CXL", "Supported", files=["drivers/cxl/"])
+        _add_recent_patch_with_trailers(
+            s,
+            "leak@x",
+            ["drivers/cxl/a.c"],
+            [("Reviewed-by", "Jonathan Cameron", hidden)],
+        )
+        _add_recent_patch_with_trailers(
+            s,
+            "leak2@x",
+            ["drivers/cxl/b.c"],
+            [("Reviewed-by", "Jonathan Cameron", "jonathan.cameron@kernel.org")],
+            days_ago=3,
+        )
+        s.add(Mailmap(old_address=hidden, address="jonathan.cameron@kernel.org"))
+        s.commit()
+
+    r = client.get("/alpha/subsystem/cxl/")
+    assert r.status_code == 200
+    text = r.data.decode()
+    # Precondition: the merged row rendered, with both attestations.
+    assert text.count('class="subsystem-reviewer-heading"') == 1
+    assert '<span class="count">2</span>' in text
+    assert "corp.example" not in text
+    assert "jic23" not in text
