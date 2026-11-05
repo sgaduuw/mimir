@@ -460,6 +460,19 @@ class SubsystemList(Base):
     subsystem: Mapped[Subsystem] = relationship(back_populates="lists")
 
 
+class Mailmap(Base):
+    """One `.mailmap` email pair from the kernel tree: a retired or
+    alternate address and the canonical address it maps to, both
+    lowercased. Replaced wholesale with the subsystems projection in
+    the same transaction, so the two never disagree. One hop only: a
+    value is never looked up again as a key."""
+
+    __tablename__ = "mailmap"
+
+    old_address: Mapped[str] = mapped_column(String, primary_key=True)
+    address: Mapped[str] = mapped_column(String)
+
+
 class MainlineState(Base):
     """Tracks which version of the mainline tree (Linus's `linux.git`)
     we last interacted with. One row keyed by tree_name so the

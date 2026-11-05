@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- A retired maintainer address (`/maintainers/<old>`) redirects with a 301 to the current profile when the kernel tree's `.mailmap` maps it to a current `M:` address. The `.mailmap` pairs are stored in a new `mailmap` table, replaced with the MAINTAINERS projection in one transaction. A `.mailmap` change alone now triggers that reload, and trees whose `.mailmap` is present reload once after the upgrade to fill the table (#1069).
+
 ### Fixed
 
 - Hyphenated message and thread URLs redirect with canonical month padding. Invalid years and months return 404 directly (#1083).
