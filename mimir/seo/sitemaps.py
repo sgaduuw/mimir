@@ -8,11 +8,8 @@ invalidates everything if a payload shape changes, so per-route expiry
 is purely about freshness.
 
 Each archive year or month file lists `/t` URLs, and `/sitemap.xml`
-indexes them with the pages mimir adds over lore.kernel.org. The message
-tree (`/messages-sitemap.xml` and its `messages-` files) was retired in
-#1089: every file was empty once the backfill completed, and the routes
-answer 410. A root the column cannot rank yet is in no sitemap until its
-backfill reaches it.
+indexes them with the pages mimir adds over lore.kernel.org. A root the
+column cannot rank yet is in no sitemap until its backfill reaches it.
 
 Each surface returns a `SitemapPayload` carrying both the XML body and
 the most-recent `<lastmod>` date represented in that body. That date is
@@ -300,16 +297,10 @@ def _archive_entries(
     canonical.
 
     Every root gets its thread view (#1003), single-message threads
-    included, except one `unmaterialised_roots` returns: the column
-    cannot rank it, and its messages name their own URL as canonical
-    while it is in that state. Listing its `/t` would advertise a URL
-    the messages disclaim, which
-    `test_sitemap_is_coherent_midway_through_a_backfill` exists to
-    catch; listing the message URL is what the retired message tree did
-    (#1089). So it is listed nowhere until its backfill reaches it, a
-    transient gap, and it is still linked and self-canonical meanwhile.
-    That predicate is the only one; a second test such as "has a reply"
-    would disagree with the pages' canonicals.
+    included, except one `unmaterialised_roots` returns: its messages
+    name their own URL as canonical until the backfill ranks it, so it
+    is listed nowhere until then. That predicate is the only one; see
+    `test_sitemap_is_coherent_midway_through_a_backfill`.
     """
     rows = {
         art_id: date
@@ -681,9 +672,6 @@ def _month_root_ids(
     return ids
 
 
-# The page keys changed shape with #1089 (one payload per page, not a
-# `(thread, message)` pair), so they were renamed rather than reused: an
-# old row would unpack wrongly until it expired.
 def _year_pages_key(inbox_name: str, year: int) -> str:
     return (
         f"sitemap:yearpages:{inbox_name}:{year:04d}:{settings.thread_view_render_cap}"
@@ -863,8 +851,7 @@ def sitemap_index_xml(
     per configured inbox with its archive `/t` files,
     `/sitemap-maintainers.xml`, and the sixteen series diff pages.
     Cached under `sitemap:index:<render-cap>`, the key `warm-cache`
-    pre-populates (renamed from `sitemap:indexsplit:` in #1089, when the
-    cached value stopped being a pair). The `last_modified` field is the global-max article date. It
+    pre-populates. The `last_modified` field is the global-max article date. It
     is NOT projected into a `Last-Modified` response header: this is the
     surface whose date validator 304-pinned Cloudflare's edge on a
     pre-deploy index in 3.6.0, which is why no sitemap route sets one.
