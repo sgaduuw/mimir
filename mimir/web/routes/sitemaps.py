@@ -165,12 +165,7 @@ def archive_sitemap(
 @bp_web.route("/<inbox_name>/<int:year>/messages-sitemap-<int:page>.xml")
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/messages-sitemap.xml")
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/messages-sitemap-<int:page>.xml")
-def messages_sitemap_gone(
-    inbox_name: str | None = None,
-    year: int | None = None,
-    month: int | None = None,
-    page: int | None = None,
-) -> Response:
+def messages_sitemap_gone(**_url_args) -> Response:
     """The retired message sitemaps (#1089). Every file was empty once the
     backfill finished. 410, not 404, so a crawler drops the URL rather
     than retrying it. Nothing validates the segments: a retired URL is
