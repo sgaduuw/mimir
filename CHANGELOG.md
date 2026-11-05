@@ -23,7 +23,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
-- `/sitemap.xml` lists the site files first, then the inbox files, then the archive files with the newest period first, so crawlers that read only the first part of it reach the pages that matter. Each `/<inbox>/sitemap.xml` lists its highest-priority entries first. No URL or `<lastmod>` changes (#1085).
+- `/sitemap.xml` lists the site files first, then the inbox files, then the archive files with the newest period first, so crawlers that read only the first part of it reach the pages that matter. Files for a year after today, from mis-dated mail, go last. Each `/<inbox>/sitemap.xml` lists its highest-priority entries first. No URL or `<lastmod>` changes (#1085).
 
 ### Fixed
 

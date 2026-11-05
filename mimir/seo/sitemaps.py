@@ -877,6 +877,7 @@ def sitemap_index_xml(
             ),
         ]
         hubs: list[tuple[str, str | None]] = []
+        this_year = datetime.now(UTC).year
         archive: list[tuple[tuple, str, str | None]] = []
         inboxes = session.execute(select(Inbox).order_by(Inbox.name)).scalars().all()
         for inbox in inboxes:
@@ -900,8 +901,9 @@ def sitemap_index_xml(
                         else _month_page_key(inbox.name, year, month, page),
                         month is None,
                         # Newest period first, a year file ranking as its
-                        # last month; then inbox, then page.
-                        (-year, -(month or 12), inbox.name, page),
+                        # last month; then inbox, then page. A year after
+                        # today is a mis-dated mail, so it sinks.
+                        (year > this_year, -year, -(month or 12), inbox.name, page),
                     )
                 )
             # lastmod = the child's cached last_modified; an uncached child
