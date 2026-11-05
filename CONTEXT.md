@@ -1693,13 +1693,14 @@ A migration guard catches persisted conflicts before appending robots entries.
 The prefix rules only keep redundant lookup URLs out of the crawl; normal
 messages and query-bearing comparisons remain crawlable.
 
-Hyphenated date aliases perform no article lookup. They use `url_for` to spell
-the existing message/thread acceptor, which remains the one authority for date
-and membership. This promises an accepted slash-form URL, not byte-identical
-canonical month padding. A wrong-inbox message may recover through its existing
-redirect; a thread with no membership in that inbox remains404. Linked cross-
-posts keep the acceptor's inbox-specific conversation semantics. New aliases do
-not introduce a second canonical or identity policy.
+Hyphenated date aliases perform no article lookup. They use the shared message
+and thread URL builders so the redirect spells months exactly as canonical
+links do (#1083). Invalid years and months return 404 directly; the existing
+acceptor remains the authority for an article's actual date and membership.
+A wrong-inbox message may recover through its existing redirect; a thread with
+no membership in that inbox remains 404. Linked cross-posts keep the acceptor's
+inbox-specific conversation semantics. New aliases do not introduce a second
+canonical or identity policy.
 
 ## Canonical-inbox resolution (cross-posts)
 
