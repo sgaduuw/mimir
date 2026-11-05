@@ -1288,6 +1288,14 @@ fail on a changed field (#957).
 registered type's fields beside `NAMESPACE_VERSION` and fails until a
 field change bumps it. A bump cold-starts the whole cache once.
 
+Archive sitemap rows are the long-lived case (#1088). They live up to 30
+days (`archive_sitemap_ttl`) and their keys carry no release, so a change
+to what an archive file lists must rename the keys (the year and month
+page keys, and `sitemap:monthids:` when the root query changes), or old
+rows serve for weeks. Edge copies live up to a week and a rename cannot
+drop them, so that release must also purge the sitemap paths at the edge.
+A rollback reads the newer rows in the same way.
+
 `cache.get_or_compute(session, key, ttl, fn)` is the high-level API;
 `force=True` on dashboard helpers bypasses the cache and recomputes
 (used by `warm-cache`).
