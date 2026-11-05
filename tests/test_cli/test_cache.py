@@ -407,19 +407,17 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     cap = settings.thread_view_render_cap
-    indexes = cache.get(f"sitemap:indexsplit:{cap}")
-    assert indexes is not None, "missing cache row for both indexes"
-    high, messages = indexes
+    index = cache.get(f"sitemap:index:{cap}")
+    assert index is not None, "missing cache row for the index"
     expected_root = {
-        "sitemap index": (high, f"{{{ns}}}sitemapindex"),
-        "messages sitemap index": (messages, f"{{{ns}}}sitemapindex"),
+        "sitemap index": (index, f"{{{ns}}}sitemapindex"),
         "sitemap:meta": (cache.get("sitemap:meta"), f"{{{ns}}}urlset"),
         **{
             key: (cache.get(key), f"{{{ns}}}urlset")
             for key in ("sitemap:inboxhubs:alpha", "sitemap:inboxhubs:beta")
         },
     }
-    assert "messages-sitemap.xml" in messages.body
+    assert "messages-sitemap" not in index.body
     for key, (payload, expected_tag) in expected_root.items():
         assert payload is not None, f"missing cache row for {key}"
         # The cache now stores SitemapPayload (body + last_modified);

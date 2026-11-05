@@ -636,13 +636,11 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
     )
     _clear_sitemap_cache()
 
-    # The year's archive files, both trees: they list every root (#964).
+    # The year's archive file lists every root (#964).
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     year = seeded["solo-sm@x"][1].split("/")[2]
-    locs = set()
-    for name in ("sitemap.xml", "messages-sitemap.xml"):
-        root = ET.fromstring(client.get(f"/alpha/{year}/{name}").get_data())
-        locs |= {u.find("s:loc", ns).text.replace("http://localhost", "") for u in root}
+    root = ET.fromstring(client.get(f"/alpha/{year}/sitemap.xml").get_data())
+    locs = {u.find("s:loc", ns).text.replace("http://localhost", "") for u in root}
 
     checked = 0
     for mid, (_aid, url) in seeded.items():

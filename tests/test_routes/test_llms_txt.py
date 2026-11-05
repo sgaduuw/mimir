@@ -34,7 +34,7 @@ def test_llms_txt_is_served_as_plain_text(client):
     assert body.startswith("# ")
     assert body.endswith("\n")  # like robots.txt; Jinja drops the last one
     assert "http://localhost/sitemap.xml" in body
-    assert "http://localhost/messages-sitemap.xml" in body
+    assert "messages-sitemap" not in body  # retired in #1089
     # In code spans, or a Markdown renderer drops `<inbox>` as an HTML tag.
     assert (
         len(re.findall(r"`http://localhost/<inbox>/[^`\s]+`", body)) == 7
@@ -98,8 +98,8 @@ def test_llms_txt_urls_use_the_configured_site_base_verbatim(client, monkeypatch
     assert body.startswith("# Lists & <Co>\n"), body[:40]
     urls = re.findall(r"https?://[^\s)`]+", body)
     # Three shapes in two forms, the subsystem and maintainer shapes, two
-    # inboxes, home, merge window, two sitemaps and privacy.
-    assert len(urls) == 6 + 2 + 2 + 1 + 1 + 2 + 1, urls
+    # inboxes, home, merge window, the sitemap and privacy.
+    assert len(urls) == 6 + 2 + 2 + 1 + 1 + 1 + 1, urls
     assert all(u.startswith("https://lists.example.org/a&b/") for u in urls), urls
     assert "localhost" not in body and "&amp;" not in body
 
@@ -225,10 +225,10 @@ def test_llms_txt_page_links_answer_200_and_shapes_have_routes(client):
         adapter.match(path)
 
 
-def test_llms_txt_optional_section_holds_sitemaps_and_privacy(client):
+def test_llms_txt_optional_section_holds_sitemap_and_privacy(client):
     body = client.get("/llms.txt").get_data(as_text=True)
     optional = _links(_section(body, "Optional"))
-    assert [t for t, _, _ in optional] == ["Sitemap", "Message sitemap", "Privacy"]
+    assert [t for t, _, _ in optional] == ["Sitemap", "Privacy"]
     assert body.rstrip().splitlines()[-1].startswith("- [Privacy]")  # last section
 
 

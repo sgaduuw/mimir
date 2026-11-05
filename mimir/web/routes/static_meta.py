@@ -69,12 +69,11 @@ def robots_txt():
     """DB-backed robots.txt. Rows in `robots_rules` produce one
     stanza each; migrations seed the `*` row. The operator
     mutates via `admin robots {add,update,remove,reset}`."""
-    # Both indexes (#964): pages mimir adds, then message pages.
     base = _site_base()
     with SessionLocal() as session:
         body = robots.render_robots_txt(
             session,
-            [f"{base}/sitemap.xml", f"{base}/messages-sitemap.xml"],
+            [f"{base}/sitemap.xml"],
             llms_url=base + LLMS_TXT_PATH,
         )
     return Response(body, mimetype="text/plain")
