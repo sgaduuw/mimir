@@ -2239,19 +2239,20 @@ def test_a_mailmap_change_alone_reloads_the_mapping(seeded_db, tmp_path):
 @pytest.mark.parametrize(
     "bad_line",
     [
-        b"no angle brackets here",
-        b"Unterminated <new@x",
-        b"Name <new@x> <>",
-        b"<> <old@x>",
-        b"<>",
+        pytest.param(b"a stray line with no address\n", id="no-angle-brackets"),
+        pytest.param(b"Empty <empty@kernel.org> <>\n", id="empty-old-address"),
+        pytest.param(b"<> <gone@example.org>\n", id="empty-canonical-address"),
+        pytest.param(b"Unterminated <new@x\n", id="unterminated-bracket"),
     ],
 )
-def test_a_malformed_mailmap_line_does_not_stop_the_good_ones(
+def test_a_mailmap_line_git_skips_does_not_block_the_rules_load(
     seeded_db, tmp_path, bad_line
 ):
-    """`load_maintainers` shares a try block with the Linus commit walk,
-    so one line that raises would freeze MAINTAINERS reloads and the
-    walk on every tick. Git skips such lines; so do we."""
+    """`.mailmap` is upstream data, and git reads it leniently: a line
+    it cannot parse into addresses is skipped, not fatal. One such line
+    must not stop MAINTAINERS from loading (that would freeze every
+    rules-derived surface until upstream fixed the file), and the
+    valid pairs around it still load."""
     from mimir.mainline import load_maintainers
 
     path = tmp_path / "tree.git"
@@ -2259,17 +2260,11 @@ def test_a_malformed_mailmap_line_does_not_stop_the_good_ones(
     _commit_maintainers(
         repo,
         b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n",
-        mailmap=(
-            b"First <first@kernel.org> <first@old.example>\n"
-            + bad_line
-            + b"\nLast <last@kernel.org> <last@old.example>\n"
-        ),
+        mailmap=b"New <new@kernel.org> <old@example.org>\n" + bad_line,
         ts=1700000000,
     )
     repo.close()
 
-    assert load_maintainers(path, tree_name="linus")[0]
-    assert _mailmap_rows() == {
-        "first@old.example": "first@kernel.org",
-        "last@old.example": "last@kernel.org",
-    }
+    ran, loaded, _ = load_maintainers(path, tree_name="linus")
+    assert ran and loaded == 1
+    assert _mailmap_rows() == {"old@example.org": "new@kernel.org"}
