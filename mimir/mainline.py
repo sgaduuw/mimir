@@ -832,9 +832,12 @@ def _mailmap_rows(data: bytes) -> list[dict]:
     reloads and the walk on every tick. Like git, skip a line dulwich
     cannot parse or that lacks a canonical or an old address. An
     address mapped to itself is no redirect. An old address that maps
-    to more than one canonical address (git qualifies it by name, the
-    table keys on the address alone) is ambiguous and gets no row:
-    keeping either would merge one person into another."""
+    to more than one canonical address is ambiguous and gets no row,
+    whether git told the lines apart by name or the file is simply
+    inconsistent: the table keys on the address alone, so keeping any
+    target would merge one person into another. That is stricter than
+    git, in the safe direction: it can lose a merge, but it never
+    misattributes."""
     targets: dict[str, set[str]] = {}
     for line in data.splitlines():
         try:

@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- A retired maintainer address (`/maintainers/<old>`) redirects with a 301 to the current profile when the kernel tree's `.mailmap` maps it to a current `M:` address. The `.mailmap` pairs are stored in a new `mailmap` table, replaced with the MAINTAINERS projection in one transaction. A `.mailmap` change alone now triggers that reload, and trees whose `.mailmap` is present reload once after the upgrade to fill the table (#1069).
+- Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to a current maintainer still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
 
 ### Fixed
 
