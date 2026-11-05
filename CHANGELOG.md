@@ -17,6 +17,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- The subsystem dashboard's "Active reviewers" list merges addresses that `.mailmap` maps to one canonical address into a single row, with summed counts. The row shows the canonical address through the usual redaction, never the retired one. The list cache is keyed on the rules version, so a `.mailmap` reload cannot serve stale merged rows. The reviewer page, maintainer profile review activity and lifecycle pill counts still count one address (#986).
 - Hyphenated message and thread URLs redirect with canonical month padding. Invalid years and months return 404 directly (#1083).
 - Archive count prose uses thousands separators, search highlights stay joined inside identifiers, and lifecycle chips use a middle-dot separator with matching Markdown wording. Listing headers keep consistent typography, year totals align with their rows, and message overviews show subjects only for changed topics while preserving safe sender display and navigation. Rapid series-diff navigation keeps using HTMX instead of reloading the document (#1081).
 
