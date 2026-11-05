@@ -1860,31 +1860,20 @@ afterthought:
   root expands to; see the ETag section for the surface that was
   missed the first time.
 
-  **Two indexes, split by page value (#964).** `/sitemap.xml` lists
-  the pages mimir adds over lore.kernel.org: meta, inbox files,
+  **One index; the message sitemaps are retired (#1089).** `/sitemap.xml`
+  lists the pages mimir adds over lore.kernel.org: meta, inbox files,
   maintainers, series diffs, and the archive files, which hold `/t`
-  URLs only. `/messages-sitemap.xml` is a second, independent index
-  (neither references the other, so it is not nesting) of each archive
-  file's `messages-` sibling, with the same names and page numbers.
-  Those hold message URLs: only threads listed by their root while the
-  backfill has not reached them. Since #1003 a single-message thread is
-  in the `/t` file like any other, because its message page
-  canonicalises to its `/t`. Replies are in neither tree, because they
-  canonicalise to `/t`. The split costs
-  nothing to build: `_archive_entries` tags each entry with
-  its kind, which is the one `/t`-versus-message decision, and
-  `_split_by_kind` cuts one build into both files. So there is one
-  `_month_counts` pass, one build and one cache row per bucket, and one
-  cache row for both indexes; the layout is decided on all roots, which
-  is why the trees share page numbers. Do not filter on anything but
-  the tag: any second test, such as "the thread has more than one
-  member", disagrees with the pages' canonicals mid-backfill. A bucket
-  whose roots are all one kind serves an empty urlset for the other
-  kind rather than a 404, because the index names both files. No count
-  column skips those files, since it would be that second test. The
-  point of the split is per-set coverage in Search Console, and the
-  option to drop message pages later by removing one index and one
-  robots.txt line.
+  URLs only. #964 split a second index, `/messages-sitemap.xml`, off it
+  for the message URLs of threads the backfill had not reached; once the
+  backfill completed, all 3,339 of its files were empty. Its routes now
+  answer 410, not 404, so a crawler drops them rather than retrying.
+  `_archive_entries` lists a root in `unmaterialised_roots` nowhere, so a
+  mid-backfill root is in no sitemap until it is ranked, then in its `/t`
+  file. Listing its `/t` meanwhile would advertise a URL its messages
+  disclaim. A bucket of only such roots serves an empty urlset, not a 404,
+  because the index names a file by root count. The cache keys were
+  renamed (`sitemap:index:`, `sitemap:yearpages:`, `sitemap:monthpages:`)
+  because the cached value stopped being a `(thread, message)` pair.
 
   The per-inbox `/<inbox>/sitemap.xml` holds hub pages only. It used to
   list the 5,000 most recent thread roots too, which after the split
