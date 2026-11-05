@@ -28,8 +28,12 @@ day's first article happened to bump the date past the cached value.
 Dropping the HTTP validator makes each fetch a full 200; the per-URL
 `<lastmod>` inside the XML stays the crawler-facing freshness signal,
 and the per-endpoint `Cache-Control: max-age=300` (set in hooks.py)
-still lets edges cache briefly and re-fetch fresh.
+still lets edges, browsers and crawlers cache briefly and re-fetch fresh. The
+archive files also send `Cloudflare-CDN-Cache-Control`, so Cloudflare's
+edge keeps them for up to a week (#1088).
 """
+
+from datetime import UTC, datetime
 
 from flask import Response, abort
 
@@ -42,7 +46,12 @@ from mimir.seo import (
     series_diff_sitemap_xml,
     sitemap_index_xml,
 )
-from mimir.seo.sitemaps import SERIES_DIFF_BUCKETS, SitemapPayload
+from mimir.seo.sitemaps import (
+    SERIES_DIFF_BUCKETS,
+    WEEK_SEC,
+    SitemapPayload,
+    archive_sitemap_ttl,
+)
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _get_inbox_or_404, _site_base
 
@@ -156,7 +165,14 @@ def archive_sitemap(
         payload = archive_sitemap_xml(session, inbox, year, month, page, _site_base())
     if payload is None:
         abort(404)
-    return _sitemap_response(payload)
+    response = _sitemap_response(payload)
+    # The edge follows the origin TTL, capped at a week: a cache-key bump
+    # cannot drop an edge copy, so a month would outlast a release that
+    # changes what these files hold (3.6.0). Cloudflare strips this header;
+    # clients keep `Cache-Control: max-age=300` from hooks.py.
+    edge = min(archive_sitemap_ttl(year, month, datetime.now(UTC).date()), WEEK_SEC)
+    response.headers["Cloudflare-CDN-Cache-Control"] = f"max-age={edge}"
+    return response
 
 
 @bp_web.route("/messages-sitemap.xml")
