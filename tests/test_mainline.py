@@ -2296,3 +2296,48 @@ def test_an_old_address_mailmap_maps_by_name_to_two_people_maps_to_neither(
 
     assert load_maintainers(path, tree_name="linus")[0]
     assert _mailmap_rows() == {"old@example.org": "new@kernel.org"}
+
+
+def test_a_bad_mailmap_line_does_not_stop_the_linus_walk(
+    seeded_db, monkeypatch, tmp_path, writer
+):
+    """The rules load shares `update_mainline`'s per-tree try block with
+    the Linus commit walk. A `.mailmap` line git skips must leave the
+    tick healthy: rules loaded and the walk run."""
+    from mimir.broker import _context
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.config import TreeConfig, settings
+    from mimir.mainline import WalkResult, update_mainline
+
+    path = tmp_path / "linux.git"
+    repo = _bare_repo(path)
+    _commit_maintainers(
+        repo,
+        b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n",
+        mailmap=b"New <new@kernel.org> <old@example.org>\na stray line\n",
+        ts=1700000000,
+    )
+    repo.close()
+    monkeypatch.setattr(
+        settings,
+        "trees",
+        {"linus": TreeConfig(url="https://example.com/linux.git", path=path)},
+    )
+    monkeypatch.setattr("mimir.mainline._ensure_tree", lambda tree, **kw: tree.path)
+    walked = []
+    monkeypatch.setattr(
+        "mimir.mainline.walk_commits",
+        lambda *a, **kw: walked.append(kw["tree_name"]) or WalkResult(),
+    )
+
+    pool = ReadSessionPool.from_settings()
+    try:
+        _context.set_active(pool, writer)
+        result = update_mainline()
+    finally:
+        _context.clear_active()
+        pool.close()
+
+    assert result.trees["linus"].ok, result.trees["linus"].error
+    assert result.maintainers_ran and result.subsystems_loaded == 1
+    assert walked == ["linus"]
