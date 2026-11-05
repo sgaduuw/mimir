@@ -64,7 +64,11 @@ def maintainer_view(address: str):
             # current `M:` address keeps its indexed URL alive. One hop,
             # and only on this path, so live profiles pay nothing.
             mapped = canonical_address(session, address_normalized)
-            if mapped is not None and maintainer_profile(session, mapped) is not None:
+            if (
+                mapped is not None
+                and is_addressable_maintainer_address(mapped)
+                and maintainer_profile(session, mapped) is not None
+            ):
                 return redirect(maintainer_path(mapped), code=301)
             abort(404)
         review_counts = cached_maintainer_review_counts(session, address_normalized)

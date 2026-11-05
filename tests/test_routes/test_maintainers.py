@@ -499,6 +499,35 @@ def test_a_retired_address_mapped_to_a_non_maintainer_stays_404(client, session)
     assert client.get("/maintainers/edumazet@google.com").status_code == 404
 
 
+def test_a_retired_address_mapped_to_an_unaddressable_profile_stays_404(
+    client, session
+):
+    from mimir.mainline import _mailmap_rows
+    from mimir.maintainer_directory import (
+        is_addressable_maintainer_address,
+        maintainer_profile,
+    )
+
+    target = "bad/addr@kernel.org"
+    _add_subsystem(
+        session,
+        "NETWORKING",
+        "Maintained",
+        maintainers=[("M", "Current Maintainer", target)],
+    )
+    rows = _mailmap_rows(f"Current <{target}> <old@kernel.org>\n".encode())
+    assert rows == [{"old_address": "old@kernel.org", "address": target}]
+    session.add_all(Mailmap(**row) for row in rows)
+    session.commit()
+    assert maintainer_profile(session, target) is not None
+    assert not is_addressable_maintainer_address(target)
+    assert client.get(maintainer_path(target)).status_code == 404
+
+    response = client.get("/maintainers/old@kernel.org")
+    assert response.status_code == 404
+    assert "Location" not in response.headers
+
+
 def test_unmapped_and_current_addresses_do_not_redirect(client, session):
     _seed_retired_address(session)
 
