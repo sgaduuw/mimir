@@ -460,6 +460,19 @@ class SubsystemList(Base):
     subsystem: Mapped[Subsystem] = relationship(back_populates="lists")
 
 
+class Mailmap(Base):
+    """One `.mailmap` email pair from the kernel tree: a retired or
+    alternate address and the canonical address it maps to, both
+    lowercased. Replaced wholesale with the subsystems projection in
+    the same transaction, so the two never disagree. One hop only: a
+    value is never looked up again as a key."""
+
+    __tablename__ = "mailmap"
+
+    old_address: Mapped[str] = mapped_column(String, primary_key=True)
+    address: Mapped[str] = mapped_column(String)
+
+
 class MainlineState(Base):
     """Tracks which version of the mainline tree (Linus's `linux.git`)
     we last interacted with. One row keyed by tree_name so the
@@ -468,9 +481,11 @@ class MainlineState(Base):
 
     Two independent cursors:
     - `last_commit_sha`, the git object id of the MAINTAINERS BLOB at
-      the last load. Lets `update-mainline` skip the parse step, and
-      the ~15k-row replace it drives, unless that file's CONTENT
-      changed. It held the tree HEAD until 2026-07-29, which meant
+      the last load, plus `:<mailmap blob id>` when the tree has a
+      `.mailmap`. Lets `update-mainline` skip the parse step, and
+      the ~15k-row replace it drives, unless either file's CONTENT
+      changed. A `.mailmap`-only change therefore reruns the replace
+      and rotates the message-page ETags. It held the tree HEAD until 2026-07-29, which meant
       every push to Linus's tree triggered a full reparse and rewrote
       the subsystems triple to identical values. The name is kept
       (avoiding a migration for a column whose shape is unchanged: a

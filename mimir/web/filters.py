@@ -666,6 +666,12 @@ def _highlight_match_filter(subject: str | None, query: str | None) -> Markup:
     )
 
 
+@bp_web.app_template_filter("format_count")
+def _format_count_filter(n: int) -> str:
+    """Keep full human-readable counts consistent across archive pages."""
+    return f"{n:,}"
+
+
 @bp_web.app_template_filter("short_count")
 def _short_count_filter(n: int | None) -> str:
     """A count in two or three figures: `999`, `1.5k`, `160k`, `6.6M`."""

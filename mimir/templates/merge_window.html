@@ -70,7 +70,7 @@
   {% for row in items %}
   <li>
     <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
-    {%- if row.patches > 1 %} <small>{{ row.patches }} patches</small>{% endif %}
+    {%- if row.patches > 1 %} <small>{{ row.patches|format_count }} patches</small>{% endif %}
     <br><small>{{ row.author|display_name }}
       {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
       &middot; {{ row.inbox_name }}
@@ -115,7 +115,7 @@
 {% if mw.window_open %}{{ pull_requests() }}{% endif %}
 
 {% if mw.queued %}
-<h2 id="queued">{{ '{:,}'.format(mw.queued) }} patch{{ '' if mw.queued == 1 else 'es' }} queued in linux-next</h2>
+<h2 id="queued">{{ mw.queued|format_count }} patch{{ '' if mw.queued == 1 else 'es' }} queued in linux-next</h2>
 <p>Not in Linus's tree yet, grouped by MAINTAINERS subsystem. <a href="#how-counted">How these are counted</a></p>
 
 {% if mw.sections or mw.smaller %}
@@ -135,7 +135,7 @@
         <span class="mw-name">{{ mw.smaller|length }} smaller subsystem{{ '' if mw.smaller|length == 1 else 's' }}</span>
         <span class="count">{{ mw.smaller_patches }}</span>
       </summary>
-      <p><small>Subsystems with fewer than {{ section_min }} queued patches.</small></p>
+      <p><small>Subsystems with fewer than {{ section_min|format_count }} queued patches.</small></p>
       <ul class="mw-subsystems mw-subsystems-nested">
         {% for sec in mw.smaller %}{{ subsystem_row(sec, largest) }}{% endfor %}
       </ul>
@@ -145,13 +145,13 @@
 </ul>
 {% endif %}
 
-<p id="how-counted"><small>{{ mw.queued }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
+<p id="how-counted"><small>{{ mw.queued|format_count }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
   {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet, grouped by MAINTAINERS subsystem: each series
   goes under the most specific subsystem that covers at least half as many of
   its files as the subsystem covering the most.
-  {%- if mw.walked_commits %} {{ mw.walked_linked }} of {{ mw.walked_commits }} commits in linux-next link their mailing-list patch; the rest cannot be shown here.{% endif %}
+  {%- if mw.walked_commits %} {{ mw.walked_linked|format_count }} of {{ mw.walked_commits|format_count }} commits in linux-next link their mailing-list patch; the rest cannot be shown here.{% endif %}
   Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted.
-  {%- if mw.not_archived %} {{ mw.not_archived }} of them link to messages not archived here.{% endif %}
+  {%- if mw.not_archived %} {{ mw.not_archived|format_count }} of them link to messages not archived here.{% endif %}
   A series shows once, by its cover letter.</small></p>
 {% else %}
 {# Empty is a real state: right after a merge window closes, or before

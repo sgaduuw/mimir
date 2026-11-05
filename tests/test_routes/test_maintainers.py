@@ -7,7 +7,15 @@ import re
 import pytest
 from sqlalchemy import select
 
-from mimir.models import Article, ArticleTrailer, Subsystem, SubsystemMaintainer
+from mimir.mailmap import rules_version
+from mimir.maintainer_directory import maintainer_path
+from mimir.models import (
+    Article,
+    ArticleTrailer,
+    Mailmap,
+    Subsystem,
+    SubsystemMaintainer,
+)
 from tests.test_routes._helpers import _json_ld_blocks
 
 
@@ -424,7 +432,7 @@ def test_profile_counts_use_one_snapshot_and_never_aggregate_in_requests(
     for chip in chips:
         assert client.get(chip.attrib["href"]).status_code == 200
 
-    key = "maintainer:review_counts_v1:" + address
+    key = f"maintainer:review_counts_v2:{rules_version(session)}:{address}"
     cache.set(key, {"beta": 2, "alpha": 2}, 3600)
     assert [
         c.findtext("span")
@@ -454,3 +462,132 @@ def test_profile_counts_use_one_snapshot_and_never_aggregate_in_requests(
     owner.role = "R"
     session.commit()
     assert client.get("/maintainers/ada@kernel.org").status_code == 404
+
+
+def _seed_retired_address(session, *, target="edumazet@kernel.org", maintainer=True):
+    if maintainer:
+        _add_subsystem(
+            session,
+            "NETWORKING",
+            "Maintained",
+            maintainers=[("M", "Eric Dumazet", "Edumazet@Kernel.org")],
+        )
+    session.add(Mailmap(old_address="edumazet@google.com", address=target))
+    session.commit()
+
+
+def test_a_retired_address_redirects_to_the_current_profile(client, session):
+    _seed_retired_address(session)
+
+    r = client.get("/maintainers/edumazet@google.com")
+    assert r.status_code == 301
+    assert r.headers["Location"] == maintainer_path("edumazet@kernel.org")
+    assert client.get(r.headers["Location"]).status_code == 200
+
+
+def test_a_retired_address_redirects_whatever_its_case(client, session):
+    _seed_retired_address(session)
+
+    r = client.get("/maintainers/EDumazet@Google.COM")
+    assert r.status_code == 301
+    assert r.headers["Location"] == "/maintainers/edumazet@kernel.org"
+
+
+def test_a_retired_address_mapped_to_a_non_maintainer_stays_404(client, session):
+    _seed_retired_address(session, maintainer=False)
+
+    assert client.get("/maintainers/edumazet@google.com").status_code == 404
+
+
+def test_a_retired_address_mapped_to_an_unaddressable_profile_stays_404(
+    client, session
+):
+    from mimir.mainline import _mailmap_rows
+    from mimir.maintainer_directory import (
+        is_addressable_maintainer_address,
+        maintainer_profile,
+    )
+
+    target = "bad/addr@kernel.org"
+    _add_subsystem(
+        session,
+        "NETWORKING",
+        "Maintained",
+        maintainers=[("M", "Current Maintainer", target)],
+    )
+    rows = _mailmap_rows(f"Current <{target}> <old@kernel.org>\n".encode())
+    assert rows == [{"old_address": "old@kernel.org", "address": target}]
+    session.add_all(Mailmap(**row) for row in rows)
+    session.commit()
+    assert maintainer_profile(session, target) is not None
+    assert not is_addressable_maintainer_address(target)
+    assert client.get(maintainer_path(target)).status_code == 404
+
+    response = client.get("/maintainers/old@kernel.org")
+    assert response.status_code == 404
+    assert "Location" not in response.headers
+
+
+def test_unmapped_and_current_addresses_do_not_redirect(client, session):
+    _seed_retired_address(session)
+
+    assert client.get("/maintainers/nobody@example.org").status_code == 404
+    assert client.get("/maintainers/edumazet@kernel.org").status_code == 200
+
+
+def _seed_split_maintainer(session):
+    _add_subsystem(session, "BCACHEFS", "Supported", [("M", "Kent", "kent@kernel.org")])
+    _add_trailer(session, "art1@example.com", "kent@kernel.org")  # alpha
+    _add_trailer(session, "art2@example.com", "kent@corp.example")  # beta
+    session.add(Mailmap(old_address="kent@corp.example", address="kent@kernel.org"))
+    session.commit()
+
+
+def _review_chips(client):
+    html = client.get("/maintainers/kent@kernel.org").data.decode()
+    return re.findall(
+        r'href="(/[a-z]+/reviewer/[^"]*)"><span>[a-z]+</span>'
+        r"<strong>(\d+)</strong>",
+        html,
+    ), html
+
+
+def test_profile_review_activity_merges_a_mapped_old_address(client, session):
+    from mimir.maintainer_directory import warm_maintainer_review_counts
+
+    _seed_split_maintainer(session)
+    warm_maintainer_review_counts(session)
+
+    chips, html = _review_chips(client)
+
+    assert chips == [
+        ("/alpha/reviewer/kent@kernel.org", "1"),
+        ("/beta/reviewer/kent@kernel.org", "1"),
+    ]
+    assert "corp.example" not in html
+
+
+def test_profile_review_counts_follow_a_mailmap_reload(client, session):
+    """The mapping is an input of the cached counts, so the key carries
+    the rules version. The first warm is a plain cached one."""
+    from mimir.maintainer_directory import warm_maintainer_review_counts
+    from mimir.models import MainlineState
+
+    _seed_split_maintainer(session)
+    session.query(Mailmap).delete()
+    session.merge(MainlineState(tree_name="linus", last_commit_sha="m1:a"))
+    session.commit()
+    warm_maintainer_review_counts(session)
+    chips, _ = _review_chips(client)
+    assert chips == [("/alpha/reviewer/kent@kernel.org", "1")], "precondition: split"
+
+    session.add(Mailmap(old_address="kent@corp.example", address="kent@kernel.org"))
+    session.merge(MainlineState(tree_name="linus", last_commit_sha="m1:b"))
+    session.commit()
+    warm_maintainer_review_counts(session)
+    chips, _ = _review_chips(client)
+
+    assert [c[0] for c in chips] == [
+        "/alpha/reviewer/kent@kernel.org",
+        "/beta/reviewer/kent@kernel.org",
+    ]

@@ -210,7 +210,8 @@ def test_warm_cache_subsystem_dashboards_populate_cache(
         f"recent_postings_v1:alpha:{sub_id}:30:30",
         f"active_threads_in_subsystem:alpha:{sub_id}:7:10",
         f"daily_volume_in_subsystem:alpha:{sub_id}:30",
-        f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10",
+        # Trailing segment is the rules version, empty here (no load).
+        f"active_reviewers_in_subsystem:alpha:{sub_id}:30:10:",
     ]
     from mimir.cache import _ns
 
@@ -318,9 +319,12 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     _drain_writer()
 
     from mimir.cache import _ns
+    from mimir.mailmap import rules_version
 
-    expected_key = "articles_reviewed_by:alpha:david@kernel.org:100"
     with SessionLocal() as s:
+        expected_key = (
+            f"articles_reviewed_by:alpha:david@kernel.org:100:{rules_version(s)}"
+        )
         present = s.execute(
             sa_select(CacheEntry).where(CacheEntry.key == _ns(expected_key))
         ).scalar_one_or_none()
@@ -406,19 +410,17 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     cap = settings.thread_view_render_cap
-    indexes = cache.get(f"sitemap:indexsplit:{cap}")
-    assert indexes is not None, "missing cache row for both indexes"
-    high, messages = indexes
+    index = cache.get(f"sitemap:index:{cap}")
+    assert index is not None, "missing cache row for the index"
     expected_root = {
-        "sitemap index": (high, f"{{{ns}}}sitemapindex"),
-        "messages sitemap index": (messages, f"{{{ns}}}sitemapindex"),
+        "sitemap index": (index, f"{{{ns}}}sitemapindex"),
         "sitemap:meta": (cache.get("sitemap:meta"), f"{{{ns}}}urlset"),
         **{
             key: (cache.get(key), f"{{{ns}}}urlset")
-            for key in ("sitemap:inboxhubs:alpha", "sitemap:inboxhubs:beta")
+            for key in ("sitemap:inboxhubs2:alpha", "sitemap:inboxhubs2:beta")
         },
     }
-    assert "messages-sitemap.xml" in messages.body
+    assert "messages-sitemap" not in index.body
     for key, (payload, expected_tag) in expected_root.items():
         assert payload is not None, f"missing cache row for {key}"
         # The cache now stores SitemapPayload (body + last_modified);
@@ -445,7 +447,7 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from mimir.extensions import SessionLocal
     from mimir.seo import inbox_sitemap_xml
 
-    key = "sitemap:inboxhubs:alpha"
+    key = "sitemap:inboxhubs2:alpha"
     cache.set(key, "STALE", ttl=3600)
     assert cache.get(key) == "STALE"
     with SessionLocal() as s:
@@ -1115,7 +1117,7 @@ def test_maintainer_counts_warm_only_on_slow_and_all_global_targets(session):
         # Exercise the actual target and the ordinary cache writer path.
         with cache.ttl_extension(7200):
             slow["maintainer_review_counts"](session)
-        assert cached_maintainer_review_counts("owner@kernel.org") == {}
+        assert cached_maintainer_review_counts(session, "owner@kernel.org") == {}
 
 
 def test_recent_message_total_warms_on_the_fast_tier_only(session):

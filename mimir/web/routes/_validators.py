@@ -176,7 +176,9 @@ def render_state_tag(session: Session, article_id: int, message_id: str) -> str:
     ).all()
     trailers_tag = _digest(repr(tuple(r)) for r in trailer_rows)
     # `MainlineState.last_commit_sha` is the object id of the
-    # MAINTAINERS BLOB at the last load, so it versions the whole
+    # MAINTAINERS BLOB at the last load (plus `:<mailmap blob id>` when
+    # the tree has a `.mailmap`, so a `.mailmap`-only change rotates
+    # these ETags and reruns the rules replace), so it versions the whole
     # subsystem-RULE snapshot in one scalar instead of re-deriving this
     # article's matches. Load-bearing that it is the blob and not the
     # tree HEAD: HEAD moves on every push to Linus's tree, which would

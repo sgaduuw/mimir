@@ -121,7 +121,11 @@ _REVIEW_ROLES_PARAM = bindparam(
 # subset). The maintainer flag is an EXISTS on LOWER(sm.address) =
 # t.address_normalized, not a JOIN: an address is listed once per
 # MAINTAINERS section, so a join multiplies each trailer by the number
-# of sections its reviewer sits in (#800). The
+# of sections its reviewer sits in (#800). A trailer under a retired
+# address that `.mailmap` maps to a maintainer's counts as that
+# maintainer (#1087), and a listed address keeps counting when `.mailmap`
+# maps it elsewhere (the two files are edited independently); the LEFT JOIN is on the mailmap primary key, so it
+# multiplies nothing either. The
 # `at_review` CTE is the cheap "any review trailer exists" predicate
 # that still drives the REVIEWED state classification (kept distinct
 # from rc so the state derivation doesn't pay the COUNT cost when
@@ -203,9 +207,10 @@ rc AS (
     SELECT t.article_id,
            COUNT(*) AS review_total,
            SUM(EXISTS (SELECT 1 FROM subsystem_maintainers sm
-                        WHERE LOWER(sm.address) = t.address_normalized
+                        WHERE LOWER(sm.address) IN (t.address_normalized, m.address)
                           AND sm.role IN ('M', 'R'))) AS review_maintainer
       FROM article_trailers t
+      LEFT JOIN mailmap m ON m.old_address = t.address_normalized
      WHERE t.article_id IN :ids
        AND t.role IN :review_roles
      GROUP BY t.article_id
@@ -425,9 +430,10 @@ _REVIEWER_NAMES_SQL = text("""
 SELECT t.article_id,
        t.name,
        EXISTS (SELECT 1 FROM subsystem_maintainers sm
-                WHERE LOWER(sm.address) = t.address_normalized
+                WHERE LOWER(sm.address) IN (t.address_normalized, m.address)
                   AND sm.role IN ('M', 'R')) AS is_maintainer
   FROM article_trailers t
+  LEFT JOIN mailmap m ON m.old_address = t.address_normalized
  WHERE t.article_id IN :ids
    AND t.role IN :review_roles
  ORDER BY t.article_id, t.id ASC
@@ -550,7 +556,7 @@ def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
         return None
     reviews = "review" if total == 1 else "reviews"
     maintainers = "a maintainer" if maintainer_count == 1 else "maintainers"
-    return f": {total} {reviews}, {maintainer_count} by {maintainers}"
+    return f" · {total:,} {reviews}, {maintainer_count:,} by {maintainers}"
 
 
 def _cover_rollup(own: LifecycleStatus, row) -> tuple[LifecycleStatus, str | None]:
@@ -725,7 +731,7 @@ def lifecycle_status_for_articles(
     article has one chip per inbox.
 
     Per-article cache rows with a 5-minute TTL. Cache key
-    `lifecycle_status_v2:<id>:i<inbox_id>`, backed by `cache.get_many` so a
+    `lifecycle_status_v3:<id>:i<inbox_id>`, backed by `cache.get_many` so a
     single SELECT covers all hits. Misses are computed together in
     `_bulk_uncached`, a fixed number of statements however many ids. Empty input
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
@@ -747,9 +753,9 @@ def lifecycle_status_for_articles(
     if not article_ids:
         return {}
     suffix = f":i{inbox_id}" + (f":{state_key}" if state_key is not None else "")
-    # v2 leaves the pre-#1068 compact presentation strings to expire. The
+    # v3 leaves the pre-#1081 colon presentation strings to expire. The
     # cached shape is unchanged, so other cache families need no reset.
-    key_to_id = {f"lifecycle_status_v2:{a}{suffix}": a for a in article_ids}
+    key_to_id = {f"lifecycle_status_v3:{a}{suffix}": a for a in article_ids}
     hits = cache.get_many(list(key_to_id))
     out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
     missing_ids = [a for a in article_ids if a not in out]
@@ -757,7 +763,7 @@ def lifecycle_status_for_articles(
         computed = _bulk_uncached(session, missing_ids, inbox_id)
         for article_id, info in computed.items():
             cache.set(
-                f"lifecycle_status_v2:{article_id}{suffix}",
+                f"lifecycle_status_v3:{article_id}{suffix}",
                 info,
                 ttl=LIFECYCLE_STATUS_TTL_SEC,
             )

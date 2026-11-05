@@ -8,15 +8,13 @@
 ] %}
 <nav aria-label="breadcrumb"><ul><li><a href="/{{ inbox_name }}/">{{ inbox_name }}</a></li><li>{{ year }}</li></ul></nav>
 <h1>{{ year }}</h1>
+<p class="year-total">{{ volume.total|format_count }} message{{ '' if volume.total == 1 else 's' }} {{ 'so far this year' if is_current_year else 'in ' ~ year }}</p>
 
-<nav>
+<nav class="year-nav" aria-label="Years">
   <ul>
     {% if prev_year %}
     <li><a href="/{{ inbox_name }}/{{ prev_year }}/">← {{ prev_year }}</a></li>
     {% endif %}
-  </ul>
-  <ul>
-    <li><small>{{ '{:,}'.format(volume.total) }} message{{ '' if volume.total == 1 else 's' }} {{ 'so far this year' if is_current_year else 'in ' ~ year }}</small></li>
   </ul>
   <ul>
     {% if next_year %}
@@ -36,7 +34,7 @@
       <a href="/{{ inbox_name }}/{{ year }}/{{ '%02d' % month_num }}/">{{ month_names[month_num - 1] }}</a>
       {# Proportional bar (#988). The CSP forbids `style=`, so the width is an SVG `rect` attribute, as in `_sparkline.html`. #}
       <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ count * 100 // busiest }}% of the busiest month"><rect width="{{ (count / busiest * 100) | round(1) }}" height="6" fill="currentColor" opacity="0.9"/></svg>
-      <span class="count">{{ '{:,}'.format(count) }}</span>
+      <span class="count">{{ count|format_count }}</span>
     </li>
     {% else %}
     <li class="year-row year-row--empty">

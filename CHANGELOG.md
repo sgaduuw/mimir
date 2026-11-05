@@ -11,6 +11,34 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.42.0] - 2026-11-05
+
+### Removed
+
+- `/messages-sitemap.xml` and every `messages-sitemap*.xml` archive file now return 410 Gone. All 3,339 files were empty once the thread-root backfill finished. robots.txt and `/llms.txt` no longer name them, and a thread whose backfill has not reached it is in no sitemap until it is ranked. The sitemap cache keys were renamed, so the cache starts cold for the sitemap and its archive files until warm-cache refills them (#1089).
+
+  **Operator step:** remove `messages-sitemap.xml` from Google Search Console and, if it was submitted, from Bing Webmaster Tools.
+
+### Added
+
+- Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to an addressable current maintainer profile still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
+
+### Changed
+
+- `/sitemap.xml` lists the site files first, then the inbox files, then the archive files with the newest period first, so crawlers that read only the first part of it reach the pages that matter. Files for a year after today, from mis-dated mail, go last. Each `/<inbox>/sitemap.xml` lists its highest-priority entries first. No URL or `<lastmod>` changes (#1085).
+
+- Archive sitemap files now stay cached by the age of the period they cover, not for an hour: the open and previous period keep one hour, a period that ended up to 2 months ago gets a week, up to a year two weeks, and older a month. The year file, the month file and the month's root list share that TTL. `/sitemap.xml` therefore keeps its `<lastmod>` for old files instead of losing it an hour after the last crawler fetch. Each archive file also sends `Cloudflare-CDN-Cache-Control: max-age=<that TTL, at most one week>`; `Cache-Control: public, max-age=300` is unchanged, and the index, the hub, meta, maintainers and series-diff sitemaps are untouched (#1088).
+
+  **Operator step:** the Cloudflare Cache Rule for these XML paths must take its Edge TTL from the origin ("Use cache-control header if present"), not a fixed override, or the new header is ignored. A future release that changes what archive files contain (URL shapes, the render cap) must purge the sitemap paths at the edge: a cache-key bump drops origin rows but cannot drop an edge copy, which can live up to a week.
+
+### Fixed
+
+- The subsystem dashboard's "Active reviewers" list shows one row per person when the kernel's `.mailmap` maps several of their addresses together, with the attestation counts added up. The row shows the canonical address (or its hidden placeholder), never a retired one. The reviewer page, maintainer profile review activity and lifecycle pill counts are covered below (#986).
+- The reviewer page for an address now includes the attestations made under every retired address the kernel's `.mailmap` maps to it, so it matches the dashboard row that links there. The maintainer profile's review activity (inboxes and counts) does the same, and the lifecycle pill counts a review under a retired address as a maintainer's when the address it maps to is one, or when the address itself is listed. Nothing shows a retired address. Cached counts and reviewer lists are keyed by the rules version, so a `.mailmap` reload replaces them; the pill's per-article cache on listing pages still expires on its 5-minute TTL (#1087).
+- `/<inbox>/reviewer/<retired address>` redirects with a 301 to the canonical address's reviewer page in the same inbox, but only when that address is one the site links to. Otherwise the old address's own page is served as before, so a redirect never names a hidden address. Each reviewer page request adds a few small reads: a primary-key lookup for the mapping, one for the rules version, and, when the page is not cached, a scan of the small `.mailmap` table for retired addresses (#1087).
+- Hyphenated message and thread URLs redirect with canonical month padding. Invalid years and months return 404 directly (#1083).
+- Archive count prose uses thousands separators, search highlights stay joined inside identifiers, and lifecycle chips use a middle-dot separator with matching Markdown wording. Listing headers keep consistent typography, year totals align with their rows, and message overviews show subjects only for changed topics while preserving safe sender display and navigation. Rapid series-diff navigation keeps using HTMX instead of reloading the document (#1081).
+
 ## [3.41.0] - 2026-11-04
 
 ### Added
