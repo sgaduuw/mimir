@@ -105,7 +105,7 @@ def count_steps(session):
         raw.set_progress_handler(None, 0)
 
 
-def plan_of(session, call, match):
+def plan_of(session, call, match, *, required_sql=()):
     """EXPLAIN QUERY PLAN of the one statement containing `match` that
     `call` really runs, so a rewrite of a query cannot slip past a copy
     of it."""
@@ -123,6 +123,8 @@ def plan_of(session, call, match):
         event.remove(engine, "before_cursor_execute", grab)
     assert len(seen) == 1, seen
     statement, params = seen[0]
+    for fragment in required_sql:
+        assert fragment in statement, statement
     raw = session.connection().connection.driver_connection
     return "\n".join(
         row[3] for row in raw.execute("EXPLAIN QUERY PLAN " + statement, params)

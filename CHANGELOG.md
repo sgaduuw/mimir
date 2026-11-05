@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Archive listings, yearly sitemaps, subsystem path matches and reviewer pages retain bounded index seeks on SQLite 3.54 as well as 3.53. Reviewer lookups start from matching trailers instead of walking every message in the inbox; yearly sitemap roots remain inbox-driven while monthly roots stay date-driven (#1093).
+
 ## [3.42.0] - 2026-11-05
 
 ### Removed
