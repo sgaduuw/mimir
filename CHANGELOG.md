@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.42.0] - 2026-11-05
+
 ### Removed
 
 - `/messages-sitemap.xml` and every `messages-sitemap*.xml` archive file now return 410 Gone. All 3,339 files were empty once the thread-root backfill finished. robots.txt and `/llms.txt` no longer name them, and a thread whose backfill has not reached it is in no sitemap until it is ranked. The sitemap cache keys were renamed, so the cache starts cold for the sitemap and its archive files until warm-cache refills them (#1089).
@@ -19,7 +21,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to a current maintainer still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
+- Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to an addressable current maintainer profile still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
 
 ### Changed
 

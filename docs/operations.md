@@ -52,8 +52,10 @@ command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 
 The container scheduler runs fast warming every minute and slow warming hourly.
 Cache entries are reused or refreshed according to their remaining lifetime;
-a tick does not necessarily rebuild every entry. Sitemaps have a one-hour origin
-TTL and need `SITE_BASE_URL` for warming. Without it, sitemap warm targets are
+a tick does not necessarily rebuild every entry. Non-archive sitemaps keep a
+one-hour origin TTL. Archive files use an age-based TTL from one hour to 30 days,
+with a Cloudflare edge TTL capped at one week. Sitemap warming needs
+`SITE_BASE_URL`. Without it, sitemap warm targets are
 omitted. Subsystem discovery can be empty until its slow-tier data has been warmed.
 
 If you run outside Compose, arrange equivalent recurring commands with the broker
@@ -74,6 +76,9 @@ page shows part of its thread rather than all of it.
 2. The scheduler warms the sitemap indexes within a minute. Run
    `uv run mimir warm-cache --tier slow` straight away to warm each inbox's
    current and previous year or month sitemap files too.
+3. Purge the sitemap paths at the CDN edge. New origin cache keys do not
+   invalidate archive copies already held at the edge, which can live for
+   up to a week.
 
 ## Database maintenance
 
@@ -200,7 +205,10 @@ snapshots you no longer need. Only load snapshots from a trusted source.
 
 The slow global warm target `maintainer_review_counts` refreshes one primitive
 inbox/count map per supported, normalized `M:` address under
-`maintainer:review_counts_v1:<address>`. It uses the existing broker cache-write
+`maintainer:review_counts_v2:<rules-version>:<address>`. Retired addresses from
+the kernel's `.mailmap` contribute to the same identity. Profile and count
+cache keys carry the rules version, so a reload invalidates both.
+It uses the existing broker cache-write
 path, directory TTL of 3600 seconds, refresh window and slow-tier extension
 (7200 seconds by default). This is approximate freshness, not an hourly-update
 guarantee. New owners enter when the cached directory refreshes. The profile
