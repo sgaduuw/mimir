@@ -17,6 +17,10 @@ changes, not internal refactors. Categories: **Added**,
 
   **Operator step:** remove `messages-sitemap.xml` from Google Search Console and, if it was submitted, from Bing Webmaster Tools.
 
+### Changed
+
+- `/sitemap.xml` lists the site files first, then the inbox files, then the archive files with the newest period first, so crawlers that read only the first part of it reach the pages that matter. Each `/<inbox>/sitemap.xml` lists its highest-priority entries first. No URL or `<lastmod>` changes (#1085).
+
 ### Added
 
 - Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to a current maintainer still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
