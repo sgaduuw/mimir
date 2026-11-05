@@ -40,7 +40,7 @@ from mimir.seo import (
     inbox_sitemap_xml,
     maintainers_sitemap_xml,
     meta_sitemap_xml,
-    sitemap_indexes_xml,
+    sitemap_index_xml,
     warm_latest_archive_sitemaps,
 )
 
@@ -51,6 +51,6 @@ __all__ = [
     "inbox_sitemap_xml",
     "maintainers_sitemap_xml",
     "meta_sitemap_xml",
-    "sitemap_indexes_xml",
+    "sitemap_index_xml",
     "warm_latest_archive_sitemaps",
 ]
