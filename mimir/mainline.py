@@ -830,10 +830,12 @@ def _mailmap_rows(data: bytes) -> list[dict]:
     Parsed line by line because this runs inside the same try block as
     the Linus commit walk: one line that raises would freeze MAINTAINERS
     reloads and the walk on every tick. Like git, skip a line dulwich
-    cannot parse or that lacks a canonical or an old address. An address
-    mapped to itself is no redirect. The last entry wins when an old
-    address appears on several lines."""
-    pairs: dict[str, str] = {}
+    cannot parse or that lacks a canonical or an old address. An
+    address mapped to itself is no redirect. An old address that maps
+    to more than one canonical address (git qualifies it by name, the
+    table keys on the address alone) is ambiguous and gets no row:
+    keeping either would merge one person into another."""
+    targets: dict[str, set[str]] = {}
     for line in data.splitlines():
         try:
             parsed = list(read_mailmap(io.BytesIO(line)))
@@ -842,10 +844,14 @@ def _mailmap_rows(data: bytes) -> list[dict]:
         for canonical, old in parsed:
             if old is None or not old[1] or not canonical[1]:
                 continue
-            pairs[old[1].decode("utf-8", "replace").lower()] = (
+            targets.setdefault(old[1].decode("utf-8", "replace").lower(), set()).add(
                 canonical[1].decode("utf-8", "replace").lower()
             )
-    return [{"old_address": o, "address": n} for o, n in pairs.items() if o != n]
+    return [
+        {"old_address": old, "address": new}
+        for old, (new,) in ((o, t) for o, t in targets.items() if len(t) == 1)
+        if old != new
+    ]
 
 
 def load_maintainers(

@@ -2268,3 +2268,31 @@ def test_a_mailmap_line_git_skips_does_not_block_the_rules_load(
     ran, loaded, _ = load_maintainers(path, tree_name="linus")
     assert ran and loaded == 1
     assert _mailmap_rows() == {"old@example.org": "new@kernel.org"}
+
+
+def test_an_old_address_mailmap_maps_by_name_to_two_people_maps_to_neither(
+    seeded_db, tmp_path
+):
+    """A `.mailmap` line can qualify the old address with a name; git
+    then maps only that name+address pair. One shared old address can
+    so belong to two people. The table keys on the address alone, so
+    keeping either target would merge one person into the other (and
+    301 one person's URL to the other's profile). Drop it instead."""
+    from mimir.mainline import load_maintainers
+
+    path = tmp_path / "tree.git"
+    repo = _bare_repo(path)
+    _commit_maintainers(
+        repo,
+        b"A\nM:\tx <x@example.org>\nF:\tfs/a/\n",
+        mailmap=(
+            b"Alice <alice@kernel.org> Alice <shared@example.org>\n"
+            b"Bob <bob@kernel.org> Bob <shared@example.org>\n"
+            b"New <new@kernel.org> <old@example.org>\n"
+        ),
+        ts=1700000000,
+    )
+    repo.close()
+
+    assert load_maintainers(path, tree_name="linus")[0]
+    assert _mailmap_rows() == {"old@example.org": "new@kernel.org"}
