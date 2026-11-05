@@ -319,9 +319,12 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
     _drain_writer()
 
     from mimir.cache import _ns
+    from mimir.mailmap import rules_version
 
-    expected_key = "articles_reviewed_by:alpha:david@kernel.org:100"
     with SessionLocal() as s:
+        expected_key = (
+            f"articles_reviewed_by:alpha:david@kernel.org:100:{rules_version(s)}"
+        )
         present = s.execute(
             sa_select(CacheEntry).where(CacheEntry.key == _ns(expected_key))
         ).scalar_one_or_none()
@@ -1114,7 +1117,7 @@ def test_maintainer_counts_warm_only_on_slow_and_all_global_targets(session):
         # Exercise the actual target and the ordinary cache writer path.
         with cache.ttl_extension(7200):
             slow["maintainer_review_counts"](session)
-        assert cached_maintainer_review_counts("owner@kernel.org") == {}
+        assert cached_maintainer_review_counts(session, "owner@kernel.org") == {}
 
 
 def test_recent_message_total_warms_on_the_fast_tier_only(session):
