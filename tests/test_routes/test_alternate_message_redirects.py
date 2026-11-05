@@ -1,8 +1,12 @@
 """Recovery URL shapes reuse the existing lookup and article acceptors."""
 
-import pytest
-from flask import url_for
+from datetime import UTC, date, datetime
+from urllib.parse import urlsplit
 
+import pytest
+
+from mimir.web.urls import _msg_path, thread_page_url
+from tests._dom import parse
 from tests.test_routes._helpers import _ingest_one_article
 
 
@@ -14,6 +18,14 @@ def alternate_article(client, tmp_path):
         "alternate/lookup@example.com",
         subject="alternate redirect target",
     )
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as session:
+        article = session.get(Article, article_id)
+        article.date = datetime(2026, 5, 1, tzinfo=UTC)
+        session.commit()
+    path = _msg_path(article_id, date(2026, 5, 1), "alpha")
     assert client.get(path).status_code == 200
     assert client.get(path + "/t").status_code == 200
     return article_id, path
@@ -42,14 +54,9 @@ def test_lore_alias_reuses_lookup_and_reaches_message(
 def test_hyphen_alias_reaches_the_existing_acceptor(client, alternate_article, thread):
     article_id, path = alternate_article
     inbox, year, month, _ = path.strip("/").split("/")
-    with client.application.test_request_context():
-        target = url_for(
-            "web.thread_view" if thread else "web.message",
-            inbox_name=inbox,
-            year=int(year),
-            month=int(month),
-            article_id=article_id,
-        )
+    assert month == "05"
+    article_date = date(int(year), int(month), 1)
+    target = (thread_page_url if thread else _msg_path)(article_id, article_date, inbox)
     alias = f"/{inbox}/{year}-{month}-{article_id}" + ("/t" if thread else "")
     response = client.get(alias)
     assert response.status_code == 301
@@ -57,6 +64,46 @@ def test_hyphen_alias_reaches_the_existing_acceptor(client, alternate_article, t
     followed = client.get(target)
     assert followed.status_code == 200
     assert "alternate redirect target" in followed.get_data(as_text=True)
+    canonical = parse(followed.get_data(as_text=True)).find("link", rel="canonical")
+    # Message pages still consolidate to their containing thread.
+    assert urlsplit(canonical.attrs["href"]).path == thread_page_url(
+        article_id, article_date, inbox
+    )
+
+
+@pytest.mark.parametrize("thread", [False, True], ids=["message", "thread"])
+@pytest.mark.parametrize(
+    "year_month",
+    [
+        "2026-00",
+        "2026-13",
+        "0-05",
+        "10000-05",
+        "99999999999999999999-05",
+        "2026-99999999999999999999",
+    ],
+)
+def test_hyphen_alias_rejects_invalid_dates_without_redirect(
+    client, year_month, thread
+):
+    response = client.get(f"/alpha/{year_month}-1" + ("/t" if thread else ""))
+    assert response.status_code == 404
+    assert "Location" not in response.headers
+
+
+@pytest.mark.parametrize("thread", [False, True], ids=["message", "thread"])
+@pytest.mark.parametrize(
+    "encoded_inbox",
+    ["alpha%3Ffoo", "alpha%23foo", "alpha%25foo", "alpha%253F", "m%C3%ADmir"],
+)
+def test_hyphen_redirect_keeps_encoded_inbox_in_path(client, encoded_inbox, thread):
+    suffix = "/t" if thread else ""
+    response = client.get(f"/{encoded_inbox}/2026-05-1{suffix}")
+    assert response.status_code == 301
+    target = urlsplit(response.headers["Location"])
+    assert target.path == f"/{encoded_inbox}/2026/05/1{suffix}"
+    assert target.query == ""
+    assert target.fragment == ""
 
 
 @pytest.mark.parametrize("prefix", ["/r/", "/all/"])
