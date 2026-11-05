@@ -240,14 +240,17 @@ def active_reviewers_in_subsystem(
         # attestation per reviewer first; that's the row whose
         # `name` / `address` we keep as the display surface.
         # `.mailmap` (public, from the kernel tree) says which addresses
-        # are one person. `identity` is the canonical address when the
-        # trailer's own address is mapped, else the address itself.
+        # are one person. A mapped trailer is shown as its canonical
+        # address, never the retired one: the link between the two is
+        # public, but a non-allowlisted address must not be displayed,
+        # and the canonical one goes through the usual render-time
+        # redaction. Unmapped trailers keep their verbatim address.
         rows = session.execute(
             text(
                 f"""
-                SELECT t.role, t.name, t.address,
+                SELECT t.role, t.name,
+                       COALESCE(m.address, t.address) AS address,
                        COALESCE(m.address, t.address_normalized) AS identity,
-                       m.address IS NOT NULL AS mapped,
                        a.date AS art_date
                 FROM article_trailers t
                 JOIN articles a ON a.id = t.article_id
@@ -272,7 +275,7 @@ def active_reviewers_in_subsystem(
             entry = agg.get(key)
             if entry is None:
                 # First (= most recent) row for this reviewer wins
-                # the display name and verbatim address.
+                # the display name and address (canonical when mapped).
                 entry = {
                     "name": r.name or "",
                     "address": r.address,
@@ -281,13 +284,6 @@ def active_reviewers_in_subsystem(
                     "last_seen": coerce_dt(r.art_date),
                 }
                 agg[key] = entry
-            if r.mapped:
-                # A merged row shows the canonical address, never the
-                # retired one: the link between the two is public via
-                # `.mailmap`, but a non-allowlisted address must not be
-                # displayed, and the canonical one goes through the
-                # usual render-time redaction.
-                entry["address"] = key
             entry["role_counts"][r.role] += 1
             # Older rows can't lift `last_seen` (we sorted DESC, also
             # across merged addresses) so the first-seen value is the max.

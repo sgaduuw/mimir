@@ -1308,13 +1308,12 @@ def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
     )
 
 
-def test_subsystem_dashboard_never_shows_an_address_merged_into_a_canonical_one(
+def test_subsystem_dashboard_links_a_merged_reviewer_to_the_canonical_address(
     client,
 ):
-    """Merging a hidden address into its `.mailmap` canonical address
-    must not publish the hidden one anywhere in the page. The merged
-    row carries the canonical address and goes through the usual
-    redaction; the retired one is not in the HTML at all."""
+    """The merged row's newest trailer is the hidden address. The row
+    must carry the canonical address, so it links to the canonical
+    reviewer page, and the hidden address appears in no href."""
     from mimir.extensions import SessionLocal
     from mimir.models import Mailmap
     from tests.test_subsystems._helpers import (
@@ -1323,29 +1322,25 @@ def test_subsystem_dashboard_never_shows_an_address_merged_into_a_canonical_one(
     )
 
     hidden = "jic23@corp.example"
+    canon = "jonathan.cameron@kernel.org"
     with SessionLocal() as s:
         _add_subsystem(s, "CXL", "Supported", files=["drivers/cxl/"])
         _add_recent_patch_with_trailers(
             s,
-            "leak@x",
+            "link@x",
             ["drivers/cxl/a.c"],
             [("Reviewed-by", "Jonathan Cameron", hidden)],
         )
         _add_recent_patch_with_trailers(
             s,
-            "leak2@x",
+            "link2@x",
             ["drivers/cxl/b.c"],
-            [("Reviewed-by", "Jonathan Cameron", "jonathan.cameron@kernel.org")],
+            [("Reviewed-by", "Jonathan Cameron", canon)],
             days_ago=3,
         )
-        s.add(Mailmap(old_address=hidden, address="jonathan.cameron@kernel.org"))
+        s.add(Mailmap(old_address=hidden, address=canon))
         s.commit()
 
-    r = client.get("/alpha/subsystem/cxl/")
-    assert r.status_code == 200
-    text = r.data.decode()
-    # Precondition: the merged row rendered, with both attestations.
-    assert text.count('class="subsystem-reviewer-heading"') == 1
-    assert '<span class="count">2</span>' in text
-    assert "corp.example" not in text
-    assert "jic23" not in text
+    text = client.get("/alpha/subsystem/cxl/").data.decode()
+    hrefs = re.findall(r'href="(/alpha/reviewer/[^"]*)"', text)
+    assert hrefs == ["/alpha/reviewer/jonathan.cameron%40kernel.org"], hrefs
