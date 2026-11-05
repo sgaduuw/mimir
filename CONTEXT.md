@@ -1284,6 +1284,13 @@ match and age out via `purge_expired`. Most keys name no release:
 pills, sitemaps and dashboards do not. So an older release reads a
 newer one's rows on rollback or while both run during a deploy, and can
 fail on a changed field (#957).
+
+Archive sitemap rows are the long-lived case (#1088). They live up to 30
+days (`archive_sitemap_ttl`) and their keys carry no version, so a change
+to what an archive file lists must rename the key, or old rows serve for
+weeks. Edge copies live up to a week and a rename cannot drop them, so
+that release must also purge the sitemap paths at the edge. A rollback
+reads the newer rows in the same way.
 `test_a_cached_field_change_bumps_the_namespace` pins a digest of every
 registered type's fields beside `NAMESPACE_VERSION` and fails until a
 field change bumps it. A bump cold-starts the whole cache once.
