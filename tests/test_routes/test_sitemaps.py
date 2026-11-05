@@ -3309,7 +3309,7 @@ def test_sitemap_index_lists_site_then_hubs_then_newest_archive_first(
     client, tmp_path, monkeypatch
 ):
     _seed_archive_order_fixture(tmp_path, monkeypatch)
-    paths = list(_index_lastmods(client))
+    paths = _index_paths(client, "/sitemap.xml")
 
     site = {"/meta-sitemap.xml", "/sitemap-maintainers.xml"} | {
         f"/sitemap-series-diffs-{h}.xml" for h in "0123456789abcdef"
@@ -3342,7 +3342,7 @@ def test_sitemap_index_orders_pages_of_one_period_by_inbox_then_page(
     march = seed_thread_shape(sub, "alpha", [("c@x", None)])
     _set_article_date(march["c@x"][0], datetime(2026, 3, 5, tzinfo=UTC))
     _clear_sitemap_cache()
-    archive = [p for p in _index_lastmods(client) if "/2026/" in p]
+    archive = [p for p in _index_paths(client, "/sitemap.xml") if "/2026/" in p]
     assert archive == [
         "/alpha/2026/04/sitemap.xml",
         "/alpha/2026/04/sitemap-2.xml",
@@ -3398,7 +3398,7 @@ def test_ordering_changes_neither_the_index_nor_the_hub_loc_set(
     from urllib.parse import urlsplit
 
     _seed_archive_order_fixture(tmp_path, monkeypatch)
-    paths = list(_index_lastmods(client))
+    paths = _index_paths(client, "/sitemap.xml")
     assert len(paths) == len(set(paths))
     assert {p for p in paths if p.startswith("/alpha/")} == {
         "/alpha/sitemap.xml",

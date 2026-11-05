@@ -1286,7 +1286,7 @@ def inbox_sitemap_xml(
             )
 
         # Highest priority first, for crawlers that read only a prefix.
-        # Stable, so each tier keeps its newest-first order.
+        # Stable, so each tier keeps its existing order.
         entries.sort(key=lambda e: -e.priority)
         return SitemapPayload(
             body=_build_sitemap_xml(entries),
