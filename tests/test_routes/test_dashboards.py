@@ -1342,5 +1342,11 @@ def test_subsystem_dashboard_links_a_merged_reviewer_to_the_canonical_address(
         s.commit()
 
     text = client.get("/alpha/subsystem/cxl/").data.decode()
+    # Precondition: one merged row carrying both attestations.
+    assert text.count('class="subsystem-reviewer-heading"') == 1
+    assert '<span class="count">2</span>' in text
+    # The retired address appears nowhere in the page, not just in hrefs.
+    assert "corp.example" not in text
+    assert "jic23" not in text
     hrefs = re.findall(r'href="(/alpha/reviewer/[^"]*)"', text)
     assert hrefs == ["/alpha/reviewer/jonathan.cameron%40kernel.org"], hrefs
