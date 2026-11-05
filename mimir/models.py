@@ -481,9 +481,11 @@ class MainlineState(Base):
 
     Two independent cursors:
     - `last_commit_sha`, the git object id of the MAINTAINERS BLOB at
-      the last load. Lets `update-mainline` skip the parse step, and
-      the ~15k-row replace it drives, unless that file's CONTENT
-      changed. It held the tree HEAD until 2026-07-29, which meant
+      the last load, plus `:<mailmap blob id>` when the tree has a
+      `.mailmap`. Lets `update-mainline` skip the parse step, and
+      the ~15k-row replace it drives, unless either file's CONTENT
+      changed. A `.mailmap`-only change therefore reruns the replace
+      and rotates the message-page ETags. It held the tree HEAD until 2026-07-29, which meant
       every push to Linus's tree triggered a full reparse and rewrote
       the subsystems triple to identical values. The name is kept
       (avoiding a migration for a column whose shape is unchanged: a
