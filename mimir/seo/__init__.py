@@ -36,7 +36,7 @@ from mimir.seo.sitemaps import (
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     series_diff_sitemap_xml,
-    sitemap_indexes_xml,
+    sitemap_index_xml,
     warm_latest_archive_sitemaps,
 )
 
@@ -56,6 +56,6 @@ __all__ = [
     "maintainers_sitemap_xml",
     "meta_sitemap_xml",
     "series_diff_sitemap_xml",
-    "sitemap_indexes_xml",
+    "sitemap_index_xml",
     "warm_latest_archive_sitemaps",
 ]

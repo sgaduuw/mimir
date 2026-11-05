@@ -1,4 +1,4 @@
-"""`/sitemap.xml`, `/messages-sitemap.xml`, `/meta-sitemap.xml`,
+"""`/sitemap.xml`, `/meta-sitemap.xml`,
 `/sitemap-maintainers.xml`, `/sitemap-series-diffs-<h>.xml`,
 `/<inbox>/sitemap.xml` and the archive files.
 
@@ -7,10 +7,9 @@
 inbox, `/sitemap-maintainers.xml` (a urlset of every maintainer
 profile page), and sixteen `/sitemap-series-diffs-<h>.xml` (the series
 cover diffs, one page per first hex character of the key), plus the
-per-inbox year and month files of thread URLs. `/messages-sitemap.xml`
-is a second, independent index of the same archive files' message
-halves (#964). Crawlers fetch the sub-sitemaps independently and
-skip unchanged inboxes via each entry's `<lastmod>`. The index/meta
+per-inbox year and month files of thread URLs. Crawlers fetch the
+sub-sitemaps independently and skip unchanged inboxes via each entry's
+`<lastmod>`. The index/meta
 split (issue #10) replaced the earlier single monolithic urlset;
 cross-posted articles now appear in each linked inbox's sitemap
 (every one is a real URL, and the page's own `<link rel="canonical">`
@@ -29,8 +28,12 @@ day's first article happened to bump the date past the cached value.
 Dropping the HTTP validator makes each fetch a full 200; the per-URL
 `<lastmod>` inside the XML stays the crawler-facing freshness signal,
 and the per-endpoint `Cache-Control: max-age=300` (set in hooks.py)
-still lets edges cache briefly and re-fetch fresh.
+still lets edges, browsers and crawlers cache briefly and re-fetch fresh. The
+archive files also send `Cloudflare-CDN-Cache-Control`, so Cloudflare's
+edge keeps them for up to a week (#1088).
 """
+
+from datetime import UTC, datetime
 
 from flask import Response, abort
 
@@ -41,9 +44,14 @@ from mimir.seo import (
     maintainers_sitemap_xml,
     meta_sitemap_xml,
     series_diff_sitemap_xml,
-    sitemap_indexes_xml,
+    sitemap_index_xml,
 )
-from mimir.seo.sitemaps import SERIES_DIFF_BUCKETS, SitemapPayload
+from mimir.seo.sitemaps import (
+    SERIES_DIFF_BUCKETS,
+    WEEK_SEC,
+    SitemapPayload,
+    archive_sitemap_ttl,
+)
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _get_inbox_or_404, _site_base
 
@@ -69,19 +77,7 @@ def sitemap() -> Response:
     independently and can skip unchanged inboxes between visits via
     the per-entry `<lastmod>`. Cached for SITEMAP_TTL_SEC."""
     with SessionLocal() as session:
-        payload = sitemap_indexes_xml(session, _site_base())[0]
-    return _sitemap_response(payload)
-
-
-@bp_web.route("/messages-sitemap.xml")
-def messages_sitemap() -> Response:
-    """Sitemap index of message pages: the `messages-` sibling of every
-    archive file `/sitemap.xml` lists (#964). Message pages mostly
-    duplicate lore.kernel.org, so they are kept apart from the pages
-    mimir adds, and dropping them later is one index and one robots.txt
-    line. Built and cached together with `/sitemap.xml`."""
-    with SessionLocal() as session:
-        payload = sitemap_indexes_xml(session, _site_base())[1]
+        payload = sitemap_index_xml(session, _site_base())
     return _sitemap_response(payload)
 
 
@@ -141,14 +137,12 @@ def archive_sitemap(
     year: int,
     month: int | None = None,
     page: int = 1,
-    *,
-    messages: bool = False,
 ) -> Response:
-    """One month or year's thread URLs for one inbox, paged, or with
-    `messages` its message URLs.
+    """One month or year's thread URLs for one inbox, paged.
 
-    These files are the only sitemap surface listing thread and message
-    pages, every root included (#964).
+    These files are the only sitemap surface listing thread pages (#964).
+    A root whose thread the column cannot yet rank is in none of them
+    until its backfill reaches it (#1089).
 
     Validated before it reaches SQL, because both segments arrive from
     the URL. An out-of-range month would otherwise build a nonsense
@@ -168,20 +162,27 @@ def archive_sitemap(
         abort(404)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        payload = archive_sitemap_xml(
-            session, inbox, year, month, page, _site_base(), messages=messages
-        )
+        payload = archive_sitemap_xml(session, inbox, year, month, page, _site_base())
     if payload is None:
         abort(404)
-    return _sitemap_response(payload)
+    response = _sitemap_response(payload)
+    # The edge follows the origin TTL, capped at a week: a cache-key bump
+    # cannot drop an edge copy, so a month would outlast a release that
+    # changes what these files hold (3.6.0). Cloudflare strips this header;
+    # clients keep `Cache-Control: max-age=300` from hooks.py.
+    edge = min(archive_sitemap_ttl(year, month, datetime.now(UTC).date()), WEEK_SEC)
+    response.headers["Cloudflare-CDN-Cache-Control"] = f"max-age={edge}"
+    return response
 
 
+@bp_web.route("/messages-sitemap.xml")
 @bp_web.route("/<inbox_name>/<int:year>/messages-sitemap.xml")
 @bp_web.route("/<inbox_name>/<int:year>/messages-sitemap-<int:page>.xml")
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/messages-sitemap.xml")
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/messages-sitemap-<int:page>.xml")
-def archive_messages_sitemap(
-    inbox_name: str, year: int, month: int | None = None, page: int = 1
-) -> Response:
-    """The message half of the matching `archive_sitemap` file (#964)."""
-    return archive_sitemap(inbox_name, year, month, page, messages=True)
+def messages_sitemap_gone(**_url_args) -> Response:
+    """The retired message sitemaps (#1089). Every file was empty once the
+    backfill finished. 410, not 404, so a crawler drops the URL rather
+    than retrying it. Nothing validates the segments: a retired URL is
+    gone whatever its inbox or date."""
+    abort(410)

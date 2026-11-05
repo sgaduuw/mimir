@@ -603,6 +603,9 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + path("cover"))
             assert page.evaluate("typeof htmx") == "object"
+            # Amplify HTMX's default binding delay: the diff explicitly settles
+            # immediately so fast keyboard actions cannot click unbound links.
+            assert page.evaluate("htmx.config.defaultSettleDelay = 250") == 250
             page.evaluate("window.diffNavigationSentinel = 42")
             page.locator("#theme-select").select_option("dark")
 

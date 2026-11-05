@@ -26,7 +26,9 @@ query to find older matches.
 
 A message page shows a mail header, body and attachments, followed by its
 thread overview. The context bar links to the whole thread and offers
-Previous and Next controls. These controls and the thread overview keep
+Previous and Next controls. Overview rows show the sender and date; subjects
+appear only when they differ from the thread's topic after reply-prefix
+normalization. These controls and the thread overview keep
 working without JavaScript; with HTMX, navigation replaces the message and
 scrolls back to its header. In a
 thread longer than one thread-view page, the tree shows the part around the
@@ -101,7 +103,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/<YYYY>/`, `/<inbox>/<YYYY>/<MM>/` | Year and month archives |
 | `/<inbox>/search?q=<query>` | Search subject and author |
 | `/<inbox>/author/<substring>` | Author activity |
-| `/<inbox>/reviewer/<address>` | Review activity |
+| `/<inbox>/reviewer/<address>` | Review activity, including trailers under retired addresses the kernel's `.mailmap` maps to it; a retired address redirects (301) to the canonical one when that is a linkable address |
 | `/m/<message-id>` | Redirect to the canonical message URL |
 | `/r/<message-id>`, `/all/<message-id>/` | Accept pasted lore shapes through the same global Message-ID lookup; input-only aliases, never emitted by the site |
 | `/m/?id=<text>` | The same lookup for a GET form. Accepts a bare ID, `<id>`, `mid:<id>`, or a lore-style URL or path ending in the ID; a miss is a 404 |
@@ -209,29 +211,31 @@ their membership can be determined.
 
 | Path | Contents |
 | --- | --- |
-| `/sitemap.xml` | Index of the following sitemap surfaces, except the message files |
-| `/messages-sitemap.xml` | Index of the `messages-sitemap.xml` files |
+| `/sitemap.xml` | Index of the following sitemap surfaces |
 | `/meta-sitemap.xml` | Site root, `/merge-window` and `/llms.txt` |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
-| `/<inbox>/<YYYY>/messages-sitemap.xml` | A year's message pages: the roots of threads still being backfilled |
-| `/<inbox>/<YYYY>/<MM>/messages-sitemap.xml` | A month's message pages |
 | `/sitemap-maintainers.xml` | Supported maintainer profiles |
 | `/sitemap-series-diffs-<h>.xml` | Cover-letter diffs between adjacent revisions of each series whose key starts with `<h>` (`0` to `f`) |
 
-Archive sitemaps can use `sitemap-2.xml` and later pages, and the message files
-`messages-sitemap-2.xml` with the same numbering. The index chooses a
+Archive sitemaps can use `sitemap-2.xml` and later pages. The index chooses a
 yearly bucket only when its root count and expanded thread-page count fit the
-limits; otherwise it lists monthly buckets. A bucket whose roots are all of one
-kind serves an empty file for the other kind. Monthly routes remain available
-when the index advertises a year. See [sitemaps.py](../mimir/seo/sitemaps.py) for
+limits; otherwise it lists monthly buckets. A root whose thread is still being
+backfilled is in no sitemap until it is ranked, so a bucket of only such roots
+serves an empty file. Monthly routes remain available
+when the index advertises a year. The retired `/messages-sitemap.xml` and
+`messages-sitemap*.xml` files answer 410. See [sitemaps.py](../mimir/seo/sitemaps.py) for
 page-size and protocol bounds.
 
-Sitemap origin caches last one hour and include the thread render cap
-where pagination depends on it. Responses have no ETag or Last-Modified
-validator and permit five minutes of downstream caching. Message and thread
-pages instead use ETags with revalidation.
+Archive sitemap files are cached at the origin by the age of the period they
+cover: one hour for the open and previous period, then a week, two weeks, and
+30 days once the period ended over a year ago. They also send
+`Cloudflare-CDN-Cache-Control` with that TTL capped at a week. Other sitemap
+origin caches last one hour. Keys include the thread render cap where
+pagination depends on it. Responses have no ETag or Last-Modified validator and
+send `Cache-Control: public, max-age=300` downstream. Message and thread pages
+instead use ETags with revalidation.
 
 ## Site metadata and probes
 

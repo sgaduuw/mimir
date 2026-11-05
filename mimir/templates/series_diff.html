@@ -5,7 +5,7 @@
 {% block page_scripts %}<script src="{{ url_for('static', filename='js/series-diff.js') }}?v={{ mimir_version }}" defer></script>{% endblock %}
 {% block content %}
 <article id="series-diff" class="series-diff-page" tabindex="-1" aria-labelledby="series-diff-title"
-         hx-target="main" hx-select="main" hx-swap="outerHTML show:#series-diff:top" hx-push-url="true" hx-sync="closest main:replace"
+         hx-target="main" hx-select="main" hx-swap="outerHTML settle:0 show:#series-diff:top" hx-push-url="true" hx-sync="closest main:replace"
          data-position="{{ 'cover' if diff.position == 0 else diff.position }}" data-inbox="{{ inbox_name }}"
          data-page-title="{{ page_title }}" data-page-description="{{ page_desc }}" data-canonical="{{ canonical_url }}">
   <header>

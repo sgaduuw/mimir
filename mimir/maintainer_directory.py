@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.mailmap import identity_addresses, rules_version
 from mimir.models import (
     ArticleList,
     ArticleTrailer,
@@ -211,7 +212,9 @@ def maintainer_profile(
                 # Every stored role: no row changes, the index can seek (#831).
                 .where(
                     ArticleTrailer.role.in_(INDEXED_TRAILER_ROLES),
-                    ArticleTrailer.address_normalized == address,
+                    ArticleTrailer.address_normalized.in_(
+                        identity_addresses(session, address)
+                    ),
                 )
                 .distinct()
                 .order_by(Inbox.name)
@@ -227,7 +230,7 @@ def maintainer_profile(
 
     return cache.get_or_compute(
         session,
-        f"maintainer:profile:{address}",
+        f"maintainer:profile:{address}:{rules_version(session)}",
         MAINTAINER_DIRECTORY_CACHE_TTL_SEC,
         compute,
         force=force,
@@ -235,7 +238,8 @@ def maintainer_profile(
 
 
 def maintainer_review_counts_query(session: Session, address: str) -> dict[str, int]:
-    """Uncached indexed trailer-event totals per inbox for a normalized address.
+    """Uncached indexed trailer-event totals per inbox for a normalized address,
+    counting the retired addresses `.mailmap` maps to it (#1087).
 
     Matches the reviewer listing's role and membership semantics: two roles
     on one article count twice, and a cross-post contributes to each inbox.
@@ -248,7 +252,7 @@ def maintainer_review_counts_query(session: Session, address: str) -> dict[str, 
         .join(Inbox, Inbox.id == ArticleList.inbox_id)
         .where(
             ArticleTrailer.role.in_(INDEXED_TRAILER_ROLES),
-            ArticleTrailer.address_normalized == address,
+            ArticleTrailer.address_normalized.in_(identity_addresses(session, address)),
         )
         .group_by(Inbox.id, Inbox.name)
         .order_by(Inbox.name)
@@ -256,17 +260,20 @@ def maintainer_review_counts_query(session: Session, address: str) -> dict[str, 
     return dict(rows)
 
 
-def _review_counts_key(address: str) -> str:
-    return f"maintainer:review_counts_v1:{address.lower()}"
+def _review_counts_key(session: Session, address: str) -> str:
+    # v2: the mailmap rules version is an input of the counts.
+    return f"maintainer:review_counts_v2:{rules_version(session)}:{address.lower()}"
 
 
-def cached_maintainer_review_counts(address: str) -> dict[str, int] | None:
+def cached_maintainer_review_counts(
+    session: Session, address: str
+) -> dict[str, int] | None:
     """Read counts without aggregation; an empty snapshot is distinct from a miss.
 
     Separate primitive data preserves the registered MaintainerProfile shape
     across rolling versions. The route checks current M-only existence first.
     """
-    return cache.get(_review_counts_key(address))
+    return cache.get(_review_counts_key(session, address))
 
 
 def warm_maintainer_review_counts(session: Session, *, force: bool = False) -> None:
@@ -279,7 +286,7 @@ def warm_maintainer_review_counts(session: Session, *, force: bool = False) -> N
         if is_addressable_maintainer_address(address):
             cache.get_or_compute(
                 session,
-                _review_counts_key(address),
+                _review_counts_key(session, address),
                 MAINTAINER_DIRECTORY_CACHE_TTL_SEC,
                 lambda address=address: maintainer_review_counts_query(
                     session, address

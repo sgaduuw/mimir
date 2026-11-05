@@ -17,11 +17,11 @@
 
 {% if entries %}
 <p><small>
-  <strong>{{ total }} attestation{{ '' if total == 1 else 's' }}</strong>
-  {% if truncated %} · capped at {{ result_cap }} most-recent{% endif %}.
+  <strong>{{ total|format_count }} attestation{{ '' if total == 1 else 's' }}</strong>
+  {% if truncated %} · capped at {{ result_cap|format_count }} most-recent{% endif %}.
   {% set _parts = [] %}
   {% for role, n in role_counts.items()|sort %}
-    {% set _ = _parts.append(n|string + ' ' + role) %}
+    {% set _ = _parts.append(n|format_count + ' ' + role) %}
   {% endfor %}
   ({{ _parts|join(', ') }})
 </small></p>

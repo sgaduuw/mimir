@@ -329,6 +329,8 @@ pre.body-text-block {
 /* Year archive (#998): one row per month, name / bar / count. Names and
    counts never wrap; the bar column takes whatever width is left, so the
    row holds together down to 320 px. Rows are at least 44 px tall. */
+.year-total { color: var(--pico-muted-color); }
+.year-nav { max-width: 900px; }
 .year-rows {
   max-width: 900px;
   margin: 0;
@@ -840,9 +842,10 @@ nav[aria-label=breadcrumb] { --pico-nav-breadcrumb-divider: "/"; }
 .listing-main { overflow-wrap: anywhere; }
 .listing-table td { vertical-align: top; }
 .listing-time, .listing-date, .listing-count { font-variant-numeric: tabular-nums; }
-.listing-time, .listing-date, .listing-detail { color: var(--pico-muted-color); font-size: .85rem; }
+td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-color); font-size: .85rem; }
 .listing-subject { font-family: var(--pico-font-family-monospace); font-weight: 700; overflow-wrap: anywhere; text-decoration: none; }
 .listing-subject:hover { text-decoration: underline; }
+.listing-subject mark { padding: 0; }
 .listing-count { font-weight: 700; }
 .listing-role .badge { white-space: nowrap; letter-spacing: 0; }
 .listing-day th { padding-top: 1.25rem; text-align: left; }

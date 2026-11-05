@@ -30,7 +30,7 @@ Search the {{ inbox_name }} archive by subject or author.
 {% elif query %}
   {% if results %}
   <p><small>
-    The {{ matching_count }} newest matching message{{ '' if matching_count == 1 else 's' }}, grouped by thread root.
+    The {{ matching_count|format_count }} newest matching message{{ '' if matching_count == 1 else 's' }}, grouped by thread root.
     {% if truncated %}Capped at {{ result_cap }}; refine the query for more.{% endif %}
   </small></p>
   <table class="listing-table search-results">

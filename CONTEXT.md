@@ -1279,7 +1279,7 @@ Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
 match and age out via `purge_expired`. Most keys name no release:
-`patch_state`, the page-level `lifecycle_status_v2:...:{state_key}`,
+`patch_state`, the page-level `lifecycle_status_v3:...:{state_key}`,
 `merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
 pills, sitemaps and dashboards do not. So an older release reads a
 newer one's rows on rollback or while both run during a deploy, and can
@@ -1287,6 +1287,14 @@ fail on a changed field (#957).
 `test_a_cached_field_change_bumps_the_namespace` pins a digest of every
 registered type's fields beside `NAMESPACE_VERSION` and fails until a
 field change bumps it. A bump cold-starts the whole cache once.
+
+Archive sitemap rows are the long-lived case (#1088). They live up to 30
+days (`archive_sitemap_ttl`) and their keys carry no release, so a change
+to what an archive file lists must rename the keys (the year and month
+page keys, and `sitemap:monthids:` when the root query changes), or old
+rows serve for weeks. Edge copies live up to a week and a rename cannot
+drop them, so that release must also purge the sitemap paths at the edge.
+A rollback reads the newer rows in the same way.
 
 `cache.get_or_compute(session, key, ttl, fn)` is the high-level API;
 `force=True` on dashboard helpers bypasses the cache and recomputes
@@ -1693,13 +1701,14 @@ A migration guard catches persisted conflicts before appending robots entries.
 The prefix rules only keep redundant lookup URLs out of the crawl; normal
 messages and query-bearing comparisons remain crawlable.
 
-Hyphenated date aliases perform no article lookup. They use `url_for` to spell
-the existing message/thread acceptor, which remains the one authority for date
-and membership. This promises an accepted slash-form URL, not byte-identical
-canonical month padding. A wrong-inbox message may recover through its existing
-redirect; a thread with no membership in that inbox remains404. Linked cross-
-posts keep the acceptor's inbox-specific conversation semantics. New aliases do
-not introduce a second canonical or identity policy.
+Hyphenated date aliases perform no article lookup. They use the shared message
+and thread URL builders so the redirect spells months exactly as canonical
+links do (#1083). Invalid years and months return 404 directly; the existing
+acceptor remains the authority for an article's actual date and membership.
+A wrong-inbox message may recover through its existing redirect; a thread with
+no membership in that inbox remains 404. Linked cross-posts keep the acceptor's
+inbox-specific conversation semantics. New aliases do not introduce a second
+canonical or identity policy.
 
 ## Canonical-inbox resolution (cross-posts)
 
@@ -1859,31 +1868,27 @@ afterthought:
   root expands to; see the ETag section for the surface that was
   missed the first time.
 
-  **Two indexes, split by page value (#964).** `/sitemap.xml` lists
-  the pages mimir adds over lore.kernel.org: meta, inbox files,
+  **One index; the message sitemaps are retired (#1089).** `/sitemap.xml`
+  lists the pages mimir adds over lore.kernel.org: meta, inbox files,
   maintainers, series diffs, and the archive files, which hold `/t`
-  URLs only. `/messages-sitemap.xml` is a second, independent index
-  (neither references the other, so it is not nesting) of each archive
-  file's `messages-` sibling, with the same names and page numbers.
-  Those hold message URLs: only threads listed by their root while the
-  backfill has not reached them. Since #1003 a single-message thread is
-  in the `/t` file like any other, because its message page
-  canonicalises to its `/t`. Replies are in neither tree, because they
-  canonicalise to `/t`. The split costs
-  nothing to build: `_archive_entries` tags each entry with
-  its kind, which is the one `/t`-versus-message decision, and
-  `_split_by_kind` cuts one build into both files. So there is one
-  `_month_counts` pass, one build and one cache row per bucket, and one
-  cache row for both indexes; the layout is decided on all roots, which
-  is why the trees share page numbers. Do not filter on anything but
-  the tag: any second test, such as "the thread has more than one
-  member", disagrees with the pages' canonicals mid-backfill. A bucket
-  whose roots are all one kind serves an empty urlset for the other
-  kind rather than a 404, because the index names both files. No count
-  column skips those files, since it would be that second test. The
-  point of the split is per-set coverage in Search Console, and the
-  option to drop message pages later by removing one index and one
-  robots.txt line.
+  URLs only. #964 split a second index, `/messages-sitemap.xml`, off it
+  for the message URLs of threads the backfill had not reached; once the
+  backfill completed, all 3,339 of its files were empty. Its routes now
+  answer 410, not 404, so a crawler drops them rather than retrying.
+  `_archive_entries` lists a root in `unmaterialised_roots` nowhere, so a
+  mid-backfill root is in no sitemap until it is ranked, then in its `/t`
+  file. Listing its `/t` meanwhile would advertise a URL its messages
+  disclaim. A bucket of only such roots serves an empty urlset, not a 404,
+  because the index names a file by root count. The cache keys were
+  renamed (`sitemap:index:`, `sitemap:yearpages:`, `sitemap:monthpages:`)
+  because the cached value stopped being a `(thread, message)` pair.
+
+  **Order is the only lever for a capped crawler (#1085).** AhrefsBot reads
+  `/sitemap.xml` and exactly its first 999 children, so entries go by value:
+  site files, then hubs, then archive files newest period first (a year file
+  ranks as its last month), then inbox, then page. A hub file lists its
+  entries by `<priority>`, highest first. Google and Bing read everything,
+  so the order costs them nothing.
 
   The per-inbox `/<inbox>/sitemap.xml` holds hub pages only. It used to
   list the 5,000 most recent thread roots too, which after the split
@@ -3080,12 +3085,12 @@ keeps everything; only the rendering changed.
 
 **Counts in the pill itself, not just the tooltip.** Real
 maintainer triage often wants the count at-a-glance:
-`REVIEWED: 12 reviews, 4 by maintainers` says how many review
+`REVIEWED · 12 reviews, 4 by maintainers` says how many review
 trailers there are and how many came from maintainers, without
 hovering. The earlier `12 (4M)` shorthand was opaque to new readers
 (#1068). These are trailer counts, not deduplicated people. Hover
-then surfaces the per-reviewer names. The v2 lifecycle cache key
-keeps the older compact strings out of the new presentation without
+then surfaces the per-reviewer names. The v3 lifecycle cache key
+keeps the older colon strings out of the new presentation (#1081) without
 changing the cached shape or invalidating unrelated cache families.
 
 The lifecycle pill's tooltip leading line carries the commit

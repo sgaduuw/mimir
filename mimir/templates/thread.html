@@ -11,9 +11,9 @@
 {% block meta_description %}
 {%- set _n = total_count -%}
 {%- if total_pages > 1 -%}
-Messages {{ (page - 1) * page_size + 1 }} to {{ [page * page_size, _n]|min }} of {{ _n }} in {{ inbox_name }}: {{ (root.subject|clean_subject or '(no subject)') | truncate(110) }}
+Messages {{ ((page - 1) * page_size + 1)|format_count }} to {{ [page * page_size, _n]|min|format_count }} of {{ _n|format_count }} in {{ inbox_name }}: {{ (root.subject|clean_subject or '(no subject)') | truncate(110) }}
 {%- else -%}
-All {{ _n }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.subject|clean_subject or '(no subject)') | truncate(110) }}
+All {{ _n|format_count }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }}: {{ (root.subject|clean_subject or '(no subject)') | truncate(110) }}
 {%- endif -%}
 {%- endblock %}
 {% block content %}

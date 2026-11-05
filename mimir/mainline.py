@@ -19,6 +19,7 @@ to learn two paths. Keeping it together follows the same shape as
 `mimir/inboxes.py` (bootstrap + CRUD + observe in one place).
 """
 
+import io
 import logging
 import re
 import subprocess
@@ -30,6 +31,7 @@ from itertools import batched
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from dulwich.mailmap import read_mailmap
 from dulwich.repo import Repo
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, insert, select, tuple_
@@ -46,6 +48,7 @@ if TYPE_CHECKING:
     from mimir.config import TreeConfig
 from mimir.extensions import SessionLocal
 from mimir.models import (
+    Mailmap,
     MainlineCommit,
     MainlineState,
     Subsystem,
@@ -682,9 +685,10 @@ def _submit_last_walked_at(
 
 
 def _rules_cursor_content(stored: str | None) -> str | None:
-    """The MAINTAINERS-blob half of a stored rules cursor.
+    """The content half of a stored rules cursor: the MAINTAINERS blob
+    id, plus `:<mailmap-blob-id>` when the tree has a `.mailmap`.
 
-    The cursor is `<blob-sha>` normally and `<blob-sha>.<generation>`
+    The cursor is `<content>` normally and `<content>.<generation>`
     after a forced rebuild (see `_next_rules_cursor`). The reparse gate
     compares only this half, so a forced rebuild does not cost an extra
     reparse on the next natural tick."""
@@ -693,7 +697,7 @@ def _rules_cursor_content(stored: str | None) -> str | None:
     return stored.split(".", 1)[0]
 
 
-def _next_rules_cursor(stored: str | None, maintainers_sha: str) -> str:
+def _next_rules_cursor(stored: str | None, rules_key: str) -> str:
     """The cursor value to store for a rebuild that just happened.
 
     When the blob changed, the content itself is a new version, so the
@@ -711,8 +715,8 @@ def _next_rules_cursor(stored: str | None, maintainers_sha: str) -> str:
     A forced rebuild IS the operator asserting the rules may differ from
     what the bytes imply (a parser fix, a hand-repaired triple), so it
     gets a new generation."""
-    if _rules_cursor_content(stored) != maintainers_sha:
-        return maintainers_sha
+    if _rules_cursor_content(stored) != rules_key:
+        return rules_key
     _, _, gen = (stored or "").partition(".")
     try:
         current = int(gen)
@@ -726,15 +730,16 @@ def _next_rules_cursor(stored: str | None, maintainers_sha: str) -> str:
         # cannot see. Restarting the count is recoverable and enough:
         # any new value moves the validator, which is the whole job.
         current = 0
-    return f"{maintainers_sha}.{current + 1}"
+    return f"{rules_key}.{current + 1}"
 
 
 def _submit_maintainers_replace(
     writer,
     tree_name: str,
-    maintainers_sha: str,
+    rules_key: str,
     force: bool,
     sub_rows: list[dict],
+    mailmap_rows: list[dict],
     path_rows_for: Callable[[list[int]], list[dict]],
     maintainer_rows_for: Callable[[list[int]], list[dict]],
     list_rows_for: Callable[[list[int]], list[dict]],
@@ -762,7 +767,7 @@ def _submit_maintainers_replace(
             )
         ).first()
         last_sha = row[0] if row else None
-        if _rules_cursor_content(last_sha) == maintainers_sha and not force:
+        if _rules_cursor_content(last_sha) == rules_key and not force:
             # Sentinel: the replace did not run. The caller skips the
             # cache invalidations and returns (False, 0, head_sha).
             return (False, 0)
@@ -773,6 +778,11 @@ def _submit_maintainers_replace(
         # connection carries `PRAGMA foreign_keys=ON` (registered via
         # _sqlite_pragmas on the writer engine) so the cascade fires.
         conn.execute(delete(Subsystem))
+        # `.mailmap` rides the same transaction and the same cursor, so
+        # the mapping and the rules version can never disagree.
+        conn.execute(delete(Mailmap))
+        if mailmap_rows:
+            conn.execute(insert(Mailmap), mailmap_rows)
 
         # `sort_by_parameter_order=True` on the RETURNING insert aligns
         # the returned ids with the input order so path / maintainer
@@ -798,7 +808,7 @@ def _submit_maintainers_replace(
         # Link-trailer walker cursor (`commits_walked_to_sha`); only
         # `last_commit_sha` is touched here. Computed once into a local
         # so the insert and the update branches cannot drift apart.
-        next_cursor = _next_rules_cursor(last_sha, maintainers_sha)
+        next_cursor = _next_rules_cursor(last_sha, rules_key)
         conn.execute(
             sqlite_insert(MainlineState)
             .values(tree_name=tree_name, last_commit_sha=next_cursor)
@@ -814,6 +824,39 @@ def _submit_maintainers_replace(
     )
 
 
+def _mailmap_rows(data: bytes) -> list[dict]:
+    """Lowercased `{old_address, address}` rows from `.mailmap` bytes.
+
+    Parsed line by line because this runs inside the same try block as
+    the Linus commit walk: one line that raises would freeze MAINTAINERS
+    reloads and the walk on every tick. Like git, skip a line dulwich
+    cannot parse or that lacks a canonical or an old address. An
+    address mapped to itself is no redirect. An old address that maps
+    to more than one canonical address is ambiguous and gets no row,
+    whether git told the lines apart by name or the file is simply
+    inconsistent: the table keys on the address alone, so keeping any
+    target would merge one person into another. That is stricter than
+    git, in the safe direction: it can lose a merge, but it never
+    misattributes."""
+    targets: dict[str, set[str]] = {}
+    for line in data.splitlines():
+        try:
+            parsed = list(read_mailmap(io.BytesIO(line)))
+        except ValueError:
+            continue
+        for canonical, old in parsed:
+            if old is None or not old[1] or not canonical[1]:
+                continue
+            targets.setdefault(old[1].decode("utf-8", "replace").lower(), set()).add(
+                canonical[1].decode("utf-8", "replace").lower()
+            )
+    return [
+        {"old_address": old, "address": new}
+        for old, (new,) in ((o, t) for o, t in targets.items() if len(t) == 1)
+        if old != new
+    ]
+
+
 def load_maintainers(
     tree_path: Path,
     tree_name: str = "linus",
@@ -822,9 +865,10 @@ def load_maintainers(
 ) -> tuple[bool, int, str]:
     """Read MAINTAINERS at HEAD and replace the
     `subsystems` / `subsystem_paths` / `subsystem_maintainers` /
-    `subsystem_lists` projection in one transaction. Returns
+    `subsystem_lists` projection, and the `.mailmap` address pairs, in
+    one transaction. Returns
     `(ran, subsystems_loaded, head_sha)`; `ran=False` when the
-    MAINTAINERS blob's object id matches `last_commit_sha` and
+    MAINTAINERS and `.mailmap` blob ids match `last_commit_sha` and
     `force=False`.
 
     Gated on the BLOB, not on HEAD. Linus's tree is pushed to many
@@ -859,7 +903,15 @@ def load_maintainers(
         # only if MAINTAINERS' bytes changed. That is the property the
         # gate below wants; HEAD is merely correlated with it, and
         # badly (see this function's docstring).
-        maintainers_sha = blob_sha.decode("ascii")
+        rules_key = blob_sha.decode("ascii")
+        # `.mailmap` is optional. Its blob id joins the gate key only
+        # when present, so a tree without one keeps the bare MAINTAINERS
+        # key and an edit to `.mailmap` alone still triggers the reload.
+        mailmap_bytes = b""
+        if b".mailmap" in tree:
+            _mode, mailmap_sha = tree[b".mailmap"]
+            mailmap_bytes = repo[mailmap_sha].data
+            rules_key += ":" + mailmap_sha.decode("ascii")
 
     # Parse + build the row payloads BEFORE the write so the
     # writer-lock hold is short, then submit one composite WriteOp. The
@@ -884,6 +936,7 @@ def load_maintainers(
                 if "@" in normalized and parseaddr(normalized)[1] == normalized:
                     addresses.add(normalized)
         list_addresses.append(sorted(addresses))
+    mailmap_rows = _mailmap_rows(mailmap_bytes)
 
     def _path_rows_for(sub_ids: list[int]) -> list[dict]:
         rows: list[dict] = []
@@ -918,9 +971,10 @@ def load_maintainers(
     ran, loaded = _submit_maintainers_replace(
         writer,
         tree_name,
-        maintainers_sha,
+        rules_key,
         force,
         sub_rows,
+        mailmap_rows,
         _path_rows_for,
         _maintainer_rows_for,
         _list_rows_for,

@@ -653,7 +653,7 @@ def test_the_counting_note_follows_the_list_and_is_linked(client, monkeypatch):
     [
         (
             (14450, 9760),
-            "9760 of 14450 commits in linux-next link their mailing-list patch",
+            "9,760 of 14,450 commits in linux-next link their mailing-list patch",
         ),
         ((None, None), None),
     ],
@@ -682,9 +682,15 @@ def test_page_says_how_much_of_linux_next_it_can_see(client, counts, expected):
         re.sub(r"<[^>]+>", "", client.get(MERGE_WINDOW_PATH).get_data(as_text=True)),
     )
     found = re.search(
-        r"\d+ of \d+ commits in linux-next link their mailing-list patch", text
+        r"(?<![\d,])([\d,]+) of ([\d,]+) commits in linux-next link their mailing-list patch",
+        text,
     )
     assert (found.group(0) if found else None) == expected
+    if found:
+        assert tuple(int(n.replace(",", "")) for n in found.groups()) == (
+            counts[1],
+            counts[0],
+        )
     assert "Link: trailer" in text  # the general note stays either way
 
 

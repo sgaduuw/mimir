@@ -8,9 +8,10 @@ passed as `None` to `render_template`, which base.html already treats
 as falsy (no inbox nav links rendered, no atom-feed `<link>`).
 """
 
-from flask import abort, render_template
+from flask import abort, redirect, render_template
 
 from mimir.extensions import SessionLocal
+from mimir.mailmap import canonical_address
 from mimir.maintainer_directory import (
     MaintainerProfile,
     cached_maintainer_review_counts,
@@ -59,9 +60,19 @@ def maintainer_view(address: str):
     with SessionLocal() as session:
         profile = maintainer_profile(session, address_normalized)
         if profile is None:
+            # A retired address that the kernel's `.mailmap` maps to a
+            # current `M:` address keeps its indexed URL alive. One hop,
+            # and only on this path, so live profiles pay nothing.
+            mapped = canonical_address(session, address_normalized)
+            if (
+                mapped is not None
+                and is_addressable_maintainer_address(mapped)
+                and maintainer_profile(session, mapped) is not None
+            ):
+                return redirect(maintainer_path(mapped), code=301)
             abort(404)
+        review_counts = cached_maintainer_review_counts(session, address_normalized)
 
-    review_counts = cached_maintainer_review_counts(address_normalized)
     # Counts and profile refresh independently. Use one snapshot for both
     # chips and the header total, including an intentionally empty snapshot.
     review_inboxes = (

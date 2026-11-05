@@ -43,7 +43,7 @@
 <p class="thread-byline">
   Started by <strong>{{ root.author|display_name }}</strong>
   {%- if root.date %} on {{ day(root.date) }}{% endif %}
-  {%- if total_count > 1 %} &middot; {{ total_count }} messages from {{ author_count }} author{{ '' if author_count == 1 else 's' }}
+  {%- if total_count > 1 %} &middot; {{ total_count|format_count }} messages from {{ author_count|format_count }} author{{ '' if author_count == 1 else 's' }}
   {%- if last_activity %} &middot; Last reply {{ day(last_activity) }}{% endif %}{% endif %}
 </p>
 {% set _maints = subsystem_hits | subsystem_maintainers %}
@@ -56,15 +56,15 @@
 {% set _patches, _files, _ins, _dels = series_totals %}
 <section class="thread-card" aria-labelledby="card-series">
   <h2 id="card-series" class="card-label">Series</h2>
-  <p>{{ _patches }} patch{{ '' if _patches == 1 else 'es' }}
-    {%- if _files %}, {{ _files }} file{{ '' if _files == 1 else 's' }}{% endif %}</p>
+  <p>{{ _patches|format_count }} patch{{ '' if _patches == 1 else 'es' }}
+    {%- if _files %}, {{ _files|format_count }} file{{ '' if _files == 1 else 's' }}{% endif %}</p>
   {% if _ins is not none %}
   {# Two segments, added then removed. The CSP forbids `style=`, so the
      split is an SVG attribute, as in year.html. #}
   {% set _total = _ins + _dels %}
   {% set _split = (_ins / _total * 100) | round(1) if _total else 0 %}
-  <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ '{:,}'.format(_ins) }} lines added, {{ '{:,}'.format(_dels) }} removed"><rect class="bar-added" width="{{ _split }}" height="6"/><rect class="bar-removed" x="{{ _split }}" width="{{ 100 - _split }}" height="6"/></svg>
-  <p><small>+{{ '{:,}'.format(_ins) }} &minus;{{ '{:,}'.format(_dels) }}</small></p>
+  <svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" role="img" aria-label="{{ _ins|format_count }} lines added, {{ _dels|format_count }} removed"><rect class="bar-added" width="{{ _split }}" height="6"/><rect class="bar-removed" x="{{ _split }}" width="{{ 100 - _split }}" height="6"/></svg>
+  <p><small>+{{ _ins|format_count }} &minus;{{ _dels|format_count }}</small></p>
   {% endif %}
 </section>
 {% endif %}
