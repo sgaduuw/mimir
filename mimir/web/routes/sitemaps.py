@@ -7,10 +7,9 @@
 inbox, `/sitemap-maintainers.xml` (a urlset of every maintainer
 profile page), and sixteen `/sitemap-series-diffs-<h>.xml` (the series
 cover diffs, one page per first hex character of the key), plus the
-per-inbox year and month files of thread URLs. The `messages-sitemap*.xml`
-index and files were retired in #1089 and answer 410 (`messages_sitemap_gone`).
-Crawlers fetch the sub-sitemaps independently and
-skip unchanged inboxes via each entry's `<lastmod>`. The index/meta
+per-inbox year and month files of thread URLs. Crawlers fetch the
+sub-sitemaps independently and skip unchanged inboxes via each entry's
+`<lastmod>`. The index/meta
 split (issue #10) replaced the earlier single monolithic urlset;
 cross-posted articles now appear in each linked inbox's sitemap
 (every one is a real URL, and the page's own `<link rel="canonical">`

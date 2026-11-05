@@ -21,6 +21,10 @@ changes, not internal refactors. Categories: **Added**,
 
 - Old `/maintainers/<retired address>` URLs now redirect with a 301 to the maintainer's current profile, using the kernel's `.mailmap` to find it. Addresses that do not map to a current maintainer still return 404. The first MAINTAINERS reload after the upgrade also loads the `.mailmap` (#1069).
 
+### Changed
+
+- `/sitemap.xml` lists the site files first, then the inbox files, then the archive files with the newest period first, so crawlers that read only the first part of it reach the pages that matter. Files for a year after today, from mis-dated mail, go last. Each `/<inbox>/sitemap.xml` lists its highest-priority entries first. No URL or `<lastmod>` changes (#1085).
+
 ### Fixed
 
 - The subsystem dashboard's "Active reviewers" list shows one row per person when the kernel's `.mailmap` maps several of their addresses together, with the attestation counts added up. The row shows the canonical address (or its hidden placeholder), never a retired one. The reviewer page, maintainer profile review activity and lifecycle pill counts still count one address (#986).

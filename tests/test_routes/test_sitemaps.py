@@ -3262,3 +3262,187 @@ def test_the_index_lists_exactly_the_archive_files_that_exist(client):
     assert expected, "precondition: alpha has archive files"
     assert {p for p in listed if p.startswith("/alpha/2")} == expected
     assert not [p for p in listed if "messages-" in p], listed
+
+
+def _seed_archive_order_fixture(tmp_path, monkeypatch):
+    """`alpha` sorts before `beta` but holds the old year file (1998) and
+    month files (2026), while `beta` holds the newest period as a year
+    file. Alphabetical or oldest-first order cannot pass by accident."""
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 2)
+    when = {
+        "alpha": [
+            ("old@x", datetime(1998, 5, 1, tzinfo=UTC)),
+            ("jan@x", datetime(2026, 1, 5, tzinfo=UTC)),
+            ("feb@x", datetime(2026, 2, 5, tzinfo=UTC)),
+            ("mar@x", datetime(2026, 3, 5, tzinfo=UTC)),
+        ],
+        "beta": [("new@x", datetime(2026, 6, 5, tzinfo=UTC))],
+    }
+    for inbox, threads in when.items():
+        for mid, stamp in threads:
+            sub = tmp_path / mid
+            sub.mkdir()
+            seeded = seed_thread_shape(sub, inbox, [(mid, None)])
+            _set_article_date(seeded[mid][0], stamp)
+    _clear_sitemap_cache()
+
+
+# Oldest period last; a year file ranks as its final month, so beta's 2026
+# year file leads alpha's March.
+_EXPECTED_ARCHIVE_ORDER = [
+    "/beta/2026/sitemap.xml",
+    "/alpha/2026/03/sitemap.xml",
+    "/alpha/2026/02/sitemap.xml",
+    "/alpha/2026/01/sitemap.xml",
+    "/alpha/2024/sitemap.xml",  # The client fixture's own January 2024 thread.
+    "/beta/2024/sitemap.xml",
+    "/alpha/1998/sitemap.xml",
+]
+
+
+def test_sitemap_index_lists_site_then_hubs_then_newest_archive_first(
+    client, tmp_path, monkeypatch
+):
+    _seed_archive_order_fixture(tmp_path, monkeypatch)
+    paths = _index_paths(client, "/sitemap.xml")
+
+    site = {"/meta-sitemap.xml", "/sitemap-maintainers.xml"} | {
+        f"/sitemap-series-diffs-{h}.xml" for h in "0123456789abcdef"
+    }
+    hubs = ["/alpha/sitemap.xml", "/beta/sitemap.xml"]
+    assert len(paths) == len(site) + len(hubs) + len(_EXPECTED_ARCHIVE_ORDER)
+    assert set(paths[: len(site)]) == site
+    assert paths[len(site) : len(site) + len(hubs)] == hubs
+    assert paths[len(site) + len(hubs) :] == _EXPECTED_ARCHIVE_ORDER
+
+
+def test_sitemap_index_orders_pages_of_one_period_by_inbox_then_page(
+    client, tmp_path, monkeypatch
+):
+    from datetime import datetime
+
+    import mimir.seo.sitemaps as sm
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(sm, "SITEMAP_URLS_PER_PAGE", 1)
+    for inbox in ("beta", "alpha"):
+        sub = tmp_path / inbox
+        sub.mkdir()
+        seeded = seed_thread_shape(sub, inbox, [("a@x", None), ("b@x", None)])
+        for mid in ("a@x", "b@x"):
+            _set_article_date(seeded[mid][0], datetime(2026, 4, 5, tzinfo=UTC))
+    # An older month in the alphabetically first inbox must not lead.
+    sub = tmp_path / "march"
+    sub.mkdir()
+    march = seed_thread_shape(sub, "alpha", [("c@x", None)])
+    _set_article_date(march["c@x"][0], datetime(2026, 3, 5, tzinfo=UTC))
+    _clear_sitemap_cache()
+    archive = [p for p in _index_paths(client, "/sitemap.xml") if "/2026/" in p]
+    assert archive == [
+        "/alpha/2026/04/sitemap.xml",
+        "/alpha/2026/04/sitemap-2.xml",
+        "/beta/2026/04/sitemap.xml",
+        "/beta/2026/04/sitemap-2.xml",
+        "/alpha/2026/03/sitemap.xml",
+    ]
+
+
+def test_inbox_hub_sitemap_lists_highest_priority_first(client, tmp_path):
+    from datetime import datetime
+
+    from tests.test_routes._helpers import (
+        _ingest_one_article,
+        _seed_subsystem,
+        warm_subsystem_activity,
+    )
+
+    _seed_subsystem(
+        "BCACHEFS",
+        "Maintained",
+        ["fs/bcachefs/"],
+        maintainers=[("M", "Alice Maintainer", "alice@example.com")],
+    )
+    _ingest_one_article(
+        tmp_path,
+        "alpha",
+        "pr@example.com",
+        body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
+    )
+    older = tmp_path / "older"
+    older.mkdir()
+    old_id, _ = _ingest_one_article(older, "alpha", "old@example.com")
+    _set_article_date(old_id, datetime(2020, 3, 5, tzinfo=UTC))
+    _clear_sitemap_cache()
+    warm_subsystem_activity("alpha")
+
+    priorities = _urlset_priorities(client, "/alpha/sitemap.xml")
+    paths = list(priorities)
+    kinds = {_expected_priority(p) for p in paths}
+    assert kinds == {"0.9", "0.7", "0.2", "0.1"}, "fixture lacks a kind"
+
+    values = [float(v) for v in priorities.values()]
+    assert values == sorted(values, reverse=True)
+    # Within a tier the existing newest-first order survives.
+    months = [p for p in paths if re.fullmatch(r"/alpha/\d{4}/\d{2}/", p)]
+    assert len(months) >= 2 and months == sorted(months, reverse=True)
+
+
+def test_ordering_changes_neither_the_index_nor_the_hub_loc_set(
+    client, tmp_path, monkeypatch
+):
+    from urllib.parse import urlsplit
+
+    _seed_archive_order_fixture(tmp_path, monkeypatch)
+    paths = _index_paths(client, "/sitemap.xml")
+    assert len(paths) == len(set(paths))
+    assert {p for p in paths if p.startswith("/alpha/")} == {
+        "/alpha/sitemap.xml",
+        "/alpha/2026/03/sitemap.xml",
+        "/alpha/2026/02/sitemap.xml",
+        "/alpha/2026/01/sitemap.xml",
+        "/alpha/2024/sitemap.xml",
+        "/alpha/1998/sitemap.xml",
+    }
+    hub = _locs(client, "/alpha/sitemap.xml")
+    assert len(hub) == len(set(hub))
+    assert {urlsplit(u).path for u in hub} == {
+        "/alpha/",
+        "/alpha/1998/",
+        "/alpha/2024/",
+        "/alpha/2024/01/",
+        "/alpha/2024/03/",
+        "/alpha/2026/",
+        "/alpha/1998/05/",
+        "/alpha/2026/01/",
+        "/alpha/2026/02/",
+        "/alpha/2026/03/",
+    }
+
+
+def test_sitemap_index_ranks_a_future_dated_year_last(client, tmp_path, monkeypatch):
+    """A mis-dated mail (lore carries 2037s, see `_archive_lastmod`) names
+    a period after today. Its file is the least useful one to a capped
+    crawler, so it must not lead the archive tier."""
+    from datetime import datetime
+
+    from tests.test_routes._helpers import seed_thread_shape
+
+    _seed_archive_order_fixture(tmp_path, monkeypatch)
+    sub = tmp_path / "future"
+    sub.mkdir()
+    seeded = seed_thread_shape(sub, "beta", [("typo@x", None)])
+    _set_article_date(seeded["typo@x"][0], datetime(2099, 1, 5, tzinfo=UTC))
+    _clear_sitemap_cache()
+
+    archive = [
+        p
+        for p in _index_paths(client, "/sitemap.xml")
+        if re.search(r"/(19|20)\d\d/", p)
+    ]
+    assert archive[0] == "/beta/2026/sitemap.xml", archive
+    assert archive[-1] == "/beta/2099/sitemap.xml", archive

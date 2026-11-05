@@ -1875,6 +1875,13 @@ afterthought:
   renamed (`sitemap:index:`, `sitemap:yearpages:`, `sitemap:monthpages:`)
   because the cached value stopped being a `(thread, message)` pair.
 
+  **Order is the only lever for a capped crawler (#1085).** AhrefsBot reads
+  `/sitemap.xml` and exactly its first 999 children, so entries go by value:
+  site files, then hubs, then archive files newest period first (a year file
+  ranks as its last month), then inbox, then page. A hub file lists its
+  entries by `<priority>`, highest first. Google and Bing read everything,
+  so the order costs them nothing.
+
   The per-inbox `/<inbox>/sitemap.xml` holds hub pages only. It used to
   list the 5,000 most recent thread roots too, which after the split
   duplicated the archive's `/t` files, so slice 3 dropped it. That
