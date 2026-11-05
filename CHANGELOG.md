@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Archive count prose uses thousands separators, search highlights stay joined inside identifiers, and lifecycle chips use a middle-dot separator with matching Markdown wording. Listing headers keep consistent typography, year totals align with their rows, and message overviews show subjects only for changed topics while preserving safe sender display and navigation. Rapid series-diff navigation keeps using HTMX instead of reloading the document (#1081).
+
 ## [3.41.0] - 2026-11-04
 
 ### Added

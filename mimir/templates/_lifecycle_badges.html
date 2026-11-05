@@ -24,7 +24,7 @@
 {%- if status.state.value != 'pending' or status.rollup -%}
 <span class="badge badge-lifecycle-{{ status.state.value }}"
       {%- if status.tooltip %} data-tooltip="{{ status.tooltip }}" tabindex="0"{% endif %}>
-  {{ status.pill_label }}{% if status.rollup %}<span class="badge-count"> · {{ status.rollup }}</span>{% endif %}{% if status.count_suffix %}<span class="badge-count">{{ status.count_suffix }}</span>{% endif %}
+  {{ status.pill_label }}{% if status.rollup %}<span class="badge-count"> · {{ status.rollup }}</span>{% endif %}{% if status.count_suffix %} <span class="badge-count">{{ status.count_suffix }}</span>{% endif %}
 </span>
 {%- endif -%}
 {%- endif -%}

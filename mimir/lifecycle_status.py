@@ -550,7 +550,7 @@ def _format_count_suffix(total: int, maintainer_count: int) -> str | None:
         return None
     reviews = "review" if total == 1 else "reviews"
     maintainers = "a maintainer" if maintainer_count == 1 else "maintainers"
-    return f": {total} {reviews}, {maintainer_count} by {maintainers}"
+    return f" · {total:,} {reviews}, {maintainer_count:,} by {maintainers}"
 
 
 def _cover_rollup(own: LifecycleStatus, row) -> tuple[LifecycleStatus, str | None]:
@@ -725,7 +725,7 @@ def lifecycle_status_for_articles(
     article has one chip per inbox.
 
     Per-article cache rows with a 5-minute TTL. Cache key
-    `lifecycle_status_v2:<id>:i<inbox_id>`, backed by `cache.get_many` so a
+    `lifecycle_status_v3:<id>:i<inbox_id>`, backed by `cache.get_many` so a
     single SELECT covers all hits. Misses are computed together in
     `_bulk_uncached`, a fixed number of statements however many ids. Empty input
     -> empty dict. Missing IDs (e.g. articles not in the corpus)
@@ -747,9 +747,9 @@ def lifecycle_status_for_articles(
     if not article_ids:
         return {}
     suffix = f":i{inbox_id}" + (f":{state_key}" if state_key is not None else "")
-    # v2 leaves the pre-#1068 compact presentation strings to expire. The
+    # v3 leaves the pre-#1081 colon presentation strings to expire. The
     # cached shape is unchanged, so other cache families need no reset.
-    key_to_id = {f"lifecycle_status_v2:{a}{suffix}": a for a in article_ids}
+    key_to_id = {f"lifecycle_status_v3:{a}{suffix}": a for a in article_ids}
     hits = cache.get_many(list(key_to_id))
     out: dict[int, LifecycleStatusInfo] = {key_to_id[k]: v for k, v in hits.items()}
     missing_ids = [a for a in article_ids if a not in out]
@@ -757,7 +757,7 @@ def lifecycle_status_for_articles(
         computed = _bulk_uncached(session, missing_ids, inbox_id)
         for article_id, info in computed.items():
             cache.set(
-                f"lifecycle_status_v2:{article_id}{suffix}",
+                f"lifecycle_status_v3:{article_id}{suffix}",
                 info,
                 ttl=LIFECYCLE_STATUS_TTL_SEC,
             )

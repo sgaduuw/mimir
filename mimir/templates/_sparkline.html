@@ -11,6 +11,6 @@
 {% macro spark_bars(spark, step, bar_width, height) -%}
 {% for day, count in spark.days -%}
 {% set h = (count / spark.max_count * (height - 2)) if spark.max_count > 0 else 0 -%}
-<rect x="{{ loop.index0 * step }}" y="{{ (height - 1) - h }}" width="{{ bar_width }}" height="{{ h if h > 0 else 1 }}" fill="currentColor" opacity="0.55"><title>{{ day.strftime('%Y-%m-%d') }}: {{ count }} message{{ '' if count == 1 else 's' }}</title></rect>
+<rect x="{{ loop.index0 * step }}" y="{{ (height - 1) - h }}" width="{{ bar_width }}" height="{{ h if h > 0 else 1 }}" fill="currentColor" opacity="0.55"><title>{{ day.strftime('%Y-%m-%d') }}: {{ count|format_count }} message{{ '' if count == 1 else 's' }}</title></rect>
 {% endfor %}
 {%- endmacro %}

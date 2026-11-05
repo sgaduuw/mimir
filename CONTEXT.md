@@ -1279,7 +1279,7 @@ Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
 match and age out via `purge_expired`. Most keys name no release:
-`patch_state`, the page-level `lifecycle_status_v2:...:{state_key}`,
+`patch_state`, the page-level `lifecycle_status_v3:...:{state_key}`,
 `merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
 pills, sitemaps and dashboards do not. So an older release reads a
 newer one's rows on rollback or while both run during a deploy, and can
@@ -3080,12 +3080,12 @@ keeps everything; only the rendering changed.
 
 **Counts in the pill itself, not just the tooltip.** Real
 maintainer triage often wants the count at-a-glance:
-`REVIEWED: 12 reviews, 4 by maintainers` says how many review
+`REVIEWED · 12 reviews, 4 by maintainers` says how many review
 trailers there are and how many came from maintainers, without
 hovering. The earlier `12 (4M)` shorthand was opaque to new readers
 (#1068). These are trailer counts, not deduplicated people. Hover
-then surfaces the per-reviewer names. The v2 lifecycle cache key
-keeps the older compact strings out of the new presentation without
+then surfaces the per-reviewer names. The v3 lifecycle cache key
+keeps the older colon strings out of the new presentation (#1081) without
 changing the cached shape or invalidating unrelated cache families.
 
 The lifecycle pill's tooltip leading line carries the commit

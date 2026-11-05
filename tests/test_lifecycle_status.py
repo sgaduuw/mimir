@@ -190,7 +190,7 @@ def test_reviewed_when_only_review_trailers(session, role):
     session.commit()
     got = lifecycle_status_for_articles(session, [art.id], _lkml(session))
     assert got[art.id].state == LifecycleStatus.REVIEWED
-    assert got[art.id].count_suffix == ": 1 review, 0 by maintainers"
+    assert got[art.id].count_suffix == " · 1 review, 0 by maintainers"
     assert got[art.id].tooltip == "Bob"
 
 
@@ -278,7 +278,7 @@ def test_lifecycle_status_caches_per_article(session):
 
     a = _seed_article(session, "cached@x")
     lifecycle_status_for_articles(session, [a.id], _lkml(session))
-    cached = cache.get(f"lifecycle_status_v2:{a.id}:i{_lkml(session)}")
+    cached = cache.get(f"lifecycle_status_v3:{a.id}:i{_lkml(session)}")
     assert cached is not None
 
 
@@ -332,14 +332,14 @@ def test_format_count_suffix_omits_when_zero():
     from mimir.lifecycle_status import _format_count_suffix
 
     assert _format_count_suffix(0, 0) is None
-    assert _format_count_suffix(1, 0) == ": 1 review, 0 by maintainers"
-    assert _format_count_suffix(1, 1) == ": 1 review, 1 by a maintainer"
-    assert _format_count_suffix(6, 3) == ": 6 reviews, 3 by maintainers"
-    assert _format_count_suffix(12, 4) == ": 12 reviews, 4 by maintainers"
+    assert _format_count_suffix(1, 0) == " · 1 review, 0 by maintainers"
+    assert _format_count_suffix(1, 1) == " · 1 review, 1 by a maintainer"
+    assert _format_count_suffix(6, 3) == " · 6 reviews, 3 by maintainers"
+    assert _format_count_suffix(12, 4) == " · 12 reviews, 4 by maintainers"
 
 
 @pytest.mark.parametrize("state_key", [None, "etag-content"])
-def test_old_compact_label_cache_is_not_reused(session, state_key):
+def test_old_colon_label_cache_is_not_reused(session, state_key):
     from mimir import cache
     from mimir.lifecycle_status import LifecycleStatusInfo
 
@@ -356,17 +356,19 @@ def test_old_compact_label_cache_is_not_reused(session, state_key):
     )
     session.commit()
     suffix = f":{state_key}" if state_key else ""
-    old_key = f"lifecycle_status:{art.id}:i{inbox_id}{suffix}"
+    old_key = f"lifecycle_status_v2:{art.id}:i{inbox_id}{suffix}"
     cache.set(
         old_key,
-        LifecycleStatusInfo(state_value="reviewed", count_suffix=": 1 (0M)"),
+        LifecycleStatusInfo(
+            state_value="reviewed", count_suffix=": 1 review, 0 by maintainers"
+        ),
         ttl=300,
     )
-    assert cache.get(old_key).count_suffix == ": 1 (0M)"
+    assert cache.get(old_key).count_suffix == ": 1 review, 0 by maintainers"
     status = lifecycle_status_for_articles(
         session, [art.id], inbox_id, state_key=state_key
     )[art.id]
-    assert status.count_suffix == ": 1 review, 0 by maintainers"
+    assert status.count_suffix == " · 1 review, 0 by maintainers"
 
 
 def test_a_message_minutes_old_is_not_dormant(session):
@@ -651,7 +653,7 @@ def test_bulk_uncached_returns_reviewer_counts(session):
 
     got = _bulk_uncached(session, [art.id], _lkml(session))
     info = got[art.id]
-    assert info.count_suffix == ": 3 reviews, 1 by a maintainer"
+    assert info.count_suffix == " · 3 reviews, 1 by a maintainer"
 
 
 def test_reviewer_listed_in_many_sections_counts_once(session):
@@ -693,7 +695,7 @@ def test_reviewer_listed_in_many_sections_counts_once(session):
     session.commit()
 
     info = _bulk_uncached(session, [art.id], _lkml(session))[art.id]
-    assert info.count_suffix == ": 3 reviews, 2 by maintainers"
+    assert info.count_suffix == " · 3 reviews, 2 by maintainers"
     assert (info.tooltip or "").count("Bob Maintainer") == 1
 
 
