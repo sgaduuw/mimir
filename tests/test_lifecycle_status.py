@@ -1137,3 +1137,37 @@ def test_a_mapped_old_address_counts_as_its_maintainer(session):
 
     assert info.count_suffix == " · 3 reviews, 2 by maintainers"
     assert (info.tooltip or "").splitlines() == ["M Bob", "M Bob Old", "Carol"]
+
+
+def test_a_maintainer_address_that_mailmap_maps_elsewhere_still_counts(session):
+    """MAINTAINERS and `.mailmap` are edited independently. A review under
+    an address MAINTAINERS still lists keeps its `M` even when `.mailmap`
+    maps that address to one MAINTAINERS does not list."""
+    from mimir.lifecycle_status import _bulk_uncached
+    from mimir.models import Mailmap, Subsystem, SubsystemMaintainer
+
+    art = _seed_article(session, "listed@x")
+    sub = Subsystem(name="TEST", status="Maintained")
+    session.add(sub)
+    session.commit()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id, role="M", name="Bob", address="bob@old.example"
+        )
+    )
+    session.add(
+        ArticleTrailer(
+            article_id=art.id,
+            role="Reviewed-by",
+            name="Bob",
+            address="bob@old.example",
+            address_normalized="bob@old.example",
+        )
+    )
+    session.add(Mailmap(old_address="bob@old.example", address="bob@kernel.org"))
+    session.commit()
+
+    info = _bulk_uncached(session, [art.id], _lkml(session))[art.id]
+
+    assert info.count_suffix == " · 1 review, 1 by a maintainer"
+    assert (info.tooltip or "").splitlines() == ["M Bob"]
