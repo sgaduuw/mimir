@@ -3446,3 +3446,166 @@ def test_sitemap_index_ranks_a_future_dated_year_last(client, tmp_path, monkeypa
     ]
     assert archive[0] == "/beta/2026/sitemap.xml", archive
     assert archive[-1] == "/beta/2099/sitemap.xml", archive
+
+
+# --- Sliding-window archive TTLs (#1088) ---------------------------------
+
+_HOUR, _WEEK = 3600, 7 * 86400
+_TWO_WEEKS, _MONTH = 2 * _WEEK, 30 * 86400
+
+
+@pytest.mark.parametrize(
+    ("year", "month", "today", "ttl"),
+    [
+        # Open and previous periods stay on the hourly TTL the warm keeps fresh.
+        (2024, 6, "2024-06-15", _HOUR),
+        (2024, 5, "2024-06-15", _HOUR),
+        (2024, 4, "2024-06-15", _WEEK),  # ended up to 2 months ago
+        (2024, 3, "2024-06-15", _TWO_WEEKS),
+        # January: the previous month is last December.
+        (2023, 12, "2024-01-10", _HOUR),
+        (2023, 11, "2024-01-10", _WEEK),
+        (2023, 10, "2024-01-10", _TWO_WEEKS),
+        # A year file is open until 31 December, so a small inbox's current
+        # year keeps the short TTL. The end counts, not the start.
+        (2024, None, "2024-01-10", _HOUR),
+        (2024, None, "2024-12-30", _HOUR),
+        (2023, None, "2024-01-10", _HOUR),
+        (2023, None, "2024-02-10", _WEEK),
+        (2023, None, "2024-03-10", _TWO_WEEKS),
+        (2023, None, "2024-12-31", _TWO_WEEKS),
+        (2022, None, "2023-12-10", _TWO_WEEKS),
+        (2022, None, "2024-01-10", _MONTH),
+        # Up to a year, then a month.
+        (2023, 6, "2024-06-15", _TWO_WEEKS),
+        (2023, 5, "2024-06-15", _MONTH),
+        (2015, 5, "2024-06-15", _MONTH),
+        (2015, None, "2024-06-15", _MONTH),
+        # 29 February, as the end of its month and as today.
+        (2024, 2, "2024-02-29", _HOUR),
+        (2024, 1, "2024-02-29", _HOUR),
+        (2023, 12, "2024-02-29", _WEEK),
+        (2024, 2, "2025-02-28", _TWO_WEEKS),
+        (2024, 2, "2025-03-01", _MONTH),
+        # A mis-dated future period is open.
+        (2099, None, "2024-06-15", _HOUR),
+        (2024, 9, "2024-06-15", _HOUR),
+    ],
+)
+def test_archive_sitemap_ttl_follows_the_age_of_the_periods_end(
+    year, month, today, ttl
+):
+    from datetime import date
+
+    from mimir.seo.sitemaps import archive_sitemap_ttl
+
+    assert archive_sitemap_ttl(year, month, date.fromisoformat(today)) == ttl
+
+
+def _seed_dated_roots(tmp_path, **when):
+    """One thread root per kwarg, dated `when`; returns nothing."""
+    from tests.test_routes._helpers import seed_thread_shape
+
+    for name, date in when.items():
+        sub = tmp_path / name
+        sub.mkdir()
+        seeded = seed_thread_shape(sub, "alpha", [(f"{name}@x", None)])
+        _set_article_date(seeded[f"{name}@x"][0], date)
+    _clear_sitemap_cache()
+
+
+def _row_ttl(key: str) -> int | None:
+    """Seconds left on a cache row, under a frozen clock."""
+    from sqlalchemy import select
+
+    from mimir import cache
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    with SessionLocal() as s:
+        expires = s.scalar(
+            select(CacheEntry.expires_at).where(CacheEntry.key == cache._ns(key))
+        )
+    return None if expires is None else expires - cache._now()
+
+
+def test_archive_rows_are_stored_with_the_sliding_ttl(client, tmp_path, frozen_clock):
+    """All three keys follow the period: the year pages, the month pages and
+    the month root-id list. The root list must not outlive or undercut the
+    body it is sliced for."""
+    from datetime import datetime
+
+    from mimir.seo import sitemaps as sm
+
+    _seed_dated_roots(
+        tmp_path,
+        old=datetime(2015, 5, 3, tzinfo=UTC),
+        new=datetime(2024, 6, 14, tzinfo=UTC),
+    )
+    cap = sm.settings.thread_view_render_cap
+    for path in (
+        "/alpha/2015/sitemap.xml",
+        "/alpha/2015/05/sitemap.xml",
+        "/alpha/2024/sitemap.xml",
+        "/alpha/2024/06/sitemap.xml",
+    ):
+        assert client.get(path).status_code == 200, path
+
+    assert _row_ttl(f"sitemap:yearpages:alpha:2015:{cap}") == _MONTH
+    assert _row_ttl(f"sitemap:monthpages:alpha:2015-05:1:{cap}") == _MONTH
+    assert _row_ttl("sitemap:monthids:alpha:2015-05") == _MONTH
+    assert _row_ttl(f"sitemap:yearpages:alpha:2024:{cap}") == _HOUR
+    assert _row_ttl(f"sitemap:monthpages:alpha:2024-06:1:{cap}") == _HOUR
+    assert _row_ttl("sitemap:monthids:alpha:2024-06") == _HOUR
+
+
+@pytest.mark.parametrize(
+    ("path", "edge"),
+    [
+        # Capped at a week: an edge copy cannot be dropped by a key bump.
+        ("/alpha/2015/sitemap.xml", "max-age=604800"),
+        ("/alpha/2015/05/sitemap.xml", "max-age=604800"),
+        ("/alpha/2024/06/sitemap.xml", "max-age=3600"),
+        ("/alpha/2024/sitemap.xml", "max-age=3600"),
+    ],
+)
+def test_archive_files_set_the_edge_ttl_and_keep_the_browser_one(
+    client, tmp_path, frozen_clock, path, edge
+):
+    from datetime import datetime
+
+    _seed_dated_roots(
+        tmp_path,
+        old=datetime(2015, 5, 3, tzinfo=UTC),
+        new=datetime(2024, 6, 14, tzinfo=UTC),
+    )
+    r = client.get(path)
+    assert r.status_code == 200
+    assert r.headers.get("Cloudflare-CDN-Cache-Control") == edge, dict(r.headers)
+    assert r.headers.get("Cache-Control") == "public, max-age=300"
+
+
+@pytest.mark.parametrize("path", ["/sitemap.xml", "/alpha/sitemap.xml"])
+def test_the_index_and_the_hub_have_no_edge_ttl(client, path):
+    """The surfaces whose structure changes stay on `max-age=300` alone."""
+    r = client.get(path)
+    assert r.status_code == 200
+    assert "Cloudflare-CDN-Cache-Control" not in r.headers
+
+
+def test_an_old_archive_files_index_date_outlives_the_hour(
+    client, tmp_path, frozen_clock
+):
+    """The index dates a child from its cache row, so a row that expires
+    after an hour takes the date with it."""
+    from datetime import datetime
+
+    _seed_dated_roots(tmp_path, old=datetime(2015, 5, 3, tzinfo=UTC))
+    child = "/alpha/2015/sitemap.xml"
+    assert client.get(child).status_code == 200
+    _drop_index_cache()
+    assert _index_lastmods(client)[child] == "2015-05-03"
+
+    frozen_clock.tick(2 * _HOUR)
+    _drop_index_cache()
+    assert _index_lastmods(client)[child] == "2015-05-03"

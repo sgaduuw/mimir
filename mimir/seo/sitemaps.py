@@ -166,6 +166,25 @@ SITEMAP_URLS_PER_PAGE = 20000
 # sitemaps.org caps a single urlset at 50,000 URLs.
 SITEMAP_MAX_URLS = 50000
 SITEMAP_TTL_SEC = 3600
+WEEK_SEC = 7 * 86400
+
+
+def archive_sitemap_ttl(year: int, month: int | None, today: date_cls) -> int:
+    """Origin TTL for one archive file, by how long ago its period ENDED.
+
+    The end, not the start: a small inbox's current year file is still
+    open and must stay on the short TTL. Whole months are enough: a month
+    ending `n` months back ended between `n - 1` and `n` months ago. The
+    open and previous periods keep `SITEMAP_TTL_SEC`; the slow warm
+    force-rebuilds them anyway. A year file ends in December; a mis-dated
+    future period counts as open.
+    """
+    ago = (today.year - year) * 12 + today.month - (month or 12)
+    if ago <= 1:
+        return SITEMAP_TTL_SEC
+    if ago == 2:
+        return WEEK_SEC
+    return 2 * WEEK_SEC if ago <= 12 else 30 * 86400
 
 
 @dataclass
@@ -630,7 +649,13 @@ def _thread_message_counts(
 
 
 def _month_root_ids(
-    session: Session, inbox: Inbox, year: int, month: int, *, force: bool = False
+    session: Session,
+    inbox: Inbox,
+    year: int,
+    month: int,
+    ttl: int,
+    *,
+    force: bool = False,
 ) -> list[int]:
     """Ordered article ids of this month's thread roots, as ONE snapshot.
 
@@ -668,7 +693,7 @@ def _month_root_ids(
         session.execute(_archive_roots_query(inbox, year, month)).scalars().all()
     )
     if ids:
-        cache.set(key, ids, SITEMAP_TTL_SEC)
+        cache.set(key, ids, ttl)
     return ids
 
 
@@ -692,7 +717,14 @@ def _unpack_year_pages(packed: str) -> list[SitemapPayload]:
 
 
 def _year_sitemap_xml(
-    session: Session, inbox: Inbox, year: int, page: int, base: str, *, force: bool
+    session: Session,
+    inbox: Inbox,
+    year: int,
+    page: int,
+    base: str,
+    ttl: int,
+    *,
+    force: bool,
 ) -> SitemapPayload | None:
     """Cache all yearly pages as one snapshot of expanded URLs.
 
@@ -732,7 +764,7 @@ def _year_sitemap_xml(
                     json.dumps([(p.body, p.last_modified) for p in pages]).encode()
                 )
             ).decode("ascii")
-            cache.set(key, packed, SITEMAP_TTL_SEC)
+            cache.set(key, packed, ttl)
     return pages[page - 1] if page <= len(pages) else None
 
 
@@ -767,13 +799,14 @@ def archive_sitemap_xml(
     the alternative is a shared cache generation, which is a lot of
     machinery for a transient soft error on a sitemap.
     """
+    ttl = archive_sitemap_ttl(year, month, datetime.now(UTC).date())
     if month is None:
-        return _year_sitemap_xml(session, inbox, year, page, base, force=force)
+        return _year_sitemap_xml(session, inbox, year, page, base, ttl, force=force)
     # A forced build re-reads the root list on page 1 only. The warm
     # walks pages in order, so later pages slice page 1's snapshot: a
     # fresh read per page would let a root arriving mid-warm shift the
     # window, listing one root twice and dropping another.
-    ids = _month_root_ids(session, inbox, year, month, force=force and page == 1)
+    ids = _month_root_ids(session, inbox, year, month, ttl, force=force and page == 1)
     offset = (page - 1) * SITEMAP_URLS_PER_PAGE
     if offset >= len(ids):
         return None
@@ -781,7 +814,7 @@ def archive_sitemap_xml(
     return cache.get_or_compute(
         session,
         _month_page_key(inbox.name, year, month, page),
-        SITEMAP_TTL_SEC,
+        ttl,
         lambda: _payload(_archive_entries(session, inbox, page_ids, base)),
         force=force,
     )

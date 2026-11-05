@@ -25,6 +25,10 @@ changes, not internal refactors. Categories: **Added**,
 
 - `/sitemap.xml` lists the site files first, then the inbox files, then the archive files with the newest period first, so crawlers that read only the first part of it reach the pages that matter. Files for a year after today, from mis-dated mail, go last. Each `/<inbox>/sitemap.xml` lists its highest-priority entries first. No URL or `<lastmod>` changes (#1085).
 
+- Archive sitemap files now stay cached by the age of the period they cover, not for an hour: the open and previous period keep one hour, a period that ended up to 2 months ago gets a week, up to a year two weeks, and older a month. The year file, the month file and the month's root list share that TTL. `/sitemap.xml` therefore keeps its `<lastmod>` for old files instead of losing it an hour after the last crawler fetch. Each archive file also sends `Cloudflare-CDN-Cache-Control: max-age=<that TTL, at most one week>`; `Cache-Control: public, max-age=300` is unchanged, and the index, the hub, meta, maintainers and series-diff sitemaps are untouched (#1088).
+
+  **Operator step:** the Cloudflare Cache Rule for these XML paths must take its Edge TTL from the origin ("Use cache-control header if present"), not a fixed override, or the new header is ignored. A future release that changes what archive files contain (URL shapes, the render cap) must purge the sitemap paths at the edge: a cache-key bump drops origin rows but cannot drop an edge copy, which can live up to a week.
+
 ### Fixed
 
 - The subsystem dashboard's "Active reviewers" list shows one row per person when the kernel's `.mailmap` maps several of their addresses together, with the attestation counts added up. The row shows the canonical address (or its hidden placeholder), never a retired one. The reviewer page, maintainer profile review activity and lifecycle pill counts still count one address (#986).
