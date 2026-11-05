@@ -675,6 +675,10 @@ def test_articles_reviewed_by_seeks_the_trailer_index(seeded_db):
     alone walks every article of the inbox (2.5 s per call on lkml,
     #831). Under production's statistics it must seek
     `ix_article_trailers_role_addr`."""
+    # A mapped retired address makes the match a two-address IN list.
+    with seeded_db() as s:
+        s.add(Mailmap(old_address="z@y", address="x@y"))
+        s.commit()
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         plan = plan_of(

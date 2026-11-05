@@ -27,9 +27,8 @@ def rules_version(session: Session) -> str:
 
 def identity_addresses(session: Session, address: str) -> list[str]:
     """`address` plus every retired address `.mailmap` maps to it, for
-    matching trailers that belong to one person. An address that is
-    itself retired has no retired addresses of its own (one hop), so it
-    keeps matching only its own trailers."""
+    matching trailers that belong to one person. One hop: the retired
+    addresses of a retired address are not followed."""
     olds = session.scalars(
         select(Mailmap.old_address).where(Mailmap.address == address)
     )
