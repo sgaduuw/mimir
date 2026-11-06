@@ -6,7 +6,7 @@ const vm = require("node:vm");
 function page(attributes = {}) {
   const listeners = {};
   let helpBindings = 0;
-  const help = { open: false, showModal() { this.open = true; }, close() { this.open = false; }, addEventListener() { helpBindings++; } };
+  const help = { open: false, showModal() { this.open = true; }, close() { this.open = false; }, set onclick(handler) { helpBindings++; this.click = handler; } };
   const window = { location: { href: "/current" } };
   let threadClicks = 0;
   const diffClicks = [];
@@ -75,7 +75,7 @@ test("message j/k still click thread neighbors", () => {
 test("history-restored help dialog gets its backdrop dismissal listener", () => {
   const p = page();
   assert.equal(p.helpBindings, 1);
-  assert.equal(typeof p.listeners["htmx:historyRestore"], "function");
-  p.listeners["htmx:historyRestore"]();
+  assert.equal(typeof p.listeners["htmx:after:swap"], "function");
+  p.listeners["htmx:after:swap"]();
   assert.equal(p.helpBindings, 2);
 });

@@ -25,7 +25,7 @@ def test_message_navigation_changes_with_the_swapped_message(
     assert f'href="{seeded["one@x"][1]}"' in msg
     assert 'rel="prev"' in msg
     assert 'class="reply-to"' in msg
-    assert "show:#msg:top" in msg
+    assert "show:top showTarget:#msg" in msg
     assert 'class="msg-badges"' not in msg
     assert 'class="revisions-fold"' not in msg
     if not headers:

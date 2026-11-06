@@ -285,7 +285,7 @@ def test_message_page_single_message_thread_skips_fold_scaffolding(
     # thread-fold.js is loaded on every page (from base.html) but with no
     # data-thread-* attrs on <html> the controller short-circuits the
     # FOUC-free block and the event handlers find no .thread-context.
-    assert 'src="/static/js/thread-fold.js"' in body
+    assert 'src="/static/js/thread-fold.js?v=' in body
 
 
 def test_message_page_thread_fold_context_is_root_when_viewing_root(
@@ -328,7 +328,7 @@ def test_message_page_thread_fold_active_marker_on_current_li(
 ):
     """The tree <li> whose data-article-id matches the current view
     carries class="is-active"; the others carry no such class. The
-    JS controller toggles this class on htmx:afterSwap, but the
+    JS controller toggles this class on htmx:after:swap, but the
     server's initial render has to set it correctly for the first
     paint (when JS hasn't run yet or is disabled)."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
@@ -487,7 +487,7 @@ def test_message_page_thread_fold_links_carry_htmx_attrs(
     for a in anchors:
         assert "hx-get=" in a
         assert 'hx-target="#msg"' in a
-        assert 'hx-swap="outerHTML show:#msg:top"' in a
+        assert 'hx-swap="outerHTML show:top showTarget:#msg"' in a
         assert 'hx-push-url="true"' in a
 
 
@@ -503,7 +503,7 @@ def test_message_page_thread_fold_script_loads_before_section(
     server's context default would cause a visible flash."""
     msgs = _seed_three_message_thread(tmp_path, "alpha")
     body = client.get(msgs["nested"][1]).data.decode()
-    script_idx = body.index('src="/static/js/thread-fold.js"')
+    script_idx = body.index('src="/static/js/thread-fold.js?v=')
     section_idx = body.index('<section class="thread-context"')
     body_idx = body.index("<body")
     assert script_idx < body_idx, (

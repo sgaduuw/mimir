@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Managing the archive](archive.md) · [Operations](operations.md)
 
-Mimir serves HTML with Flask and Jinja. HTMX enhances navigation and loading;
+Mimir serves HTML with Flask and Jinja. HTMX 4 enhances navigation and loading;
 thread pagination also works with ordinary links. The interface is read-only.
 
 ## Find and read messages
@@ -251,3 +251,11 @@ instead use ETags with revalidation.
 
 Health and readiness responses use `Cache-Control: no-store`. The privacy
 page should be reviewed against your deployment before making the site public.
+
+### Browser navigation history
+
+HTMX back and forward navigation refetches the full page without keeping page
+copies in local or session storage. The restored body, page metadata, theme
+control and keyboard controls stay aligned. HTTP errors leave the current
+content and URL intact. The theme and thread-fold preferences are still
+stored locally; native links and forms remain usable without JavaScript.

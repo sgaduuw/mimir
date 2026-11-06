@@ -193,7 +193,11 @@ def test_signal_between_spawn_and_pid_capture_still_stops_child(tmp_path, shell)
     child = tmp_path / "child.py"
     child.write_text(
         "import os,time\nfrom pathlib import Path\n"
-        f"Path({str(pidfile)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n"
+        f"pidfile = Path({str(pidfile)!r})\n"
+        # Publish readiness only after the PID is fully written, before signaling.
+        "pending = pidfile.with_suffix('.pending')\n"
+        "pending.write_text(str(os.getpid()))\npending.replace(pidfile)\n"
+        "time.sleep(60)\n"
     )
     command = tmp_path / "launch.sh"
     command.write_text(
@@ -209,13 +213,11 @@ def test_signal_between_spawn_and_pid_capture_still_stops_child(tmp_path, shell)
             time.sleep(0.01)
         assert not _alive(pid), "stop missed the child between spawn and PID capture"
     finally:
-        if process.poll() is None or (
-            pidfile.exists() and _alive(int(pidfile.read_text()))
-        ):
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        # This session belongs to the test, including any child missed on failure.
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
         process.wait(timeout=3)
 
 

@@ -420,6 +420,7 @@ def test_csp_script_src_pins_specific_htmx_version(client):
         r'dist/htmx\.min\.js"',
         r.get_data(as_text=True),
     )
+    assert rendered_pins == ["https://unpkg.com/htmx.org@4.0.1/"]
     assert rendered_pins == [s for s in script_src if htmx_pin.fullmatch(s)], (
         "The rendered HTMX script must match the version allowed by CSP"
     )
