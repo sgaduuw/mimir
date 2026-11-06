@@ -259,3 +259,18 @@ copies in local or session storage. The restored body, page metadata, theme
 control and keyboard controls stay aligned. HTTP errors leave the current
 content and URL intact. The theme and thread-fold preferences are still
 stored locally; native links and forms remain usable without JavaScript.
+
+### Month archive edge caching
+
+Successful month archive pages send `Cloudflare-CDN-Cache-Control` with
+`max-age=600` for the current or a future month, `max-age=3600` for the
+previous month, and `max-age=604800` for older months, using the UTC date.
+Browser caching stays `Cache-Control: public, max-age=600`. Year archives
+do not send this edge header. Filters keep their own query-string URLs;
+month pages have no separate HTMX representation.
+
+HTML needs an explicit Cloudflare Cache Rule before the edge caches it.
+See [month archive cache settings](operations.md#cache-month-archives-at-the-edge)
+for eligibility, origin TTL and cache-key settings. Old months can show late
+mail, reply activity and template changes up to a week late. Cached hits skip
+the origin crawler budget and request log.
