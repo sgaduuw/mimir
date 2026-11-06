@@ -96,6 +96,13 @@ runs it weekly.
 quiet periods: it occupies the writer and needs substantial temporary disk space.
 Allow headroom for a database-sized rebuild and WAL growth. A busy deployment
 may prevent the final WAL truncation; inspect the command's reported sizes.
+Application and writer connections configure a connection-local 64 MiB
+journal retention limit, also applied by the raw VACUUM connection. This is
+not a peak-size cap: active read transactions or large writes can keep a
+larger WAL. Once blocking transactions finish and a checkpoint completes, a
+subsequent write can reset and shrink it without closing idle connections.
+The policy is not persisted in the database, so querying the pragma from a
+fresh ad-hoc SQLite connection does not report the app connection's setting.
 The Compose example puts SQLite temporary files under `/data/db` so they use
 the data volume rather than the container's temporary filesystem.
 
