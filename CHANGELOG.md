@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Upgrade HTMX to 4.0.1. Back and forward navigation refetch pages instead of keeping page copies in browser session storage; the privacy notice now describes that behavior. Message and series navigation retain partial swaps, keyboard controls, and native links and forms. Failed requests preserve the current page and URL.
+
 ## [3.43.0] - 2026-11-06
 
 ### Changed

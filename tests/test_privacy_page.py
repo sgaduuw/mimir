@@ -58,13 +58,6 @@ LOCAL = [
         "your fold-state preference for that thread’s reply tree. Written only when you click the fold toggle. Stays in your browser, never sent to the server.",
     ),
 ]
-SESSION = [
-    (
-        "htmx-history-cache",
-        "htmx",
-        "copies of up to ten recently viewed pages, so the back button can show them without loading them again. Kept only for the open tab and cleared when it closes. Never sent to the server.",
-    ),
-]
 
 
 # The legal text as a list of blocks, for the golden check: headings,
@@ -162,18 +155,18 @@ def _table_rows(table):
     return head, rows
 
 
-def test_storage_is_three_real_tables_with_the_notices_own_words(client):
+def test_storage_is_two_real_tables_with_the_notices_own_words(client):
     page = _page(client)
     tables = page.find("article", cls="privacy-article").find_all("table")
-    assert len(tables) == 3
-    cookies, local, session = tables
-    for table, rows in ((cookies, COOKIES), (local, LOCAL), (session, SESSION)):
+    assert len(tables) == 2
+    cookies, local = tables
+    for table, rows in ((cookies, COOKIES), (local, LOCAL)):
         head, found = _table_rows(table)
         assert head == ["Name", "Set by", "Purpose"]
         assert found == rows
     # Each table sits under the sentence that introduces it, the "strictly
     # necessary" paragraph keeps its place between the first two, and the
-    # session-storage table comes before "No analytics".
+    # navigation-storage disclosure comes before "No analytics".
     order = []
     for node in page.find("article", cls="privacy-article").iter():
         if node.tag == "table":
@@ -183,7 +176,7 @@ def test_storage_is_three_real_tables_with_the_notices_own_words(client):
                 "Three Cloudflare",
                 "All three",
                 "Local storage",
-                "Session storage",
+                "Page navigation",
                 "No analytics",
             ):
                 if node.text().startswith(label):
@@ -194,8 +187,7 @@ def test_storage_is_three_real_tables_with_the_notices_own_words(client):
         "All three",
         "Local storage",
         "table",
-        "Session storage",
-        "table",
+        "Page navigation",
         "No analytics",
     ]
 

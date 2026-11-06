@@ -5,7 +5,7 @@
 {% block page_scripts %}<script src="{{ url_for('static', filename='js/series-diff.js') }}?v={{ mimir_version }}" defer></script>{% endblock %}
 {% block content %}
 <article id="series-diff" class="series-diff-page" tabindex="-1" aria-labelledby="series-diff-title"
-         hx-target="main" hx-select="main" hx-swap="outerHTML settle:0 show:#series-diff:top" hx-push-url="true" hx-sync="closest main:replace"
+         hx-target:inherited="main" hx-select:inherited="main" hx-swap:inherited="outerHTML settle:0 show:top showTarget:#series-diff" hx-push-url:inherited="true" hx-sync:inherited="closest main:replace"
          data-position="{{ 'cover' if diff.position == 0 else diff.position }}" data-inbox="{{ inbox_name }}"
          data-page-title="{{ page_title }}" data-page-description="{{ page_desc }}" data-canonical="{{ canonical_url }}">
   <header>
@@ -19,14 +19,14 @@
       {% if navigation.to_article.date %}<time datetime="{{ navigation.to_article.date.isoformat() }}">{{ navigation.to_article.date.strftime('%Y-%m') }}</time>{% endif %}
     </p>
     {% if navigation.pairs %}
-    <nav class="series-diff-pairs" aria-label="Other revision comparisons" hx-boost="true">
+    <nav class="series-diff-pairs" aria-label="Other revision comparisons" hx-boost:inherited="true">
       <span>Other comparisons:</span>
       {% for pair in navigation.pairs %}<a href="{{ pair.url }}">{{ pair.from_version }}→{{ pair.to_version }}{% if pair.position == 0 and diff.position != 0 %} (cover letter){% endif %}</a>{% endfor %}
     </nav>
     {% endif %}
   </header>
 
-  <nav class="series-diff-pager" aria-label="Series positions" hx-boost="true">
+  <nav class="series-diff-pager" aria-label="Series positions" hx-boost:inherited="true">
     {% if navigation.previous_url %}<a class="series-diff-step" href="{{ navigation.previous_url }}" rel="prev">Previous</a>{% else %}<span class="series-diff-step" aria-disabled="true">Previous</span>{% endif %}
     <form method="get" action="{{ navigation.form_action }}">
       <input type="hidden" name="from" value="{{ diff.from_version }}">
@@ -41,7 +41,7 @@
     {% if navigation.next_url %}{% set next_position = navigation.positions|selectattr("url", "equalto", navigation.next_url)|first %}<a class="series-diff-step" href="{{ navigation.next_url }}" rel="next">Next: {{ next_position.label|lower }}</a>{% else %}<span class="series-diff-step" aria-disabled="true">Next</span>{% endif %}
   </nav>
   <p id="series-diff-extent" class="series-diff-note">{{ navigation.positions|length }} comparable position{{ '' if navigation.positions|length == 1 else 's' }}{% if navigation.extent %}, numbered through {{ navigation.extent }}{% endif %}.</p>
-  <nav class="series-diff-overview" aria-label="Position overview" hx-boost="true">
+  <nav class="series-diff-overview" aria-label="Position overview" hx-boost:inherited="true">
     {% for entry in navigation.positions %}<a href="{{ entry.url }}" title="{{ entry.label }}"{% if entry.position == diff.position %} aria-current="page"{% endif %}><span class="series-diff-sr-only">{{ entry.label }}</span></a>{% endfor %}
   </nav>
 

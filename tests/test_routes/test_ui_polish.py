@@ -161,7 +161,7 @@ def test_message_overview_only_names_changed_subject_and_safe_sender(client, tmp
         link = row.find_all("a")[0]
         assert link.attrs["href"] == url and link.attrs["hx-get"] == url
         assert link.attrs["hx-target"] == "#msg"
-        assert link.attrs["hx-swap"] == "outerHTML show:#msg:top"
+        assert link.attrs["hx-swap"] == "outerHTML show:top showTarget:#msg"
         assert link.attrs["hx-push-url"] == "true"
         assert ("is-active" in row.classes) == (mid == "changed@polish")
     # The existing swap replaces the article only, retaining the already-rendered tree.

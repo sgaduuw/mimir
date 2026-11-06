@@ -51,13 +51,15 @@
     }
   });
   enhanceSelector();
-  document.addEventListener("htmx:beforeRequest", resetSelector);
-  document.addEventListener("htmx:afterSwap", function (event) {
-    if (event.detail.elt.tagName !== "MAIN") return;
+  document.addEventListener("htmx:before:request", resetSelector);
+  document.addEventListener("htmx:after:swap", function (event) {
+    var ctx = event.detail.ctx;
+    if (ctx.swap === "none") return;
+    var history = ctx.request.headers["HX-History-Restore-Request"] === "true";
+    if (ctx.target.tagName !== "MAIN" && !history) return;
     syncDocument();
     var page = document.getElementById("series-diff");
-    // History swaps lack request target details and retain their own focus.
-    if (page && event.detail.target) page.focus({ preventScroll: true });
+    // Refetched history keeps its own focus and scroll behavior.
+    if (page && !history) page.focus({ preventScroll: true });
   });
-  document.addEventListener("htmx:historyRestore", syncDocument);
 })();
