@@ -35,7 +35,7 @@ function page(saved, blocked = false) {
     get select() { return select; },
     ready: () => listeners.DOMContentLoaded(),
     pageshow: () => listeners.pageshow({ persisted: true }),
-    restore(event = "htmx:historyRestore") {
+    restore(event = "htmx:after:swap") {
       select = selector();
       control = { hidden: true };
       listeners[event]();
@@ -114,7 +114,7 @@ test("Back restores the preference selected on a later page", () => {
 test("a swapped main restores the current theme control", () => {
   const p = page("dark");
   p.ready();
-  p.restore("htmx:afterSwap");
+  p.restore("htmx:after:swap");
   assert.equal(p.control.hidden, false);
   assert.equal(p.select.value, "dark");
   p.select.value = "light";

@@ -10,104 +10,119 @@
  * Deferred and in /static/ because the CSP blocks inline scripts.
  */
 (function () {
-  var tablist = document.querySelector(".thread-tabs");
-  var box = document.getElementById("thread-messages");
-  if (!tablist || !box) return;
-  var tabs = Array.prototype.slice.call(tablist.querySelectorAll('[role="tab"]'));
-  var names = tabs.map(function (t) { return t.getAttribute("data-tab"); });
-  var empty = document.createElement("p");
-  empty.className = "tab-empty";
-  empty.hidden = true;
-  box.insertBefore(empty, box.firstChild);
+  var onHashChange = null;
+  var onSwap = null;
 
-  /* A patch other than the root; the root shows in every tab. */
-  function isPatch(el) {
-    return el.getAttribute("data-kind") === "patch" && !el.hasAttribute("data-root");
-  }
+  function init() {
+    onHashChange = onSwap = null;
+    var tablist = document.querySelector(".thread-tabs");
+    var box = document.getElementById("thread-messages");
+    if (!tablist || !box) return;
+    var tabs = Array.prototype.slice.call(tablist.querySelectorAll('[role="tab"]'));
+    var names = tabs.map(function (t) { return t.getAttribute("data-tab"); });
+    var empty = document.createElement("p");
+    empty.className = "tab-empty";
+    empty.hidden = true;
+    box.insertBefore(empty, box.firstChild);
 
-  /* Messages the tab shows besides the root, which shows everywhere. */
-  function shown(name) {
-    return Array.prototype.filter.call(box.querySelectorAll(".thread-message:not([data-root])"), function (el) {
-      return isPatch(el) === (name === "patches");
-    });
-  }
-
-  function updateEmpty() {
-    var name = box.getAttribute("data-tab");
-    var none = name !== "all" && shown(name).length === 0;
-    empty.textContent = name === "patches" ? "No patches on this page." : "No replies on this page.";
-    empty.hidden = !none;
-    /* Each append replaces the boundary with the new page's metadata.
-     * A normal link keeps the selected tab in its fragment on arrival. */
-    var more = box.querySelector(".thread-more");
-    var href = more && more.getAttribute("data-next-" + name);
-    if (none && href) {
-      var link = document.createElement("a");
-      link.href = href;
-      link.textContent = name === "patches" ? "Next page with patches" : "Next page with replies";
-      empty.textContent += " ";
-      empty.appendChild(link);
+    /* A patch other than the root; the root shows in every tab. */
+    function isPatch(el) {
+      return el.getAttribute("data-kind") === "patch" && !el.hasAttribute("data-root");
     }
-  }
 
-  function select(name, focus) {
-    box.setAttribute("data-tab", name);
+    /* Messages the tab shows besides the root, which shows everywhere. */
+    function shown(name) {
+      return Array.prototype.filter.call(box.querySelectorAll(".thread-message:not([data-root])"), function (el) {
+        return isPatch(el) === (name === "patches");
+      });
+    }
+
+    function updateEmpty() {
+      var name = box.getAttribute("data-tab");
+      var none = name !== "all" && shown(name).length === 0;
+      empty.textContent = name === "patches" ? "No patches on this page." : "No replies on this page.";
+      empty.hidden = !none;
+      /* Each append replaces the boundary with the new page's metadata.
+       * A normal link keeps the selected tab in its fragment on arrival. */
+      var more = box.querySelector(".thread-more");
+      var href = more && more.getAttribute("data-next-" + name);
+      if (none && href) {
+        var link = document.createElement("a");
+        link.href = href;
+        link.textContent = name === "patches" ? "Next page with patches" : "Next page with replies";
+        empty.textContent += " ";
+        empty.appendChild(link);
+      }
+    }
+
+    function select(name, focus) {
+      box.setAttribute("data-tab", name);
+      tabs.forEach(function (t) {
+        var on = t.getAttribute("data-tab") === name;
+        t.setAttribute("aria-selected", String(on));
+        t.tabIndex = on ? 0 : -1;
+        if (on && focus) t.focus();
+      });
+      updateEmpty();
+    }
+
+    /* The tab a fragment asks for, with the message it names (or null),
+     * or null when it names no tab. */
+    function fromHash() {
+      var hash = location.hash.slice(1);
+      if (names.indexOf(hash) !== -1) return { name: hash, el: null };
+      if (/^m\d+$/.test(hash)) {
+        var el = document.getElementById(hash);
+        if (el && box.contains(el)) return { name: isPatch(el) ? "patches" : "discussion", el: el };
+      }
+      return null;
+    }
+
+    function openFromHash() {
+      var hit = fromHash();
+      if (!hit) return false;
+      select(hit.name, false);
+      if (hit.el) hit.el.scrollIntoView();
+      return true;
+    }
+
     tabs.forEach(function (t) {
-      var on = t.getAttribute("data-tab") === name;
-      t.setAttribute("aria-selected", String(on));
-      t.tabIndex = on ? 0 : -1;
-      if (on && focus) t.focus();
+      t.addEventListener("click", function () {
+        var name = t.getAttribute("data-tab");
+        select(name, false);
+        /* replaceState, not location.hash: no scroll, no hashchange loop. */
+        history.replaceState(history.state, "", "#" + name);
+      });
     });
-    updateEmpty();
-  }
 
-  /* The tab a fragment asks for, with the message it names (or null),
-   * or null when it names no tab. */
-  function fromHash() {
-    var hash = location.hash.slice(1);
-    if (names.indexOf(hash) !== -1) return { name: hash, el: null };
-    if (/^m\d+$/.test(hash)) {
-      var el = document.getElementById(hash);
-      if (el && box.contains(el)) return { name: isPatch(el) ? "patches" : "discussion", el: el };
+    /* WAI-ARIA tabs: arrows move between tabs, Home and End to the ends. */
+    tablist.addEventListener("keydown", function (e) {
+      var i = names.indexOf(box.getAttribute("data-tab"));
+      var next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: names.length - 1 }[e.key];
+      if (next === undefined) return;
+      e.preventDefault();
+      var name = names[(next + names.length) % names.length];
+      select(name, true);
+      history.replaceState(history.state, "", "#" + name);
+    });
+
+    onHashChange = openFromHash;
+    onSwap = updateEmpty;
+
+    tablist.hidden = false;
+    if (!openFromHash()) {
+      /* Nothing to discuss yet: open on everything, not on an empty column. */
+      var replies = tablist.querySelector('[data-tab="discussion"] .tab-count');
+      select(Number(replies.textContent) > 0 ? "discussion" : "all", false);
     }
-    return null;
   }
 
-  function openFromHash() {
-    var hit = fromHash();
-    if (!hit) return false;
-    select(hit.name, false);
-    if (hit.el) hit.el.scrollIntoView();
-    return true;
-  }
-
-  tabs.forEach(function (t) {
-    t.addEventListener("click", function () {
-      var name = t.getAttribute("data-tab");
-      select(name, false);
-      /* replaceState, not location.hash: no scroll, no hashchange loop. */
-      history.replaceState(null, "", "#" + name);
-    });
+  window.addEventListener("hashchange", function () { if (onHashChange) onHashChange(); });
+  document.addEventListener("htmx:after:swap", function (event) {
+    if (event.detail.ctx.swap === "none") return;
+    if (event.detail.ctx.request.headers["HX-History-Restore-Request"] === "true") init();
+    else if (onSwap) onSwap();
   });
-
-  /* WAI-ARIA tabs: arrows move between tabs, Home and End to the ends. */
-  tablist.addEventListener("keydown", function (e) {
-    var i = names.indexOf(box.getAttribute("data-tab"));
-    var next = { ArrowRight: i + 1, ArrowLeft: i - 1, Home: 0, End: names.length - 1 }[e.key];
-    if (next === undefined) return;
-    e.preventDefault();
-    var name = names[(next + names.length) % names.length];
-    select(name, true);
-    history.replaceState(null, "", "#" + name);
-  });
-
-  window.addEventListener("hashchange", openFromHash);
-  document.body.addEventListener("htmx:afterSwap", updateEmpty);
-
-  tablist.hidden = false;
-  if (!openFromHash()) {
-    /* Nothing to discuss yet: open on everything, not on an empty column. */
-    var replies = tablist.querySelector('[data-tab="discussion"] .tab-count');
-    select(Number(replies.textContent) > 0 ? "discussion" : "all", false);
-  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", init);
+  else init();
 })();

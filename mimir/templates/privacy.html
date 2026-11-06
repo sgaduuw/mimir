@@ -31,7 +31,7 @@
   <article class="privacy-article">
   <hgroup>
     <h1>Privacy</h1>
-    <p><small><em>Last updated: 3 November 2026.</em></small></p>
+    <p><small><em>Last updated: 6 November 2026.</em></small></p>
   </hgroup>
 
   {# The summary says nothing the sections below do not. If one of these
@@ -98,18 +98,8 @@
         never sent to the server.</td></tr>
     </tbody>
   </table>
-  <p>Session storage, set by htmx, the page library {{ site_name }} uses:</p>
-  <table>
-    <thead>
-      <tr><th scope="col">Name</th><th scope="col">Set by</th><th scope="col">Purpose</th></tr>
-    </thead>
-    <tbody>
-      <tr><th scope="row"><code>htmx-history-cache</code></th><td data-label="Set by">htmx</td><td data-label="Purpose">copies of up to ten recently viewed pages,
-        so the back button can show them without loading them again.
-        Kept only for the open tab and cleared when it closes. Never
-        sent to the server.</td></tr>
-    </tbody>
-  </table>
+  <p>Page navigation does not store copies of pages in local or session storage.
+    Back and forward navigation reload pages from the server.</p>
   <p>
     No analytics. No tracking pixels. No advertising. No
     third-party embeds beyond the static-asset CDNs listed below.
