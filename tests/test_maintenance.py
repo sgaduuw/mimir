@@ -50,14 +50,10 @@ def vacuum_db(tmp_path, monkeypatch):
 
 
 def test_a_busy_wal_truncate_is_reported_rather_than_swallowed(vacuum_db):
-    """`wal_checkpoint(TRUNCATE)` returns busy=1 and does nothing when
-    another connection holds the DB open. It never raises, so an
-    unchecked call is invisible: on the live deployment the web and
-    tasks containers hold read connections permanently, so the
-    post-VACUUM truncate never ran and the WAL stayed at database size
-    until the next restart.
+    """A pinned reader snapshot prevents a complete TRUNCATE checkpoint.
 
-    A second open connection is exactly that condition.
+    Holding an active read transaction, rather than merely an open idle
+    connection, reproduces the blocked truncation without closing the writer.
     """
     holder = sqlite3.connect(str(vacuum_db))
     holder.execute("BEGIN")
@@ -74,9 +70,40 @@ def test_a_busy_wal_truncate_is_reported_rather_than_swallowed(vacuum_db):
 
 
 def test_an_unobstructed_truncate_reports_success(vacuum_db):
-    """The positive half, so the flag cannot be hardwired to False."""
-    result = maintenance.run_vacuum()
+    """An idle open connection does not block truncation."""
+    holder = sqlite3.connect(str(vacuum_db))
+    try:
+        result = maintenance.run_vacuum()
+        assert holder.execute("SELECT COUNT(*) FROM t").fetchone()[0] > 0
+    finally:
+        holder.close()
     assert result.wal_truncated is True
+
+
+def test_raw_vacuum_connection_has_the_retention_limit(vacuum_db, monkeypatch):
+    checkpoint = maintenance._checkpoint_truncate
+    phases = []
+
+    def check_policy(conn, phase):
+        assert (
+            conn.execute("PRAGMA journal_size_limit").fetchone()[0] == 64 * 1024 * 1024
+        )
+        phases.append(phase)
+        return checkpoint(conn, phase)
+
+    monkeypatch.setattr(maintenance, "_checkpoint_truncate", check_policy)
+    assert maintenance.run_vacuum().wal_truncated is True
+    assert phases == ["pre-vacuum", "post-vacuum"]
+
+
+def test_busy_vacuum_note_describes_the_next_reset(capsys):
+    from mimir.cli.maintenance import _echo_vacuum_outcome
+
+    _echo_vacuum_outcome({"wal_truncated": False})
+    output = capsys.readouterr().out
+    assert "next WAL reset" in output
+    assert "64 MiB" in output
+    assert "until every connection closes" not in output
 
 
 def _sizes(db):
@@ -116,9 +143,7 @@ def test_reclaimed_reports_the_space_freed_when_the_truncate_was_blocked(vacuum_
     In WAL mode VACUUM writes the rebuilt database into the WAL; the
     main file is only rewritten when a checkpoint copies it across, and
     a checkpoint cannot advance past the oldest reader's snapshot. So
-    when another connection holds the database open (the live-deployment
-    condition, per this branch's own changelog: the web and tasks
-    containers hold read connections continuously), the compacted
+    when another connection keeps an old read transaction active, the compacted
     content sits entirely in the WAL and the main file does not move at
     all. Diffing the main file then yields exactly 0 for an operation
     that freed most of the database.
