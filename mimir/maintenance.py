@@ -2,7 +2,7 @@
 
 Both are periodic-cron writers: ANALYZE refreshes `sqlite_stat1`
 so the planner picks correct join shapes; VACUUM compacts the file
-and collapses the WAL. They're orchestration helpers, not CLI
+and attempts to truncate the WAL. They're orchestration helpers, not CLI
 wrappers, the click commands in `mimir.cli.maintenance` delegate
 here, and the Phase 2.3 broker handlers do too. Single-concern:
 "the SQLite hygiene writers, end to end."
@@ -10,10 +10,8 @@ here, and the Phase 2.3 broker handlers do too. Single-concern:
 ANALYZE reads every row and is not cheap (CONTEXT.md "ANALYZE sample
 size"). That matters beyond tidiness: the post-migrate ANALYZE runs
 before the broker touches its healthcheck sentinel, so it is on the
-startup budget. VACUUM holds an
-exclusive lock for the duration (minutes on large databases); under
-the broker that means every other broker worker pauses, so it
-should run in a quiet window only.
+startup budget. VACUUM occupies SQLite's writer for the duration and
+should run in a quiet window only. Active readers can delay WAL truncation.
 """
 
 import logging
@@ -24,7 +22,7 @@ from pathlib import Path
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from mimir.extensions import engine
+from mimir.extensions import JOURNAL_SIZE_LIMIT_BYTES, engine
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +87,8 @@ def run_analyze() -> AnalyzeResult:
 
 def _db_sizes() -> dict[str, int]:
     """Return the byte sizes of the main DB file and its -wal/-shm
-    siblings. Used by `run_vacuum` for the before/after diff that
-    operators see in the result."""
+    siblings. Used for footprint diagnostics, separately from the logical
+    before/after sizes returned by `run_vacuum`."""
     db_path = Path(engine.url.database) if engine.url.database else None
     if db_path is None:
         raise RuntimeError("could not resolve DB path from engine URL")
@@ -109,8 +107,8 @@ def _logical_size(conn: sqlite3.Connection) -> int:
     live deployment, and the reason is checkpoint ordering: in WAL mode
     VACUUM writes the rebuilt database INTO THE WAL, and the main file
     is only rewritten when a checkpoint copies it across, which cannot
-    advance past the oldest reader's snapshot. With any reader
-    connected, the main file therefore does not move at all.
+    advance past the oldest active reader's snapshot. A pinned snapshot
+    can therefore leave the main file unchanged; an idle connection does not.
 
     Measured on a 200k-row throwaway DB with a reader parked
     (2026-09-26): main file 91,258,880 -> 91,258,880 while the true
@@ -126,44 +124,38 @@ def _logical_size(conn: sqlite3.Connection) -> int:
 def _checkpoint_truncate(conn: sqlite3.Connection, phase: str) -> bool:
     """Run `wal_checkpoint(TRUNCATE)` and report whether it actually ran.
 
-    The pragma returns `(busy, log, checkpointed)` and is a NO-OP
-    returning `busy=1` whenever another connection has the database
-    open. It never raises, so an unchecked call is silently ignored,
-    which is what shipped: on a live deployment `ct-mimir-web` and
-    `ct-mimir-tasks` hold `query_only` connections continuously, so the
-    post-VACUUM truncate never ran and the WAL stayed at ~database size
-    until the next container restart (observed 2026-08-03: 16.7 GB of
-    WAL still present 26 minutes after a VACUUM).
+    The pragma returns `(busy, log, checkpointed)`. An active reader or
+    writer can prevent truncation; some frames may still be checkpointed
+    when `busy=1`. An idle open connection does not itself block it.
 
-    The old docstring justified the call with "the broker satisfies
-    this by being the sole writer". True, and the wrong predicate:
-    a truncate needs the sole CONNECTION, and readers block it.
+    The retention limit also allows an oversized WAL to shrink at a later
+    reset after blocking transactions release and a checkpoint completes.
+    It does not cap peak growth or guarantee when that reset will happen.
     """
     row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
     busy = bool(row and row[0])
     if busy:
         logger.warning(
             "vacuum: %s wal_checkpoint(TRUNCATE) could not run (busy); "
-            "another connection holds the database open, so the WAL stays "
-            "at roughly database size until every connection closes",
+            "active transactions can delay truncation; the retained WAL "
+            "limit is %d bytes at the next WAL reset",
             phase,
+            JOURNAL_SIZE_LIMIT_BYTES,
         )
     return not busy
 
 
 def run_vacuum() -> VacuumResult:
-    """Compact the database via `VACUUM` and collapse the WAL via
+    """Compact the database via `VACUUM` and attempt to truncate the WAL via
     `PRAGMA wal_checkpoint(TRUNCATE)`. Two checkpoints: one before
     so any leftover WAL clears first, one after to truncate the
     WAL VACUUM itself wrote into.
 
-    SQLAlchemy's connection pool keeps idle connections that block
-    the post-truncate. Dispose the engine first so we own the only
-    handle, then re-use a raw `sqlite3` connection for the VACUUM
-    itself. Any other process that has the DB open will also
-    prevent the truncate; the operator-facing contract is "run
-    when no other process is writing", which the broker satisfies
-    by being the sole writer."""
+    Dispose idle pooled handles before opening the raw maintenance
+    connection. This does not drain other processes' active transactions,
+    which can still block truncation. The raw connection uses the same
+    retention policy as the broker writer; a later WAL reset can reclaim
+    oversized allocation without closing every connection."""
     db_path = Path(engine.url.database) if engine.url.database else None
     if db_path is None:
         raise RuntimeError("could not resolve DB path from engine URL")
@@ -173,6 +165,7 @@ def run_vacuum() -> VacuumResult:
     t0 = time.perf_counter()
     conn = sqlite3.connect(str(db_path))
     try:
+        conn.execute(f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT_BYTES}")
         logical_before = _logical_size(conn)
         # In WAL mode, VACUUM's full rebuild goes through the WAL,
         # so the WAL grows by ~db_size during the operation.
@@ -191,8 +184,8 @@ def run_vacuum() -> VacuumResult:
     # summing main+wal+shm reported a large NEGATIVE reclaim (production
     # logged -16,720,121,472 on 2026-08-03, because the WAL had just
     # been inflated by the rebuild), and diffing the main file alone
-    # reported exactly ZERO (because with any reader connected the main
-    # file never moves). Both are the same defect, a figure whose basis
+    # reported exactly ZERO (because a pinned reader snapshot can keep
+    # the main file unchanged). Both are the same defect, a figure whose basis
     # is not the one its label implies, with different signs.
     reclaimed = logical_before - logical_after
 
@@ -203,7 +196,7 @@ def run_vacuum() -> VacuumResult:
         disk = _db_sizes()
         logger.info(
             "vacuum: reclaimed %d bytes logically; on-disk footprint is "
-            "%d bytes (db %d + wal %d) until a checkpoint can run",
+            "%d bytes (db %d + wal %d); active transactions can delay WAL reset",
             reclaimed,
             disk["db"] + disk["-wal"] + disk["-shm"],
             disk["db"],

@@ -404,14 +404,26 @@ Attachments are metadata-only at parse time (`filename`,
 blob on demand. Listings render "📎 foo.patch (12 KB)" without a git
 read; downloads fetch the blob on the request path.
 
-**SQLite pragmas** are set on every connection (`mimir/extensions.py`):
-`journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`,
+**SQLite pragmas** are set by the shared hook for the application and
+migration engine, and for the broker writer (`mimir/extensions.py`):
+`journal_mode=WAL`, `journal_size_limit=67108864`, `synchronous=NORMAL`, `foreign_keys=ON`,
 `busy_timeout=<Settings.sqlite_busy_timeout_ms>` (default 5000). WAL
 is persistent in the DB header once written; we still re-issue on
-every connect for idempotence. Alembic was rewired to use the same
+each shared-hook connection for idempotence. The broker read-only pool
+uses its own query-only hook. Alembic was rewired to use the same
 engine so migrations run with these pragmas active too. **WAL means
 readers don't block writers.** Safe to run the web UI or ad-hoc
 queries during an ingest.
+
+The 64 MiB journal limit is connection-local: it bounds allocation retained
+after a safe WAL reset, not peak growth while a large write or an active
+reader pins WAL frames. It is not persisted in the database header, so a
+fresh ad-hoc connection reports its own default, not the app's policy.
+After blocking transactions release and a checkpoint finishes, a subsequent
+writer can reset and shrink an oversized WAL while idle connections remain
+open. The raw VACUUM connection sets the same limit explicitly because it
+bypasses the shared connection hook. Immediate TRUNCATE attempts remain
+best-effort; an active reader or writer can block them.
 
 `busy_timeout` was added after a production "database is locked"
 incident: the web tier rendered a page, then failed to upsert a
