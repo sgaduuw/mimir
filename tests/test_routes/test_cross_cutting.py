@@ -619,7 +619,7 @@ def access_records():
 @pytest.mark.parametrize("with_headers", [False, True])
 @pytest.mark.parametrize(
     "method,path",
-    [("GET", "/healthz"), ("HEAD", "/healthz"), ("GET", "/unknown-route/not-a-page/")],
+    [("GET", "/readyz"), ("HEAD", "/readyz"), ("GET", "/unknown-route/not-a-page/")],
 )
 def test_access_log_records_request_context(
     client, access_records, with_headers, method, path
@@ -668,6 +668,26 @@ def test_access_log_records_request_context(
         assert record[key] == (value if with_headers else None)
     assert record["response_bytes"] == len(response.data)
     assert record["status"] == response.status_code
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_access_log_skips_successful_health_check(client, access_records, method):
+    assert client.open("/healthz", method=method).status_code == 200
+    assert access_records == []
+    # The skip is this endpoint's alone, and the capture is live.
+    assert client.open("/readyz", method=method).status_code == 200
+    assert [record["path"] for record in access_records] == ["/readyz"]
+
+
+def test_access_log_keeps_failed_health_check(client, access_records):
+    from flask import Response, request
+
+    from mimir.web.hooks import _log_request
+
+    with client.application.test_request_context("/healthz"):
+        assert request.endpoint == "web.healthz"
+        _log_request(Response("down", status=500))
+    assert [(r["path"], r["status"]) for r in access_records] == [("/healthz", 500)]
 
 
 @pytest.mark.parametrize("status", [101, 204, 304])

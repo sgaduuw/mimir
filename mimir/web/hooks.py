@@ -333,6 +333,11 @@ def _log_request(response):
     """Emit one JSON-line access record per request. Runs after the
     cache + security headers are set so duration covers the full
     response-build path."""
+    # Balancer and container probes outnumbered all other requests in
+    # production (2026-11-06, #1110), and a passing one says nothing. A
+    # failing one is the line an incident needs, so it stays.
+    if request.endpoint == "web.healthz" and response.status_code == 200:
+        return response
     t0 = getattr(g, "_request_t0", None)
     duration_ms = round((time.perf_counter() - t0) * 1000, 1) if t0 else None
     _request_logger.info(
