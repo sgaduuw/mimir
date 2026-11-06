@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `CRAWLER_BUDGET_SHARED_DIR` lets same-host web containers share one fixed crawler budget through a common local directory. Matching replicas retain depleted buckets across worker/container replacement; unset preserves per-instance isolation. Provision the mount before opting in and specify the whole-host budget on each replica. Unverifiable Linux clock metadata or inaccessible storage logs a warning and falls back to per-worker buckets, which cannot guarantee a host-wide ceiling (#1028).
+
 ### Fixed
 
 - Archive listings, yearly sitemaps, subsystem path matches and reviewer pages retain bounded index seeks on SQLite 3.54 as well as 3.53. Reviewer lookups start from matching trailers instead of walking every message in the inbox; yearly sitemap roots remain inbox-driven while monthly roots stay date-driven (#1093).
