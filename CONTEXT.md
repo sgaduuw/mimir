@@ -2100,7 +2100,8 @@ Decisions specific to that shape:
   directly rather than `request.user_agent.string`, Werkzeug's
   parsed UA returns falsy for non-browser UAs (curl, monitoring
   bots, even some Firefox versions in this Werkzeug release), and
-  we want every request logged.
+  we want the UA on every record. A successful `/healthz` writes no
+  record at all: probes outnumbered all other requests (#1110).
 
 ## Scheduler verbosity
 

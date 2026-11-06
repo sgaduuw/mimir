@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The access log no longer records successful `/healthz` requests, which outnumbered all other requests combined in production. A failing `/healthz` is still recorded (#1110).
+
 ## [3.44.0] - 2026-11-06
 
 ### Changed
