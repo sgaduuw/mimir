@@ -27,7 +27,7 @@ test("diff swap/history metadata and selection failure state follow the readable
   assert.equal(select.value, "1"); // a failed request leaves the old selection intact
   page.dataset = { position: "2", inbox: "beta", pageTitle: "Patch 2", pageDescription: "Second patch", canonical: "https://test/second" };
   submit = { hidden: false }; // a newly swapped native form starts with Go visible
-  listeners["htmx:afterSwap"]({ detail: { elt: { tagName: "MAIN" }, target: { tagName: "MAIN" } } });
+  listeners["htmx:after:swap"]({ detail: { ctx: { target: { tagName: "MAIN" }, request: { headers: {} } } } });
   assert.equal(submit.hidden, true);
   assert.equal(document.title, "Patch 2");
   assert.equal(head.get('link[rel="canonical"]').href, "https://test/second");
@@ -36,19 +36,19 @@ test("diff swap/history metadata and selection failure state follow the readable
   assert.equal(head.get('link[type="application/atom+xml"]').href, "/beta/feed.atom");
   assert.equal(html["data-nav-up"], "/beta/");
   assert.equal(focused, 1);
-  // HTMX history swaps supply the swapped elt, without request target details.
+  // History restoration swaps the body and must not steal focus.
   page.dataset.pageTitle = "History swap";
   submit = { hidden: false };
-  listeners["htmx:afterSwap"]({ detail: { elt: { tagName: "MAIN" } } });
+  listeners["htmx:after:swap"]({ detail: { ctx: { target: { tagName: "BODY" }, request: { headers: { "HX-History-Restore-Request": "true" } } } } });
   assert.equal(submit.hidden, true);
   assert.equal(document.title, "History swap");
   assert.equal(focused, 1);
-  listeners["htmx:afterSwap"]({ detail: { elt: { tagName: "DIV" } } });
+  listeners["htmx:after:swap"]({ detail: { ctx: { target: { tagName: "DIV" }, request: { headers: {} } } } });
   assert.equal(focused, 1);
   page.dataset.inbox = "alpha";
   page.dataset.pageTitle = "Restored";
   submit = { hidden: false };
-  listeners["htmx:historyRestore"]();
+  listeners["htmx:after:swap"]({ detail: { ctx: { target: { tagName: "BODY" }, request: { headers: { "HX-History-Restore-Request": "true" } } } } });
   assert.equal(submit.hidden, true);
   assert.equal(document.title, "Restored");
   assert.equal(html["data-nav-up"], "/alpha/");

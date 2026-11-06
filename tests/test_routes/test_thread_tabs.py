@@ -429,7 +429,9 @@ def test_the_tabs_script_loads_only_where_there_are_tabs(client, tmp_path):
     from tests.test_routes._helpers import _ingest_one_article
 
     seeded, _ = _seed_series_thread(tmp_path)
-    tag = re.compile(r'<script src="/static/js/thread-tabs\.js" defer></script>')
+    tag = re.compile(
+        r'<script src="/static/js/thread-tabs\.js\?v=[^"]+" defer></script>'
+    )
     assert tag.search(client.get(seeded["cov@x"][1] + "/t").get_data(as_text=True))
     (tmp_path / "solo").mkdir()
     _, solo = _ingest_one_article(tmp_path / "solo", "alpha", "solo-js@x")

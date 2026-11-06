@@ -17,6 +17,7 @@ def test_keyboard_navigation_controller():
             "--test",
             "tests/js/keyboard-nav.test.cjs",
             "tests/js/series-diff.test.cjs",
+            "tests/js/htmx-navigation.test.cjs",
         ],
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
