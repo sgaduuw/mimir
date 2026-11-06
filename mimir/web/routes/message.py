@@ -386,7 +386,7 @@ def message(
         representation = "md" if markdown else "hx" if hx_request else "full"
         etag_input = f"{content_input}|{representation}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
-        if etag in request.if_none_match:
+        if request.if_none_match.contains_weak(etag):
             response = Response(status=304)
             response.set_etag(etag)
             return response
