@@ -154,26 +154,61 @@ def test_read_pool_concurrent_pragma_query_only_holds(seeded_db):
         pool.close()
 
 
-def test_thread_local_context_var_isolation_under_free_threading():
-    """Pin the stdlib ContextVar per-thread isolation contract.
-    Today's `mimir.cache.refresh_window` ContextVar was implicitly
-    safe under the GIL; under free-threading we verify that thread
-    isolation still holds in the stdlib so the cache module's
-    contract continues to work."""
-    from contextvars import ContextVar
+def test_warm_cache_contexts_are_isolated_between_threads(
+    seeded_db, writer, monkeypatch
+):
+    """Concurrent warm workers and an ordinary read keep independent scopes."""
+    from contextlib import nullcontext
 
-    cv: ContextVar[int] = ContextVar("test_cv", default=-1)
-    seen: dict[int, int] = {}
+    from sqlalchemy import select
 
-    def worker(tid: int, value: int):
-        cv.set(value)
-        seen[tid] = cv.get()
+    from mimir import cache, cache_warm
+    from mimir.models import CacheEntry
 
-    threads = [threading.Thread(target=worker, args=(i, i * 100)) for i in range(4)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=5)
+    monkeypatch.setattr(cache, "_now", lambda: 1000)
+    windows = [600, 7200, None]
+    barrier = threading.Barrier(len(windows))
+    refreshes = []
+    errors = []
 
-    for tid in range(4):
-        assert seen[tid] == tid * 100, f"thread {tid} saw {seen[tid]!r}"
+    def should_refresh(**values):
+        refreshes.append(values["window_sec"])
+        return False
+
+    monkeypatch.setattr(cache_warm, "should_refresh", should_refresh)
+    cache._set_via_writer_for_nskey(
+        writer, cache._ns("scope:seed"), '"cached"', 100
+    ).result(timeout=5)
+
+    def worker(window):
+        try:
+            scope = cache.warm_window(window) if window is not None else nullcontext()
+            with scope:
+                barrier.wait(timeout=5)
+                with seeded_db() as s:
+                    assert (
+                        cache.get_or_compute(s, "scope:seed", 100, lambda: "wrong")
+                        == "cached"
+                    )
+                cache._set_via_writer_for_nskey(
+                    writer, cache._ns(f"scope:{window}"), '"v"', 100
+                ).result(timeout=5)
+                barrier.wait(timeout=5)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=(window,)) for window in windows]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=10)
+    assert not any(thread.is_alive() for thread in threads)
+    assert not errors, errors
+    assert sorted(refreshes) == [600, 7200]
+    with seeded_db() as s:
+        rows = dict(s.execute(select(CacheEntry.key, CacheEntry.expires_at)).all())
+    assert [rows[cache._ns(f"scope:{window}")] for window in windows] == [
+        1700,
+        8300,
+        1100,
+    ]

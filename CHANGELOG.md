@@ -11,6 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.43.0] - 2026-11-06
+
+### Changed
+
+- Refresh Dulwich to 1.2.21, SQLAlchemy to 2.1.8, Pydantic to 2.14.3 and its core to 2.50.4, typing-inspection to 0.4.5, and Ruff to 0.17.4. The patches include Dulwich pack-index validation and SQLAlchemy's Python 3.15 connection-pool cleanup fix.
+
+### Added
+
+- `CRAWLER_BUDGET_SHARED_DIR` lets same-host web containers share one fixed crawler budget through a common local directory. Matching replicas retain depleted buckets across worker/container replacement; unset preserves per-instance isolation. Provision the mount before opting in and specify the whole-host budget on each replica. Unverifiable Linux clock metadata or inaccessible storage logs a warning and falls back to per-worker buckets, which cannot guarantee a host-wide ceiling (#1028).
+
+### Fixed
+
+- Archive listings, yearly sitemaps, subsystem path matches and reviewer pages retain bounded index seeks on SQLite 3.54 as well as 3.53. Reviewer lookups start from matching trailers instead of walking every message in the inbox; yearly sitemap roots remain inbox-driven while monthly roots stay date-driven (#1093).
+
 ## [3.42.0] - 2026-11-05
 
 ### Removed

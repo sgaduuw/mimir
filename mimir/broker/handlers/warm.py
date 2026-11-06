@@ -32,7 +32,7 @@ from mimir.broker.protocol import (
     WarmInboxRequest,
     WarmSubsystemRequest,
 )
-from mimir.cache import refresh_window, ttl_extension
+from mimir.cache import warm_window
 from mimir.config import settings
 
 logger = logging.getLogger(__name__)
@@ -103,14 +103,22 @@ def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
         _SITEMAP_GAP_LOGGED.set()
 
 
+def _tier_window(priority: int):
+    seconds = (
+        settings.warm_cache_fast_refresh_window_sec
+        if priority == 0
+        else settings.warm_cache_slow_refresh_window_sec
+    )
+    return warm_window(seconds)
+
+
 def _run_targets(
     targets,
     *,
     priority: int = 1,
 ) -> tuple[list[str], list[str], int, list[tuple[str, int]]]:
     """Run a list of `(label, fn(session))` warm targets serially on
-    a fresh session under tier-aware `refresh_window` +
-    `ttl_extension` context. Returns
+    a fresh session under tier-aware `warm_window` context. Returns
     `(warmed, errors, elapsed_ms, per_target)`, where `per_target`
     is `[(label, ms), ...]` sorted desc by ms.
 
@@ -124,9 +132,9 @@ def _run_targets(
       (default 7200 s; matches the per-hour cadence with enough ticks
       in the window for the ramp to fire).
 
-    The same window value drives both the read-side `refresh_window`
-    (recompute any row with less than `window` TTL remaining) AND the
-    write-side `ttl_extension` (store `expires_at = now + nominal +
+    The same window value drives both read-side proactive refresh
+    (probabilistic refresh, with an insurance band near expiry) and the
+    write-side TTL extension (store `expires_at = now + nominal +
     window` so the deterministic insurance band sits past nominal).
     Spec §5.2 walks through why these two sides must agree.
 
@@ -143,17 +151,12 @@ def _run_targets(
     (e.g. `active_threads` vs the per-inbox subsystem-dashboard
     fan-out) without needing a separate `-v` repro.
     """
-    if priority == 0:
-        window_sec = settings.warm_cache_fast_refresh_window_sec
-    else:
-        window_sec = settings.warm_cache_slow_refresh_window_sec
     warmed: list[str] = []
     errors: list[str] = []
     per_target: list[tuple[str, int]] = []
     t0 = time.perf_counter()
     with (
-        refresh_window(window_sec),
-        ttl_extension(window_sec),
+        _tier_window(priority),
         _context.get_active_pool().session() as session,
     ):
         for label, fn in targets:
@@ -263,7 +266,7 @@ def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
     The work delegates to `mimir.cli.cache._per_subsystem_warm_call`
     so the per-subsystem warm shape stays single-source-of-truth
     between this handler and the CLI fan-out. The whole sequence runs
-    under `refresh_window` + `ttl_extension` per `req.priority`,
+    under `warm_window` per `req.priority`,
     matching `handle_warm_inbox` / `handle_warm_global` semantics.
 
     Production motivation 2026-06-01: linux-arm-kernel's slow-tier
@@ -278,18 +281,12 @@ def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
     from mimir.cli.cache import _per_subsystem_warm_call
     from mimir.models import Inbox, Subsystem
 
-    if req.priority == 0:
-        window_sec = settings.warm_cache_fast_refresh_window_sec
-    else:
-        window_sec = settings.warm_cache_slow_refresh_window_sec
-
     t0 = time.perf_counter()
     warmed: list[str] = []
     errors: list[str] = []
     sub_name_for_log: str = "?"
     with (
-        refresh_window(window_sec),
-        ttl_extension(window_sec),
+        _tier_window(req.priority),
         _context.get_active_pool().session() as session,
     ):
         inbox = session.execute(

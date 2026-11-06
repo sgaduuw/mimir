@@ -968,6 +968,8 @@ def _active_thread_rows(
     """
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
+    # Ancestor membership is one composite seek per parent, not an inbox
+    # scan at every recursive depth (SQLite 3.54 otherwise reorders it).
     sql = text(
         f"""
         WITH RECURSIVE {extra_ctes_sql} chains AS (
@@ -981,7 +983,8 @@ def _active_thread_rows(
             SELECT c.recent_id, a.message_id, a.thread_parent,
                    c.recent_date, c.depth + 1
             FROM articles a
-            JOIN article_lists al ON al.article_id = a.id
+            JOIN article_lists al INDEXED BY sqlite_autoindex_article_lists_1
+              ON al.article_id = a.id
             JOIN chains c ON a.message_id = c.thread_parent
             WHERE al.inbox_id = :inbox_id AND c.depth < :max_depth
         ),

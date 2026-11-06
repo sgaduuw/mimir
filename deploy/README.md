@@ -179,6 +179,7 @@ over its budget, with no database or render work. It is off by default.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `CRAWLER_BUDGET_PER_MINUTE` | `0` | Requests per minute for all configured crawlers combined; `0` turns the whole gate off |
+| `CRAWLER_BUDGET_SHARED_DIR` | unset | Optional absolute path to one trusted local directory shared by same-host web containers; unset keeps per-instance buckets |
 | `CRAWLER_UA_BUDGETS` | `{}` (defaults below) | JSON map of crawler name to a percentage (1 to 100) of the global budget, merged over the defaults; `0` drops a default |
 | `CRAWLER_DEFAULT_UA_PCT` | `10` | Share for a recognised crawler with no entry in `CRAWLER_UA_BUDGETS` |
 | `CRAWLER_UNLISTED_POOL_PCT` | `30` | Percentage of the global budget that all unlisted crawlers share between them, on top of their own share |
@@ -247,20 +248,67 @@ pair is a client faking a click. It charges the global bucket but
 not the unlisted pool, and a declared crawler keeps its own bucket. Like the
 rest of the gate it does nothing while the global budget is `0`.
 
-The global bucket, the pool, the overflow bucket, the impossible-headers bucket
-and each listed crawler's bucket are shared by all gunicorn workers of one web instance,
-through a small file in `/dev/shm` (or the temp directory when there is no
-`/dev/shm`), so global 120 with Applebot at 10% is 12 a minute for the
-instance however many workers it runs. The buckets of unlisted crawlers stay
-in each worker and refill at their share divided by `WORKERS` (mimir reads the
-same `WORKERS` that sets `--workers`). A bucket holds ten seconds of its rate,
-or one token if that is more. In any window an instance admits at most that
-window's share of the budget plus ten seconds' worth. Each web instance has
-its own buckets, so with several instances (containers) behind a balancer,
-give each its share: two instances with `CRAWLER_BUDGET_PER_MINUTE=50` are a
-global 100. If the file cannot be created, a `crawler budget: cannot share
-buckets` warning is logged and each worker keeps its own buckets, as before
-3.37.0.
+The global bucket, pool, overflow bucket, impossible-headers bucket and each
+listed crawler's bucket are shared by all gunicorn workers of one web instance
+through a small mapped file in `/dev/shm` (or the temp directory if absent).
+The default name includes the PID namespace, master PID and budget layout.
+With multiple instances behind a balancer, split the budget across them:
+two instances with `CRAWLER_BUDGET_PER_MINUTE=50` have a combined rate of 100.
+A bucket holds ten seconds of its rate, or one token if that is more. In any
+window it admits at most the window's share of the rate plus that capacity.
+
+For **one host-wide budget**, set `CRAWLER_BUDGET_SHARED_DIR` on every web
+container to a bind mount of the same host directory, and give every replica
+the intended whole-host `CRAWLER_BUDGET_PER_MINUTE`. For example:
+
+```text
+Host directory: /run/mimir-crawler-budget
+Bind mount: /run/mimir-crawler-budget:/run/mimir-crawler-budget:rw
+CRAWLER_BUDGET_SHARED_DIR=/run/mimir-crawler-budget
+CRAWLER_BUDGET_PER_MINUTE=100
+```
+
+Provision that dedicated host directory at boot before either web service,
+mode 0700, owned by the common mapped application UID/GID (the image uses
+1001:1001). A host tmpfs such as `/run` avoids disk writes. Both containers
+must see the **same backing directory**, not two private tmpfs mounts with
+the same pathname. Use a local filesystem supporting mmap and POSIX record
+locks, not network storage. Parent directories must be trusted. Keep the
+directory alive independently of either service, for example with a
+systemd-tmpfiles entry rather than per-service RuntimeDirectory cleanup.
+Never remove or replace a budget file while any worker has it mapped: that
+would split readers across old and new inodes. The app creates files with
+mode 0600, refuses leaf symlinks and incompatible nonzero sizes, and does not
+unlink them on exit.
+
+Opted-in file names include the Linux host boot UUID, budget layout and
+storage/algorithm version. Matching replicas reuse depleted buckets when a
+worker or container restarts. A new boot gets new state even if the directory
+was accidentally disk-backed. The startup check requires readable Linux
+boot/time-namespace metadata, matching current and child time namespaces,
+and a zero monotonic offset. These checks happen only at startup; requests
+still use the existing mmap and lock. Unsupported or unverifiable clock
+scope, missing/unwritable directories, symlinks and incompatible files log
+`crawler budget: cannot share buckets` and fall back to private buckets at
+`budget / WORKERS`. That preserves per-instance protection but **loses the
+host-wide ceiling**: two failed replicas configured 100 can admit 200/minute,
+plus their bursts. Monitor startup warnings.
+
+The buckets for arbitrary unlisted names remain per worker, at their share
+divided by `WORKERS` (the same setting as gunicorn `--workers`). Their
+per-name aggregate can grow across replicas; the shared pool, overflow and
+global buckets still cap the combined traffic. Listed percentages, their
+order and other fixed-bucket settings must agree across replicas. `WORKERS`
+is not part of the shared layout, so changing the worker count does not
+reset fixed buckets.
+
+Deploy a release supporting this setting **before activating the mount/env
+configuration and whole-host budget**. During a rolling switch, an old
+independent 50 and a new shared 100 can temporarily admit 150/minute plus
+bursts. Changing the budget layout or storage version also creates separate
+groups during overlap. Use a controlled cutover if a strict ceiling is
+required throughout the change. Existing default deployments need no mount
+or configuration change.
 
 To pick a budget, measure the crawler's request rate in the access log first
 (its `ua` field), then set the global budget to about a third of the combined

@@ -2522,9 +2522,15 @@ def test_year_and_month_roots_plans_under_production_statistics(client, tmp_path
                     s, inbox, 2020, m, 1, "", force=True
                 ),
                 "articles.date >=",
+                required_sql=("CROSS JOIN articles", "CROSS JOIN article_lists")
+                if month is None
+                else (),
             )
     assert "ix_article_lists_thread_root (inbox_id=?" in plans[None], plans[None]
     assert "ix_articles_date" not in plans[None], plans[None]
+    assert plans[None].index("SCAN roots") < plans[None].index(
+        "SEARCH articles USING INTEGER PRIMARY KEY"
+    ), plans[None]
     assert "ix_articles_date (date>? AND date<?)" in plans[2], plans[2]
 
 

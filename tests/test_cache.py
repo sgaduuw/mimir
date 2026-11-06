@@ -666,14 +666,14 @@ def test_get_or_compute_force_recomputes_despite_live_row():
             s.commit()
 
 
-def test_refresh_window_recomputes_when_near_expiry():
-    """Inside an active `refresh_window`, a still-live row whose
+def test_warm_window_recomputes_when_near_expiry():
+    """Inside an active `warm_window`, a still-live row whose
     remaining TTL is less than the window must be recomputed. This is
     what lets warm-cache refresh 24h-TTL keys *before* they expire,
     without recomputing every key on every cron tick."""
     from sqlalchemy import delete as sql_delete
 
-    from mimir.cache import _ns, get_or_compute, refresh_window
+    from mimir.cache import _ns, get_or_compute, warm_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -700,27 +700,27 @@ def test_refresh_window_recomputes_when_near_expiry():
         return "fresh"
 
     try:
-        with SessionLocal() as s, refresh_window(300):
+        with SessionLocal() as s, warm_window(300):
             # ttl=3600 matches what the original caller would have
             # stored; remaining 60 << window 300 puts us in the
             # insurance band of `cache_warm.should_refresh`.
             out = get_or_compute(s, key, ttl=3600, fn=compute)
         assert out == "fresh"
-        assert calls == 1, "near-expiry row inside refresh_window must recompute"
+        assert calls == 1, "near-expiry row inside warm_window must recompute"
     finally:
         with SessionLocal() as s:
             s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
             s.commit()
 
 
-def test_refresh_window_skips_when_plenty_of_ttl_left():
-    """Inside an active `refresh_window`, a row whose remaining TTL
+def test_warm_window_skips_when_plenty_of_ttl_left():
+    """Inside an active `warm_window`, a row whose remaining TTL
     *exceeds* the window must still be served from cache. This is
     what lets 24h-TTL keys (archive_stats) sit unbothered across most
     5-minute warm-cache ticks."""
     from sqlalchemy import delete as sql_delete
 
-    from mimir.cache import _ns, get_or_compute, refresh_window
+    from mimir.cache import _ns, get_or_compute, warm_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -745,10 +745,10 @@ def test_refresh_window_skips_when_plenty_of_ttl_left():
         return "fresh"
 
     try:
-        with SessionLocal() as s, refresh_window(300):
+        with SessionLocal() as s, warm_window(300):
             out = get_or_compute(s, key, ttl=60, fn=compute)
         assert out == "stale-but-fresh-enough"
-        assert calls == 0, "row outside refresh_window must short-circuit"
+        assert calls == 0, "row outside warm_window must short-circuit"
     finally:
         with SessionLocal() as s:
             s.execute(sql_delete(CacheEntry).where(CacheEntry.key == _ns(key)))
@@ -1077,8 +1077,47 @@ def test_cache_set_routes_through_active_writer_when_registered(seeded_db, write
             _context.clear_active()
 
 
-def test_ttl_extension_context_extends_stored_ttl(seeded_db):
-    """`ttl_extension(seconds)` causes `cache.set` to store
+def test_warm_window_restores_read_and_write_effects(seeded_db, monkeypatch):
+    from sqlalchemy import select
+
+    from mimir import cache_warm
+    from mimir.config import settings
+    from mimir.models import CacheEntry
+
+    monkeypatch.setattr(settings, "mimir_is_broker", True)
+    monkeypatch.setattr(cache, "_now", lambda: 1000)
+    monkeypatch.setattr(cache_warm, "should_refresh", lambda **kw: True)
+    cache.set("scope:read", "cached", 100)
+
+    with cache.warm_window(600):
+        with cache.warm_window(None), seeded_db() as s:
+            assert (
+                cache.get_or_compute(s, "scope:read", 100, lambda: "wrong") == "cached"
+            )
+            cache.set("scope:inner", "v", 100)
+        with seeded_db() as s:
+            assert (
+                cache.get_or_compute(s, "scope:read", 100, lambda: "refreshed")
+                == "refreshed"
+            )
+        with pytest.raises(ValueError, match="scope exit"):
+            with cache.warm_window(25):
+                raise ValueError("scope exit")
+        cache.set("scope:restored", "v", 100)
+    cache.set("scope:outside", "v", 100)
+    with seeded_db() as s:
+        rows = dict(s.execute(select(CacheEntry.key, CacheEntry.expires_at)).all())
+        assert (
+            cache.get_or_compute(s, "scope:read", 100, lambda: "wrong") == "refreshed"
+        )
+    assert {
+        key: rows[cache._ns("scope:" + key)]
+        for key in ("read", "inner", "restored", "outside")
+    } == {"read": 1700, "inner": 1100, "restored": 1700, "outside": 1100}
+
+
+def test_warm_window_context_extends_stored_ttl(seeded_db):
+    """`warm_window(seconds)` causes `cache.set` to store
     `expires_at = now + ttl + seconds`. The context manager scopes
     the effect; outside the block, `set` stores nominal TTL only."""
     import time
@@ -1086,7 +1125,7 @@ def test_ttl_extension_context_extends_stored_ttl(seeded_db):
     from sqlalchemy import delete, select
 
     from mimir import cache
-    from mimir.cache import ttl_extension
+    from mimir.cache import warm_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -1104,7 +1143,7 @@ def test_ttl_extension_context_extends_stored_ttl(seeded_db):
         assert 95 <= remaining <= 100
 
     # With extension: stored TTL = nominal + extension.
-    with ttl_extension(600):
+    with warm_window(600):
         cache.set("test:with_extension", "v1", ttl=100)
     with SessionLocal() as s:
         row = s.execute(
@@ -1114,8 +1153,8 @@ def test_ttl_extension_context_extends_stored_ttl(seeded_db):
         assert 695 <= remaining <= 700  # 100 nominal + 600 extension
 
 
-def test_ttl_extension_inner_none_overrides_outer_extension(seeded_db):
-    """`ttl_extension(None)` inside an outer `ttl_extension(600)`
+def test_warm_window_inner_none_overrides_outer_extension(seeded_db):
+    """`warm_window(None)` inside an outer `warm_window(600)`
     scope opts out: the inner `cache.set` stores nominal TTL only.
     This freezes the API contract that the explicit None case
     degrades to no-extension behaviour, so a future caller can
@@ -1125,7 +1164,7 @@ def test_ttl_extension_inner_none_overrides_outer_extension(seeded_db):
     from sqlalchemy import delete, select
 
     from mimir import cache
-    from mimir.cache import ttl_extension
+    from mimir.cache import warm_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -1133,7 +1172,7 @@ def test_ttl_extension_inner_none_overrides_outer_extension(seeded_db):
         s.execute(delete(CacheEntry))
         s.commit()
 
-    with ttl_extension(600), ttl_extension(None):
+    with warm_window(600), warm_window(None):
         cache.set("test:inner_none", "v", ttl=100)
     with SessionLocal() as s:
         row = s.execute(
@@ -1143,15 +1182,15 @@ def test_ttl_extension_inner_none_overrides_outer_extension(seeded_db):
         assert 95 <= remaining <= 100  # No extension applied
 
 
-def test_ttl_extension_context_clears_on_exit(seeded_db):
-    """After exiting the `ttl_extension` context, `cache.set`
+def test_warm_window_context_clears_on_exit(seeded_db):
+    """After exiting the `warm_window` context, `cache.set`
     reverts to storing nominal TTL only."""
     import time
 
     from sqlalchemy import delete, select
 
     from mimir import cache
-    from mimir.cache import ttl_extension
+    from mimir.cache import warm_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -1159,7 +1198,7 @@ def test_ttl_extension_context_clears_on_exit(seeded_db):
         s.execute(delete(CacheEntry))
         s.commit()
 
-    with ttl_extension(600):
+    with warm_window(600):
         pass  # do nothing; just open + close the context
     cache.set("test:after_exit", "v1", ttl=100)
     with SessionLocal() as s:
@@ -1173,7 +1212,7 @@ def test_ttl_extension_context_clears_on_exit(seeded_db):
 def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active(
     seeded_db, monkeypatch
 ):
-    """Inside `refresh_window(window_sec)`, `get_or_compute` uses
+    """Inside `warm_window(window_sec)`, `get_or_compute` uses
     `cache_warm.should_refresh` instead of the deterministic "if
     remaining < window, recompute" check. Verified by monkey-
     patching `cache_warm.should_refresh` and confirming the result
@@ -1181,7 +1220,7 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
     from sqlalchemy import delete
 
     from mimir import cache
-    from mimir.cache import refresh_window
+    from mimir.cache import warm_window
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -1192,7 +1231,7 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
     # Seed a cache row with a known TTL.
     cache.set("test:probabilistic", "v1", ttl=3600)
 
-    # Inside a refresh_window, monkey-patch should_refresh to
+    # Inside a warm_window, monkey-patch should_refresh to
     # always return True; expect get_or_compute to call fn()
     # and overwrite with v2.
     from mimir import cache_warm
@@ -1200,7 +1239,7 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
     monkeypatch.setattr(cache_warm, "should_refresh", lambda **kw: True)
 
     with SessionLocal() as s:
-        with refresh_window(600):
+        with warm_window(600):
             value = cache.get_or_compute(
                 session=s,
                 key="test:probabilistic",
@@ -1214,7 +1253,7 @@ def test_get_or_compute_window_check_is_probabilistic_when_refresh_within_active
     # returned unchanged.
     monkeypatch.setattr(cache_warm, "should_refresh", lambda **kw: False)
     with SessionLocal() as s:
-        with refresh_window(600):
+        with warm_window(600):
             value = cache.get_or_compute(
                 session=s,
                 key="test:probabilistic",
@@ -1301,14 +1340,14 @@ def test_cache_set_in_broker_drops_oversized_value(
     assert row is None
 
 
-def test_only_broker_warm_handlers_enter_the_refresh_window():
+def test_only_broker_warm_handlers_enter_the_warm_window():
     """`get_or_compute`'s probabilistic-refresh branch is guarded by a
     comment saying it "is never reached outside the warm-cache cycle
     (window is None by default)". That is a claim about who enters
-    `cache.refresh_window`, not about `get_or_compute`, so pin it where
+    `cache.warm_window`, not about `get_or_compute`, so pin it where
     it can be violated.
 
-    If a request-path module ever wraps work in `refresh_window`, hot
+    If a request-path module ever wraps work in `warm_window`, hot
     reads start recomputing still-fresh rows inline (the exact cost the
     warm cycle exists to keep off the request path), and the comment
     goes quietly wrong."""
@@ -1321,16 +1360,13 @@ def test_only_broker_warm_handlers_enter_the_refresh_window():
     for path in root.rglob("*.py"):
         if path in allowed:
             continue
-        # Word-boundary match: a bare `refresh_window(` or an
-        # attribute call (`cache.refresh_window(`), but not
-        # `_check_warm_refresh_window(` in the doctor CLI. A plain
-        # substring test would be satisfied by that unrelated name.
+        # Match the context call, not an unrelated longer helper name.
         if re.search(
-            r"(?<![A-Za-z0-9_])refresh_window\(", path.read_text(encoding="utf-8")
+            r"(?<![A-Za-z0-9_])warm_window\(", path.read_text(encoding="utf-8")
         ):
             offenders.append(str(path))
     assert not offenders, (
-        "cache.refresh_window may only be entered by the broker's warm "
+        "cache.warm_window may only be entered by the broker's warm "
         "handlers; anywhere else makes get_or_compute's "
         f"'window is None outside the warm cycle' comment false: {offenders}"
     )

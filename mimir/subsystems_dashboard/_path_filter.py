@@ -81,25 +81,27 @@ def _subsystem_path_filter_sql(
     exc_clause = " AND NOT (" + " OR ".join(exc_parts) + ")" if exc_parts else ""
 
     branches: list[str] = []
+    # Pin each seek: SQLite 3.54 can otherwise scan the article/path
+    # covering index to satisfy UNION ordering instead of using path bounds.
     for i, g in enumerate(includes):
         if g.endswith("/"):
             lo, hi = _prefix_bounds(g)
             pname_lo = _add(f"{prefix}_inc_lo_{i}", lo)
             pname_hi = _add(f"{prefix}_inc_hi_{i}", hi)
             branches.append(
-                "SELECT article_id FROM article_files "
+                "SELECT article_id FROM article_files INDEXED BY ix_article_files_path "
                 f"WHERE path >= :{pname_lo} AND path < :{pname_hi}{exc_clause}"
             )
             # Also match the bare directory path (no trailing slash).
             pname_eq = _add(f"{prefix}_inc_eq_{i}", g[:-1])
             branches.append(
-                "SELECT article_id FROM article_files "
+                "SELECT article_id FROM article_files INDEXED BY ix_article_files_path "
                 f"WHERE path = :{pname_eq}{exc_clause}"
             )
         elif not any(c in g for c in "*?["):
             pname = _add(f"{prefix}_inc_eq_{i}", g)
             branches.append(
-                "SELECT article_id FROM article_files "
+                "SELECT article_id FROM article_files INDEXED BY ix_article_files_path "
                 f"WHERE path = :{pname}{exc_clause}"
             )
         # else: wildcard skipped (slice 1/2)

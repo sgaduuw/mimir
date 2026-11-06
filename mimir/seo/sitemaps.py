@@ -35,8 +35,8 @@ from itertools import groupby
 from typing import NamedTuple
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from sqlalchemy import func, select
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import DateTime, bindparam, func, select, text
+from sqlalchemy.orm import Session
 
 from mimir import cache
 from mimir._inbox_name import inbox_path
@@ -450,32 +450,32 @@ def _archive_roots_query(inbox: Inbox, year: int, month: int | None):
     # starts at `ix_articles_date` across every inbox's articles for the
     # year. In the same local synthetic bench (about 30% of production
     # scale, measured 2026-10-26) that cost 280 to 440 ms per child
-    # whatever the inbox. The grouped subquery is a co-routine SQLite
-    # cannot flatten, so it scans the covering
-    # `ix_article_lists_thread_root` for this inbox first: an
-    # 8k-member inbox went from 283 ms to 1.4 ms. `own` keeps the old
-    # predicate: a root must be its own member.
-    roots = (
-        select(ArticleList.thread_root_id.label("root"))
-        .where(
-            ArticleList.inbox_id == inbox.id, ArticleList.thread_root_id.is_not(None)
-        )
-        .group_by(ArticleList.thread_root_id)
-        .subquery()
-    )
-    own = aliased(ArticleList)
+    # whatever the inbox. An 8k-member inbox went from 283 ms to 1.4 ms.
+    # Grouping prevents flattening, but SQLite 3.54 can still reorder the
+    # joins and walk the global date index first. CROSS JOIN keeps the
+    # inbox's grouped roots outside the article and own-membership seeks.
     return (
-        select(Article.id, Article.date)
-        .select_from(roots)
-        .join(Article, Article.id == roots.c.root)
-        .join(
-            own,
-            (own.article_id == Article.id)
-            & (own.inbox_id == inbox.id)
-            & (own.thread_root_id == Article.id),
+        text("""
+            SELECT articles.id, articles.date
+            FROM (
+                SELECT thread_root_id AS root
+                FROM article_lists
+                WHERE inbox_id = :inbox_id AND thread_root_id IS NOT NULL
+                GROUP BY thread_root_id
+            ) AS roots
+            CROSS JOIN articles ON articles.id = roots.root
+            CROSS JOIN article_lists AS own
+              ON own.article_id = articles.id AND own.inbox_id = :inbox_id
+             AND own.thread_root_id = articles.id
+            WHERE articles.date >= :start AND articles.date < :end
+            ORDER BY articles.date DESC, articles.id DESC
+        """)
+        .bindparams(
+            bindparam("inbox_id", value=inbox.id),
+            bindparam("start", value=start, type_=DateTime()),
+            bindparam("end", value=end, type_=DateTime()),
         )
-        .where(Article.date >= start, Article.date < end)
-        .order_by(Article.date.desc(), Article.id.desc())
+        .columns(Article.id, Article.date)
     )
 
 
