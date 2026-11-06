@@ -158,7 +158,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 #   regression that re-introduces inline styles will fail to render
 #   instead of silently widening the attack surface.
 #   `script-src` is pinned to the specific htmx version path
-#   (`unpkg.com/htmx.org@2.0.11/`); an htmx bump in `base.html` must
+#   (`unpkg.com/htmx.org@4.0.1/`); an htmx bump in `base.html` must
 #   update this CSP entry in lockstep, the test
 #   `test_csp_script_src_pins_specific_htmx_version` enforces that.
 #   Pygments is configured `noclasses=False` (both inline-renderer in
@@ -180,7 +180,7 @@ _SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; "
         "style-src 'self' https://cdn.jsdelivr.net; "
-        "script-src 'self' https://unpkg.com/htmx.org@2.0.11/; "
+        "script-src 'self' https://unpkg.com/htmx.org@4.0.1/; "
         "img-src 'self' data:; "
         "frame-ancestors 'none'; "
         "base-uri 'self'"

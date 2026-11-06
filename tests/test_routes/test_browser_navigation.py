@@ -6,7 +6,7 @@ CI sets MIMIR_BROWSER_REQUIRED=1 so a missing dependency fails rather than skips
 """
 
 import re
-from threading import Thread
+from threading import Event, Thread
 
 import pytest
 from werkzeug.serving import make_server
@@ -100,8 +100,10 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + root_path)
-            assert page.evaluate("typeof htmx") == "object"
+            assert page.evaluate("htmx.version") == "4.0.1"
             page.locator('[data-fold-set="expanded"]').click()
+            page.locator("#theme-select").select_option("dark")
+            page.evaluate("window.navigationSentinel = 42")
 
             def expect_message(article_id, path):
                 expect(page.locator("#msg")).to_have_attribute(
@@ -125,21 +127,13 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
             assert "hx-request" in partial.headers["vary"].lower()
             assert partial.headers["etag"]
             expect_message(next_id, next_path)
-            page.go_back()
-            expect_message(root_id, root_path)
-            page.go_forward()
-            expect_message(next_id, next_path)
-
-            # Force real cache misses in both directions, after checking cache hits.
+            assert partial.request.headers["hx-request-type"] == "partial"
+            # HTMX 4 restores from the server on every traversal, including
+            # repeated visits, without retaining mail bodies in browser storage.
             for navigate, article_id, path in [
                 (page.go_back, root_id, root_path),
                 (page.go_forward, next_id, next_path),
-            ]:
-                cached = page.evaluate(
-                    "JSON.parse(sessionStorage.getItem('htmx-history-cache'))"
-                )
-                assert any(entry["url"] == path for entry in cached)
-                page.evaluate("sessionStorage.removeItem('htmx-history-cache')")
+            ] * 2:
                 with page.expect_response(
                     lambda r: (
                         r.url == base + path
@@ -156,10 +150,50 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 expect(page.locator("main > nav")).to_be_visible()
                 expect_message(article_id, path)
                 assert "hx-request" not in restored.request.headers
+                assert restored.request.headers["hx-request-type"] == "full"
                 assert "<!doctype html>" in restored.text().lower()
                 assert "hx-request" in restored.headers["vary"].lower()
                 if path == next_path:
                     assert restored.headers["etag"] != partial.headers["etag"]
+                expect(page.locator("html")).to_have_attribute(
+                    "data-thread-root-id", str(root_id)
+                )
+                expect(page.locator("html")).to_have_attribute(
+                    "data-thread-context", "root" if article_id == root_id else "deep"
+                )
+                metadata = page.evaluate(
+                    """html => {
+                    var restored = new DOMParser().parseFromString(html, 'text/html');
+                    var selector = 'title, meta[name="description"], link[rel="canonical"], script[type="application/ld+json"]';
+                    return [document, restored].map(doc =>
+                        Array.from(doc.head.querySelectorAll(selector), node => node.outerHTML));
+                }""",
+                    restored.text(),
+                )
+                assert len(metadata[1]) >= 4, (
+                    "Fixture needs title, description, canonical and JSON-LD"
+                )
+                assert metadata[0] == metadata[1], (
+                    "History left stale document metadata"
+                )
+                assert page.evaluate("window.navigationSentinel") == 42
+                assert (
+                    page.evaluate("sessionStorage.getItem('htmx-history-cache')")
+                    is None
+                )
+                assert (
+                    page.evaluate("localStorage.getItem('htmx-history-cache')") is None
+                )
+                expect(page.locator("html")).to_have_attribute("data-theme", "dark")
+                expect(page.locator("#theme-select")).to_have_value("dark")
+                expect(page.locator("html")).to_have_attribute(
+                    "data-thread-fold", "expanded"
+                )
+                page.keyboard.press("?")
+                expect(page.locator("#keyboard-help")).to_be_visible()
+                # The backdrop closes the newly restored dialog too.
+                page.locator("#keyboard-help").click(position={"x": 1, "y": 1})
+                expect(page.locator("#keyboard-help")).to_be_hidden()
 
             page.locator('[data-fold-set="closed"]').click()
             expect(page.locator("html")).to_have_attribute("data-thread-fold", "closed")
@@ -175,17 +209,36 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
 
             # A failed swap must preserve the currently readable message.
             page.evaluate(
-                """() => document.body.addEventListener('htmx:responseError',
+                """() => document.body.addEventListener('htmx:response:error',
                 () => { document.body.dataset.responseError = 'received'; },
                 {once: true})"""
             )
-            page.route(base + root_path, lambda route: route.fulfill(status=500))
+            page.evaluate("""() => {
+                document.body.insertAdjacentHTML('beforeend',
+                    '<div id="failure-oob">unchanged</div>');
+                document.addEventListener('htmx:finally:request', () => {
+                    document.documentElement.dataset.failedRequestFinished = 'true';
+                }, {once: true});
+            }""")
+            page.route(
+                base + root_path,
+                lambda route: route.fulfill(
+                    status=500,
+                    content_type="text/html",
+                    body='<article id="msg" data-article-id="error">Error</article>'
+                    '<div id="failure-oob" hx-swap-oob="outerHTML">changed</div>',
+                ),
+            )
             with page.expect_response(lambda r: r.status == 500):
                 page.keyboard.press("k")
             expect(page.locator("body")).to_have_attribute(
                 "data-response-error", "received"
             )
+            expect(page.locator("html")).to_have_attribute(
+                "data-failed-request-finished", "true"
+            )
             expect_message(next_id, next_path)
+            expect(page.locator("#failure-oob")).to_have_text("unchanged")
             page.unroute(base + root_path)
             assert not errors, errors
 
@@ -387,6 +440,7 @@ def test_an_in_page_jump_opens_the_tab_that_holds_the_message(
         with playwright.sync_playwright() as p, p.chromium.launch() as browser:
             page = browser.new_page()
             page.goto(base + page1)
+            page.evaluate("window.threadHistorySentinel = 42")
             expect(page.locator(".thread-tabs")).to_be_visible()
             more = page.locator(".thread-more a")
             page2 = more.get_attribute("href")
@@ -404,6 +458,48 @@ def test_an_in_page_jump_opens_the_tab_that_holds_the_message(
             )
             expect(page.locator(f"#m{reply}")).to_be_in_viewport()
             expect(page).to_have_url(f"{base}{page2}#m{reply}")
+            # Back replaces the appended rows with page 1. Forward must fetch
+            # page 2 again, including after a tab changes that history entry.
+            for cycle in range(2):
+                for navigate, path, fragment in (
+                    (page.go_back, page1, "patches"),
+                    (
+                        page.go_forward,
+                        page2,
+                        f"m{reply}" if cycle == 0 else "discussion",
+                    ),
+                ):
+                    with page.expect_response(
+                        lambda r: (
+                            r.url == base + path
+                            and r.request.headers.get("hx-history-restore-request")
+                            == "true"
+                        )
+                    ) as restored:
+                        navigate()
+                    assert restored.value.status == 200
+                    assert "hx-request" not in restored.value.request.headers
+                    assert restored.value.request.headers["hx-request-type"] == "full"
+                    assert "<!doctype html>" in restored.value.text().lower()
+                    expect(page).to_have_url(f"{base}{path}#{fragment}")
+                    expect(page.locator(".thread-message")).to_have_count(3)
+                    if path == page1:
+                        expect(page.locator(f"#m{reply}")).to_have_count(0)
+                        expect(page.locator("#thread-messages")).to_have_attribute(
+                            "data-tab", "patches"
+                        )
+                    else:
+                        expect(page.locator(f"#m{reply}")).to_be_visible()
+                        expect(page.locator("#thread-messages")).to_have_attribute(
+                            "data-tab", "discussion"
+                        )
+                        if cycle == 0:
+                            expect(page.locator(f"#m{reply}")).to_be_in_viewport()
+                    assert page.evaluate("window.threadHistorySentinel") == 42
+                page.locator('[role="tab"][data-tab="patches"]').click()
+                expect(page.locator(f"#m{reply}")).to_be_hidden()
+                page.locator('[role="tab"][data-tab="discussion"]').click()
+                expect(page.locator(f"#m{reply}")).to_be_visible()
     finally:
         server.shutdown()
         thread.join()
@@ -452,7 +548,7 @@ def test_message_reader_navigation_scrolls_from_the_tree_to_the_new_mail(
                 viewport={"width": width, "height": 800}, color_scheme=scheme
             )
             page.goto(base + root_url)
-            assert page.evaluate("typeof htmx") == "object"
+            assert page.evaluate("htmx.version") == "4.0.1"
             playwright.expect(page.locator("html")).to_have_attribute(
                 "data-thread-fold", "partial"
             )
@@ -548,6 +644,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
     """Real HTMX DOM swaps must keep successive targets, history and chrome aligned."""
     playwright = playwright_api()
     expect = playwright.expect
+    from flask import request
     from sqlalchemy import select
 
     from mimir.extensions import SessionLocal
@@ -591,6 +688,40 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
     def path(pos, inbox="alpha", older="v1", newer="v2"):
         return f"/{inbox}/series/{key}/diff?from={older}&to={newer}&pos={pos}"
 
+    slow_started, release_slow, slow_finished, delay_enabled = (
+        Event(),
+        Event(),
+        Event(),
+        Event(),
+    )
+    original_view = client.application.view_functions["web.series_diff"]
+
+    def delayed_diff(*args, **kwargs):
+        if (
+            delay_enabled.is_set()
+            and request.args.get("pos") == "3"
+            and request.headers.get("HX-Request") == "true"
+        ):
+            delay_enabled.clear()
+            slow_started.set()
+            try:
+                assert release_slow.wait(10), "Overlapping request was not released"
+                return original_view(*args, **kwargs)
+            finally:
+                slow_finished.set()
+        return original_view(*args, **kwargs)
+
+    monkeypatch.setitem(
+        client.application.view_functions, "web.series_diff", delayed_diff
+    )
+    error_html = (
+        client.get(path(3))
+        .get_data(as_text=True)
+        .replace(
+            "</body>",
+            '<div id="failure-oob" hx-swap-oob="outerHTML">changed</div></body>',
+        )
+    )
     server = make_server("127.0.0.1", 0, client.application, threaded=True)
     worker = Thread(target=server.serve_forever, daemon=True)
     worker.start()
@@ -602,7 +733,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + path("cover"))
-            assert page.evaluate("typeof htmx") == "object"
+            assert page.evaluate("htmx.version") == "4.0.1"
             # Amplify HTMX's default binding delay: the diff explicitly settles
             # immediately so fast keyboard actions cannot click unbound links.
             assert page.evaluate("htmx.config.defaultSettleDelay = 250") == 250
@@ -652,9 +783,10 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
 
             with page.expect_response(lambda r: r.url == base + path(1)) as response:
                 page.locator('.series-diff-pager a[rel="next"]').click()
-            assert response.value.request.headers.get("hx-request") == "true"
-            assert "<!doctype html>" in response.value.text().lower()
             expect_position(1)
+            assert response.value.request.headers.get("hx-request") == "true"
+            assert response.value.request.headers["hx-request-type"] == "full"
+            assert "<!doctype html>" in response.value.text().lower()
             expect(page.locator("#series-diff")).to_be_focused()
             page.keyboard.press("j")
             expect_position(2, "beta")
@@ -667,37 +799,75 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
             page.go_forward()
             expect_position(2, "beta")
 
-            # History cache misses request the same full representation as a browser.
-            page.evaluate("sessionStorage.removeItem('htmx-history-cache')")
+            # Every history restoration requests the full representation.
             with page.expect_response(lambda r: r.url == base + path(3)) as restored:
                 page.go_back()
             assert (
                 restored.value.request.headers.get("hx-history-restore-request")
                 == "true"
             )
-            assert restored.value.request.headers.get("hx-request") != "true"
+            assert "hx-request" not in restored.value.request.headers
+            assert restored.value.request.headers["hx-request-type"] == "full"
             assert "<!doctype html>" in restored.value.text().lower()
+            assert page.evaluate("sessionStorage.getItem('htmx-history-cache')") is None
             expect_position(3)
             page.locator("#series-diff-position").select_option("1")
             expect_position(1)
 
-            # Failed selection must leave the selected option naming the readable body.
+            # Completion, rather than response headers alone, proves a rejected
+            # response cannot later push history or modify OOB chrome.
+            page.evaluate("""() => {
+                document.body.insertAdjacentHTML('beforeend',
+                    '<div id="failure-oob">unchanged</div>');
+                document.addEventListener('htmx:finally:request', () => {
+                    document.documentElement.dataset.requestFinished = 'true';
+                });
+            }""")
             for status in (404, 500):
+                page.evaluate("delete document.documentElement.dataset.requestFinished")
                 page.route(
                     base + path(3),
-                    lambda route: route.fulfill(status=status),
+                    lambda route: route.fulfill(
+                        status=status, content_type="text/html", body=error_html
+                    ),
                 )
                 with page.expect_response(lambda r: r.url == base + path(3)):
                     page.locator("#series-diff-position").select_option("3")
+                expect(page.locator("html")).to_have_attribute(
+                    "data-request-finished", "true"
+                )
+                assert page.url == base + path(1), "failed response changed the URL"
                 expect_position(1)
+                expect(page.locator("#failure-oob")).to_have_text("unchanged")
                 page.unroute(base + path(3))
+            page.evaluate("delete document.documentElement.dataset.requestFinished")
             page.route(base + path(3), lambda route: route.abort())
             with page.expect_event(
                 "requestfailed", predicate=lambda r: r.url == base + path(3)
             ):
                 page.locator("#series-diff-position").select_option("3")
+            expect(page.locator("html")).to_have_attribute(
+                "data-request-finished", "true"
+            )
             expect_position(1)
+            expect(page.locator("#failure-oob")).to_have_text("unchanged")
             page.unroute(base + path(3))
+
+            # Hold an earlier request on the server while another link wins.
+            # Different source anchors must share the inherited replace policy.
+            delay_enabled.set()
+            page.locator(".series-diff-overview a").last.click()
+            assert slow_started.wait(5), "Earlier diff request never started"
+            with page.expect_event(
+                "requestfailed", predicate=lambda r: r.url == base + path(3)
+            ):
+                page.locator(".series-diff-overview a").first.click()
+            expect_position("cover")
+            release_slow.set()
+            assert slow_finished.wait(5), "Earlier diff request never finished"
+            expect_position("cover")
+            page.locator("#series-diff-position").select_option("1")
+            expect_position(1)
 
             # The enhanced picker replaces Go, including after swaps and history.
             page.locator("#series-diff-position").select_option("2")
@@ -727,6 +897,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
                     "data-position", "2"
                 )
     finally:
+        release_slow.set()
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()

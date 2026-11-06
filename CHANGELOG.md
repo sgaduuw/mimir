@@ -11,6 +11,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.44.0] - 2026-11-06
+
+### Changed
+
+- Upgrade HTMX to 4.0.1. Back and forward navigation refetch pages instead of keeping page copies in browser session storage; the privacy notice now describes that behavior. Message and series navigation retain partial swaps, keyboard controls, and native links and forms. Failed requests preserve the current page and URL.
+
+- SQLite writer connections, including VACUUM's raw connection, limit retained journal allocation to 64 MiB at a safe WAL reset. An oversized post-VACUUM WAL can shrink after blocking transactions release, checkpointing finishes and writing resumes, without closing idle connections. This does not cap peak WAL growth or guarantee immediate reclamation; busy checkpoint warnings now describe that distinction (#1103).
+
+### Fixed
+
+- Conditional requests accept weak ETags on message, thread, message-body and merge-window responses, avoiding full renders when a matching validator was weakened by compression at the edge. Full HTML, HTMX and Markdown validators remain distinct (#1104).
+
 ## [3.43.0] - 2026-11-06
 
 ### Changed

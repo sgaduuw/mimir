@@ -699,7 +699,7 @@ def thread_view(
         ).hexdigest()
         etag_input = f"{content_input}|{page}|{representation}|{parents_tag}|{outline_tag}|{revisions_tag}"
         etag = hashlib.blake2s(etag_input.encode(), digest_size=8).hexdigest()
-        if etag in request.if_none_match:
+        if request.if_none_match.contains_weak(etag):
             response = Response(status=304)
             response.set_etag(etag)
             return response

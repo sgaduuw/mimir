@@ -466,15 +466,17 @@ def test_diff_navigation_uses_full_response_htmx_and_restorable_metadata(
         for tag, attrs in tags
         if tag == "article" and attrs.get("id") == "series-diff"
     )
-    assert article["hx-target"] == article["hx-select"] == "main"
-    assert article["hx-push-url"] == "true"
+    assert article["hx-target:inherited"] == article["hx-select:inherited"] == "main"
+    assert article["hx-push-url:inherited"] == "true"
     assert article["data-page-title"] == html.unescape(
         re.search(r"<title>(.*?)</title>", page.text)[1]
     )
     assert article["data-canonical"] == "http://localhost" + url
     assert "patch 1" in article["data-page-description"]
     boosted_nav = [
-        attrs for tag, attrs in tags if tag == "nav" and attrs.get("hx-boost") == "true"
+        attrs
+        for tag, attrs in tags
+        if tag == "nav" and attrs.get("hx-boost:inherited") == "true"
     ]
     assert (
         len(boosted_nav) == 2

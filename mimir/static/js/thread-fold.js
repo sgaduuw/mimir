@@ -38,10 +38,13 @@
 
   var afterSwap = null;
   function init() {
-    if (afterSwap) document.body.removeEventListener("htmx:afterSwap", afterSwap);
+    if (afterSwap) document.body.removeEventListener("htmx:after:swap", afterSwap);
     var section = document.querySelector(".thread-context");
     if (!section) return;
-    var rootIdNow = section.getAttribute("data-thread-root-id") || rootId;
+    var rootIdNow = section.getAttribute("data-thread-root-id");
+    var saved = null;
+    try { saved = localStorage.getItem("mimir.fold." + rootIdNow); } catch (e) { /* storage may be blocked */ }
+    html.setAttribute("data-thread-fold", saved || "partial");
 
     function reflectToggle(modeNow) {
       section.querySelectorAll(".thread-toggle button").forEach(function (b) {
@@ -116,11 +119,14 @@
       });
       if (html.getAttribute("data-thread-fold") === "partial") scrollActiveIntoView();
     };
-    document.body.addEventListener("htmx:afterSwap", afterSwap);
+    document.body.addEventListener("htmx:after:swap", afterSwap);
   }
 
   // History restoration replaces the section and discards its DOM listeners.
-  document.addEventListener("htmx:historyRestore", init);
+  document.addEventListener("htmx:after:swap", function (event) {
+    if (event.detail.ctx.swap === "none") return;
+    if (event.detail.ctx.request.headers["HX-History-Restore-Request"] === "true") init();
+  });
 
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", init);

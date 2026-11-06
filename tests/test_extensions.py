@@ -1,10 +1,11 @@
 """SQLite pragma contract for `mimir.extensions`.
 
-The `connect` listener at `mimir/extensions.py` sets four pragmas on
-every connection, WAL journaling, NORMAL sync, FK enforcement, and
-the configured `busy_timeout`. These are load-bearing:
+The `connect` listener at `mimir/extensions.py` sets WAL journaling,
+the retained journal limit, NORMAL sync, FK enforcement, and the
+configured `busy_timeout`. These are load-bearing:
 
 - WAL is what makes readers non-blocking during ingest writes.
+- The retained journal limit reclaims oversized WAL allocation at a safe reset.
 - `foreign_keys=ON` is what makes the `ON DELETE SET NULL` /
   `ON DELETE CASCADE` clauses on `articles.canonical_inbox_id` and
   `article_lists` actually fire.
@@ -37,6 +38,61 @@ def test_journal_mode_is_wal():
     re-issue on every connect for idempotence. A fresh connection
     must report `wal`."""
     assert _pragma("journal_mode").lower() == "wal"
+
+
+def test_journal_size_limit_is_64_mib():
+    from mimir import extensions
+
+    assert _pragma("journal_size_limit") == 64 * 1024 * 1024
+    assert extensions.JOURNAL_SIZE_LIMIT_BYTES == 64 * 1024 * 1024
+
+
+def test_wal_reuse_shrinks_the_file_with_an_idle_reader_still_open(
+    tmp_path, monkeypatch
+):
+    import sqlite3
+
+    from mimir import extensions
+
+    # Exercise the real hook and reset policy without writing a 64 MiB fixture.
+    limit = 64 * 1024
+    monkeypatch.setattr(extensions, "JOURNAL_SIZE_LIMIT_BYTES", limit, raising=False)
+    path = tmp_path / "retention.db"
+    wal = path.with_name(path.name + "-wal")
+    writer = sqlite3.connect(path)
+    reader = sqlite3.connect(path)
+    try:
+        extensions._sqlite_pragmas(writer, None)
+        writer.execute("PRAGMA busy_timeout=0")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("CREATE TABLE t (value BLOB)")
+        writer.commit()
+        assert writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+        reader.execute("PRAGMA query_only=ON")
+        reader.execute("BEGIN")
+        assert reader.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 0
+
+        writer.execute("INSERT INTO t VALUES (zeroblob(?))", (limit * 4,))
+        writer.commit()
+        grown = wal.stat().st_size
+        assert grown > limit, "the active snapshot must retain an oversized WAL"
+        assert writer.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 1
+
+        reader.rollback()
+        assert not reader.in_transaction
+        busy, frames, checkpointed = writer.execute(
+            "PRAGMA wal_checkpoint(FULL)"
+        ).fetchone()
+        assert busy == 0 and frames == checkpointed and frames > 0
+        writer.execute("INSERT INTO t VALUES (zeroblob(1))")
+        writer.commit()
+
+        assert wal.exists(), "last-connection cleanup must not make the test pass"
+        assert wal.stat().st_size <= limit, f"WAL stayed at {grown} bytes after reuse"
+        assert reader.execute("SELECT COUNT(*) FROM t").fetchone()[0] == 2
+    finally:
+        reader.close()
+        writer.close()
 
 
 def test_foreign_keys_enabled():

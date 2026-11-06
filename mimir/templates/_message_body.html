@@ -3,8 +3,8 @@
   <nav class="message-context" aria-label="Message navigation">
     {% if thread_link_url %}<a class="whole-thread" href="{{ thread_link_url }}">Read the whole thread, {{ thread_total|format_count }} message{{ '' if thread_total == 1 else 's' }}</a>{% endif %}
     <span class="message-pager">
-    {% if previous_url %}<a rel="prev" data-message-nav="prev" href="{{ previous_url }}" hx-get="{{ previous_url }}" hx-target="#msg" hx-swap="outerHTML show:#msg:top" hx-push-url="true">Previous</a>{% else %}<a rel="prev" data-message-nav="prev" aria-disabled="true" tabindex="-1">Previous</a>{% endif %}
-    {% if next_url %}<a rel="next" data-message-nav="next" href="{{ next_url }}" hx-get="{{ next_url }}" hx-target="#msg" hx-swap="outerHTML show:#msg:top" hx-push-url="true">Next</a>{% else %}<a rel="next" data-message-nav="next" aria-disabled="true" tabindex="-1">Next</a>{% endif %}
+    {% if previous_url %}<a rel="prev" data-message-nav="prev" href="{{ previous_url }}" hx-get="{{ previous_url }}" hx-target="#msg" hx-swap="outerHTML show:top showTarget:#msg" hx-push-url="true">Previous</a>{% else %}<a rel="prev" data-message-nav="prev" aria-disabled="true" tabindex="-1">Previous</a>{% endif %}
+    {% if next_url %}<a rel="next" data-message-nav="next" href="{{ next_url }}" hx-get="{{ next_url }}" hx-target="#msg" hx-swap="outerHTML show:top showTarget:#msg" hx-push-url="true">Next</a>{% else %}<a rel="next" data-message-nav="next" aria-disabled="true" tabindex="-1">Next</a>{% endif %}
     </span>
   </nav>
   <header class="mail-header">
