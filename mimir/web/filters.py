@@ -618,11 +618,7 @@ def _subsystem_label_filter(name: str | None) -> str:
     return (name or "").lower()
 
 
-@bp_web.app_template_filter("subsystem_index_url")
-def _subsystem_index_url_filter(inbox_name: str) -> str:
-    """Site-relative URL for an inbox's subsystem index. See
-    `mimir.subsystems.subsystem_index_path`."""
-    return subsystem_index_path(inbox_name)
+bp_web.add_app_template_filter(subsystem_index_path, "subsystem_index_url")
 
 
 @bp_web.app_template_filter("is_addressable_subsystem")

@@ -45,61 +45,29 @@ logger = logging.getLogger(__name__)
 # Plain container values and encoder changes still need a bump by hand.
 NAMESPACE_VERSION = 5
 
-# Proactive-refresh window threaded through to `get_or_compute` via a
-# context manager. Set by warm-cache so a still-fresh row that's about
-# to expire gets recomputed before the next user request sees a cold
-# miss, without recomputing rows that are nowhere near expiry. Unset
-# (None) means standard cache-aside: only expired rows recompute.
-_refresh_within: ContextVar[float | None] = ContextVar("_refresh_within", default=None)
+# Warm handlers use one window for proactive refresh and stored-TTL insurance.
+# None keeps ordinary request reads and writes at their nominal lifetime.
+_warm_window: ContextVar[int | None] = ContextVar("_warm_window", default=None)
 
 
 @contextmanager
-def refresh_window(seconds: float | None) -> Iterator[None]:
-    """Within this scope, `get_or_compute` recomputes any cached row
-    whose remaining TTL is less than `seconds`, instead of returning
-    the stale-but-not-expired value. Used by warm-cache so 24h-TTL
-    keys aren't recomputed on every 5-minute cron tick, only on the
-    tick nearest their expiry. The contextvar is snapshotted at
-    submission time when callers fan out to a `ThreadPoolExecutor`,
-    via `contextvars.copy_context().run(fn, ...)`."""
-    token = _refresh_within.set(seconds)
+def warm_window(seconds: int | None) -> Iterator[None]:
+    """Couple warm refresh decisions and TTL extension within this scope.
+
+    Each broker warm worker enters its own context. Write paths snapshot
+    the extended TTL before an RPC or writer submission, since those
+    boundaries do not transport the caller's context.
+    """
+    token = _warm_window.set(seconds)
     try:
         yield
     finally:
-        _refresh_within.reset(token)
-
-
-# Stored-TTL extension threaded through to `set` / writer variants
-# via a context manager. Set by warm-cache so warm-managed cache
-# rows store `expires_at = now + nominal_ttl + extension`, giving
-# the probabilistic refresh window in `_refresh_within` room to
-# fire inside the cached lifetime AND a deterministic insurance
-# band past nominal. Unset (None) means standard cache.set:
-# stored TTL = nominal TTL.
-_ttl_extension: ContextVar[int | None] = ContextVar("_ttl_extension", default=None)
-
-
-@contextmanager
-def ttl_extension(seconds: int | None) -> Iterator[None]:
-    """Within this scope, calls to `set` / `_set_via_writer_for_nskey`
-    / etc. that write a cache row extend the stored TTL by
-    `seconds`. Used by warm-cache so a warm-managed row's
-    stored expires_at sits `seconds` past its nominal expiry,
-    matching the spec's "stored TTL = nominal + window" pattern.
-    Spec: `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md` §5.2."""
-    token = _ttl_extension.set(seconds)
-    try:
-        yield
-    finally:
-        _ttl_extension.reset(token)
+        _warm_window.reset(token)
 
 
 def _apply_ttl_extension(ttl: int) -> int:
-    """Add the active `_ttl_extension` ContextVar value (if any) to
-    `ttl`. Called at each cache-write site so warm-cache cycles can
-    extend stored TTL beyond nominal without per-call plumbing.
-    Returns `ttl` unchanged when no extension is in scope."""
-    return ttl + (_ttl_extension.get() or 0)
+    """Snapshot the warm window before crossing a write boundary."""
+    return ttl + (_warm_window.get() or 0)
 
 
 def _ns(key: str) -> str:
@@ -366,7 +334,7 @@ def set(key: str, value: Any, ttl: int) -> None:
         from mimir.broker.protocol import CacheSetRequest
 
         # Apply the extension here, before crossing the wire: the
-        # broker's _ttl_extension ContextVar is unset in the cache-
+        # broker's _warm_window ContextVar is unset in the cache-
         # worker thread (ContextVar is per-thread; the warm worker's
         # scope doesn't leak into other broker threads), so the
         # broker-side _apply_ttl_extension is a no-op for RPCs from
@@ -538,13 +506,13 @@ def get_or_compute(
             )
         ).one_or_none()
         if row is not None and row.expires_at >= _now():
-            window = _refresh_within.get()
+            window = _warm_window.get()
             if window is None:
                 return _decode(json.loads(row.value))
             # Probabilistic refresh window, only reached inside a
             # warm-cache cycle (window is None by default). The
             # bands are measured from the row's own clock, so a
-            # `ttl_extension` in scope here does not matter.
+            # stored extension does not alter the nominal TTL passed below.
             from mimir.cache_warm import should_refresh
 
             if not should_refresh(
