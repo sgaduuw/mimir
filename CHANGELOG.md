@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.43.0] - 2026-11-06
+
 ### Changed
 
 - Refresh Dulwich to 1.2.21, SQLAlchemy to 2.1.8, Pydantic to 2.14.3 and its core to 2.50.4, typing-inspection to 0.4.5, and Ruff to 0.17.4. The patches include Dulwich pack-index validation and SQLAlchemy's Python 3.15 connection-pool cleanup fix.
