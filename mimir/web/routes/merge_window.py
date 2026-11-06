@@ -41,7 +41,7 @@ def merge_window_page():
             f"{state}|{pulls_state}|{canonical_url}|{allowlist_tag()}".encode(),
             digest_size=8,
         ).hexdigest()
-        if etag in request.if_none_match:
+        if request.if_none_match.contains_weak(etag):
             response = Response(status=304)
             response.set_etag(etag)
             return response
