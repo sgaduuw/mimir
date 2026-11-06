@@ -12,7 +12,7 @@ three bands, measured against `effective = effective_window_sec(...)`:
   before expiry.
 
 Warm-cache stores rows with `expires_at = now + nominal_ttl +
-window_sec` (`cache.ttl_extension`), which is what gives the bands
+window_sec` (`cache.warm_window`), which is what gives the bands
 room inside the cached lifetime. Read paths see no difference.
 
 Spec: `_claude/specs/2026-06-01-warm-cache-fast-slow-tier-split-design.md` §5.2.

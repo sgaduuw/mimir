@@ -59,12 +59,6 @@ from mimir.web import (
 )
 from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
 
-# Refresh-window used by warm-cache. See the call site in
-# `warm_cache_command` for the calibration rationale (cron period +
-# jitter buffer). A key with less remaining TTL than this gets
-# recomputed; one with more remaining TTL is left alone.
-WARM_CACHE_REFRESH_WITHIN_SEC = 450
-
 # Number of top-active subsystems whose per-subsystem dashboard
 # caches are pre-warmed per inbox. The full per-subsystem dashboard
 # fires four cache-backed helpers; on a 1500-subsystem corpus,
@@ -241,16 +235,7 @@ def _build_inbox_targets(
     yesterday: date,
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
-    """Legacy combined builder: fast + slow concatenated. Kept so
-    `mimir warm-cache --tier all` (the operator one-off) and any
-    callers that haven't been migrated still get the full target
-    list. New scheduler-side callers use _build_fast_inbox_targets /
-    _build_slow_inbox_targets directly.
-
-    Order differs slightly from the pre-split shape (fast comes
-    first now), but no existing test pins ordering of this list,
-    only set-membership.
-    """
+    """All-tier targets in fast-then-slow order."""
     return _build_fast_inbox_targets(inbox) + _build_slow_inbox_targets(
         inbox, today, yesterday, sitemap_base
     )
@@ -269,8 +254,8 @@ def _build_fast_global_targets(
     next to targets budgeted at 100 ms. It is here for freshness, not
     speed. The target calls `sitemap_index_xml` WITHOUT `force=True`,
     so a warm row costs nothing and the per-minute tick refreshes it
-    only inside `WARM_CACHE_REFRESH_WITHIN_SEC` of its one-hour TTL:
-    one rebuild an hour. On the slow tier it ran after a 30 to 50
+    according to `warm_cache_fast_refresh_window_sec` near its one-hour
+    TTL. On the slow tier it ran after a 30 to 50
     minute per-inbox fan-out and could expire before the tick reached
     it, so a crawler could pay the rebuild on one of two web workers,
     against a 60 s worker timeout. The fast tier also warms it within
@@ -324,14 +309,7 @@ def _build_slow_global_targets(
 def _build_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
-    """Legacy combined builder: fast + slow concatenated. Kept so
-    `mimir warm-cache --tier all` (the operator one-off) and any
-    callers that haven't been migrated still get the full target
-    list. New scheduler-side callers use _build_fast_global_targets /
-    _build_slow_global_targets directly.
-
-    Sitemap targets come first when sitemap_base is set, followed by
-    the cross-inbox activity aggregator and maintainer review counts."""
+    """All-tier global targets in fast-then-slow order."""
     return _build_fast_global_targets(sitemap_base) + _build_slow_global_targets(
         sitemap_base
     )

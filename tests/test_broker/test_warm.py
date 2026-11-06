@@ -123,6 +123,55 @@ def test_dispatch_warm_inbox_reply_shape(seeded_db):
     )
 
 
+def test_warm_window_ttl_is_applied_once_across_rpc_and_writer(seeded_db, monkeypatch):
+    from sqlalchemy import select
+
+    import mimir.cli.cache as cli_cache
+    from mimir import cache
+    from mimir.broker import client as client_module
+    from mimir.config import settings
+    from mimir.models import CacheEntry
+
+    monkeypatch.setattr(cache, "_now", lambda: 1000)
+    # Client and broker share a process here; keep writer connections
+    # writable while the server's real handler flag selects each path.
+    monkeypatch.setattr(
+        cache, "_should_dispatch_to_broker", lambda: not cache._broker_handler_active()
+    )
+    monkeypatch.setattr(settings, "warm_cache_fast_refresh_window_sec", 600)
+    monkeypatch.setattr(
+        cli_cache,
+        "_build_fast_inbox_targets",
+        lambda inbox: [
+            ("test:warm-write", lambda s: cache.set("scope:handler", "v", 100))
+        ],
+    )
+    with broker_running(short_socket_path("warm-window-once")):
+        client = BrokerClient(short_socket_path("warm-window-once"))
+        try:
+            monkeypatch.setattr(client_module, "get_broker_client", lambda: client)
+            with cache.warm_window(600):
+                cache.set("scope:rpc", "v", 100)
+            reply = client.call(
+                WarmInboxRequest(
+                    inbox_name="alpha", priority=0, targets=["test:warm-write"]
+                )
+            )
+            assert reply["warmed"] == ["test:warm-write"]
+            assert reply["errors"] == []
+            from tests.test_ingest._helpers import _drain_writer
+
+            _drain_writer()
+            with seeded_db() as s:
+                rows = dict(
+                    s.execute(select(CacheEntry.key, CacheEntry.expires_at)).all()
+                )
+            assert rows[cache._ns("scope:rpc")] == 1700
+            assert rows[cache._ns("scope:handler")] == 1700
+        finally:
+            client.close()
+
+
 def test_dispatch_warm_inbox_unknown_returns_clean_error(seeded_db):
     """Bogus inbox name returns a structured `UnknownInbox:<name>`
     error rather than crashing the handler. Mirrors the matching
@@ -458,7 +507,7 @@ def test_handle_warm_global_uses_active_read_pool_session(monkeypatch):
 
 
 # Task 5 of the fast/slow tier split (spec §2 §5): `_run_targets`
-# selects per-tier `refresh_window` + `ttl_extension` from settings;
+# selects the per-tier `warm_window` from settings;
 # the handlers pass `priority=req.priority` through. The no-
 # preemption pin captures the load-bearing semantic that a slow op
 # already in flight is NOT cancelled when a fast op queues behind
@@ -530,11 +579,7 @@ def test_warm_workers_do_not_preempt_in_flight_slow_op(seeded_db, monkeypatch):
 
 
 def test_run_targets_applies_fast_tier_window_for_priority_zero(seeded_db, monkeypatch):
-    """`_run_targets(targets, priority=0)` wraps execution in
-    refresh_window(warm_cache_fast_refresh_window_sec) and
-    ttl_extension(warm_cache_fast_refresh_window_sec). Verified
-    by monkey-patching refresh_window + ttl_extension to record
-    the value they're called with."""
+    """Fast priority enters the configured shared warm window once."""
     from contextlib import contextmanager
 
     from mimir.broker.handlers import warm as warm_module
@@ -545,22 +590,15 @@ def test_run_targets_applies_fast_tier_window_for_priority_zero(seeded_db, monke
     captured: list[tuple[str, int | None]] = []
 
     @contextmanager
-    def fake_refresh_window(seconds):
-        captured.append(("refresh_window", seconds))
+    def fake_warm_window(seconds):
+        captured.append(("warm_window", seconds))
         yield
 
-    @contextmanager
-    def fake_ttl_extension(seconds):
-        captured.append(("ttl_extension", seconds))
-        yield
-
-    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
-    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+    monkeypatch.setattr(warm_module, "warm_window", fake_warm_window)
 
     # No-op target list so the for-loop exits without running anything.
     warm_module._run_targets([], priority=0)
-    assert ("refresh_window", 555) in captured
-    assert ("ttl_extension", 555) in captured
+    assert captured == [("warm_window", 555)]
 
 
 def test_run_targets_applies_slow_tier_window_for_priority_one(seeded_db, monkeypatch):
@@ -575,21 +613,14 @@ def test_run_targets_applies_slow_tier_window_for_priority_one(seeded_db, monkey
     captured: list[tuple[str, int | None]] = []
 
     @contextmanager
-    def fake_refresh_window(seconds):
-        captured.append(("refresh_window", seconds))
+    def fake_warm_window(seconds):
+        captured.append(("warm_window", seconds))
         yield
 
-    @contextmanager
-    def fake_ttl_extension(seconds):
-        captured.append(("ttl_extension", seconds))
-        yield
-
-    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
-    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+    monkeypatch.setattr(warm_module, "warm_window", fake_warm_window)
 
     warm_module._run_targets([], priority=1)
-    assert ("refresh_window", 999) in captured
-    assert ("ttl_extension", 999) in captured
+    assert captured == [("warm_window", 999)]
 
 
 def test_run_targets_default_priority_is_slow(seeded_db, monkeypatch):
@@ -607,21 +638,14 @@ def test_run_targets_default_priority_is_slow(seeded_db, monkeypatch):
     captured: list[tuple[str, int | None]] = []
 
     @contextmanager
-    def fake_refresh_window(seconds):
-        captured.append(("refresh_window", seconds))
+    def fake_warm_window(seconds):
+        captured.append(("warm_window", seconds))
         yield
 
-    @contextmanager
-    def fake_ttl_extension(seconds):
-        captured.append(("ttl_extension", seconds))
-        yield
-
-    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
-    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+    monkeypatch.setattr(warm_module, "warm_window", fake_warm_window)
 
     warm_module._run_targets([])
-    assert ("refresh_window", 1234) in captured
-    assert ("ttl_extension", 1234) in captured
+    assert captured == [("warm_window", 1234)]
 
 
 # ----- Config-drift Layer 2: sitemap labels with SITE_BASE_URL unset -------
@@ -815,9 +839,7 @@ def _seed_or_get_subsystem_id() -> int:
 
 
 def test_handle_warm_subsystem_runs_helpers_under_tier_window(seeded_db, monkeypatch):
-    """`handle_warm_subsystem(req)` selects refresh_window +
-    ttl_extension based on req.priority. Verified by monkey-patching
-    both context managers to record their seconds argument."""
+    """Both subsystem priorities enter their configured warm window once."""
     from contextlib import contextmanager
 
     from mimir.broker.handlers import warm as warm_module
@@ -830,17 +852,11 @@ def test_handle_warm_subsystem_runs_helpers_under_tier_window(seeded_db, monkeyp
     captured: list[tuple[str, int | None]] = []
 
     @contextmanager
-    def fake_refresh_window(seconds):
-        captured.append(("refresh_window", seconds))
+    def fake_warm_window(seconds):
+        captured.append(("warm_window", seconds))
         yield
 
-    @contextmanager
-    def fake_ttl_extension(seconds):
-        captured.append(("ttl_extension", seconds))
-        yield
-
-    monkeypatch.setattr(warm_module, "refresh_window", fake_refresh_window)
-    monkeypatch.setattr(warm_module, "ttl_extension", fake_ttl_extension)
+    monkeypatch.setattr(warm_module, "warm_window", fake_warm_window)
 
     sub_id = _seed_or_get_subsystem_id()
 
@@ -849,8 +865,7 @@ def test_handle_warm_subsystem_runs_helpers_under_tier_window(seeded_db, monkeyp
     )
     reply = warm_module.handle_warm_subsystem(req)
     assert reply.ok, reply.error
-    assert ("refresh_window", 222) in captured
-    assert ("ttl_extension", 222) in captured
+    assert captured == [("warm_window", 222)]
 
     captured.clear()
     req_fast = WarmSubsystemRequest(
@@ -858,8 +873,7 @@ def test_handle_warm_subsystem_runs_helpers_under_tier_window(seeded_db, monkeyp
     )
     reply_fast = warm_module.handle_warm_subsystem(req_fast)
     assert reply_fast.ok, reply_fast.error
-    assert ("refresh_window", 111) in captured
-    assert ("ttl_extension", 111) in captured
+    assert captured == [("warm_window", 111)]
 
 
 def test_handle_warm_subsystem_returns_unknown_inbox_cleanly(seeded_db):
