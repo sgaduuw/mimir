@@ -124,8 +124,9 @@ by the separate broker can continue; stopping the scheduler does not cancel it.
 ## Access logs
 
 Mimir emits one JSON access record per request, including unmatched routes.
-Alongside timestamp, request ID, method, path, status, duration, client IP,
-user agent and referrer, it records:
+A successful `/healthz` is the one exception, so health checks do not fill the
+log; a failing one is still recorded. Alongside timestamp, request ID, method,
+path, status, duration, client IP, user agent and referrer, it records:
 
 | Field | Source |
 | --- | --- |
