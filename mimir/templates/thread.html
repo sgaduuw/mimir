@@ -1,4 +1,8 @@
 {% extends "base.html" %}
+{% block page_scripts %}
+{% if show_tabs %}<script src="{{ url_for('static', filename='js/thread-tabs.js') }}?v={{ mimir_version }}" defer></script>{% endif %}
+<script src="{{ url_for('static', filename='js/thread-anchors.js') }}?v={{ mimir_version }}" defer></script>
+{% endblock %}
 {# Pages 2+ are separate self-canonical documents in the sitemap, so
    they need separate titles. Shipping the strategy with identical ones
    hands crawlers a duplicate-title signal on every URL it adds. #}
@@ -100,10 +104,6 @@ All {{ _n|format_count }} message{{ '' if _n == 1 else 's' }} in {{ inbox_name }
 {% if prev_page_url %}
 <p><small><a href="{{ prev_page_url }}">Previous page</a></small></p>
 {% endif %}
-{% if show_tabs %}
-<script src="{{ url_for('static', filename='js/thread-tabs.js') }}" defer></script>
-{% endif %}
-<script src="{{ url_for('static', filename='js/thread-anchors.js') }}" defer></script>
 {% if outline %}
 </div>
 </div>

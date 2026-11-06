@@ -3,6 +3,9 @@ from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 from mimir.config import settings
 
+# Bound retained journals after a reset, not WAL growth pinned by active readers.
+JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024
+
 
 class Base(DeclarativeBase):
     pass
@@ -16,6 +19,7 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False
 def _sqlite_pragmas(dbapi_conn, _conn_record) -> None:
     cur = dbapi_conn.cursor()
     cur.execute("PRAGMA journal_mode=WAL")
+    cur.execute(f"PRAGMA journal_size_limit={JOURNAL_SIZE_LIMIT_BYTES}")
     cur.execute("PRAGMA synchronous=NORMAL")
     cur.execute("PRAGMA foreign_keys=ON")
     cur.execute(f"PRAGMA busy_timeout={settings.sqlite_busy_timeout_ms}")

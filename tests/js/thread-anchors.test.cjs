@@ -15,7 +15,7 @@ function click(kind, href, loaded) {
     URL,
     HashChangeEvent: class {},
     location: { href: "http://h/a/t" },
-    history: { pushState: (_s, _t, url) => (calls.pushed = url) },
+    history: { state: { original: 7 }, pushState(state, _title, url) { calls.pushed = url; calls.state = state && { ...state }; } },
     window: { dispatchEvent: () => (calls.hashchange = true) },
     document: {
       addEventListener: (_event, fn) => (handler = fn),
@@ -37,6 +37,7 @@ test("a revision link to a loaded message scrolls in place", () => {
   assert.deepEqual(calls, {
     prevented: true,
     pushed: "http://h/a/t/2#m7",
+    state: { original: 7, htmx: true },
     scrolled: true,
     hashchange: true,
   });

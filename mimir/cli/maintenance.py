@@ -5,14 +5,15 @@ functions `mimir.maintenance.run_analyze` / `run_vacuum` do the
 actual work inside the broker process; this module turns CLI
 flags into RPC arguments and echoes the structured result.
 
-Both are intended for periodic cron runs. `analyze` is cheap and
-can run while the web tier is up; `vacuum` holds an exclusive lock
-and pauses every other broker worker for the duration.
+Both are intended for periodic cron runs. `analyze` can run while
+the web tier is up; `vacuum` occupies SQLite's writer and can delay
+other write work for the duration.
 """
 
 import click
 
 from mimir.cli._common import _fmt_bytes
+from mimir.extensions import JOURNAL_SIZE_LIMIT_BYTES
 
 
 @click.command("analyze")
@@ -47,8 +48,8 @@ def vacuum_command() -> None:
     `VACUUM` (rebuilds the database into a compact form) and
     `PRAGMA wal_checkpoint(TRUNCATE)` (collapses the WAL).
 
-    VACUUM holds an exclusive lock for the duration; every other
-    broker worker pauses. Run during a quiet window.
+    VACUUM occupies SQLite's writer for the duration. Run during a quiet
+    window; active read transactions can delay the final WAL truncation.
     """
     from mimir.broker.client import BrokerUnavailable, get_broker_client
     from mimir.broker.protocol import VacuumRequest
@@ -70,11 +71,8 @@ def _echo_vacuum_outcome(payload: dict) -> None:
     click.echo(f"after:  total={_fmt_bytes(after)}")
     click.echo(f"reclaimed {_fmt_bytes(reclaimed)} in {elapsed_s:.1f} s")
     if not payload.get("wal_truncated", True):
-        # The operator-visible half of the same finding: without this
-        # line the only symptom is a volume that quietly holds twice
-        # the database until the next restart.
         click.echo(
-            "note: the WAL could not be truncated (another connection "
-            "holds the database open), so it stays at roughly database "
-            "size until every connection closes"
+            "note: the WAL could not be truncated; active transactions can "
+            "delay reclamation. At the next WAL reset the retained WAL "
+            f"limit is {JOURNAL_SIZE_LIMIT_BYTES // (1024 * 1024)} MiB"
         )

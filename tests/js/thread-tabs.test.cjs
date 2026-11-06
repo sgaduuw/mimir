@@ -45,6 +45,8 @@ function reader(hash, kinds, next) {
     history: { replaceState(_state, _title, hash) { location.hash = hash; } },
     document: {
       body,
+      readyState: "complete",
+      addEventListener: (name, fn) => body.addEventListener(name, fn),
       querySelector: () => tablist,
       getElementById: id => id === "thread-messages" ? box : null,
       createElement: () => element(),
@@ -52,7 +54,7 @@ function reader(hash, kinds, next) {
   });
   return { box, tabs, location, empty: box.children[0], append(kinds, next) {
     page(kinds, next);
-    body.events["htmx:afterSwap"]();
+    body.events["htmx:after:swap"]({ detail: { ctx: { request: { headers: {} } } } });
   } };
 }
 

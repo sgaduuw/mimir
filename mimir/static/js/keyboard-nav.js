@@ -20,7 +20,7 @@
  *
  * j/k navigation drives the thread-list <a hx-get …> anchors via
  * .click(), so HTMX picks up the intra-thread swap naturally and the
- * is-active marker flip handled by thread-fold.js's htmx:afterSwap
+ * is-active marker flip handled by thread-fold.js's htmx:after:swap
  * hook still works without modification.
  */
 (function () {
@@ -110,7 +110,7 @@
         link.setAttribute("href", url);
         link.setAttribute("hx-get", url);
         link.setAttribute("hx-target", "#msg");
-        link.setAttribute("hx-swap", "outerHTML show:#msg:top");
+        link.setAttribute("hx-swap", "outerHTML show:top showTarget:#msg");
         link.setAttribute("hx-push-url", "true");
         link.removeAttribute("aria-disabled");
         link.removeAttribute("tabindex");
@@ -121,12 +121,13 @@
       }
       // htmx caches the verb/path when binding; changing hx-get alone
       // leaves a previously processed control targeting the old message.
-      if (window.htmx) window.htmx.process(link);
+      if (window.htmx) window.htmx.process(link, true);
     });
   }
 
-  document.addEventListener("htmx:afterSwap", function (event) {
-    if (event.detail.target && event.detail.target.id === "msg") syncMessagePager();
+  document.addEventListener("htmx:after:swap", function (event) {
+    var ctx = event.detail.ctx;
+    if (ctx.target.id === "msg" || ctx.request.headers["HX-History-Restore-Request"] === "true") syncMessagePager();
   });
   if (document.readyState === "loading") {
     document.addEventListener("DOMContentLoaded", syncMessagePager);
@@ -192,12 +193,12 @@
   function wireHelpDialog() {
     var dlg = document.getElementById("keyboard-help");
     if (!dlg) return;
-    dlg.addEventListener("click", function (e) {
+    dlg.onclick = function (e) {
       // Click landed on the dialog element itself (i.e., the
       // backdrop area outside the content box). Inner clicks
       // bubble from <article> children and hit a different target.
       if (e.target === dlg) dlg.close();
-    });
+    };
   }
 
   if (document.readyState === "loading") {
@@ -205,5 +206,5 @@
   } else {
     wireHelpDialog();
   }
-  document.addEventListener("htmx:historyRestore", wireHelpDialog);
+  document.addEventListener("htmx:after:swap", wireHelpDialog);
 })();

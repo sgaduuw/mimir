@@ -85,7 +85,7 @@ Message from {{ _from }} on {{ _date }} in {{ inbox_name }}: {{ (parsed.subject|
       <a href="{{ thread_urls[n.message_id] }}"
          hx-get="{{ thread_urls[n.message_id] }}"
          hx-target="#msg"
-         hx-swap="outerHTML show:#msg:top"
+         hx-swap="outerHTML show:top showTarget:#msg"
          hx-push-url="true">{% if n.id in thread_heading_ids %}{{ n.subject|clean_subject or '(no subject)' }} &middot; {% endif %}{{ n.author|listing_sender }}</a>
       <small>&middot; {{ n.date.strftime('%Y-%m-%d') if n.date else '' }}</small>
       {% if n.id in hidden_replies %}

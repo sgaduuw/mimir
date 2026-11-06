@@ -18,8 +18,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {# History misses need full pages; HX-Request selects fragments in our routes. #}
-  <meta name="htmx-config" content='{"historyRestoreAsHxRequest":false}'>
+  <meta name="htmx-config" content='{"noSwap":[204,304,"4xx","5xx"]}'>
+  <script src="{{ url_for('static', filename='js/htmx-navigation.js') }}?v={{ mimir_version }}"></script>
   <meta name="generator" content="mimir {{ mimir_version }}">
   <meta name="theme-color" content="#ffc107">
   <script src="{{ url_for('static', filename='js/theme.js') }}?v={{ mimir_version }}"></script>
@@ -48,7 +48,7 @@
      data-thread-fold on <html> from any localStorage pin + context default,
      and CSS resolves the right state on first paint. Loads from /static/
      because the CSP (script-src 'self') blocks inline scripts. #}
-  <script src="{{ url_for('static', filename='js/thread-fold.js') }}"></script>
+  <script src="{{ url_for('static', filename='js/thread-fold.js') }}?v={{ mimir_version }}"></script>
   {# Vim-style keyboard navigation: h/j/k/l, Esc to close fold, ? for
      help. Deferred since nothing here needs to run before paint  
      contrast thread-fold.js, which must run synchronously to avoid
@@ -109,8 +109,8 @@
      `'unsafe-inline'`: every page goes through this sheet. #}
   <link rel="stylesheet"
         href="{{ url_for('static', filename='css/mimir.css') }}?v={{ mimir_version }}">
-  <script src="https://unpkg.com/htmx.org@2.0.11/dist/htmx.min.js"
-          integrity="sha384-2OatzQy1H+Zd/IIrjr1TcuDGqLXeHhbooAyJY1KdQMKnr4LZ22k31GBLdYKHmVjg"
+  <script src="https://unpkg.com/htmx.org@4.0.1/dist/htmx.min.js"
+          integrity="sha384-Qp9rdC8H7EqOoX+nR0P3RPG2Noji+qdwJlGpfzwQJsfOpp3sGwIdSP9xO3+UlEhn"
           crossorigin="anonymous" defer></script>
 </head>
 <body>

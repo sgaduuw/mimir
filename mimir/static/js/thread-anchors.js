@@ -26,7 +26,9 @@
     var el = /^#m\d+$/.test(url.hash) && document.getElementById(url.hash.slice(1));
     if (!el) return;
     e.preventDefault();
-    if (url.href !== location.href) history.pushState(null, "", url.href);
+    // Back can refetch the first page and discard appended cards. Mark this
+    // URL for a full refetch on Forward instead of keeping an absent anchor.
+    if (url.href !== location.href) history.pushState({ ...history.state, htmx: true }, "", url.href);
     /* The tab first: a message in a hidden tab cannot be scrolled to. */
     window.dispatchEvent(new HashChangeEvent("hashchange"));
     el.scrollIntoView();
