@@ -1,4 +1,4 @@
-"""Token buckets that throttle declared crawlers (#761, #1026).
+"""Token buckets that throttle declared crawlers (#761, #1026, #1028).
 
 One well-behaved crawler can take most of the web tier, and a CDN rate
 limit cannot tell it from readers (it counts per IP, and the crawl is
@@ -47,9 +47,12 @@ in the broker would put an RPC on every crawler request. The fixed
 buckets (global, pool, overflow, impossible-headers and one per listed
 crawler) instead live in one small file mapped into every worker
 (`/dev/shm` where it exists), each a `(tokens, stamp)` pair updated
-under a POSIX record lock (`lockf`). The file is named after the gunicorn master's pid and
-a hash of the budget layout, so a config change never reads another
-layout's slots; the first worker in fills the buckets, and the kernel
+under a POSIX record lock (`lockf`). By default its name includes the PID
+namespace, gunicorn master's pid and budget layout hash. Opting in with
+CRAWLER_BUDGET_SHARED_DIR instead uses host boot ID, layout hash and a
+storage/algorithm version, so matching containers share one budget without
+reusing a previous boot's monotonic stamps. The first worker fills the
+buckets, and the kernel
 drops a dead worker's lock. If the file cannot be created, the gate
 logs a warning and falls back to per-worker buckets rather than fail
 the import. These buckets therefore hold the whole
@@ -63,13 +66,18 @@ credited twice. Over any window a bucket admits at most that window's
 share of its rate plus its capacity, and capacity is `BURST_SECONDS`
 (10) seconds of rate, or one token if that is more, so a share below one
 request every ten seconds still admits one request every `60 / rate`
-seconds instead of never. Each web instance (container) holds its own
-file, so instances cannot see each other: split the budget across them.
+seconds instead of never. Without host sharing, split the budget across
+instances. With host sharing, each specifies the whole host budget. A
+config-layout change starts a separate group during a rolling update.
+Unverifiable Linux clock scope or inaccessible storage warns and falls
+back to budget / WORKERS per process, losing the host-wide ceiling.
 
 Memory bound: the token is attacker-chosen text, so buckets for unlisted
 crawlers stay in each worker (a fixed shared layout cannot hold them, so
 each holds `budget * pct / 100 / web_workers`) and are capped at
-`MAX_UNLISTED_BUCKETS`. A bucket that has been
+`MAX_UNLISTED_BUCKETS`. A name can therefore receive more than its share
+across multiple replicas, but the shared pool and global buckets still
+cap their combined traffic. A bucket that has been
 idle for ten minutes and has refilled holds no state and is dropped. At
 the cap, a further new token shares ONE overflow bucket at the default
 percentage, so a flood of invented crawler names is throttled together
@@ -97,8 +105,10 @@ import struct
 import tempfile
 import threading
 import time
+import uuid
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
+from pathlib import Path
 
 from mimir.config import Settings
 
@@ -161,6 +171,33 @@ def shared_dir() -> str:
     return "/dev/shm" if os.path.isdir("/dev/shm") else tempfile.gettempdir()
 
 
+def _host_boot_id() -> str:
+    """Only share monotonic stamps when their host clock domain is known."""
+    # timens_offsets describes time_for_children, which need not be the
+    # caller's current namespace after unshare. Check both before trusting it.
+    current = os.stat("/proc/self/ns/time")
+    children = os.stat("/proc/self/ns/time_for_children")
+    if (current.st_dev, current.st_ino) != (children.st_dev, children.st_ino):
+        raise OSError("current and child time namespaces differ")
+    try:
+        offsets = {}
+        for line in Path("/proc/self/timens_offsets").read_text().splitlines():
+            name, seconds, nanoseconds = line.split()
+            if name in offsets or name not in ("monotonic", "boottime"):
+                raise ValueError("unexpected time namespace offset")
+            offsets[name] = (int(seconds), int(nanoseconds))
+            if not 0 <= int(nanoseconds) < 1_000_000_000:
+                raise ValueError("invalid time namespace nanoseconds")
+        if set(offsets) != {"monotonic", "boottime"} or offsets["monotonic"] != (0, 0):
+            raise ValueError("host sharing requires zero monotonic offset")
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+        if str(uuid.UUID(boot)) != boot:
+            raise ValueError("invalid host boot UUID")
+    except ValueError as exc:
+        raise OSError(f"unverified host clock: {exc}") from exc
+    return boot
+
+
 class _Shared:
     """The fixed buckets' state in one mmap. With a path, every process
     opening the same file shares it; without, it is private to this
@@ -177,8 +214,14 @@ class _Shared:
         # symlink someone else planted there.
         self._fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         try:
-            os.ftruncate(self._fd, size)  # zero-filled on create, a no-op after
-            self.mem = mmap.mmap(self._fd, size)
+            with self.lock():
+                existing = os.fstat(self._fd).st_size
+                if existing == 0:
+                    os.ftruncate(self._fd, size)
+                elif existing != size:
+                    # Never resize a file another worker may still have mapped.
+                    raise OSError(f"incompatible crawler budget file size: {existing}")
+                self.mem = mmap.mmap(self._fd, size)
         except OSError:
             os.close(self._fd)
             raise
@@ -351,20 +394,6 @@ class CrawlerBudget:
             s.crawler_impossible_headers_pct,
         )
         path = None
-        if s.crawler_budget_per_minute > 0:
-            # One file per gunicorn master (each worker's parent), per pid
-            # namespace (containers in one pod share /dev/shm, and their
-            # masters can have the same pid) and per layout, so a changed
-            # config never reads another's slots.
-            digest = hashlib.sha256(repr(layout).encode()).hexdigest()[:12]
-            try:
-                pidns = os.stat("/proc/self/ns/pid").st_ino
-            except OSError:
-                pidns = 0
-            path = os.path.join(
-                shared_dir(),
-                f"mimir-crawler-budget-{pidns}-{os.getppid()}-{digest}",
-            )
 
         def build(shared_path: str | None, split: int = 1) -> CrawlerBudget:
             return cls(
@@ -381,6 +410,30 @@ class CrawlerBudget:
             )
 
         try:
+            if s.crawler_budget_per_minute > 0:
+                digest = hashlib.sha256(repr(layout).encode()).hexdigest()[:12]
+                if s.crawler_budget_shared_dir is not None:
+                    path = s.crawler_budget_shared_dir
+                    if not os.path.isabs(path):
+                        raise OSError(
+                            "shared crawler budget directory must be absolute"
+                        )
+                    boot = _host_boot_id()
+                    # v1 identifies this storage/algorithm contract; boot scopes
+                    # monotonic stamps even if /run was accidentally disk-backed.
+                    path = os.path.join(
+                        path, f"mimir-crawler-budget-v1-{boot}-{digest}"
+                    )
+                else:
+                    # Preserve per-master/PID-namespace isolation by default.
+                    try:
+                        pidns = os.stat("/proc/self/ns/pid").st_ino
+                    except OSError:
+                        pidns = 0
+                    path = os.path.join(
+                        shared_dir(),
+                        f"mimir-crawler-budget-{pidns}-{os.getppid()}-{digest}",
+                    )
             return build(path)
         except OSError as exc:
             # The gate is built at import in every process, so a missing
