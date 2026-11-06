@@ -259,7 +259,7 @@ def test_review_count_warmer_filters_owners_and_refreshes_existing_keys(
     # Existing slow-warmer context refreshes near expiry without a new policy.
     now = cache._now()
     monkeypatch.setattr(cache, "_now", lambda: now + 3599)
-    with cache.refresh_window(450):
+    with cache.warm_window(450):
         directory.warm_maintainer_review_counts(session)
     assert calls == ["alice@kernel.org", "empty@kernel.org", "new@kernel.org"]
     assert directory.cached_maintainer_review_counts(session, "new@kernel.org") == {}
