@@ -453,6 +453,7 @@ def test_recent_postings_in_subsystem_uses_indexed_seeks_no_full_scan(seeded_db)
             session,
             lambda: recent_postings_query(session, inbox, sub),
             "WITH candidates",
+            required_sql=("article_files INDEXED BY ix_article_files_path",),
         )
     assert "ix_article_files_path" in plan
     assert "SCAN article_files" not in plan

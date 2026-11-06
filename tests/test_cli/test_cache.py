@@ -72,17 +72,12 @@ def _drain_writer(timeout: float = 10.0) -> None:
     )
 
 
-def test_warm_cache_parallel_propagates_refresh_window(
+def test_warm_cache_parallel_refreshes_near_expiry_rows(
     seeded_db, _active_broker_context
 ):
-    """Worker threads must inherit the `refresh_window` contextvar
-    via `copy_context()`. If they don't, a fresh-but-near-expiry
-    cache row would *not* recompute under load, silently undoing
-    Phase 2's TTL-aware refresh once Phase 3 fans out across workers.
-
-    Pre-seed a near-expiry row for one warm target's key, then run
-    warm-cache. The row's `expires_at` must move forward (recompute
-    happened) instead of staying near-now (skipped)."""
+    """The CLI fans requests out to broker workers, which enter their
+    own warm scope. A fresh-but-near-expiry row must be recomputed
+    there rather than skipped as an ordinary request-path hit."""
     from sqlalchemy import delete as sql_delete
 
     from mimir.cache import _ns
@@ -105,14 +100,14 @@ def test_warm_cache_parallel_propagates_refresh_window(
         row = s.execute(
             select(CacheEntry).where(CacheEntry.key == _ns(key))
         ).scalar_one()
-    # If the worker thread had no refresh_window, the still-live
+    # Without the broker worker's warm scope, the still-live
     # 30s-remaining row would have short-circuited and `expires_at`
     # would still be near `near_expiry`. Successful refresh pushes
     # it out by the full TTL.
     assert row.expires_at > near_expiry + 60, (
         f"expected refresh to extend expires_at well past {near_expiry}, "
-        f"got {row.expires_at}; refresh_window contextvar may not have "
-        f"propagated to worker threads"
+        f"got {row.expires_at}; broker worker may not have "
+        f"entered its warm scope"
     )
 
 
@@ -1115,7 +1110,7 @@ def test_maintainer_counts_warm_only_on_slow_and_all_global_targets(session):
         combined = [label for label, _ in _build_global_targets(base)]
         assert combined.count("maintainer_review_counts") == 1
         # Exercise the actual target and the ordinary cache writer path.
-        with cache.ttl_extension(7200):
+        with cache.warm_window(7200):
             slow["maintainer_review_counts"](session)
         assert cached_maintainer_review_counts(session, "owner@kernel.org") == {}
 
@@ -1138,6 +1133,6 @@ def test_recent_message_total_warms_on_the_fast_tier_only(session):
         assert label not in dict(_build_slow_global_targets(base))
         assert [lbl for lbl, _ in _build_global_targets(base)].count(label) == 1
     # Run the real target through the ordinary cache writer.
-    with cache.ttl_extension(7200):
+    with cache.warm_window(7200):
         dict(_build_fast_global_targets(""))[label](session)
     assert cached_recent_message_total() == 0  # the seed is dated 2024
