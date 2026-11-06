@@ -132,7 +132,7 @@ def api_message_body(inbox_name: str, article_id: int):
             ).encode(),
             digest_size=8,
         ).hexdigest()
-        if etag in request.if_none_match:
+        if request.if_none_match.contains_weak(etag):
             response = Response(status=304)
         else:
             try:
