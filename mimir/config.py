@@ -705,9 +705,15 @@ class Settings(BaseSettings):
     # operator opts in. See mimir/web/crawler_budget.py.
     #
     # Master switch and budget for ALL configured crawlers combined,
-    # requests per minute across the whole web tier. 0 = the whole gate
+    # requests per minute per instance, or per host with shared_dir. 0 = the gate
     # is off and nothing is gated, whatever CRAWLER_UA_BUDGETS says.
     crawler_budget_per_minute: int = Field(default=0, ge=0)
+
+    # Opt in to host-wide fixed buckets: both web containers bind the
+    # same trusted local directory here, owned by their common UID.
+    # Unset keeps PID-namespace/master isolation. Prefer a host /run
+    # directory whose lifetime is independent of either web service.
+    crawler_budget_shared_dir: str | None = None
 
     # Overrides on top of DEFAULT_CRAWLER_UA_BUDGETS (merged, not
     # replaced: `{"Applebot": 50}` changes only Applebot). Each key is a
