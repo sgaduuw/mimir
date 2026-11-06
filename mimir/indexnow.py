@@ -49,10 +49,9 @@ def build_urls(session: Session, message_ids: list[str], base: str) -> list[str]
     """Translate a list of newly-ingested message IDs into a list of
     canonical absolute URLs ready for the IndexNow `urlList` payload.
 
-    Resolves the canonical inbox per article and emits the URL that
-    surface actually wants indexed: the THREAD view when the article's
-    thread has replies, the message URL when it does not. See
-    `mimir.web.urls._advertised_urls_for`.
+    Delegates canonical inbox and advertised URL selection to
+    `mimir.web.urls._advertised_urls_for`: the thread page holding the
+    message, with a message URL fallback while its thread is unmaterialised.
 
     Pushing the message URL unconditionally, which is what this did
     before the thread-view work, had two costs. It told Bing "this
