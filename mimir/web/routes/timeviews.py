@@ -9,7 +9,7 @@ date-scoped views are the right shape for "what happened on a day".
 from datetime import UTC, datetime, timedelta
 from datetime import date as date_cls
 
-from flask import abort, render_template, request
+from flask import abort, make_response, render_template, request
 
 from mimir.dashboard import messages_in_window, monthly_volume
 from mimir.extensions import SessionLocal
@@ -21,6 +21,7 @@ from mimir.listings import (
     listing_for_month,
     listing_since,
 )
+from mimir.seo.sitemaps import WEEK_SEC, archive_sitemap_ttl
 from mimir.threading import (
     THREADS_SINCE_MAX_DAYS,
     THREADS_SINCE_MAX_THREADS,
@@ -220,7 +221,7 @@ def month_archive(inbox_name: str, year: int, month: int):
     else:
         next_year, next_month = year, month + 1
 
-    return render_template(
+    response = render_template(
         "month.html",
         inbox_name=inbox.name,
         current_inbox=inbox.name,
@@ -247,6 +248,17 @@ def month_archive(inbox_name: str, year: int, month: int):
         ),
         lifecycle_status_by_id=lifecycle_status_by_id,
     )
+    response = make_response(response)
+    today = datetime.now(UTC).date()
+    # New threads keep the open month fresh; old months trade reply-order
+    # freshness for a bounded edge lifetime, independently of browser caching.
+    edge = (
+        600
+        if (year, month) >= (today.year, today.month)
+        else min(archive_sitemap_ttl(year, month, today), WEEK_SEC)
+    )
+    response.headers["Cloudflare-CDN-Cache-Control"] = f"max-age={edge}"
+    return response
 
 
 def _filter_context(selected, unanswered_label):
