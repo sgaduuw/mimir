@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.45.0] - 2026-11-07
+
 ### Changed
 
 - Month archive pages send an age-based Cloudflare edge TTL: 10 minutes for the current or a future month, one hour for the previous month, and one week for older months. Browser caching stays at 10 minutes. A month-only Cloudflare Cache Rule must enable HTML caching and honor the origin TTL; cached old months can lag replies or late mail by up to a week and must be purged after template changes (#1109).
