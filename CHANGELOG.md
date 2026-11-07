@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- A 180x180 PNG touch icon cropped from the existing Ratatoskr illustration is linked from every page and served at both `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png`, with the same one-week cache lifetime as the other icons (#1117).
 - `CRAWLER_UA_EXEMPT` configures case-insensitive User-Agent substrings excluded from crawler classification. The default exempts The Lounge IRC Client's user-triggered link previews before their embedded Facebook or Twitter tokens match, without spending crawler tokens. An environment JSON list replaces the default; `[]` disables UA exemptions. The separate impossible-headers check still applies (#1116).
 
 ### Changed
