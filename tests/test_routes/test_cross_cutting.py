@@ -670,6 +670,95 @@ def test_access_log_records_request_context(
     assert record["status"] == response.status_code
 
 
+@pytest.mark.parametrize(
+    ("path", "query", "status"),
+    [
+        ("/readyz", None, 200),
+        ("/readyz?", None, 200),
+        (
+            "/readyz?offset=10&context=3&id=a%2Fb%40example.com&x=hello+world&x=%2B",
+            "offset=10&context=3&id=a%2Fb%40example.com&x=hello+world&x=%2B",
+            200,
+        ),
+        ("/alpha/2026/09/?filter=patches", "filter=patches", 200),
+        (
+            "/alpha/series/unknown/diff?from=v1&to=v2&pos=cover&s=1",
+            "from=v1&to=v2&pos=cover&s=1",
+            404,
+        ),
+    ],
+)
+def test_access_log_keeps_raw_query_separate_from_path(
+    client, access_records, path, query, status
+):
+    response = client.get(path)
+    assert response.status_code == status
+    assert len(access_records) == 1
+    assert access_records[0]["query"] == query
+    assert access_records[0]["path"] == path.split("?", 1)[0]
+
+
+def test_access_log_preserves_non_ascii_query_bytes(client, access_records):
+    response = client.get("/readyz", environ_overrides={"QUERY_STRING": "id=\xff"})
+    assert response.status_code == 200
+    assert len(access_records) == 1
+    assert access_records[0]["query"].encode("latin-1") == b"id=\xff"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "status"),
+    [
+        ("GET", "/alpha/search", 200),
+        ("HEAD", "/alpha/search", 200),
+        ("GET", "/unknown-inbox/search", 404),
+        ("GET", "/alpha/search/", 404),
+        ("GET", "/alpha/%73earch", 200),
+        ("POST", "/alpha/search", 405),
+    ],
+)
+def test_access_log_excludes_search_queries_even_when_routing_fails(
+    client, access_records, method, path, status
+):
+    import json
+
+    response = client.open(path + "?q=private-search-1114&offset=10", method=method)
+    assert response.status_code == status
+    assert len(access_records) == 1
+    assert access_records[0]["query"] is None
+    assert "private-search-1114" not in json.dumps(access_records)
+
+
+@pytest.mark.parametrize(
+    ("referrer", "expected"),
+    [
+        (
+            "https://ratatoskr.run/alpha/search?q=private-search-1114#private-search-1114",
+            "https://ratatoskr.run/alpha/search",
+        ),
+        (
+            "https://ratatoskr.run/alpha/%73earch/?q=private-search-1114",
+            "https://ratatoskr.run/alpha/%73earch/",
+        ),
+        (
+            "https://ratatoskr.run/alpha/2026/09/?filter=patches#top",
+            "https://ratatoskr.run/alpha/2026/09/?filter=patches#top",
+        ),
+        ("https://[broken?q=private-search-1114", None),
+    ],
+)
+def test_access_log_removes_search_terms_from_referrers(
+    client, access_records, referrer, expected
+):
+    import json
+
+    response = client.get("/readyz?offset=2", headers={"Referer": referrer})
+    assert response.status_code == 200
+    assert len(access_records) == 1
+    assert access_records[0]["referrer"] == expected
+    assert access_records[0]["query"] == "offset=2"
+    assert "private-search-1114" not in json.dumps(access_records)
+
+
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
 def test_access_log_skips_successful_health_check(client, access_records, method):
     assert client.open("/healthz", method=method).status_code == 200
