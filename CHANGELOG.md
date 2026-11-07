@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Routine broker idle-connection closes log at DEBUG instead of WARNING. Oversized requests still warn, and connection handling and timeout limits are unchanged (#1115).
 - Access records include the raw query string separately from the path, so diff parameters, filters and paging can be reproduced. Inbox search queries are omitted even on failed requests; search-page referrers lose query strings and fragments. The privacy notice now describes these application-log exclusions (#1114).
 
 ## [3.45.0] - 2026-11-07
