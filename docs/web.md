@@ -248,6 +248,7 @@ instead use ETags with revalidation.
 | `/security.txt`, `/.well-known/security.txt` | Security contact; 404 unless configured |
 | `/privacy` | Privacy notice linked from the footer |
 | `/favicon.svg`, `/og-image.png` | Site icon and social preview image |
+| `/apple-touch-icon.png`, `/apple-touch-icon-precomposed.png` | The same 180x180 PNG crop of Ratatoskr for home-screen and link-preview icons, cached for one week |
 
 Health and readiness responses use `Cache-Control: no-store`. The privacy
 page should be reviewed against your deployment before making the site public.
