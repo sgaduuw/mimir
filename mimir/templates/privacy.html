@@ -31,7 +31,7 @@
   <article class="privacy-article">
   <hgroup>
     <h1>Privacy</h1>
-    <p><small><em>Last updated: 6 November 2026.</em></small></p>
+    <p><small><em>Last updated: 7 November 2026.</em></small></p>
   </hgroup>
 
   {# The summary says nothing the sections below do not. If one of these
@@ -107,17 +107,19 @@
 
   {{ heading('server-side') }}
   <p>
-    Standard HTTP request metadata, one log record per request:
+    Standard HTTP request metadata in the application access log, one record
+    per request except successful <code>/healthz</code> requests:
   </p>
   <ul>
     <li>the time, a request ID, and how long the response took;</li>
     <li>your IP address;</li>
-    <li>the request method and path, the response status, and the
-      response size;</li>
+    <li>the request method, path and query string (except on inbox
+      searches), the response status, and the response size;</li>
     <li>your browser&rsquo;s User-Agent, and the browser hints that
       Chromium-based browsers send with it (browser brand and
       version, mobile or not, operating system);</li>
-    <li>the page you came from (Referer);</li>
+    <li>the page you came from (Referer), with the query string and
+      fragment removed from search-page URLs;</li>
     <li>the request-context headers browsers add
       (<code>Sec-Fetch-*</code>, <code>Purpose</code>,
       <code>Sec-Purpose</code>, <code>HX-Request</code>) and the
@@ -126,6 +128,7 @@
     <li>your country, when Cloudflare supplies it.</li>
   </ul>
   <p>
+    Inbox search terms are not recorded in these access logs.
     Retained in operator-side logs for two days, then deleted. Used
     for abuse triage and debugging.
   </p>
