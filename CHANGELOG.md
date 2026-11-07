@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- `CRAWLER_UA_EXEMPT` configures case-insensitive User-Agent substrings excluded from crawler classification. The default exempts The Lounge IRC Client's user-triggered link previews before their embedded Facebook or Twitter tokens match, without spending crawler tokens. An environment JSON list replaces the default; `[]` disables UA exemptions. The separate impossible-headers check still applies (#1116).
+
 ### Changed
 
 - Routine broker idle-connection closes log at DEBUG instead of WARNING. Oversized requests still warn, and connection handling and timeout limits are unchanged (#1115).
