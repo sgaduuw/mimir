@@ -17,6 +17,7 @@ import logging
 import secrets
 import time
 from datetime import UTC, datetime
+from urllib.parse import unquote, urlsplit
 
 from flask import Response, g, request
 
@@ -328,6 +329,11 @@ def _add_cache_headers(response):
     return response
 
 
+def _is_search_path(path: str) -> bool:
+    # Routing errors have no endpoint; keep their search terms private too.
+    return path.rstrip("/").endswith("/search")
+
+
 @bp_web.after_app_request
 def _log_request(response):
     """Emit one JSON-line access record per request. Runs after the
@@ -338,6 +344,15 @@ def _log_request(response):
     # failing one is the line an incident needs, so it stays.
     if request.endpoint == "web.healthz" and response.status_code == 200:
         return response
+    search = request.endpoint == "web.search" or _is_search_path(request.path)
+    referrer = request.referrer
+    if referrer:
+        try:
+            parsed = urlsplit(referrer)
+            if _is_search_path(unquote(parsed.path)):
+                referrer = parsed._replace(query="", fragment="").geturl()
+        except ValueError:
+            referrer = None
     t0 = getattr(g, "_request_t0", None)
     duration_ms = round((time.perf_counter() - t0) * 1000, 1) if t0 else None
     _request_logger.info(
@@ -347,6 +362,9 @@ def _log_request(response):
                 "request_id": getattr(g, "_request_id", None),
                 "method": request.method,
                 "path": request.path,
+                "query": None
+                if search
+                else request.query_string.decode("latin-1") or None,
                 "status": response.status_code,
                 "duration_ms": duration_ms,
                 "remote": request.remote_addr,
@@ -357,7 +375,7 @@ def _log_request(response):
                 # Firefox, evaluate falsy and silently turn into null. The
                 # raw header is what we actually want to log.
                 "ua": request.headers.get("User-Agent"),
-                "referrer": request.referrer,
+                "referrer": referrer,
                 "sec_fetch_mode": request.headers.get("Sec-Fetch-Mode"),
                 "sec_fetch_site": request.headers.get("Sec-Fetch-Site"),
                 "sec_fetch_dest": request.headers.get("Sec-Fetch-Dest"),

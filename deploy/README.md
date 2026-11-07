@@ -130,6 +130,7 @@ path, status, duration, client IP, user agent and referrer, it records:
 
 | Field | Source |
 | --- | --- |
+| `query` | Raw encoded query string, or `null` when absent or on an inbox search |
 | `sec_fetch_mode` | `Sec-Fetch-Mode` |
 | `sec_fetch_site` | `Sec-Fetch-Site` |
 | `sec_fetch_dest` | `Sec-Fetch-Dest` |
@@ -144,6 +145,13 @@ path, status, duration, client IP, user agent and referrer, it records:
 | `sec_purpose` | `Sec-Purpose` |
 | `country` | `CF-IPCountry` |
 | `response_bytes` | Known response body length before proxy compression |
+
+The `query` field preserves parameter order, repeated parameters and percent
+encoding, separately from `path`. Inbox search queries are omitted, including
+failed search requests. Search-page referrers keep their path but lose query
+strings and fragments; malformed referrer URLs are omitted. Other referrers
+are unchanged. These exclusions apply to Mimir's application access log, not
+separate proxy or CDN logs.
 
 Header values are raw strings, with JSON escaping; absent headers are `null`.
 They are observations, not verified identities or automatic bot classifications.
