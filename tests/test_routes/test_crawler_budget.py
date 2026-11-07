@@ -28,6 +28,8 @@ AHREFS = "Mozilla/5.0 (compatible; AhrefsBot/7.0; +http://ahrefs.com/robot/)"
 # A device called CUBOT, no `bot/` product token: must never be gated.
 CUBOT_BROWSER = "Mozilla/5.0 (Linux; Android 13; CUBOT X30) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36"
 BROWSER = "Mozilla/5.0 (X11; Linux x86_64) Gecko/20100101 Firefox/130.0"
+LOUNGE = "Mozilla/5.0 (compatible; The Lounge IRC Client; +https://github.com/thelounge/thelounge) facebookexternalhit/1.1 Twitterbot/1.0"
+FACEBOOK = "facebookexternalhit/1.1"
 
 
 class Clock:
@@ -95,6 +97,82 @@ def test_global_empty_refuses_without_charging_per_ua_bucket(monkeypatch):
     before = gate.ua_tokens("Applebot")
     assert gate.check(APPLEBOT) == "Applebot"
     assert gate.ua_tokens("Applebot") == before
+
+
+@pytest.mark.parametrize("ua", [LOUNGE, LOUNGE.lower(), LOUNGE.upper()])
+def test_lounge_is_not_classified_as_its_embedded_crawlers(ua):
+    gate = _gate(Clock(), uas={"facebookexternalhit": 10})
+    assert gate.crawler_key(ua) is None
+    assert gate.crawler_key(FACEBOOK) == "facebookexternalhit"
+    assert gate.crawler_key(None) is None
+    assert gate.crawler_key(BROWSER) is None
+
+
+@pytest.mark.parametrize("total, admitted", [(120, 2), (1, 1)])
+def test_lounge_previews_pass_depleted_buckets_without_charging(
+    client, monkeypatch, total, admitted
+):
+    gate = _gate(Clock(), total=total, uas={"facebookexternalhit": 10})
+    _install(monkeypatch, gate)
+    for _ in range(admitted):
+        assert gate.check(FACEBOOK) is None
+    assert gate.ua_tokens("facebookexternalhit") == 0
+    if total == 1:
+        assert gate.global_tokens() == 0
+    before = (gate.global_tokens(), gate.ua_tokens("facebookexternalhit"))
+    assert _get(client, "/privacy", FACEBOOK).status_code == 429
+    assert _get(client, "/privacy", LOUNGE).status_code == 200
+    assert (gate.global_tokens(), gate.ua_tokens("facebookexternalhit")) == before
+    assert _get(client, "/privacy", FACEBOOK).status_code == 429
+
+
+@pytest.mark.parametrize("fallback", [False, True])
+def test_ua_exemption_env_replaces_defaults_in_all_build_paths(
+    monkeypatch, tmp_path, fallback
+):
+    assert Settings().crawler_ua_exempt == ["The Lounge IRC Client"]
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    monkeypatch.setenv("CRAWLER_UA_EXEMPT", '["Preview Helper"]')
+    if fallback:
+        monkeypatch.setattr(
+            crawler_budget, "shared_dir", lambda: str(tmp_path / "missing")
+        )
+    settings = Settings()
+    assert settings.crawler_ua_exempt == ["Preview Helper"]
+    gate = CrawlerBudget.from_settings(settings)
+    assert gate.crawler_key("PREVIEW HELPER facebookexternalhit/1.1") is None
+    assert gate.crawler_key(LOUNGE) == "facebookexternalhit"
+
+
+def test_empty_ua_exemption_list_disables_lounge_default(monkeypatch):
+    monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
+    monkeypatch.setenv("CRAWLER_UA_EXEMPT", "[]")
+    assert Settings().crawler_ua_exempt == []
+    assert CrawlerBudget.from_settings(Settings()).crawler_key(LOUNGE) == (
+        "facebookexternalhit"
+    )
+    assert (
+        _gate(Clock(), uas={"facebookexternalhit": 10}, ua_exempt=[]).crawler_key(
+            LOUNGE
+        )
+        == "facebookexternalhit"
+    )
+
+
+@pytest.mark.parametrize("entry", ["", " ", "\t"])
+def test_blank_ua_exemptions_are_rejected(monkeypatch, entry):
+    monkeypatch.setenv("CRAWLER_UA_EXEMPT", json.dumps([entry]))
+    with pytest.raises(ValueError):
+        Settings()
+
+
+def test_ua_exemption_does_not_disable_impossible_headers_check():
+    gate = _gate(Clock(), total=1, uas={"facebookexternalhit": 10})
+    assert gate.crawler_key(LOUNGE) is None
+    assert gate.check(LOUNGE, "none", "https://example.com/") is None
+    assert gate.check(LOUNGE, "none", "https://example.com/") == (
+        crawler_budget.IMPOSSIBLE_KEY
+    )
 
 
 def test_ua_empty_refuses_without_charging_global_bucket():
