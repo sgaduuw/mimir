@@ -9,15 +9,15 @@ Local storage preferences, set by mimir itself:
 Page navigation does not store copies of pages in local or session storage. Back and forward navigation reload pages from the server.
 No analytics. No tracking pixels. No advertising. No third-party embeds beyond the static-asset CDNs listed below.
 What gets processed server-side
-Standard HTTP request metadata, one log record per request:
+Standard HTTP request metadata in the application access log, one record per request except successful /healthz requests:
 the time, a request ID, and how long the response took;
 your IP address;
-the request method and path, the response status, and the response size;
+the request method, path and query string (except on inbox searches), the response status, and the response size;
 your browser’s User-Agent, and the browser hints that Chromium-based browsers send with it (browser brand and version, mobile or not, operating system);
-the page you came from (Referer);
+the page you came from (Referer), with the query string and fragment removed from search-page URLs;
 the request-context headers browsers add (Sec-Fetch-*, Purpose, Sec-Purpose, HX-Request) and the content types and languages your browser accepts (Accept, Accept-Language);
 your country, when Cloudflare supplies it.
-Retained in operator-side logs for two days, then deleted. Used for abuse triage and debugging.
+Inbox search terms are not recorded in these access logs. Retained in operator-side logs for two days, then deleted. Used for abuse triage and debugging.
 Legal basis: legitimate interest (GDPR Art. 6(1)(f)) in operating and securing the service.
 Third parties in the request path
 Cloudflare (US) fronts mimir as an edge proxy and bot-mitigation layer. It sees your IP and request metadata. Cloudflare’s Data Processing Addendum and the EU Standard Contractual Clauses cover the EU-to-US transfer.

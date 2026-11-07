@@ -103,7 +103,7 @@ def test_reader_closes_idle_connection(seeded_db, caplog, monkeypatch):
     """A connection that accepts but never speaks gets closed after
     `IDLE_TIMEOUT_SEC`. Test compresses the timeout via monkeypatch
     so it actually fires inside the test budget."""
-    caplog.set_level(logging.WARNING, logger="mimir.broker.server")
+    caplog.set_level(logging.DEBUG, logger="mimir.broker.server")
     # Tight idle window for the test. Two select polls (each at
     # SHUTDOWN_POLL_SEC=100ms) easily cover the 500ms window.
     monkeypatch.setattr(broker_server, "IDLE_TIMEOUT_SEC", 0.5)
@@ -124,10 +124,13 @@ def test_reader_closes_idle_connection(seeded_db, caplog, monkeypatch):
         finally:
             s.close()
 
-    msgs = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
-    assert any("idle connection" in m for m in msgs), (
-        f"expected idle-close warning; saw {msgs}"
-    )
+    idle_records = [
+        r
+        for r in caplog.records
+        if r.name == "mimir.broker.server" and "idle connection" in r.getMessage()
+    ]
+    assert idle_records, "expected an idle-close debug record"
+    assert all(r.levelno == logging.DEBUG for r in idle_records)
 
 
 def test_active_connection_not_closed_by_idle_check(seeded_db, monkeypatch):

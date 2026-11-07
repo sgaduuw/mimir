@@ -2101,7 +2101,14 @@ Decisions specific to that shape:
   parsed UA returns falsy for non-browser UAs (curl, monitoring
   bots, even some Firefox versions in this Werkzeug release), and
   we want the UA on every record. A successful `/healthz` writes no
-  record at all: probes outnumbered all other requests (#1110).
+  record at all: probes outnumbered all other requests (#1110). The
+  separate `query` field preserves the raw query string for reproducing
+  diff, filter and pagination requests. Inbox searches omit it, including
+  routing failures where there is no endpoint. A conservative search-path
+  guard also strips query strings and fragments from search-page referrers
+  so the same terms cannot enter through a subsequent request. Referrer
+  paths are decoded once for that guard; other referrers stay unchanged
+  and malformed referrer URLs are omitted (#1114).
 
 ## Scheduler verbosity
 

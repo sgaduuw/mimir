@@ -730,6 +730,11 @@ class Settings(BaseSettings):
     # marker below is refused ("bot" would gate the CUBOT browser).
     crawler_ua_budgets: dict[str, int] = {}
 
+    # User-triggered preview clients can include crawler tokens for metadata
+    # compatibility. Match these case-insensitive substrings first. Env is a
+    # JSON array replacing this default; [] disables the UA exemptions.
+    crawler_ua_exempt: list[str] = ["The Lounge IRC Client"]
+
     # Crawlers that are NOT listed above are still recognised by a
     # product token: a name ending in one of these markers, followed by
     # a slash (AhrefsBot/7.0, GPTBot/1.0, curl/8.5.0); a token that is
@@ -776,12 +781,12 @@ class Settings(BaseSettings):
             raise ValueError(f"crawler_ua_budgets keys equal to markers: {clash}")
         return self
 
-    @field_validator("crawler_ua_markers")
+    @field_validator("crawler_ua_markers", "crawler_ua_exempt")
     @classmethod
-    def _validate_crawler_ua_markers(cls, v: list[str]) -> list[str]:
-        # A blank marker makes the token regex match any `name/` pair.
+    def _validate_crawler_ua_substrings(cls, v: list[str]) -> list[str]:
+        # Blank exemptions match every UA; blank markers match any name/ pair.
         if any(not m.strip() for m in v):
-            raise ValueError("crawler_ua_markers entries must not be blank")
+            raise ValueError("crawler UA substrings must not be blank")
         return v
 
     # Share (percentage of the global budget) for a recognised crawler
