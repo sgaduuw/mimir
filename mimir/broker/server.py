@@ -323,8 +323,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
           pin this reader thread + its selector indefinitely. Beyond the
           ceiling the connection is closed.
 
-        Both defenses log at WARNING so an operator can correlate the
-        close with the upstream symptom (a stuck `cache.set` etc.)."""
+        Oversized requests log at WARNING; routine idle expiry logs at
+        DEBUG so normal connection cleanup does not bury warnings."""
         # Set once, before sharing the socket with workers. recv follows a
         # readability check; sendall gets a deadline even if this reader is busy.
         sock.settimeout(REPLY_TIMEOUT_SEC)
@@ -342,7 +342,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
                             and time.monotonic() - conn.last_activity > IDLE_TIMEOUT_SEC
                         )
                     if idle:
-                        logger.warning(
+                        logger.debug(
                             "broker: closing idle connection after %ds",
                             IDLE_TIMEOUT_SEC,
                         )
