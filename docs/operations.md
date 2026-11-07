@@ -80,6 +80,57 @@ page shows part of its thread rather than all of it.
    invalidate archive copies already held at the edge, which can live for
    up to a week.
 
+## Cache month archives at the edge
+
+Deploy the month archive edge header before enabling this optional rule.
+In Cloudflare, open **Caching > Cache Rules > Create rule**. Limit the rule
+to the archive hostname and month paths; never include message or thread
+paths, which have different full-page and HTMX representations.
+
+For plans supporting regular expressions, use this expression, replacing
+the hostname with your deployment's hostname:
+
+```text
+(http.host eq "archive.example.com" and
+ http.request.uri.path matches r"^/[^/]+/[0-9]{4}/(0[1-9]|1[0-2])/$")
+```
+
+Cloudflare's `matches` operator requires Business or Enterprise. On other
+plans, use equivalent narrowly scoped path conditions supported by your plan;
+do not replace this with a broad HTML cache rule.
+
+Set these rule options:
+
+- **Cache eligibility:** Eligible for cache.
+- **Edge TTL:** Use cache-control header if present, bypass cache if not.
+  Do not set a fixed TTL or status-code TTL override. The origin's
+  `Cloudflare-CDN-Cache-Control` selects 10 minutes for current/future months,
+  one hour for the previous month and one week for older months.
+- **Browser TTL:** Respect origin TTL, preserving the 600-second browser cache.
+- **Cache key:** Keep the default, including the complete query string.
+  Ignoring `filter` would mix filtered and unfiltered pages.
+
+Check that no later matching rule overrides these settings. Cloudflare
+consumes the Cloudflare-specific header, so inspect it at the origin and
+use `CF-Cache-Status` and `Age` at the public URL. Request an old month twice:
+
+```sh
+curl -sS -D - -o /dev/null https://archive.example.com/list/2024/05/
+```
+
+The second request should normally be a HIT with an Age header; eviction or
+requests reaching different edge locations can produce another MISS.
+Confirm a filtered URL still shows its selected filter. A new reply or
+late-arriving message can leave an old month stale for up to a week. Cache
+hits do not reach the origin request log or crawler budget. Purge month
+archive URLs, including cached query variants, after a release changes their
+templates or content policy; an origin cache-key change cannot invalidate
+an edge copy. Removing the rule alone does not purge copies already cached.
+
+References: [Cloudflare Cache Rule settings](https://developers.cloudflare.com/cache/how-to/cache-rules/settings/),
+[CDN cache-control headers](https://developers.cloudflare.com/cache/concepts/cdn-cache-control/),
+and [rule operators](https://developers.cloudflare.com/ruleset-engine/rules-language/operators/).
+
 ## Database maintenance
 
 ```sh
