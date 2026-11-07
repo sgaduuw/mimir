@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.46.0] - 2026-11-07
+
 ### Added
 
 - A 180x180 PNG touch icon cropped from the existing Ratatoskr illustration is linked from every page and served at both `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png`, with the same one-week cache lifetime as the other icons (#1117).
