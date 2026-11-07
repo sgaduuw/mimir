@@ -5,6 +5,7 @@ month archive routes, and the date-shaped 404 guards."""
 import re
 from datetime import UTC
 
+import pytest
 from freezegun import freeze_time
 
 from tests.test_routes._helpers import _title_of
@@ -114,6 +115,55 @@ def test_inbox_month_archive_renders_month_label(client, inbox_name):
             "December",
         )
     ), "month label missing"
+
+
+@pytest.mark.parametrize(
+    ("period", "edge"),
+    [
+        ("2026/01", 600),
+        ("2026/02", 600),
+        ("2027/01", 600),
+        ("2025/12", 3600),
+        ("2025/11", 604800),
+        ("2024/05", 604800),
+    ],
+)
+@freeze_time("2026-01-15 12:00:00")
+def test_month_edge_ttl_follows_age_and_keeps_browser_ttl(client, period, edge):
+    response = client.get(f"/alpha/{period}/")
+    assert response.status_code == 200
+    assert response.headers.get("Cloudflare-CDN-Cache-Control") == f"max-age={edge}"
+    assert response.headers["Cache-Control"] == "public, max-age=600"
+
+
+@freeze_time("2026-01-15 12:00:00")
+def test_filtered_month_keeps_edge_ttl_and_has_no_htmx_variant(client):
+    url = "/alpha/2025/12/?filter=patches"
+    normal = client.get(url)
+    htmx = client.get(url, headers={"HX-Request": "true"})
+    assert normal.status_code == htmx.status_code == 200
+    assert normal.data == htmx.data
+    for response in (normal, htmx):
+        assert response.headers.get("Cloudflare-CDN-Cache-Control") == "max-age=3600"
+        assert response.headers["Cache-Control"] == "public, max-age=600"
+        assert "Vary" not in response.headers
+
+
+@pytest.mark.parametrize(
+    ("path", "status"),
+    [
+        ("/unknown-inbox/2025/12/", 404),
+        ("/alpha/2025/13/", 404),
+        ("/alpha/2025/", 200),
+        ("/alpha/today", 200),
+        ("/healthz", 200),
+    ],
+)
+@freeze_time("2026-01-15 12:00:00")
+def test_month_edge_ttl_does_not_reach_errors_or_other_routes(client, path, status):
+    response = client.get(path)
+    assert response.status_code == status
+    assert "Cloudflare-CDN-Cache-Control" not in response.headers
 
 
 def test_year_out_of_range_404(client, inbox_name):
