@@ -1200,8 +1200,8 @@ def test_an_unknown_root_segment_404s_without_a_redirect(client, seeded_db):
 
     from mimir.models import Inbox
 
-    # `ads.txt` stands in for `llms.txt`, which #884 made a real route.
-    names = ["no-such-inbox", "ads.txt", "apple-touch-icon.png", "search"]
+    # Keep these absent: llms.txt and the Apple touch icons are real routes.
+    names = ["no-such-inbox", "ads.txt", "missing-site-icon.png", "search"]
     with seeded_db() as s:
         known = set(s.execute(select(Inbox.name)).scalars())
     assert not known & set(names), known & set(names)
