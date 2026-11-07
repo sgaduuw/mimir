@@ -5,6 +5,8 @@ alternate-feed `<link>` tags wired into base.html."""
 
 import re
 
+import pytest
+
 from tests.test_routes._helpers import _ingest_one_article, _meta_value
 
 
@@ -226,6 +228,41 @@ def test_favicon_ico_redirects_to_the_svg(client):
     assert r.status_code == 301
     assert r.headers["Location"].endswith("/favicon.svg")
     assert r.headers["Cache-Control"] == "public, max-age=604800"
+
+
+@pytest.mark.parametrize(
+    "path", ["/apple-touch-icon.png", "/apple-touch-icon-precomposed.png"]
+)
+def test_apple_touch_icon_is_a_cached_180_pixel_png(client, path):
+    import struct
+
+    response = client.get(path)
+    assert response.status_code == 200
+    assert response.mimetype == "image/png"
+    assert response.data[:8] == b"\x89PNG\r\n\x1a\n"
+    assert struct.unpack(">II", response.data[16:24]) == (180, 180)
+    assert response.headers["Cache-Control"] == "public, max-age=604800"
+    head = client.head(path)
+    assert head.status_code == 200
+    assert head.mimetype == "image/png"
+    assert head.data == b""
+    assert head.content_length == len(response.data)
+    assert head.headers["Cache-Control"] == "public, max-age=604800"
+
+
+def test_apple_touch_icon_alias_serves_the_same_bytes(client):
+    primary = client.get("/apple-touch-icon.png")
+    alias = client.get("/apple-touch-icon-precomposed.png")
+    assert primary.status_code == alias.status_code == 200
+    assert primary.data == alias.data
+
+
+def test_base_links_the_apple_touch_icon(client):
+    body = client.get("/privacy").get_data(as_text=True)
+    links = re.findall(r'<link\b[^>]*rel="apple-touch-icon"[^>]*>', body)
+    assert len(links) == 1
+    assert 'href="/apple-touch-icon.png"' in links[0]
+    assert 'sizes="180x180"' in links[0]
 
 
 def test_og_image_png_served(client):

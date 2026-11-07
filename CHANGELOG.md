@@ -11,6 +11,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.46.0] - 2026-11-07
+
+### Added
+
+- A 180x180 PNG touch icon cropped from the existing Ratatoskr illustration is linked from every page and served at both `/apple-touch-icon.png` and `/apple-touch-icon-precomposed.png`, with the same one-week cache lifetime as the other icons (#1117).
+- `CRAWLER_UA_EXEMPT` configures case-insensitive User-Agent substrings excluded from crawler classification. The default exempts The Lounge IRC Client's user-triggered link previews before their embedded Facebook or Twitter tokens match, without spending crawler tokens. An environment JSON list replaces the default; `[]` disables UA exemptions. The separate impossible-headers check still applies (#1116).
+
+### Changed
+
+- Routine broker idle-connection closes log at DEBUG instead of WARNING. Oversized requests still warn, and connection handling and timeout limits are unchanged (#1115).
+- Access records include the raw query string separately from the path, so diff parameters, filters and paging can be reproduced. Inbox search queries are omitted even on failed requests; search-page referrers lose query strings and fragments. The privacy notice now describes these application-log exclusions (#1114).
+
 ## [3.45.0] - 2026-11-07
 
 ### Changed

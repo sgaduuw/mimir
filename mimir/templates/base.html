@@ -24,6 +24,7 @@
   <meta name="theme-color" content="#ffc107">
   <script src="{{ url_for('static', filename='js/theme.js') }}?v={{ mimir_version }}"></script>
   <link rel="icon" type="image/svg+xml" href="{{ url_for('web.favicon_svg') }}">
+  <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('web.apple_touch_icon') }}">
   {% if noindex %}
   <meta name="robots" content="noindex">
   {% else %}

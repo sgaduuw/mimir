@@ -18,6 +18,11 @@ too, on purpose. The slash is required so a browser on a device called
 `CUBOT X30` is never gated. Script tools are markers, so an operator's
 curl smoke check is a crawler once the global budget is set.
 
+`CRAWLER_UA_EXEMPT` takes precedence over those UA checks, defaulting to
+`The Lounge IRC Client`, whose user-triggered link previews include Facebook
+and Twitter crawler tokens. These case-insensitive substrings exempt the UA
+classification only; the separate impossible-headers check still applies.
+
 A listed crawler holds its own percentage of the global budget,
 `global * pct / 100`; any other recognised crawler holds the default
 percentage, in a bucket keyed by its lowercased token, and also draws on
@@ -324,6 +329,7 @@ class CrawlerBudget:
         impossible_headers_pct: int = 1,
         shared_path: str | None = None,
         split: int = 1,
+        ua_exempt: Sequence[str] | None = None,
     ):
         self.retry_after_sec = retry_after_sec
         self._clock = clock
@@ -368,6 +374,9 @@ class CrawlerBudget:
                 self._shared.mark_ready()
         if markers is None:
             markers = Settings.model_fields["crawler_ua_markers"].default
+        if ua_exempt is None:
+            ua_exempt = Settings.model_fields["crawler_ua_exempt"].default
+        self._ua_exempt = tuple(value.lower() for value in ua_exempt)
         alternatives = "|".join(re.escape(m) for m in markers)
         self._token = (
             re.compile(rf"\b((?:[A-Za-z][\w.-]*)?(?:{alternatives}))/", re.IGNORECASE)
@@ -407,6 +416,7 @@ class CrawlerBudget:
                 impossible_headers_pct=s.crawler_impossible_headers_pct,
                 shared_path=shared_path,
                 split=split,
+                ua_exempt=s.crawler_ua_exempt,
             )
 
         try:
@@ -457,6 +467,8 @@ class CrawlerBudget:
         if self._total <= 0 or not user_agent:
             return None
         ua = user_agent.lower()
+        if any(needle in ua for needle in self._ua_exempt):
+            return None
         for name, (needle, _, _) in self._listed.items():
             if needle in ua:
                 return name

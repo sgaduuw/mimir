@@ -130,6 +130,7 @@ path, status, duration, client IP, user agent and referrer, it records:
 
 | Field | Source |
 | --- | --- |
+| `query` | Raw encoded query string, or `null` when absent or on an inbox search |
 | `sec_fetch_mode` | `Sec-Fetch-Mode` |
 | `sec_fetch_site` | `Sec-Fetch-Site` |
 | `sec_fetch_dest` | `Sec-Fetch-Dest` |
@@ -144,6 +145,13 @@ path, status, duration, client IP, user agent and referrer, it records:
 | `sec_purpose` | `Sec-Purpose` |
 | `country` | `CF-IPCountry` |
 | `response_bytes` | Known response body length before proxy compression |
+
+The `query` field preserves parameter order, repeated parameters and percent
+encoding, separately from `path`. Inbox search queries are omitted, including
+failed search requests. Search-page referrers keep their path but lose query
+strings and fragments; malformed referrer URLs are omitted. Other referrers
+are unchanged. These exclusions apply to Mimir's application access log, not
+separate proxy or CDN logs.
 
 Header values are raw strings, with JSON escaping; absent headers are `null`.
 They are observations, not verified identities or automatic bot classifications.
@@ -182,6 +190,7 @@ over its budget, with no database or render work. It is off by default.
 | `CRAWLER_BUDGET_PER_MINUTE` | `0` | Requests per minute for all configured crawlers combined; `0` turns the whole gate off |
 | `CRAWLER_BUDGET_SHARED_DIR` | unset | Optional absolute path to one trusted local directory shared by same-host web containers; unset keeps per-instance buckets |
 | `CRAWLER_UA_BUDGETS` | `{}` (defaults below) | JSON map of crawler name to a percentage (1 to 100) of the global budget, merged over the defaults; `0` drops a default |
+| `CRAWLER_UA_EXEMPT` | `["The Lounge IRC Client"]` | JSON array of case-insensitive UA substrings exempt from crawler classification; replaces the default, and `[]` disables UA exemptions |
 | `CRAWLER_DEFAULT_UA_PCT` | `10` | Share for a recognised crawler with no entry in `CRAWLER_UA_BUDGETS` |
 | `CRAWLER_UNLISTED_POOL_PCT` | `30` | Percentage of the global budget that all unlisted crawlers share between them, on top of their own share |
 | `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests", "lightpanda"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
@@ -203,6 +212,15 @@ order wins, so pick distinctive names. Blank keys, and keys equal to a marker
 budget of 120 a minute, `{"Applebot": 10}` gives Applebot 12 a minute. A
 request needs a token in every bucket it draws on; a refused request spends
 none.
+
+UA exemptions are checked before listed names and marker tokens. The Lounge's
+user-triggered IRC link previews therefore do not spend Facebook's budget even
+though their User-Agent includes `facebookexternalhit`. To replace that default,
+set `CRAWLER_UA_EXEMPT='["Another Preview Client"]'`; include The Lounge explicitly
+if both should be exempt. Blank entries are rejected. This is a courtesy budget,
+not authentication: clients already choose their own User-Agent. An exemption
+does not bypass the independent impossible-headers check below. No new mount
+or environment setting is needed to activate the default after upgrading.
 
 A crawler's percentage is also its priority on the global bucket: it may take
 a global token only while that bucket is more than `100 - pct` percent full.
