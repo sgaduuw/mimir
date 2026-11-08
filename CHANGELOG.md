@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.48.0] - 2026-11-08
+
 ### Added
 
 - Linux release history at `/merge-window/history`, with release dates, merge-window and stabilization durations, observed RC tags, Git commit counts and recorded mailing-list references. Release detail pages link to the current archived conversations. Missing historical metadata is shown as unavailable; cold calculations fill in the background (#1126).
