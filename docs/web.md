@@ -137,8 +137,14 @@ Recorded mailing-list references count commit/message pairs. These may refer
 to discussions or reports rather than patches, and the index may cover only
 part of a historical release. Detail pages deduplicate the messages currently
 addressable in the archive and resolve their current privacy and thread links.
-The history index never calculates every release during a request: cold rows
-say "Not calculated yet" until slow warming or a detail request fills them.
+The history index and `/meta-sitemap.xml` list the same releases: those with a
+Git range and at least one recorded mailing-list reference. Both decide from
+cached history and never calculate during a request, so a release not yet
+calculated stays out until slow warming or a detail request fills it in; the
+index says how many releases have been checked. Detail pages for releases
+without references remain reachable by URL. Concurrent cold detail requests for
+one release share a single Git walk; if it fails or times out the page answers
+503 with `Retry-After`.
 Git facts and membership live for 30 days under resolved tag identities;
 recorded references refresh after one day, independently of current-cycle walks.
 
@@ -228,7 +234,7 @@ their membership can be determined.
 | Path | Contents |
 | --- | --- |
 | `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root, `/merge-window`, `/llms.txt`, release-history index and closed releases |
+| `/meta-sitemap.xml` | Site root, `/merge-window`, `/llms.txt`, release-history index and closed releases with recorded references |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
