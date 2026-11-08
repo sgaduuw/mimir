@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The release history index and `/meta-sitemap.xml` list only releases with a Git range and at least one recorded mailing-list reference, chosen by one shared rule so the two always agree. Releases not yet calculated are left out until the background warm fills them in, instead of showing "Not calculated yet" rows; a note above the table gives how many releases are shown and checked. Detail pages for other releases stay reachable by URL (#1130).
+
+### Fixed
+
+- Concurrent requests for a release history page whose Git range is not cached yet now share one `git rev-list` walk, across web workers, instead of each starting its own. Waiting and walking share the 30 s Git budget, so a request still fails with a retryable 503 rather than reaching the worker timeout (#1130).
+
 ## [3.48.0] - 2026-11-08
 
 ### Added

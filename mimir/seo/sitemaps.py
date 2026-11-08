@@ -23,6 +23,7 @@ index for hours that way. Freshness rides `<lastmod>` plus
 "SEO posture" before reintroducing a validator here.
 """
 
+import hashlib
 import json
 import logging
 import zlib
@@ -975,6 +976,11 @@ def sitemap_index_xml(
     )
 
 
+def meta_sitemap_key(release_tags: list[str]) -> str:
+    digest = hashlib.sha256(" ".join(release_tags).encode()).hexdigest()[:16]
+    return f"sitemap:meta:{digest}"
+
+
 def meta_sitemap_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
@@ -986,14 +992,28 @@ def meta_sitemap_xml(
     field carries the same global-max date so the route's
     body's `<lastmod>` stays truthful. It does not reach an HTTP
     `Last-Modified` header; sitemap routes set no validator at all (see
-    the module docstring)."""
+    the module docstring).
+
+    Release history pages are listed only when
+    `mimir.release_history.recorded_history` lists them on the index, read
+    from cached history and never calculated here. The cache key carries
+    the listed tags, so a release the warm fills in enters on the next
+    request rather than after the row's lifetime."""
+    # Late import: `mimir.merge_window` reaches the web layer's URL
+    # helpers, which import this module's package at load time.
+    from mimir.release_history import (
+        recorded_history,
+        release_catalog,
+        release_history_path,
+    )
+
+    release_tags = [
+        release.tag for release, _f, _l in recorded_history(release_catalog()).listed
+    ]
 
     def compute() -> SitemapPayload:
-        # Late import: `mimir.merge_window` reaches the web layer's URL
-        # helpers, which import this module's package at load time.
         from mimir.merge_window import MERGE_WINDOW_PATH, QUEUED_TREE
         from mimir.models import MainlineState
-        from mimir.release_history import release_catalog, release_history_path
 
         per_inbox_latest = _per_inbox_latest_date(session)
         global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
@@ -1018,11 +1038,9 @@ def meta_sitemap_xml(
                     SitemapEntry(base + release_history_path(), None, PRIORITY_SITE),
                     *(
                         SitemapEntry(
-                            base + release_history_path(release.tag),
-                            None,
-                            PRIORITY_HUB,
+                            base + release_history_path(tag), None, PRIORITY_HUB
                         )
-                        for release in release_catalog()
+                        for tag in release_tags
                     ),
                 ]
             ),
@@ -1031,7 +1049,7 @@ def meta_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        "sitemap:meta",
+        meta_sitemap_key(release_tags),
         SITEMAP_TTL_SEC,
         compute,
         force=force,
