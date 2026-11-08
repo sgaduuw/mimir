@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.47.0] - 2026-11-08
+
 ### Added
 
 - Sending `SIGUSR1` to the broker writes every thread's Python stack to its log and leaves it running, so a hung worker can be located before a restart discards the evidence. See `deploy/README.md` (#1123).
