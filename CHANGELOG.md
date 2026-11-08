@@ -17,7 +17,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- Concurrent requests for a release history page whose Git range is not cached yet now share one `git rev-list` walk, across web workers, instead of each starting its own. Waiting and walking share the 30 s Git budget, so a request still fails with a retryable 503 rather than reaching the worker timeout (#1130).
+- Concurrent requests for a release history page whose Git range is not cached yet now share one `git rev-list` walk across the web workers of a container, instead of each starting its own. Waiting and walking share the 30 s Git budget, so a request still fails with a retryable 503 rather than reaching the worker timeout (#1130).
 
 ## [3.48.0] - 2026-11-08
 

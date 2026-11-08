@@ -214,10 +214,11 @@ def _single_flight(key: str, deadline: float) -> Iterator[None]:
     file would drop the record lock. Waiting is bounded by `deadline` so a
     waiter cannot outlive the request's Git budget.
     """
+    budget = max(deadline - time.monotonic(), 0)
     with _walk_locks_guard:
         thread_lock = _walk_locks.setdefault(key, threading.Lock())
-    if not thread_lock.acquire(timeout=max(deadline - time.monotonic(), 0)):
-        raise subprocess.TimeoutExpired("release history lock", GIT_TIMEOUT_SEC)
+    if not thread_lock.acquire(timeout=budget):
+        raise subprocess.TimeoutExpired("release history lock", budget)
     try:
         name = "mimir-" + key.replace(":", "-") + ".lock"
         fd = os.open(
@@ -233,7 +234,7 @@ def _single_flight(key: str, deadline: float) -> Iterator[None]:
                 except OSError:
                     if time.monotonic() >= deadline:
                         raise subprocess.TimeoutExpired(
-                            "release history lock", GIT_TIMEOUT_SEC
+                            "release history lock", budget
                         ) from None
                     time.sleep(_LOCK_POLL_SEC)
             yield
@@ -251,6 +252,28 @@ def _cached_git(release: Release) -> tuple[ReleaseFacts, list[str] | None] | Non
     return None
 
 
+def _renew_git(
+    release: Release, facts: ReleaseFacts, members: list[str] | None
+) -> None:
+    """Let the warm extend cached Git facts before they expire.
+
+    Without this, nothing rewrites them: the daily links refresh reads
+    them through `git_facts` and hits. A cold fill writes every release in
+    one run, so they would expire together and every release would leave
+    the index and the sitemap at once until the next walk (#1131 review).
+    The facts are fixed under their key, which carries the tag object
+    IDs, so renewal rewrites the values it already holds and never walks
+    Git. `get_or_compute` decides: outside a warm window it is a read.
+    """
+
+    def rewrite():
+        cache.set(release.key + ":members", members, GIT_TTL_SEC)
+        return facts.model_dump(mode="json")
+
+    with SessionLocal() as session:
+        cache.get_or_compute(session, release.key + ":facts", GIT_TTL_SEC, rewrite)
+
+
 def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     """Keep membership separate so an index cache hit decodes only facts.
 
@@ -263,6 +286,7 @@ def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     """
     cached = _cached_git(release)
     if cached is not None:
+        _renew_git(release, *cached)
         return cached
     deadline = time.monotonic() + GIT_TIMEOUT_SEC
     with _single_flight(release.key, deadline):

@@ -806,3 +806,38 @@ def test_archive_total_counts_only_messages_that_get_a_url(seeded_db, monkeypatc
                 page += 1
             assert total == 4
             assert shown == total, size
+
+
+def test_warm_renews_git_facts_so_listed_releases_never_lapse(
+    releases, seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    _record(seeded_db, releases[2], "art3@example.com")
+    release = history.release_catalog()[0]
+    now = cache._now()
+    monkeypatch.setattr(cache, "_now", lambda: now)
+    history.release_data(release)
+
+    def listed_tags():
+        catalog = history.release_catalog()
+        return [r.tag for r, _f, _l in history.recorded_history(catalog).listed]
+
+    assert listed_tags() == ["v7.0"]
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("renewing immutable Git facts must not walk Git")
+
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    # Inside the last part of the warm window, where refresh is certain.
+    monkeypatch.setattr(cache, "_now", lambda: now + history.GIT_TTL_SEC - 60)
+    # Precondition: the facts are still cached, so the warm hits them
+    # rather than walking. Links (one day) have lapsed and recompute.
+    assert release.tag in history.cached_facts([release])
+    with cache.warm_window(7200), seeded_db() as session:
+        history.warm_release(session, release)
+    monkeypatch.setattr(cache, "_now", lambda: now + history.GIT_TTL_SEC + 60)
+    assert release.tag in history.cached_facts([release])
+    assert listed_tags() == ["v7.0"]
