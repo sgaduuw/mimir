@@ -993,6 +993,7 @@ def meta_sitemap_xml(
         # helpers, which import this module's package at load time.
         from mimir.merge_window import MERGE_WINDOW_PATH, QUEUED_TREE
         from mimir.models import MainlineState
+        from mimir.release_history import release_catalog, release_history_path
 
         per_inbox_latest = _per_inbox_latest_date(session)
         global_latest = max((d for d in per_inbox_latest.values() if d), default=None)
@@ -1014,6 +1015,15 @@ def meta_sitemap_xml(
                         PRIORITY_SITE,
                     ),
                     SitemapEntry(base + LLMS_TXT_PATH, None, PRIORITY_SITE),
+                    SitemapEntry(base + release_history_path(), None, PRIORITY_SITE),
+                    *(
+                        SitemapEntry(
+                            base + release_history_path(release.tag),
+                            None,
+                            PRIORITY_HUB,
+                        )
+                        for release in release_catalog()
+                    ),
                 ]
             ),
             last_modified=global_latest,

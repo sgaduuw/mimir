@@ -120,11 +120,27 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/subsystem/<name>/` | Subsystem dashboard |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
 | `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
+| `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references |
+| `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page |
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
 | `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
+
+Release history follows the previous-final to final Git reachability range,
+not commit timestamps. Annotated tags supply their tagger date; lightweight
+tags use the commit date, shown in UTC. Missing predecessors, rc1 tags or
+commit-backed tag objects leave the affected metrics unavailable.
+
+Recorded mailing-list references count commit/message pairs. These may refer
+to discussions or reports rather than patches, and the index may cover only
+part of a historical release. Detail pages deduplicate the messages currently
+addressable in the archive and resolve their current privacy and thread links.
+The history index never calculates every release during a request: cold rows
+say "Not calculated yet" until slow warming or a detail request fills them.
+Git facts and membership live for 30 days under resolved tag identities;
+recorded references refresh after one day, independently of current-cycle walks.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
 form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias
@@ -212,7 +228,7 @@ their membership can be determined.
 | Path | Contents |
 | --- | --- |
 | `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root, `/merge-window` and `/llms.txt` |
+| `/meta-sitemap.xml` | Site root, `/merge-window`, `/llms.txt`, release-history index and closed releases |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
