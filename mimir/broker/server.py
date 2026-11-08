@@ -1495,6 +1495,11 @@ def serve(socket_path: Path) -> None:
     runs the accept loop on this thread. Tests should NOT call this;
     they use `build_server()` + manual control instead, since signal
     handlers only register from the main thread."""
+    # First, before build_server: its migration and backfills can run
+    # for minutes, and a stack dump of a startup that hangs there is
+    # as useful as one of a hung worker. Registered later, SIGUSR1
+    # would hit its default action and kill the broker instead.
+    _register_stack_dump_signal()
     server = build_server(socket_path)
     sp = Path(socket_path)
 
@@ -1515,7 +1520,6 @@ def serve(socket_path: Path) -> None:
     signal_handler, shutdown_state = _make_signal_handler(server)
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
-    _register_stack_dump_signal()
     tracemalloc_thread = _maybe_start_tracemalloc_snapshotter(
         settings.tracemalloc_interval_seconds,
         stop_event=server.stop_event,
