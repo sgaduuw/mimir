@@ -51,6 +51,7 @@ threads notice via their selector poll, the worker notices via
 its `queue.get(timeout=...)` poll, all exit cleanly.
 """
 
+import faulthandler
 import logging
 import os
 import pickle
@@ -61,6 +62,7 @@ import signal
 import socket
 import socketserver
 import struct
+import sys
 import threading
 import time
 import tracemalloc
@@ -73,6 +75,7 @@ from mimir.broker import _context
 from mimir.broker.handlers import LONG_OPS, WARM_OPS, classify_op, dispatch
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import Reply
+from mimir.broker.watchdog import InFlightJobs
 from mimir.broker.writes import WriterThread
 from mimir.config import settings
 
@@ -262,6 +265,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # before accept, stop after drain) is explicit.
         self.read_pool = ReadSessionPool.from_settings()
         self.writer = WriterThread.from_settings()
+        # What each worker is running, for the stuck-job watchdog
+        # (`mimir.broker.watchdog`, #1123).
+        self.in_flight = InFlightJobs()
+        self._watchdog_thread: threading.Thread | None = None
 
     def process_request(self, request, client_address) -> None:
         """Override of `BaseServer.process_request` so each accepted
@@ -461,6 +468,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 else:
                     line, conn, enqueued_at = item
                 try:
+                    self.in_flight.start(worker_tag, line)
                     queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
                     t0 = time.perf_counter()
                     # Mark this worker thread as "currently dispatching a
@@ -532,6 +540,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
                                 "broker [%s]: dropped reply on closed sock", worker_tag
                             )
                 finally:
+                    self.in_flight.finish()
                     with conn.activity_lock:
                         conn.pending -= 1
                         conn.last_activity = time.monotonic()
@@ -610,6 +619,13 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 )
                 t.start()
                 tracker.append(t)
+        self._watchdog_thread = threading.Thread(
+            target=self.in_flight.run,
+            args=(self.stop_event, settings.broker_stuck_job_warn_interval_sec),
+            daemon=True,
+            name="broker-watchdog",
+        )
+        self._watchdog_thread.start()
 
 
 def _check_peer_uid(sock: socket.socket) -> bool:
@@ -1451,10 +1467,31 @@ def _make_signal_handler(server: _BrokerServer):
     return _on_signal, state
 
 
+def _register_stack_dump_signal(file=None) -> None:
+    """Make `SIGUSR1` dump every thread's Python stack to `file`
+    (stderr, which is the broker's log) and carry on running.
+
+    A hung worker shows up to the kernel as an empty stack in
+    `futex_wait`; where it blocked in Python is invisible from outside
+    the process, and a restart destroys the evidence (#1123). One
+    signal before the restart records it. `faulthandler` writes from
+    its C handler without taking the GIL or any Python lock, so the
+    dump works even when the threads it describes are deadlocked.
+    `chain=False`: nothing else in the broker handles SIGUSR1, and
+    chaining to the default disposition would terminate the process."""
+    faulthandler.register(
+        signal.SIGUSR1,
+        file=file if file is not None else sys.stderr,
+        all_threads=True,
+        chain=False,
+    )
+
+
 def serve(socket_path: Path) -> None:
     """Start the broker daemon. Blocks until SIGTERM/SIGINT.
 
-    Wires the signal handlers, starts the periodic purge thread,
+    Wires the signal handlers (SIGTERM/SIGINT stop; SIGUSR1 dumps
+    every thread's stack and continues), starts the periodic purge thread,
     runs the accept loop on this thread. Tests should NOT call this;
     they use `build_server()` + manual control instead, since signal
     handlers only register from the main thread."""
@@ -1478,6 +1515,7 @@ def serve(socket_path: Path) -> None:
     signal_handler, shutdown_state = _make_signal_handler(server)
     signal.signal(signal.SIGTERM, signal_handler)
     signal.signal(signal.SIGINT, signal_handler)
+    _register_stack_dump_signal()
     tracemalloc_thread = _maybe_start_tracemalloc_snapshotter(
         settings.tracemalloc_interval_seconds,
         stop_event=server.stop_event,
@@ -1503,6 +1541,8 @@ def serve(socket_path: Path) -> None:
         ):
             t.join(timeout=5.0)
         purge_thread.join(timeout=5.0)
+        if server._watchdog_thread is not None:
+            server._watchdog_thread.join(timeout=5.0)
         if tracemalloc_thread is not None:
             tracemalloc_thread.join(timeout=5.0)
         # Join the signal-spawned shutdown thread so a fast SIGTERM

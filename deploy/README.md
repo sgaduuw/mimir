@@ -97,6 +97,26 @@ with the same work. Changing Compose does not change another deployment's timeou
 To request a fresh startup analysis, remove `/data/.broker_initial_analyze`
 while managing a broker restart; migrations already trigger analysis themselves.
 
+## Diagnosing a stuck broker
+
+A caller's RPC timeout ends its wait, not the broker's job. When a job is still
+running past its op's client timeout, the broker logs
+`broker stuck job [<queue>] on <thread>` naming the op and its target, and
+repeats it every `BROKER_STUCK_JOB_WARN_INTERVAL_SEC` (default 300) until the
+job ends. The caller's `rpc timed out` error names the request the same way,
+so the two lines can be matched.
+
+Before restarting a broker with a stuck job, dump every thread's Python stack
+to its log. The broker keeps running:
+
+```sh
+docker compose kill -s SIGUSR1 mimir-broker
+docker compose logs --tail 400 mimir-broker
+```
+
+A restart discards the stacks, and they are the only record of where a hung
+thread was blocked.
+
 ## Scheduled tasks
 
 The task service runs [scheduler.sh](scheduler.sh). Configure these on
