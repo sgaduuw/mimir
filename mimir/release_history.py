@@ -252,28 +252,6 @@ def _cached_git(release: Release) -> tuple[ReleaseFacts, list[str] | None] | Non
     return None
 
 
-def _renew_git(
-    release: Release, facts: ReleaseFacts, members: list[str] | None
-) -> None:
-    """Let the warm extend cached Git facts before they expire.
-
-    Without this, nothing rewrites them: the daily links refresh reads
-    them through `git_facts` and hits. A cold fill writes every release in
-    one run, so they would expire together and every release would leave
-    the index and the sitemap at once until the next walk (#1131 review).
-    The facts are fixed under their key, which carries the tag object
-    IDs, so renewal rewrites the values it already holds and never walks
-    Git. `get_or_compute` decides: outside a warm window it is a read.
-    """
-
-    def rewrite():
-        cache.set(release.key + ":members", members, GIT_TTL_SEC)
-        return facts.model_dump(mode="json")
-
-    with SessionLocal() as session:
-        cache.get_or_compute(session, release.key + ":facts", GIT_TTL_SEC, rewrite)
-
-
 def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     """Keep membership separate so an index cache hit decodes only facts.
 
@@ -286,7 +264,6 @@ def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     """
     cached = _cached_git(release)
     if cached is not None:
-        _renew_git(release, *cached)
         return cached
     deadline = time.monotonic() + GIT_TIMEOUT_SEC
     with _single_flight(release.key, deadline):
@@ -414,6 +391,44 @@ def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str
     )
 
 
+class _Lapsed(Exception):
+    pass
+
+
+def _renew_git(session: Session, release: Release) -> None:
+    """Extend cached Git facts before they expire, on every warm pass.
+
+    Nothing else rewrites them: links refreshes read them through a cache
+    hit. A cold fill writes every release in one run, so without renewal
+    they expire together and every release leaves the index and the
+    sitemap at once until the next walk (#1131 review). Checking on every
+    pass, not only when links recompute about once a day, is what lands
+    a check inside the facts' refresh window.
+
+    The facts are fixed under their key, which carries the tag object
+    IDs, so renewal rewrites the values held and never walks Git. Off
+    the window `get_or_compute` only reads the small facts row; members
+    are read only to be rewritten.
+    """
+    facts_key, members_key = release.key + ":facts", release.key + ":members"
+    if not cache.alive(session, facts_key):
+        # Not filled yet, or a broker write still queued: nothing to renew.
+        return
+
+    def rewrite():
+        values = cache.get_many([facts_key, members_key])
+        if facts_key not in values or members_key not in values:
+            raise _Lapsed
+        cache.set(members_key, values[members_key], GIT_TTL_SEC)
+        return values[facts_key]
+
+    try:
+        cache.get_or_compute(session, facts_key, GIT_TTL_SEC, rewrite)
+    except _Lapsed:
+        # Expired since the check; the next walk refills it.
+        pass
+
+
 def warm_release(session: Session, release: Release) -> None:
     """Adapter for the slow warmer's shared, read-only target session."""
     # Earlier global targets can leave their read transaction open. This
@@ -421,6 +436,8 @@ def warm_release(session: Session, release: Release) -> None:
     session.rollback()
     try:
         release_data(release)
+        session.rollback()
+        _renew_git(session, release)
     finally:
         session.rollback()
 

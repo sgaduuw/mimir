@@ -811,6 +811,8 @@ def test_archive_total_counts_only_messages_that_get_a_url(seeded_db, monkeypatc
 def test_warm_renews_git_facts_so_listed_releases_never_lapse(
     releases, seeded_db, monkeypatch
 ):
+    import random
+
     from mimir import cache
     from mimir import release_history as history
 
@@ -818,8 +820,11 @@ def test_warm_renews_git_facts_so_listed_releases_never_lapse(
     _record(seeded_db, releases[2], "art3@example.com")
     release = history.release_catalog()[0]
     now = cache._now()
-    monkeypatch.setattr(cache, "_now", lambda: now)
-    history.release_data(release)
+    clock = [now]
+    monkeypatch.setattr(cache, "_now", lambda: clock[0])
+    window = 7200
+    with cache.warm_window(window):
+        history.release_data(release)
 
     def listed_tags():
         catalog = history.release_catalog()
@@ -831,13 +836,24 @@ def test_warm_renews_git_facts_so_listed_releases_never_lapse(
         pytest.fail("renewing immutable Git facts must not walk Git")
 
     monkeypatch.setattr(history, "calculate_git", unexpected)
-    # Inside the last part of the warm window, where refresh is certain.
-    monkeypatch.setattr(cache, "_now", lambda: now + history.GIT_TTL_SEC - 60)
-    # Precondition: the facts are still cached, so the warm hits them
-    # rather than walking. Links (one day) have lapsed and recompute.
-    assert release.tag in history.cached_facts([release])
-    with cache.warm_window(7200), seeded_db() as session:
-        history.warm_release(session, release)
-    monkeypatch.setattr(cache, "_now", lambda: now + history.GIT_TTL_SEC + 60)
-    assert release.tag in history.cached_facts([release])
-    assert listed_tags() == ["v7.0"]
+    # Refresh as early as the window allows, as warm runs do by chance.
+    # Links then refresh about 22 h apart, drifting against the 30-day
+    # facts expiry the way production's do, so a renewal tied to the
+    # links refresh misses the facts' window; one checked every pass
+    # cannot.
+    monkeypatch.setattr(random, "random", lambda: 0.0)
+    links_refreshes = 0
+    last_links = history.cached_links([release])[release.tag].computed_at
+    hours = (history.GIT_TTL_SEC + 3 * window) // 3600
+    for hour in range(1, hours + 1):
+        clock[0] = now + hour * 3600
+        with cache.warm_window(window), seeded_db() as session:
+            history.warm_release(session, release)
+        assert listed_tags() == ["v7.0"], f"left the listing at hour {hour}"
+        links = history.cached_links([release])[release.tag].computed_at
+        links_refreshes += links != last_links
+        last_links = links
+    # Precondition: the walk crossed the original facts expiry with links
+    # kept fresh by their own daily cadence, not recomputed on demand.
+    assert hours * 3600 > history.GIT_TTL_SEC + window
+    assert 30 <= links_refreshes <= hours // 20
