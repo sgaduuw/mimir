@@ -136,12 +136,17 @@ def test_sitemap_index_sub_sitemap_lastmods(client):
     assert lastmods[maintainers_loc] == "2024-03-01"
 
 
-def test_meta_sitemap_lastmod_is_global_max(client):
+def test_meta_sitemap_lastmod_is_global_max(client, monkeypatch):
     """`/meta-sitemap.xml` lists `/` with the global max article date as
     its lastmod, then `/merge-window` (#672), whose lastmod is the last
     linux-next walk and absent before the first one."""
     import xml.etree.ElementTree as ET
 
+    from mimir import release_history
+
+    # A checkout with a local Linus mirror at the default path would list
+    # its closed releases too; this test counts only the fixed entries.
+    monkeypatch.setattr(release_history, "release_catalog", lambda: [])
     _clear_sitemap_cache()
     r = client.get("/meta-sitemap.xml")
     assert r.status_code == 200
@@ -149,13 +154,15 @@ def test_meta_sitemap_lastmod_is_global_max(client):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 3
+    assert len(urls) == 4
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
     assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
     assert urls[1].find("s:lastmod", ns) is None
     assert urls[2].find("s:loc", ns).text.endswith("/llms.txt")
     assert urls[2].find("s:lastmod", ns) is None
+    assert urls[3].find("s:loc", ns).text.endswith("/merge-window/history")
+    assert urls[3].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
@@ -2554,8 +2561,10 @@ def _expected_priority(path):
     """The issue's table, keyed by URL shape. Deliberately written from
     the paths, not from the kind tag the emitter uses, so the two cannot
     agree by sharing a bug."""
-    if path in ("/", "/merge-window", "/llms.txt"):
+    if path in ("/", "/merge-window", "/llms.txt", "/merge-window/history"):
         return "1.0"
+    if path.startswith("/merge-window/history/"):
+        return "0.7"
     if path.startswith("/maintainers/"):
         return "0.7"
     if re.fullmatch(r"/[^/]+/subsystem/.*", path):

@@ -15,6 +15,7 @@ from mimir.web.routes import (
     maintainers,  # noqa: F401
     merge_window,  # noqa: F401
     message_id,  # noqa: F401
+    release_history,  # noqa: F401
     search,  # noqa: F401
     series_diff,  # noqa: F401
     sitemaps,  # noqa: F401
