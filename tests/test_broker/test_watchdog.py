@@ -238,3 +238,24 @@ def test_sigusr1_dumps_every_thread_and_the_process_keeps_running():
     )
     assert len(headers) >= 2
     assert "hung_warm_worker_here" in proc.stderr
+
+
+def test_sigusr1_is_registered_before_the_server_is_built(monkeypatch, tmp_path):
+    """build_server runs migrations and backfills that can take minutes.
+    A SIGUSR1 sent then must dump stacks, not kill the broker."""
+    import faulthandler
+    import signal
+
+    from mimir.broker import server as server_mod
+
+    seen = []
+
+    def build_server(_socket_path):
+        # unregister() returns True only if a handler was registered.
+        seen.append(faulthandler.unregister(signal.SIGUSR1))
+        raise RuntimeError("stop after the check")
+
+    monkeypatch.setattr(server_mod, "build_server", build_server)
+    with pytest.raises(RuntimeError, match="stop after the check"):
+        server_mod.serve(tmp_path / "broker.sock")
+    assert seen == [True]
