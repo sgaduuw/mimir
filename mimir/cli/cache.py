@@ -285,6 +285,8 @@ def _build_slow_global_targets(
     they are here because an hourly cadence is all their date-grained
     `<lastmod>` can express. `sitemap:index` is the exception and
     lives on the fast tier; see `_build_fast_global_targets`."""
+    from mimir.release_history import release_catalog, warm_release
+
     targets: list[tuple[str, object]] = []
     if sitemap_base:
         targets.extend(
@@ -303,6 +305,10 @@ def _build_slow_global_targets(
         )
     )
     targets.append(("maintainer_review_counts", warm_maintainer_review_counts))
+    targets.extend(
+        (f"release_history:{release.tag}", lambda s, r=release: warm_release(s, r))
+        for release in release_catalog()
+    )
     return targets
 
 
