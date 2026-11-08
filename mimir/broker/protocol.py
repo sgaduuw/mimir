@@ -22,6 +22,7 @@ wait for the long worker's current commit batch, not the whole long
 op. See `handlers.LONG_OPS` for the routing set.
 """
 
+from collections.abc import Mapping
 from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator, BaseModel, Field
@@ -69,6 +70,48 @@ class _BrokerRequest(BaseModel):
     # on the same host on a UNIX socket, so 5 s is generous for a
     # cache op; the long ops override it below.
     timeout: ClassVar[float] = 5.0
+
+
+# The fields that say WHICH piece of work a request is, in the order
+# they read best. Payload fields (`value_json`, robots rules, tracker
+# dicts) are left out: they say what the work does, not what it is
+# about, and some run to megabytes.
+_IDENTIFYING_FIELDS = (
+    "rpc_id",
+    "inbox_name",
+    "name",
+    "inbox",
+    "inbox_filter",
+    "subsystem_id",
+    "epoch",
+    "epoch_filter",
+    "key",
+    "targets",
+)
+
+
+def describe_request(fields: Mapping[str, Any]) -> str:
+    """One-line name for a request: its op plus the fields that
+    identify its target, e.g. `warm_subsystem rpc_id=7 inbox_name=lkml
+    subsystem_id=42`.
+
+    Takes a plain mapping so both sides of the socket share it: the
+    client passes `model_dump()` when an RPC times out, the broker
+    passes the parsed wire line when a job runs long. One function
+    means the scheduler's timeout line and the broker's stuck-job
+    WARNING name a request the same way, so an operator can match
+    them (#1123)."""
+    parts = [str(fields.get("op") or "?")]
+    for name in _IDENTIFYING_FIELDS:
+        value = fields.get(name)
+        if value is None:
+            continue
+        text = ",".join(map(str, value)) if isinstance(value, list) else str(value)
+        # A cache key may be 512 bytes; a log line wants a prefix.
+        if len(text) > 120:
+            text = text[:117] + "..."
+        parts.append(f"{name}={text}")
+    return " ".join(parts)
 
 
 class CacheSetRequest(_BrokerRequest):
