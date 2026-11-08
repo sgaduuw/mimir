@@ -14,11 +14,12 @@ from mimir.web.urls import _site_base
 @bp_web.route(history.MERGE_WINDOW_HISTORY_PATH)
 def release_history_index():
     releases = history.release_catalog()
+    recorded = history.recorded_history(releases)
     return render_template(
         "release_history.html",
-        releases=releases,
-        facts=history.cached_facts(releases),
-        links=history.cached_links(releases),
+        listed=recorded.listed,
+        checked=recorded.checked,
+        release_total=len(releases),
         release_path=history.release_history_path,
         current_inbox=None,
         canonical_url=_site_base() + history.release_history_path(),

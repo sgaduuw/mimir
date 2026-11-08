@@ -1,5 +1,6 @@
 """Closed releases use tag identities and reachability, never commit dates."""
 
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -104,7 +105,7 @@ def test_git_cache_does_not_follow_walk_state(releases, seeded_db, monkeypatch):
     assert history.cached_facts([release])[release.tag] == before[0]
 
 
-def test_cold_index_lists_every_release_without_calculation(
+def test_cold_index_lists_nothing_unchecked_and_never_calculates(
     client, releases, monkeypatch
 ):
     from mimir import release_history as history
@@ -118,28 +119,72 @@ def test_cold_index_lists_every_release_without_calculation(
     response = client.get(history.release_history_path())
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    for release in history.release_catalog():
-        assert f'href="{history.release_history_path(release.tag)}"' in body
-    assert "Not calculated yet" in body
+    catalog = history.release_catalog()
+    assert catalog, "the fixture must provide releases for the index to omit"
+    for release in catalog:
+        assert f'href="{history.release_history_path(release.tag)}"' not in body
+    assert "Not calculated yet" not in body
+    # Nothing is checked yet, so the page says more may appear rather
+    # than that no release has references.
+    assert re.search(
+        r"\b(\d+) of (\d+) releases have not been checked", body
+    ).groups() == (
+        str(len(catalog)),
+        str(len(catalog)),
+    )
     assert response.headers["Cache-Control"] == "public, max-age=300"
     assert "ETag" not in response.headers
 
 
-def test_history_sitemap_and_canonical_share_url_bytes(client, releases, monkeypatch):
-    import re
+def _record(seeded_db, sha: bytes, message_id: str) -> None:
+    from mimir.models import MainlineCommit
+
+    with seeded_db() as session:
+        session.add(
+            MainlineCommit(
+                commit_sha=sha.decode(),
+                message_id=message_id,
+                tree_name="linus",
+                committed_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+
+def _sitemap_locations(client) -> list[str]:
     import xml.etree.ElementTree as ET
 
+    sitemap = ET.fromstring(client.get("/meta-sitemap.xml").data)
+    return [n.text for n in sitemap.findall("{*}url/{*}loc")]
+
+
+def _canonical(body: str) -> str:
+    return re.search(r'<link rel="canonical" href="([^"]+)"', body).group(1)
+
+
+def test_history_sitemap_and_canonical_share_url_bytes(
+    client, releases, seeded_db, monkeypatch
+):
     from mimir import release_history as history
 
     monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
-    body = client.get(history.release_history_path()).get_data(as_text=True)
-    canonical = re.search(r'<link rel="canonical" href="([^"]+)"', body).group(1)
-    sitemap = ET.fromstring(client.get("/meta-sitemap.xml").data)
-    locations = [n.text for n in sitemap.findall("{*}url/{*}loc")]
-    assert canonical in locations
-    base = canonical.removesuffix(history.release_history_path())
+    _record(seeded_db, releases[2], "art3@example.com")
     for release in history.release_catalog():
-        assert base + history.release_history_path(release.tag) in locations
+        history.release_data(release)
+    listed = history.recorded_history(history.release_catalog()).listed
+    # An empty list would run the loop below zero times and pass.
+    assert [release.tag for release, _f, _l in listed] == ["v7.0"]
+    index = client.get(history.release_history_path()).get_data(as_text=True)
+    locations = _sitemap_locations(client)
+    assert _canonical(index) in locations
+    for release, _facts, _links in listed:
+        path = history.release_history_path(release.tag)
+        detail = client.get(path)
+        assert detail.status_code == 200
+        canonical = _canonical(detail.get_data(as_text=True))
+        assert canonical in locations
+        assert canonical.endswith(path)
+        assert f'href="{path}"' in index
 
 
 def test_git_timeout_is_bounded_and_never_cached_as_zero(releases, monkeypatch):
@@ -158,7 +203,8 @@ def test_git_timeout_is_bounded_and_never_cached_as_zero(releases, monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         history.git_facts(release)
     assert len(calls) == 1
-    assert calls[0][1]["timeout"] == history.GIT_TIMEOUT_SEC
+    # The request's single Git budget, less what the cache lookup took.
+    assert 0 < calls[0][1]["timeout"] <= history.GIT_TIMEOUT_SEC
     assert history.cached_facts([release]) == {}
 
 
@@ -266,7 +312,7 @@ def test_release_data_refreshes_links_after_one_day_not_a_walk(
     monkeypatch.setattr(
         history,
         "calculate_git",
-        lambda release: pytest.fail("Git cache must survive link refresh"),
+        lambda release, **kwargs: pytest.fail("Git cache must survive link refresh"),
     )
     _, summary, mids = history.release_data(release)
     assert summary.pair_count == 1
@@ -337,9 +383,9 @@ def test_slow_warm_target_calculates_pending_release_and_ends_read_transaction(
     real = history.calculate_git
     with seeded_db() as session:
 
-        def checked(release):
+        def checked(release, **kwargs):
             assert not session.in_transaction()
-            return real(release)
+            return real(release, **kwargs)
 
         monkeypatch.setattr(history, "calculate_git", checked)
         from sqlalchemy import text
@@ -367,9 +413,9 @@ def test_cold_release_warm_walks_git_once_before_async_writes_land(
     calculate = history.calculate_git
     calls = []
 
-    def counted(release):
+    def counted(release, **kwargs):
         calls.append(release.tag)
-        return calculate(release)
+        return calculate(release, **kwargs)
 
     monkeypatch.setattr(history, "calculate_git", counted)
     writer = _context.get_active_writer()
@@ -434,7 +480,7 @@ def test_warmer_repairs_a_missing_small_summary_without_rewalking(
     assert history.cached_links([release]) == {}
     assert cache.get(release.key + ":links_data") is not None
 
-    def unexpected(release):
+    def unexpected(release, **kwargs):
         raise AssertionError(
             "persisted data should repair the index without a Git walk"
         )
@@ -525,7 +571,7 @@ def test_missing_git_is_retryable_not_a_false_empty_release(
 
     monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
 
-    def timeout(*args):
+    def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired("git", 30)
 
     monkeypatch.setattr(history, "calculate_git", timeout)
@@ -554,3 +600,260 @@ def test_small_summary_repair_cannot_extend_its_original_lifetime(
         lambda: summary.computed_at.timestamp() + history.LINKS_TTL_SEC + 1,
     )
     assert history.cached_links([release]) == {}
+
+
+def test_concurrent_cold_requests_for_one_release_walk_git_once(
+    client, releases, seeded_db, monkeypatch
+):
+    import threading
+
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    _record(seeded_db, releases[2], "art3@example.com")
+    release = history.release_catalog()[0]
+    assert history.cached_facts([release]) == {}, "the release must start cold"
+    calculate = history.calculate_git
+    calls = []
+    walking, finish = threading.Event(), threading.Event()
+
+    def slow(release, **kwargs):
+        calls.append(release.tag)
+        walking.set()
+        # Hold the first walk open until the second request is waiting
+        # on it, so the two genuinely overlap.
+        assert finish.wait(10), "test failed to release the walk"
+        return calculate(release, **kwargs)
+
+    monkeypatch.setattr(history, "calculate_git", slow)
+    responses = {}
+
+    def fetch(name):
+        responses[name] = client.application.test_client().get(
+            history.release_history_path(release.tag)
+        )
+
+    first = threading.Thread(target=fetch, args=("first",))
+    first.start()
+    assert walking.wait(10)
+    second = threading.Thread(target=fetch, args=("second",))
+    second.start()
+    # The second request is blocked on the walk, not finished.
+    second.join(0.5)
+    assert second.is_alive()
+    finish.set()
+    first.join(10)
+    second.join(10)
+    assert calls == [release.tag]
+    assert sorted(responses) == ["first", "second"]
+    for response in responses.values():
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        # Each 200 carries the release's data, never a placeholder.
+        assert "1 recorded mailing-list references" in body
+        assert "cross-posted note" in body
+
+
+def test_single_flight_excludes_another_process(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import tempfile
+    import time
+
+    from mimir import release_history as history
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    key = "release_history:1:test"
+    path = tmp_path / ("mimir-" + key.replace(":", "-") + ".lock")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, sys\n"
+            f"fd = os.open({str(path)!r}, os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.lockf(fd, fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            with history._single_flight(key, time.monotonic() + 0.3):
+                pytest.fail("acquired a lock another process holds")
+        assert time.monotonic() - started >= 0.3
+    finally:
+        holder.stdin.close()
+        holder.wait(10)
+    # Released by the holder's exit, so the next caller gets it at once.
+    with history._single_flight(key, time.monotonic() + 1):
+        pass
+
+
+def test_sitemap_and_index_list_only_releases_with_cached_recorded_history(
+    client, releases, seeded_db, monkeypatch
+):
+    from dulwich.objects import Tree
+
+    from mimir import release_history as history
+
+    path, baseline, patch, rc, final = releases
+    with Repo(str(path)) as repo:
+        tree = Tree()
+        repo.object_store.add_object(tree)
+        repo.refs[b"refs/tags/v2.6.11"] = tree.id
+        later = add_commit(repo, b"Linus <linus@x>", [final], b"7.1", when=500000).id
+        repo.refs[b"refs/tags/v7.1"] = later
+        last = add_commit(repo, b"Linus <linus@x>", [later], b"7.2", when=600000).id
+        repo.refs[b"refs/tags/v7.2"] = last
+    monkeypatch.setattr(history, "_linus_path", lambda: path)
+    _record(seeded_db, patch, "art3@example.com")
+    # v7.2 has a reference too, so only its uncached state can keep it out.
+    _record(seeded_db, last, "art4@example.com")
+    by_tag = {r.tag: r for r in history.release_catalog()}
+    assert sorted(by_tag) == ["v2.6.11", "v6.19", "v7.0", "v7.1", "v7.2"]
+    for tag in ("v2.6.11", "v6.19", "v7.0", "v7.1"):
+        history.release_data(by_tag[tag])
+    # Preconditions: each excluded release is excluded for its own reason.
+    facts, links = (
+        history.cached_facts(by_tag.values()),
+        history.cached_links(by_tag.values()),
+    )
+    assert facts["v2.6.11"].commit_count is None
+    assert links["v7.1"].pair_count == 0 and facts["v7.1"].commit_count == 1
+    assert links["v7.0"].pair_count == 1
+    assert "v7.2" not in links
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("deciding what to list must never walk Git")
+
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    prefix = history.release_history_path() + "/"
+
+    def sitemap_tags():
+        return {
+            loc.rsplit("/", 1)[1] for loc in _sitemap_locations(client) if prefix in loc
+        }
+
+    def index():
+        return client.get(history.release_history_path()).get_data(as_text=True)
+
+    def index_tags(body):
+        return set(re.findall(re.escape(prefix) + r'(v[\d.]+)"', body))
+
+    assert sitemap_tags() == {"v7.0"}
+    body = index()
+    assert index_tags(body) == {"v7.0"}
+    assert "Not calculated yet" not in body
+    assert re.search(r"\b(\d+) of (\d+) checked releases", body).groups() == (
+        "1",
+        "4",
+    )
+    assert re.search(r"\b(\d+) more release has not been checked", body)[1] == "1"
+
+    # The warm fills v7.2 in: the cached sitemap must not hold it out.
+    monkeypatch.undo()
+    monkeypatch.setattr(history, "_linus_path", lambda: path)
+    history.release_data(by_tag["v7.2"])
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    assert sitemap_tags() == {"v7.0", "v7.2"}
+    body = index()
+    assert index_tags(body) == {"v7.0", "v7.2"}
+    assert re.search(r"\b(\d+) of (\d+) checked releases", body).groups() == (
+        "2",
+        "5",
+    )
+    assert "not been checked" not in body
+    # Releases without references stay reachable by URL.
+    assert client.get(history.release_history_path("v7.1")).status_code == 200
+
+
+def test_archive_total_counts_only_messages_that_get_a_url(seeded_db, monkeypatch):
+    from sqlalchemy import select, update
+
+    from mimir import release_history as history
+    from mimir.models import Article, ArticleList, Inbox
+
+    mids = [f"art{n}@example.com" for n in range(1, 5)]
+    with seeded_db() as session:
+        art2 = session.scalar(select(Article).where(Article.message_id == mids[1]))
+        # The two fallbacks `_advertised_urls_for` takes: a canonical inbox
+        # the article is not linked in, and a root not yet computed.
+        art2.canonical_inbox_id = session.scalar(
+            select(Inbox.id).where(Inbox.name == "alpha")
+        )
+        session.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == art2.id)
+            .values(thread_root_id=None)
+        )
+        session.commit()
+    for size in (1, 3, 50):
+        monkeypatch.setattr(history, "PAGE_SIZE", size)
+        with seeded_db() as session:
+            shown = 0
+            page = 1
+            while True:
+                rows, total = history.archived_page(session, mids, page)
+                if not rows:
+                    break
+                assert len(rows) == min(size, total - (page - 1) * size)
+                shown += len(rows)
+                page += 1
+            assert total == 4
+            assert shown == total, size
+
+
+def test_warm_renews_git_facts_so_listed_releases_never_lapse(
+    releases, seeded_db, monkeypatch
+):
+    import random
+
+    from mimir import cache
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    _record(seeded_db, releases[2], "art3@example.com")
+    release = history.release_catalog()[0]
+    now = cache._now()
+    clock = [now]
+    monkeypatch.setattr(cache, "_now", lambda: clock[0])
+    window = 7200
+    with cache.warm_window(window):
+        history.release_data(release)
+
+    def listed_tags():
+        catalog = history.release_catalog()
+        return [r.tag for r, _f, _l in history.recorded_history(catalog).listed]
+
+    assert listed_tags() == ["v7.0"]
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("renewing immutable Git facts must not walk Git")
+
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    # Refresh as early as the window allows, as warm runs do by chance.
+    # Links then refresh about 22 h apart, drifting against the 30-day
+    # facts expiry the way production's do, so a renewal tied to the
+    # links refresh misses the facts' window; one checked every pass
+    # cannot.
+    monkeypatch.setattr(random, "random", lambda: 0.0)
+    links_refreshes = 0
+    last_links = history.cached_links([release])[release.tag].computed_at
+    hours = (history.GIT_TTL_SEC + 3 * window) // 3600
+    for hour in range(1, hours + 1):
+        clock[0] = now + hour * 3600
+        with cache.warm_window(window), seeded_db() as session:
+            history.warm_release(session, release)
+        assert listed_tags() == ["v7.0"], f"left the listing at hour {hour}"
+        links = history.cached_links([release])[release.tag].computed_at
+        links_refreshes += links != last_links
+        last_links = links
+    # Precondition: the walk crossed the original facts expiry with links
+    # kept fresh by their own daily cadence, not recomputed on demand.
+    assert hours * 3600 > history.GIT_TTL_SEC + window
+    assert 30 <= links_refreshes <= hours // 20

@@ -1,8 +1,15 @@
 """Closed Linux releases: immutable Git ranges and expiring recorded links."""
 
+import fcntl
 import hashlib
 import logging
+import os
 import subprocess
+import tempfile
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from itertools import batched
@@ -154,7 +161,9 @@ def _days(start: datetime | None, end: datetime | None) -> int | None:
     return (end.date() - start.date()).days
 
 
-def calculate_git(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
+def calculate_git(
+    release: Release, timeout: float = GIT_TIMEOUT_SEC
+) -> tuple[ReleaseFacts, list[str] | None]:
     """One bounded rev-list supplies both membership and its count.
 
     Use object IDs captured with the cache key, not refs that a concurrent
@@ -173,7 +182,7 @@ def calculate_git(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
             capture_output=True,
             text=True,
             check=True,
-            timeout=GIT_TIMEOUT_SEC,
+            timeout=timeout,
         ).stdout
         members = output.splitlines()
     return ReleaseFacts(
@@ -186,20 +195,89 @@ def calculate_git(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     ), members
 
 
-def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
-    """Keep membership separate so an index cache hit decodes only facts."""
+# One lock per release key per process, never removed: keys change only
+# when a tag moves, so the dict holds about one entry per release.
+_walk_locks: dict[str, threading.Lock] = {}
+_walk_locks_guard = threading.Lock()
+_LOCK_POLL_SEC = 0.05
+
+
+@contextmanager
+def _single_flight(key: str, deadline: float) -> Iterator[None]:
+    """Exclude other walks of `key`, across threads and gunicorn workers.
+
+    Sync workers are separate processes, so a thread lock alone dedupes
+    nothing in production; a POSIX record lock does, and the kernel drops
+    it when a worker dies. lockf does not exclude threads of one process
+    (the broker's warm pool), hence the thread lock around it, which also
+    keeps this process to one fd per lock file: closing any fd on the
+    file would drop the record lock. Waiting is bounded by `deadline` so a
+    waiter cannot outlive the request's Git budget.
+    """
+    budget = max(deadline - time.monotonic(), 0)
+    with _walk_locks_guard:
+        thread_lock = _walk_locks.setdefault(key, threading.Lock())
+    if not thread_lock.acquire(timeout=budget):
+        raise subprocess.TimeoutExpired("release history lock", budget)
+    try:
+        name = "mimir-" + key.replace(":", "-") + ".lock"
+        fd = os.open(
+            Path(tempfile.gettempdir()) / name,
+            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+            0o600,
+        )
+        try:
+            while True:
+                try:
+                    fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise subprocess.TimeoutExpired(
+                            "release history lock", budget
+                        ) from None
+                    time.sleep(_LOCK_POLL_SEC)
+            yield
+        finally:
+            os.close(fd)
+    finally:
+        thread_lock.release()
+
+
+def _cached_git(release: Release) -> tuple[ReleaseFacts, list[str] | None] | None:
     values = cache.get_many([release.key + ":facts", release.key + ":members"])
-    facts, members = (
-        values.get(release.key + ":facts"),
-        values.get(release.key + ":members"),
-    )
+    facts = values.get(release.key + ":facts")
     if facts is not None and release.key + ":members" in values:
-        return ReleaseFacts.model_validate(facts), members
-    facts, members = calculate_git(release)
-    # Feature-versioned plain payloads leave every pre-existing cache type
-    # and namespace valid during a rolling deployment or rollback.
-    cache.set(release.key + ":members", members, GIT_TTL_SEC)
-    cache.set(release.key + ":facts", facts.model_dump(mode="json"), GIT_TTL_SEC)
+        return ReleaseFacts.model_validate(facts), values[release.key + ":members"]
+    return None
+
+
+def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
+    """Keep membership separate so an index cache hit decodes only facts.
+
+    A cold release is walked once however many requests ask for it: the
+    rest wait for the walker and read its result from the cache, which
+    a web worker's `cache.set` has committed by the time it returns.
+    Waiting and walking share one GIT_TIMEOUT_SEC budget, so a request
+    queued behind a walk that failed cannot spend a second full timeout
+    and reach the worker timeout; it fails into the route's 503 instead.
+    """
+    cached = _cached_git(release)
+    if cached is not None:
+        return cached
+    deadline = time.monotonic() + GIT_TIMEOUT_SEC
+    with _single_flight(release.key, deadline):
+        cached = _cached_git(release)
+        if cached is not None:
+            return cached
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired("git rev-list", GIT_TIMEOUT_SEC)
+        facts, members = calculate_git(release, timeout=remaining)
+        # Feature-versioned plain payloads leave every pre-existing cache
+        # type and namespace valid during a rolling deployment or rollback.
+        cache.set(release.key + ":members", members, GIT_TTL_SEC)
+        cache.set(release.key + ":facts", facts.model_dump(mode="json"), GIT_TTL_SEC)
     return facts, members
 
 
@@ -210,6 +288,43 @@ def cached_facts(releases: list[Release]) -> dict[str, ReleaseFacts]:
         for r in releases
         if r.key + ":facts" in values
     }
+
+
+def has_recorded_history(facts: ReleaseFacts, links: ReleaseLinks) -> bool:
+    """A Git range and at least one recorded mailing-list reference.
+
+    The sitemap and the history index both list a release by this, so
+    what one advertises the other shows. One reference is the bar (#1130):
+    early releases with a single reference still pass.
+    """
+    return facts.commit_count is not None and (links.pair_count or 0) > 0
+
+
+@dataclass(frozen=True)
+class RecordedHistory:
+    listed: list[tuple[Release, ReleaseFacts, ReleaseLinks]]
+    # Releases whose history is cached, listed or not. The rest are not
+    # yet known either way and stay out until the warm calculates them.
+    checked: int
+
+
+def recorded_history(releases: list[Release]) -> RecordedHistory:
+    """Decide from cached state only; deciding must never start a walk."""
+    keys = [r.key + suffix for r in releases for suffix in (":facts", ":links")]
+    values = cache.get_many(keys)
+    listed = []
+    checked = 0
+    for release in releases:
+        raw_facts = values.get(release.key + ":facts")
+        raw_links = values.get(release.key + ":links")
+        if raw_facts is None or raw_links is None:
+            continue
+        checked += 1
+        facts = ReleaseFacts.model_validate(raw_facts)
+        links = ReleaseLinks.model_validate(raw_links)
+        if has_recorded_history(facts, links):
+            listed.append((release, facts, links))
+    return RecordedHistory(listed, checked)
 
 
 def calculate_links(
@@ -276,6 +391,44 @@ def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str
     )
 
 
+class _Lapsed(Exception):
+    pass
+
+
+def _renew_git(session: Session, release: Release) -> None:
+    """Extend cached Git facts before they expire, on every warm pass.
+
+    Nothing else rewrites them: links refreshes read them through a cache
+    hit. A cold fill writes every release in one run, so without renewal
+    they expire together and every release leaves the index and the
+    sitemap at once until the next walk (#1131 review). Checking on every
+    pass, not only when links recompute about once a day, is what lands
+    a check inside the facts' refresh window.
+
+    The facts are fixed under their key, which carries the tag object
+    IDs, so renewal rewrites the values held and never walks Git. Off
+    the window `get_or_compute` only reads the small facts row; members
+    are read only to be rewritten.
+    """
+    facts_key, members_key = release.key + ":facts", release.key + ":members"
+    if not cache.alive(session, facts_key):
+        # Not filled yet, or a broker write still queued: nothing to renew.
+        return
+
+    def rewrite():
+        values = cache.get_many([facts_key, members_key])
+        if facts_key not in values or members_key not in values:
+            raise _Lapsed
+        cache.set(members_key, values[members_key], GIT_TTL_SEC)
+        return values[facts_key]
+
+    try:
+        cache.get_or_compute(session, facts_key, GIT_TTL_SEC, rewrite)
+    except _Lapsed:
+        # Expired since the check; the next walk refills it.
+        pass
+
+
 def warm_release(session: Session, release: Release) -> None:
     """Adapter for the slow warmer's shared, read-only target session."""
     # Earlier global targets can leave their read transaction open. This
@@ -283,6 +436,8 @@ def warm_release(session: Session, release: Release) -> None:
     session.rollback()
     try:
         release_data(release)
+        session.rollback()
+        _renew_git(session, release)
     finally:
         session.rollback()
 
@@ -295,6 +450,24 @@ def archived_page(
     Lightweight ID/date batches bound SQL variables without caching authors,
     inbox ownership or thread roots. A newly archived message therefore appears
     even while the release's recorded-reference cache remains valid.
+
+    The total counts candidates, and that equals what can be reached:
+    `_advertised_urls_for` drops an article only when it has no date or
+    no inbox link, and the candidate query already requires both. Every
+    other article gets its thread page or, failing that, its own message
+    URL (#1130). Only a row unlinked between the two queries can fall out,
+    and that page is one row short for that one render.
+
+    Every page pays for the whole release: all its IDs are matched (one
+    `IN` per 900) and sorted, whatever page is asked for. Measured on
+    production 2026-11-08 (3.48.0, one run each, cached links) for v7.3,
+    the largest release: 14,126 recorded references, 14,040 distinct
+    IDs, 14,003 archived, 281 pages. Page 1 (50 rows) took 0.189 s in 83
+    statements; page 281 (3 rows) took 0.118 s in 28. The last page
+    approximates the fixed whole-release part; the rest scales with the
+    rows shown, mostly one `thread_page_of` COUNT per row in
+    `_advertised_urls_for`. Reading and decoding the cached ID list took
+    0.005 s. Re-measure before relying on these as releases grow.
     """
     from mimir.web.urls import _advertised_urls_for
 
