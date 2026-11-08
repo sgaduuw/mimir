@@ -6,31 +6,29 @@
 <p><a href="{{ url_for('web.merge_window_page') }}">Current merge window</a></p>
 <p>Release ranges follow Git ancestry from the previous final tag to the final tag.
   Dates use the annotated tag timestamp, or the commit timestamp for lightweight tags, in UTC.</p>
-{% if releases %}
+{% if listed %}
+<p>Showing only releases with recorded mailing-list references: {{ listed|length|format_count }} of {{ checked|format_count }} checked releases.{% if checked < release_total %} {{ (release_total - checked)|format_count }} more {{ 'release has' if release_total - checked == 1 else 'releases have' }} not been checked yet and may appear later.{% endif %}</p>
 <div class="overflow-auto">
 <table>
-  <caption>Closed releases, newest first. Missing calculations are filled in the background.</caption>
+  <caption>Closed releases with recorded references, newest first.</caption>
   <thead><tr><th scope="col">Release</th><th scope="col">Date (UTC)</th><th scope="col">Merge window (days)</th><th scope="col">RC tags</th><th scope="col">Stabilization (days)</th><th scope="col">Commits</th><th scope="col">Recorded references</th></tr></thead>
   <tbody>
-  {% for release in releases %}
-    {% set fact = facts.get(release.tag) %}
+  {% for release, fact, summary in listed %}
     <tr>
       <th scope="row"><a href="{{ release_path(release.tag) }}">{{ release.tag }}</a></th>
-      {% if fact %}
       <td>{% if fact.release_date %}<time datetime="{{ fact.release_date.isoformat() }}">{{ fact.release_date.strftime('%Y-%m-%d') }}</time>{% else %}Unavailable{% endif %}</td>
       <td>{{ fact.merge_days if fact.merge_days is not none else 'Unavailable' }}</td>
       <td>{{ fact.rc_count }}</td>
       <td>{{ fact.stabilization_days if fact.stabilization_days is not none else 'Unavailable' }}</td>
-      <td>{{ fact.commit_count|format_count if fact.commit_count is not none else 'Unavailable' }}</td>
-      {% else %}<td colspan="5">Not calculated yet</td>{% endif %}
-      {% set summary = links.get(release.tag) %}
-      <td>{% if not summary %}Not calculated yet{% elif summary.pair_count is none %}Unavailable{% elif summary.pair_count == 0 %}No records{% else %}{{ summary.pair_count|format_count }}{% endif %}</td>
+      <td>{{ fact.commit_count|format_count }}</td>
+      <td>{{ summary.pair_count|format_count }}</td>
     </tr>
   {% endfor %}
   </tbody>
 </table>
 </div>
 <p><small>Merge-window duration runs from the preceding final tag to rc1; stabilization runs from rc1 to the final tag. Missing tags or non-commit tags leave the affected metrics unavailable.</small></p>
-<p><small>Recorded references count commit/message pairs, not unique patches. They can name discussions or bug reports. The index may cover only part of a release; no records does not mean no patches were linked.</small></p>
+<p><small>Recorded references count commit/message pairs, not unique patches. They can name discussions or bug reports. The index may cover only part of a release.</small></p>
+{% elif release_total %}<p>No release with recorded mailing-list references has been found yet{% if checked < release_total %}; {{ (release_total - checked)|format_count }} of {{ release_total|format_count }} releases have not been checked yet{% endif %}.</p>
 {% else %}<p>No release tags are available yet.</p>{% endif %}
 {% endblock %}
