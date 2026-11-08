@@ -242,6 +242,11 @@ sitemaps remain the discovery path. Notification errors do not abort ingestion.
 The [access-log reference](../deploy/README.md#access-logs) covers JSON request
 fields, proxy-supplied country and ASN, and their trust boundaries.
 
+For a broker job that hangs, see
+[Diagnosing a stuck broker](../deploy/README.md#diagnosing-a-stuck-broker):
+the broker warns while the job runs past its client timeout, and `SIGUSR1`
+dumps every thread's stack without stopping it.
+
 To investigate broker memory retention, set `TRACEMALLOC_INTERVAL_SECONDS`
 on the broker to a positive interval in seconds, then restart it. For example,
 `1800` writes a snapshot every 30 minutes under `/data/diagnostics/` and logs the

@@ -413,6 +413,14 @@ class Settings(BaseSettings):
     # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
     broker_slow_rpc_warn_ms: int = 100
 
+    # How often (seconds) the broker repeats its WARNING about a job
+    # still running past its op's client timeout. The first WARNING
+    # fires once the caller has given up (300 s for a warm op, an
+    # hour for most long ops); this sets the repeat, so a job stuck
+    # for hours stays visible in the log (#1123). Override via
+    # BROKER_STUCK_JOB_WARN_INTERVAL_SEC.
+    broker_stuck_job_warn_interval_sec: int = Field(default=300, ge=1)
+
     # Phase 1 of the broker two-pool restructure introduces
     # ReadSessionPool sized by this field. `os.cpu_count()` is the
     # natural starting default so the pool sizes itself to the host.

@@ -11,6 +11,17 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.47.0] - 2026-11-08
+
+### Added
+
+- Sending `SIGUSR1` to the broker writes every thread's Python stack to its log and leaves it running, so a hung worker can be located before a restart discards the evidence. See `deploy/README.md` (#1123).
+- The broker logs a WARNING for any job still running past its op's client timeout (300 s for warm ops), naming the worker thread, the op and its target. It repeats every `BROKER_STUCK_JOB_WARN_INTERVAL_SEC` (default 300) until the job ends. Before this, a job that never finished never logged (#1123).
+
+### Changed
+
+- A broker RPC timeout error now names the request, for example `rpc timed out after 300.0s: warm_subsystem rpc_id=7 inbox_name=lkml subsystem_id=42`, instead of only the timeout (#1123).
+
 ## [3.46.0] - 2026-11-07
 
 ### Added

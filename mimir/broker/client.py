@@ -31,6 +31,7 @@ from mimir.broker.protocol import (
     CacheSetRequest,
     Reply,
     _BrokerRequest,
+    describe_request,
 )
 from mimir.config import settings
 
@@ -275,7 +276,15 @@ class BrokerClient:
             # Caller's per-RPC timeout. Leave the pending entry in
             # place; if the reply eventually arrives, demux drops it.
             # If the socket dies, fail-all clears it.
-            raise BrokerUnavailable(f"rpc timed out after {timeout_value}s") from exc
+            #
+            # The timeout ends this caller's wait, not the job: the
+            # broker keeps running it. Name the request so the
+            # caller's one log line says what hung, in the same words
+            # as the broker's stuck-job WARNING (#1123).
+            raise BrokerUnavailable(
+                f"rpc timed out after {timeout_value}s: "
+                f"{describe_request(request_model.model_dump())}"
+            ) from exc
         return reply
 
     def call(self, req: _BrokerRequest, timeout: float | None = None) -> dict:
