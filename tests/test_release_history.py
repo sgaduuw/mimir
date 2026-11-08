@@ -203,6 +203,9 @@ def test_link_summary_has_one_day_lifetime_separate_from_git(releases, monkeypat
 
     release = history.release_catalog(releases[0])[0]
     now = cache._now()
+    # Freeze the clock: the Git walk can cross a second boundary, and a
+    # write stamped one second late has not expired at now + TTL + 1.
+    monkeypatch.setattr(cache, "_now", lambda: now)
     history.git_facts(release)
     history._link_payload(release, 3, ["a@x", "b@x"])
     assert history.cached_links([release])[release.tag].pair_count == 3
