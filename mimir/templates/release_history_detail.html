@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Linux {{ release.tag }} release history | {{ site_name }}{% endblock %}
+{% block meta_description %}Archived mailing-list messages referenced by commits in Linux {{ release.tag }}.{% endblock %}
+{% block content %}
+<h1>Linux {{ release.tag }}</h1>
+<p><a href="{{ url_for('web.release_history_index') }}">Release history</a> &middot; <a href="{{ url_for('web.merge_window_page') }}">Current merge window</a></p>
+{% if unavailable %}
+<p>This release could not be calculated right now. Please try again shortly.</p>
+{% else %}
+<p>{% if facts.release_date %}Released <time datetime="{{ facts.release_date.isoformat() }}">{{ facts.release_date.strftime('%Y-%m-%d') }}</time> (UTC, {{ 'annotated tag' if facts.date_source == 'tagger' else 'commit' }} date).{% else %}Release date unavailable.{% endif %}</p>
+{% if facts.commit_count is not none %}<p>{{ facts.commit_count|format_count }} commits reachable from {{ release.tag }} but not from {{ release.previous_tag }}.</p>{% else %}<p>The Git range is unavailable because a final tag or its predecessor does not identify a commit.</p>{% endif %}
+{% if links.pair_count is not none %}
+<p>{{ links.pair_count|format_count }} recorded mailing-list references; {{ total|format_count }} distinct archived messages.</p>
+{% endif %}
+<p>References are commit/message pairs, not unique landed patches. They can name discussions or bug reports. This index may cover only part of the release, and some referenced messages are not archived here.</p>
+{% if rows %}
+<ul class="divided">
+{% for article, url in rows %}
+  <li><a href="{{ url }}">{{ article.subject|clean_subject or '(no subject)' }}</a>
+    <br><small>{{ article.author|display_name }}{% if article.date %} &middot; {{ article.date.strftime('%Y-%m-%d') }}{% endif %}</small></li>
+{% endfor %}
+</ul>
+{% else %}<p>No archived messages are available for this range. This does not establish that the release had no linked patches.</p>{% endif %}
+{% if previous or following %}
+<nav aria-label="Release messages pages">
+  {% if previous %}<a href="{{ previous }}" rel="prev">Previous page</a>{% endif %}
+  <span>Page {{ page }}</span>
+  {% if following %}<a href="{{ following }}" rel="next">Next page</a>{% endif %}
+</nav>
+{% endif %}
+{% endif %}
+{% endblock %}
