@@ -416,6 +416,17 @@ def archived_page(
     other article gets its thread page or, failing that, its own message
     URL (#1130). Only a row unlinked between the two queries can fall out,
     and that page is one row short for that one render.
+
+    Every page pays for the whole release: all its IDs are matched (one
+    `IN` per 900) and sorted, whatever page is asked for. Measured on
+    production 2026-11-08 (3.48.0, one run each, cached links) for v7.3,
+    the largest release: 14,126 recorded references, 14,040 distinct
+    IDs, 14,003 archived, 281 pages. Page 1 (50 rows) took 0.189 s in 83
+    statements; page 281 (3 rows) took 0.118 s in 28. The last page
+    approximates the fixed whole-release part; the rest scales with the
+    rows shown, mostly one `thread_page_of` COUNT per row in
+    `_advertised_urls_for`. Reading and decoding the cached ID list took
+    0.005 s. Re-measure before relying on these as releases grow.
     """
     from mimir.web.urls import _advertised_urls_for
 
