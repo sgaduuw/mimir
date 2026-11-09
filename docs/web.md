@@ -156,10 +156,14 @@ subsystem with 25 or more references gets its own row, the rest sit under "N
 smaller subsystems". Bars are relative to the release's largest subsystem, and
 the rows carry counts only, because the messages are listed below. A release
 with fewer than 10 archived references shows a one-line note instead of a table.
-The grouping is cached under `<release key>:subsystems`, written with the daily
-links refresh (so a MAINTAINERS change reaches it within a day) and rebuilt by
-the next request if the entry is missing. Whether it could be computed per
-request depends on a production measurement that has not been made yet; see
+The grouping is cached under `<release key>:subsystems`. A request only
+reads it and never computes it, so until it exists page 1 shows no "By
+subsystem" section, no note and no "Archived messages" heading. The daily
+links refresh in the background warm rewrites it with the links (a MAINTAINERS
+change reaches it within a day), and each hourly warm pass fills missing
+entries, newest release first, within a 60 s budget
+(`SUBSYSTEMS_FILL_BUDGET_SEC`), leaving the rest for the next pass. The budget
+rests on a local timing; the production figure is not measured yet, see
 `calculate_subsystems`.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup

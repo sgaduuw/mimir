@@ -57,12 +57,9 @@ def release_history_detail(tag):
         )
     with SessionLocal() as session:
         rows, total = history.archived_page(session, message_ids, page)
-        # Page 1 only: later pages list more messages, not another table.
-        subsystems = (
-            history.release_subsystems(session, release, message_ids)
-            if page == 1
-            else None
-        )
+    # Page 1 only: later pages list more messages, not another table. None
+    # until the warm has filled it; a request never groups.
+    subsystems = history.release_subsystems(release) if page == 1 else None
     if page > 1 and (page - 1) * history.PAGE_SIZE >= total:
         abort(404)
     return render_template(

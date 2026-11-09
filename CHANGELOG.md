@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- Release history pages group a release's archived references by primary subsystem, on page 1, with the same rows, bars and "N smaller subsystems" group as `/merge-window`. Bars are relative to the release's largest subsystem and say so; a release with only a handful of references gets a one-line note instead of a table. The grouping is cached with the release's recorded references and refreshes with them (#1136).
+- Release history pages group a release's archived references by primary subsystem, on page 1, with the same rows, bars and "N smaller subsystems" group as `/merge-window`. Bars are relative to the release's largest subsystem and say so; a release with only a handful of references gets a one-line note instead of a table. The grouping is cached with the release's recorded references and refreshes with them. A request never computes it: the hourly background warm fills missing ones, newest release first, within a time budget, and until a release has one its page shows no subsystem section (#1136).
 
 ### Changed
 
