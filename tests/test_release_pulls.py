@@ -378,6 +378,9 @@ _COVERAGE = (
     [
         # Before 2012: no tip, no bot. Everything is Unclear, and why.
         ({"count": 3, "unclear": 3, "tips": 0, "bot_replies": 0}, _COVERAGE[0]),
+        # No tip and no bot, but Linus refused one: not "all are Unclear"
+        # (review finding, #1135).
+        ({"count": 3, "unclear": 2, "tips": 0, "bot_replies": 0}, "2 name none"),
         # 2012 to 2018: tips, no bot.
         ({"count": 10, "unclear": 4, "tips": 6, "bot_replies": 0}, _COVERAGE[1]),
         # The bot replies to some: a share past the threshold still says so.
@@ -622,3 +625,43 @@ def test_the_predicate(pairs, pulls, listed):
     assert history.has_recorded_history(facts, links, summary) is listed
     rangeless = facts.model_copy(update={"commit_count": None})
     assert history.has_recorded_history(rangeless, links, summary) is False
+
+
+def test_a_cached_row_whose_article_is_unlinked_or_gone_is_skipped(
+    client, seeded_db, mirror, bodies
+):
+    """`release_pulls` resolves rows at render time; an article unlinked or deleted since the fill drops out instead of breaking the page."""
+    from sqlalchemy import delete
+
+    from mimir.models import Article, ArticleList
+
+    held, _ = bodies
+    with seeded_db() as s:
+        keep = _pull(s, held, "keep@x", mirror["new"], hours=48).id
+        unlinked = _pull(s, held, "unlinked@x", mirror["new"], hours=49).id
+        gone = _pull(s, held, "gone@x", mirror["new"], hours=50).id
+        s.commit()
+    _fill(seeded_db, _v73())
+    with seeded_db() as s:
+        for article_id in (unlinked, gone):
+            s.execute(delete(ArticleList).where(ArticleList.article_id == article_id))
+        s.execute(delete(Article).where(Article.id == gone))
+        s.commit()
+    html = _page(client)
+    assert f'/{keep}"' in html
+    assert f'/{unlinked}"' not in html
+    assert f'/{gone}"' not in html
+
+
+def test_a_rejection_after_the_release_still_counts(seeded_db, mirror, bodies):
+    """Linus's refusal is his decision whenever he sends it; only the bot's reply is windowed."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "late-no@x", _TIP_B, hours=_HOURS_TO_V73 - 24)
+        _linus_reply(
+            s, held, "late-no@x", "Not pulling this.", hours=_HOURS_TO_V73 + 48
+        )
+        s.commit()
+    release = _v73()
+    _fill(seeded_db, release)
+    assert _states(release) == {"late-no@x": "rejected"}
