@@ -827,3 +827,13 @@ def test_an_unlinked_pull_is_skipped_not_fatal(seeded_db, messages):
             ("[GIT PULL] tipless@x", "unknown"),
             ("[GIT PULL] ok@x", "merged"),
         ]
+
+
+def test_an_undated_refusal_still_marks_rejected(seeded_db, messages):
+    """The live page takes Linus's refusal whenever he sent it; only a closed release's overlap needs its date (#1135)."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "refused@x", _TIP_B, hours=10)
+        _linus_reply(s, bodies, "refused@x", "Not pulling this.", hours=20).date = None
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] refused@x", "rejected")]
