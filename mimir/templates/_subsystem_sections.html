@@ -1,0 +1,72 @@
+{# The subsystem list shared by `/merge-window` and a release's history page
+   (#1136): one disclosure row per subsystem with name, bar and count, then
+   one "N smaller subsystems" row. Takes `sections`, `smaller`,
+   `smaller_patches`, `section_min` and `unit` (what the counts count). A
+   section with rows opens as a disclosure listing them; one without (a
+   release counts, its messages are listed below) is a plain row. #}
+{% from "_bar_meter.html" import bar_meter %}
+{% from "_search_field.html" import search_field %}
+
+{# One subsystem as a row: name, bar, count. A <details> keeps the section's
+   fragment id, so a link to it still lands on it. #}
+{% macro subsystem_row(sec, largest, is_open=false) %}
+<li data-filter-item data-filter-text="{{ sec.name|subsystem_label }}">
+  {% if sec.rows %}
+  <details id="{{ sec.anchor }}"{% if is_open %} open{% endif %}>
+    <summary>
+      <span class="mw-name">{{ sec.name|subsystem_label }}</span>
+      {{ bar_meter(sec.patches, largest) }}
+      <span class="count">{{ sec.patches }}</span>
+    </summary>
+    {{ rows(sec.rows) }}
+  </details>
+  {% else %}
+  <div class="mw-flat" id="{{ sec.anchor }}">
+    <span class="mw-name">{{ sec.name|subsystem_label }}</span>
+    {{ bar_meter(sec.patches, largest) }}
+    <span class="count">{{ sec.patches }}</span>
+  </div>
+  {% endif %}
+</li>
+{% endmacro %}
+
+{% macro rows(items) %}
+<ul class="divided">
+  {% for row in items %}
+  <li>
+    <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
+    {%- if row.patches > 1 %} <small>{{ row.patches|format_count }} patches</small>{% endif %}
+    <br><small>{{ row.author|display_name }}
+      {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
+      &middot; {{ row.inbox_name }}
+      {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}
+      {%- if row.also %} &middot; touches {{ row.also|map('subsystem_label')|join(', ') }}{% endif %}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
+
+<div class="mw-find" data-filter-controls hidden>
+  {% call search_field('mw-find-input', 'Find a subsystem') %}
+  <input id="mw-find-input" type="search" data-filter-input="mw-subsystems" autocomplete="off">
+  {% endcall %}
+</div>
+<ul class="mw-subsystems" id="mw-subsystems">
+  {# One scale for every bar. `(no subsystem)` is always in `smaller` and can be the biggest bucket. #}
+  {% set largest = (sections + smaller)|map(attribute='patches')|max %}
+  {% for sec in sections %}{{ subsystem_row(sec, largest, loop.first) }}{% endfor %}
+  {% if smaller %}
+  <li data-filter-item>
+    <details id="smaller-subsystems">
+      <summary>
+        <span class="mw-name">{{ smaller|length }} smaller subsystem{{ '' if smaller|length == 1 else 's' }}</span>
+        <span class="count">{{ smaller_patches }}</span>
+      </summary>
+      <p><small>Subsystems with fewer than {{ section_min|format_count }} {{ unit }}.</small></p>
+      <ul class="mw-subsystems mw-subsystems-nested">
+        {% for sec in smaller %}{{ subsystem_row(sec, largest) }}{% endfor %}
+      </ul>
+    </details>
+  </li>
+  {% endif %}
+</ul>
