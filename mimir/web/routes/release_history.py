@@ -57,6 +57,9 @@ def release_history_detail(tag):
         )
     with SessionLocal() as session:
         rows, total = history.archived_page(session, message_ids, page)
+        # Page 1 only: later pages list more messages, not the cards again.
+        # None until the warm has classified them; a request reads no mail.
+        pulls = history.release_pulls(session, release) if page == 1 else None
     # Page 1 only: later pages list more messages, not another table. None
     # until the warm has filled it; a request never groups.
     subsystems = history.release_subsystems(release) if page == 1 else None
@@ -70,6 +73,9 @@ def release_history_detail(tag):
         rows=rows,
         total=total,
         subsystems=subsystems,
+        pulls=pulls,
+        lead_in_days=history.PULLS_LEAD_IN.days,
+        unclear_note_share=history.UNCLEAR_NOTE_SHARE,
         handful=history.HANDFUL_OF_REFERENCES,
         section_min=SECTION_MIN_PATCHES,
         page=page,

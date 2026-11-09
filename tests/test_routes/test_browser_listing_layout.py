@@ -460,3 +460,125 @@ def test_release_subsystem_rows_at_desktop_and_phone_widths(client, tmp_path):
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def release_pull_pages(client):
+    """A closed release's page with every pull-request state (#1135),
+    long subjects and a card past four rows, rendered from the real
+    template with its coverage note."""
+    from mimir.release_history import ReleasePull, ReleasePulls, ReleasePullSummary
+
+    when = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
+    long = "[GIT PULL] " + "drivers and a very long pull request subject " * 3
+    states = ["merged"] * 6 + ["not_merged", "unknown", "rejected"]
+    rows = [
+        ReleasePull(
+            subject=long if n % 2 else f"[GIT PULL] pull {n}",
+            url=f"/alpha/2026/09/{n}",
+            author="Mae Maintainer With A Long Name <mae@example.com>",
+            date=when,
+            state=state,
+        )
+        for n, state in enumerate(states)
+    ]
+    with client.application.test_request_context("/merge-window/history/v7.3"):
+        html = render_template(
+            "release_history_detail.html",
+            release=SimpleNamespace(tag="v7.3", previous_tag="v7.2"),
+            facts=SimpleNamespace(
+                release_date=when, date_source="tagger", commit_count=20260
+            ),
+            links=SimpleNamespace(pair_count=14126),
+            rows=[],
+            total=0,
+            subsystems=None,
+            pulls=ReleasePulls(
+                ReleasePullSummary(count=9, unclear=1, tips=8, bot_replies=0), rows
+            ),
+            lead_in_days=14,
+            unclear_note_share=0.10,
+            handful=10,
+            section_min=25,
+            page=1,
+            previous=None,
+            following=None,
+            current_inbox=None,
+            canonical_url="http://localhost/merge-window/history/v7.3",
+        )
+    return {"pulls": html}
+
+
+def test_release_pull_sample_has_all_four_states(client):
+    """Keep the browser test's input runnable without Playwright."""
+    page = parse(release_pull_pages(client)["pulls"])
+    cards = page.find_all("section", cls="pull-card")
+    assert [c.attrs["id"] for c in cards] == [
+        "pulls-merged",
+        "pulls-not_merged",
+        "pulls-unknown",
+        "pulls-rejected",
+    ]
+    assert cards[0].find_all("details") != []
+    assert page.find_all("p", id="pulls-how-counted") != []
+
+
+def test_release_pull_cards_at_desktop_and_phone_widths(client, tmp_path):
+    playwright = playwright_api()
+    pages = release_pull_pages(client)
+    app = client.application
+    app.add_url_rule("/_pulls/<name>", view_func=lambda name: pages[name])
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            for width in (1280, 390):
+                page.set_viewport_size({"width": width, "height": 900})
+                for theme in ("light", "dark"):
+                    page.goto(f"http://127.0.0.1:{server.server_port}/_pulls/pulls")
+                    page.evaluate(
+                        "theme => document.documentElement.dataset.theme = theme",
+                        theme,
+                    )
+                    page.evaluate(
+                        "document.querySelectorAll('.pull-card details')"
+                        ".forEach(d => d.open = true)"
+                    )
+                    page.screenshot(
+                        path=str(tmp_path / f"pulls-{width}-{theme}.png"),
+                        full_page=True,
+                    )
+                    assert page.evaluate(
+                        "document.documentElement.scrollWidth <= innerWidth"
+                    ), (width, theme)
+                    layout = page.locator(".pull-cards").evaluate(
+                        """grid => {
+                          const errors = [];
+                          const box = grid.getBoundingClientRect();
+                          const cards = [...grid.querySelectorAll('.pull-card')];
+                          for (const card of cards) {
+                            const r = card.getBoundingClientRect();
+                            if (r.left < box.left - 1 || r.right > box.right + 1)
+                              errors.push('card outside the grid: ' + card.id);
+                            for (const el of card.querySelectorAll('h3, .count, a, small, summary')) {
+                              const e = el.getBoundingClientRect();
+                              if (e.right > r.right + 1 || e.left < r.left - 1)
+                                errors.push('outside its card: ' + card.id + ' ' + el.tagName);
+                            }
+                            const label = card.querySelector('h3');
+                            if (getComputedStyle(label).color === getComputedStyle(card).backgroundColor)
+                              errors.push('label invisible: ' + card.id);
+                          }
+                          const rows = new Set(cards.map(c => Math.round(c.getBoundingClientRect().top)));
+                          return {errors, cards: cards.length, rows: rows.size};
+                        }"""
+                    )
+                    assert layout["errors"] == [], (width, theme, layout)
+                    assert layout["cards"] == 4
+                    # Side by side on a wide screen, one per row on a phone.
+                    assert (layout["rows"] < 4) is (width == 1280), (width, layout)
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
