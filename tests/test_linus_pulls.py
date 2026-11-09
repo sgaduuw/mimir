@@ -53,17 +53,20 @@ def revlist_tags():
 
 @pytest.fixture
 def messages(monkeypatch, tags, revlist_tags):
-    """Bodies and headers by message-id, served where `read_message`
+    """Bodies and headers by message-id, served where `read_messages`
     would read them from git. The tags, their commit times and the set
-    `git rev-list <tag>..HEAD` returns are stubbed alongside."""
+    `git rev-list <tag>..HEAD` returns are stubbed alongside. Reading one
+    mail at a time fails: the section reads in batches (#1135)."""
     bodies: dict[str, ParsedArticle] = {}
 
-    def _read(session, inbox, message_id):
-        if message_id not in bodies:
-            raise store.MessageNotFound(message_id)
-        return bodies[message_id]
+    def _read_many(session, inbox, message_ids):
+        return {m: bodies[m] for m in message_ids if m in bodies}
 
-    monkeypatch.setattr(store, "read_message", _read)
+    def _read_one(*args):
+        pytest.fail("pull bodies are read per batch, never per mail")
+
+    monkeypatch.setattr(store, "read_messages", _read_many)
+    monkeypatch.setattr(store, "read_message", _read_one)
     for module in (lp, mw):
         monkeypatch.setattr(module, "version_tags", lambda path: tags)
     monkeypatch.setattr(lp, "_tag_time", lambda path, tag: _TAG_TIMES[tag])
@@ -727,3 +730,58 @@ def test_live_pull_section_renders_as_it_did_before_the_shared_include(
     ]
     assert "<details>" in section
     assert section == _PULL_SECTION.read_text().strip()
+
+
+def test_batched_bodies_keep_read_first_readables_inbox_order(seeded_db, monkeypatch):
+    """Each article's canonical inbox first, then its other inboxes by
+    name, as `read_first_readable` tries them; a mail one inbox cannot
+    serve comes from the next, and one no inbox serves is left out."""
+    from mimir.store import read_first_readable
+
+    held = {
+        ("alpha", "both@x"): "from alpha",
+        ("beta", "both@x"): "from beta",
+        ("alpha", "alpha-only@x"): "from alpha",
+    }
+
+    def read_many(session, inbox, message_ids):
+        return {
+            m: ParsedArticle(message_id=m, body=held[inbox.name, m], headers={})
+            for m in message_ids
+            if (inbox.name, m) in held
+        }
+
+    def read_one(session, inbox, message_id):
+        if (inbox.name, message_id) not in held:
+            raise store.MessageNotFound(message_id)
+        return read_many(session, inbox, [message_id])[message_id]
+
+    monkeypatch.setattr(store, "read_messages", read_many)
+    monkeypatch.setattr(store, "read_message", read_one)
+    with seeded_db() as s:
+        inboxes = {i.name: i for i in s.execute(select(Inbox)).scalars()}
+        arts = []
+        for mid in ("both@x", "alpha-only@x", "nowhere@x"):
+            art = Article(
+                message_id=mid,
+                subject=mid,
+                date=_TAG_TIME,
+                canonical_inbox_id=inboxes["beta"].id,
+                lists=[
+                    ArticleList(
+                        inbox_id=inboxes[n].id, epoch="0.git", commit_sha="f" * 40
+                    )
+                    for n in ("alpha", "beta")
+                ],
+            )
+            s.add(art)
+            arts.append(art)
+        s.flush()
+        got = lp._bodies(s, arts)
+        expected = {}
+        for art in arts:
+            one = read_first_readable(s, [art], art.canonical_inbox_id)
+            if one is not None:
+                expected[art.id] = one[1].body
+        assert {k: v.body for k, v in got.items()} == expected
+        assert expected == {arts[0].id: "from beta", arts[1].id: "from alpha"}

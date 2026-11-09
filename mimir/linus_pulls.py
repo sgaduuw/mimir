@@ -12,10 +12,14 @@ the merge is in Linus's tree, so it cannot invent one, and it covers a
 pull whose named tip never appears there (a re-pushed tag, or a
 different tip pulled).
 
-Bodies and headers come from git through `read_message`, a few dozen
-per cycle (106 candidates read in 0.5 s, same measurement), cached
-under `linus_pulls_state` so new mail never recomputes the linux-next
-queue.
+Bodies and headers come from git through `read_messages`, one epoch
+open per inbox and batch rather than one per mail (`read_message` read
+106 candidates in 0.5 s, same measurement), cached under
+`linus_pulls_state` so new mail never recomputes the linux-next queue.
+
+`classify` is the one classifier: this page and each closed release's
+history page (`release_history.calculate_pulls`, #1135) call it, and
+`_state` alone decides a state.
 
 Rejected: Linus replied to the pull request in his own words that he is
 not pulling it (`_REJECTED_RE`), unless it is merged anyway. Unknown: the
@@ -29,8 +33,9 @@ import re
 import subprocess
 from datetime import UTC, datetime
 from email.utils import getaddresses, parseaddr
+from itertools import batched
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from dulwich.errors import NotGitRepository
 from dulwich.repo import Repo
@@ -39,12 +44,13 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, selectinload
 
 import mimir
-from mimir import cache
+from mimir import cache, store
 from mimir.config import settings
+from mimir.datetime_utils import aware_utc
 from mimir.merge_window import LINUS_TREE, _linus_path, _window, version_tags
 from mimir.models import Article, MainlineState
+from mimir.parser import ParsedArticle
 from mimir.pull_requests import pull_subject_sql
-from mimir.store import read_first_readable
 from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
 logger = logging.getLogger(__name__)
@@ -70,6 +76,10 @@ LINUS_PULLS_CACHE_TTL_SEC = 24 * 3600
 
 
 PullState = Literal["merged", "rejected", "unknown", "pending"]
+# A closed release's history says "not merged in vN" where the live page
+# says pending: the release is out, nothing is waiting for it any more.
+# Kept out of `PullState` so the cached `LinusPull` type does not change.
+ClosedPullState = Literal["merged", "rejected", "unknown", "not_merged"]
 
 
 class LinusPull(BaseModel):
@@ -173,37 +183,78 @@ def _compute(session: Session) -> LinusPulls:
     if since is None:
         return LinusPulls(anchor=anchor, rows=[])
 
-    pulls = []
-    for art in session.execute(
-        select(Article)
-        .options(selectinload(Article.lists))
-        .where(pull_subject_sql(Article.subject), Article.date >= since)
-        .order_by(Article.date.desc(), Article.id.desc())
-    ).scalars():
-        parsed = _body(session, art)
+    pulls = classify(session, since, None, _merged_tips(path, anchor))
+    names = _canonical_inbox_names_for(session, [p.article.id for p in pulls])
+    return LinusPulls(
+        anchor=anchor,
+        rows=[
+            LinusPull(
+                subject=p.article.subject,
+                url=_msg_path(p.article.id, p.article.date, names[p.article.id]),
+                author=p.article.author,
+                date=p.article.date,
+                state=p.state,
+            )
+            for p in pulls
+        ],
+    )
+
+
+class Pull(NamedTuple):
+    article: Article
+    # The body's "up to <sha>", or None.
+    tip: str | None
+    # pr-tracker-bot replied it was merged (inside `bot_window`, if given).
+    bot_merged: bool
+    state: PullState | ClosedPullState
+
+
+def classify(
+    session: Session,
+    since: datetime,
+    until: datetime | None,
+    merged_tips: set[str],
+    *,
+    closed: bool = False,
+    bot_window: tuple[datetime, datetime] | None = None,
+) -> list[Pull]:
+    """The `[GIT PULL]` mails to Linus dated from `since` (to `until`,
+    if given), newest first, each with its state. `merged_tips` is the
+    set of commits that count as merged. `closed` names an unmerged tip
+    `not_merged` instead of `pending`. `bot_window` counts a
+    pr-tracker-bot reply only when it is dated after its start and by
+    its end: for a closed release, a reply outside its cycle is about a
+    merge into another release."""
+    query = select(Article).options(selectinload(Article.lists))
+    query = query.where(pull_subject_sql(Article.subject), Article.date >= since)
+    if until is not None:
+        query = query.where(Article.date <= until)
+    articles = list(
+        session.execute(
+            query.order_by(Article.date.desc(), Article.id.desc())
+        ).scalars()
+    )
+    bodies = _bodies(session, articles)
+    candidates = []
+    for art in articles:
+        parsed = bodies.get(art.id)
         if parsed is None or LINUS_ADDRESS not in _recipients(parsed.headers):
             continue
         tip = _TIP_RE.search(parsed.body or "")
-        pulls.append((art, tip.group(1) if tip else None))
+        candidates.append((art, tip.group(1) if tip else None))
 
-    bot_said, linus_rejected = _replies(session, [art.message_id for art, _ in pulls])
-    merged_tips = _merged_tips(path, anchor)
-    names = _canonical_inbox_names_for(session, [art.id for art, _ in pulls])
-
-    rows = []
-    for art, tip in pulls:
-        rows.append(
-            LinusPull(
-                subject=art.subject,
-                url=_msg_path(art.id, art.date, names[art.id]),
-                author=art.author,
-                date=art.date,
-                state=_state(
-                    tip, art.message_id, merged_tips, bot_said, linus_rejected
-                ),
-            )
+    bot_said, linus_rejected = _replies(
+        session, [art.message_id for art, _ in candidates], bot_window
+    )
+    return [
+        Pull(
+            art,
+            tip,
+            art.message_id in bot_said,
+            _state(tip, art.message_id, merged_tips, bot_said, linus_rejected, closed),
         )
-    return LinusPulls(anchor=anchor, rows=rows)
+        for art, tip in candidates
+    ]
 
 
 def _state(
@@ -212,12 +263,15 @@ def _state(
     merged_tips: set[str],
     bot_said: set[str],
     linus_rejected: set[str],
-) -> PullState:
+    closed: bool = False,
+) -> PullState | ClosedPullState:
     if tip in merged_tips or message_id in bot_said:
         return "merged"
     if message_id in linus_rejected:
         return "rejected"
-    return "pending" if tip else "unknown"
+    if not tip:
+        return "unknown"
+    return "not_merged" if closed else "pending"
 
 
 def _linus_walked_at(session: Session) -> datetime | None:
@@ -228,9 +282,39 @@ def _linus_walked_at(session: Session) -> datetime | None:
     ).scalar_one_or_none()
 
 
-def _body(session: Session, art: Article):
-    found = read_first_readable(session, [art], art.canonical_inbox_id)
-    return found[1] if found else None
+def _bodies(session: Session, articles: list[Article]) -> dict[int, ParsedArticle]:
+    """`read_first_readable` for many articles, by article id: the same
+    inbox order for each (its canonical inbox first, then the rest by
+    name), read with one `read_messages` per inbox and attempt, so each
+    epoch repository opens once per batch instead of once per mail. An
+    article no inbox can serve is left out. Batches of 900 stay far below
+    SQLite's bind-parameter limit."""
+    order = {
+        art.id: sorted(
+            art.lists,
+            key=lambda al: (al.inbox_id != art.canonical_inbox_id, al.inbox.name),
+        )
+        for art in articles
+    }
+    found: dict[int, ParsedArticle] = {}
+    left = list(articles)
+    attempt = 0
+    while left:
+        by_inbox: dict[int, list[Article]] = {}
+        for art in left:
+            by_inbox.setdefault(order[art.id][attempt].inbox_id, []).append(art)
+        for group in by_inbox.values():
+            inbox = order[group[0].id][attempt].inbox
+            for chunk in batched(group, 900):
+                read = store.read_messages(
+                    session, inbox, [a.message_id for a in chunk]
+                )
+                for art in chunk:
+                    if art.message_id in read:
+                        found[art.id] = read[art.message_id]
+        attempt += 1
+        left = [a for a in left if a.id not in found and attempt < len(order[a.id])]
+    return found
 
 
 def _recipients(headers: dict[str, str]) -> set[str]:
@@ -239,24 +323,35 @@ def _recipients(headers: dict[str, str]) -> set[str]:
     return {addr.lower() for _, addr in getaddresses(values)}
 
 
-def _replies(session: Session, message_ids: list[str]) -> tuple[set[str], set[str]]:
+def _replies(
+    session: Session,
+    message_ids: list[str],
+    bot_window: tuple[datetime, datetime] | None = None,
+) -> tuple[set[str], set[str]]:
     """Message-ids of the pull requests pr-tracker-bot replied were
-    merged into Linus's tree, and of those Linus replied he will not
-    pull. One query for the replies; only the bot's and Linus's bodies
-    are read."""
+    merged into Linus's tree (within `bot_window`, when given), and of
+    those Linus replied he will not pull. One query for the replies;
+    only the bot's and Linus's bodies are read."""
     bot_said: set[str] = set()
     linus_rejected: set[str] = set()
     if not message_ids:
         return bot_said, linus_rejected
+    replies = []
     for reply in session.execute(
         select(Article)
         .options(selectinload(Article.lists))
         .where(Article.thread_parent.in_(message_ids))
     ).scalars():
         sender = parseaddr(reply.author or "")[1].lower()
-        if sender not in (PR_TRACKER_BOT, LINUS_ADDRESS):
-            continue
-        parsed = _body(session, reply)
+        if sender == PR_TRACKER_BOT and bot_window is not None:
+            start, end = bot_window
+            if reply.date is None or not start < aware_utc(reply.date) <= end:
+                continue
+        if sender in (PR_TRACKER_BOT, LINUS_ADDRESS):
+            replies.append((reply, sender))
+    bodies = _bodies(session, [reply for reply, _ in replies])
+    for reply, sender in replies:
+        parsed = bodies.get(reply.id)
         body = (parsed.body or "") if parsed is not None else ""
         if sender == PR_TRACKER_BOT:
             if _BOT_MERGED in body:
