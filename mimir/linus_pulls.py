@@ -287,7 +287,7 @@ def _bodies(session: Session, articles: list[Article]) -> dict[int, ParsedArticl
     inbox order for each (its canonical inbox first, then the rest by
     name), read with one `read_messages` per inbox and attempt, so each
     epoch repository opens once per batch instead of once per mail. An
-    article no inbox can serve is left out. Batches of 900 stay far below
+    article no inbox can serve, or filed in none, is left out. Batches of 900 stay far below
     SQLite's bind-parameter limit."""
     order = {
         art.id: sorted(
@@ -297,7 +297,9 @@ def _bodies(session: Session, articles: list[Article]) -> dict[int, ParsedArticl
         for art in articles
     }
     found: dict[int, ParsedArticle] = {}
-    left = list(articles)
+    # An article filed in no inbox (orphaned by `delete_inbox`, or before a
+    # reindex re-walks it) has nothing to read, as in `read_first_readable`.
+    left = [art for art in articles if order[art.id]]
     attempt = 0
     while left:
         by_inbox: dict[int, list[Article]] = {}

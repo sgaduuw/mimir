@@ -785,3 +785,34 @@ def test_batched_bodies_keep_read_first_readables_inbox_order(seeded_db, monkeyp
                 expected[art.id] = one[1].body
         assert {k: v.body for k, v in got.items()} == expected
         assert expected == {arts[0].id: "from beta", arts[1].id: "from alpha"}
+
+
+def test_an_unlinked_pull_is_skipped_not_fatal(seeded_db, messages):
+    """An article with no `article_lists` row (an inbox removed with
+    --keep-orphan-articles, or an epoch reindexed from scratch) has no
+    readable body. `read_first_readable` returned None for it and the
+    section skipped it; the batched read must do the same, not raise.
+    Replies go through the same reader. (Review regression, #1135.)"""
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with seeded_db() as s:
+        _pull(s, bodies, "ok@x", _TIP_A, hours=10)
+        _pull(s, bodies, "tipless@x", hours=12)
+        for mid, parent, author in (
+            ("orphan@x", None, "Mae <mae@example.com>"),
+            ("orphan-bot@x", "tipless@x", _BOT),
+        ):
+            s.add(
+                Article(
+                    message_id=mid,
+                    subject=f"[GIT PULL] {mid}" if parent is None else "Re: x",
+                    author=author,
+                    date=_TAG_TIME + timedelta(hours=20),
+                    thread_parent=parent,
+                )
+            )
+        s.commit()
+        assert _rows(s) == [
+            ("[GIT PULL] tipless@x", "unknown"),
+            ("[GIT PULL] ok@x", "merged"),
+        ]
