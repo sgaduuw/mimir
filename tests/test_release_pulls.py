@@ -3,7 +3,7 @@ classified once by the hourly warm with `/merge-window`'s classifier and
 kept under the release's immutable key; a page view never reads a mail."""
 
 import re
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from dulwich.repo import Repo
@@ -51,6 +51,10 @@ def mirror(tmp_path, monkeypatch):
         repo.refs[b"refs/tags/" + tag.encode()] = oid
     repo.close()
     monkeypatch.setattr(history, "_linus_path", lambda: path)
+    # The tags are dated up to 2027; the fill waits until a tag has settled
+    # (PULLS_SETTLE), on the cache's clock, so set that clock past them.
+    settled = t74 + 30 * 86400
+    monkeypatch.setattr(cache, "_now", lambda: settled)
     return {"old": old.decode(), "new": new.decode(), "next": nxt.decode()}
 
 
@@ -518,7 +522,7 @@ def test_coverage_note_is_decided_from_the_release_data(
     cache.set(release.key + history.PULLS, summary, history.GIT_TTL_SEC)
     note = _note(_page(client))
     assert note is not None and "14 days before v7.2" in note
-    assert "sent in the 14 days before a release count for it only if" in note
+    assert "made it in or Linus rejected them by the tag" in note
     assert sum(c in note for c in _COVERAGE) == (1 if says else 0), note
     if says:
         assert says in note, note
@@ -533,7 +537,7 @@ def _fake(n):
     per-release warm targets leave them. Keys are made up."""
     out = []
     facts = history.ReleaseFacts(
-        release_date=None,
+        release_date=datetime(2020, 1, 1, tzinfo=UTC),
         date_source=None,
         merge_days=None,
         stabilization_days=None,
@@ -805,7 +809,10 @@ def test_a_cached_row_whose_article_is_unlinked_or_gone_is_skipped(
 
 
 def test_a_rejection_after_the_release_still_counts(seeded_db, mirror, bodies):
-    """Linus's refusal is his decision whenever he sends it; only the bot's reply is windowed."""
+    """Linus's refusal is his decision whenever he sends it; only the bot's
+    reply is windowed. One sent after vN's tag keeps a late pull off vN
+    (it was not rejected by the tag), so the pull is vN+1's, shown there
+    as Rejected."""
     held, _ = bodies
     with seeded_db() as s:
         _pull(s, held, "late-no@x", _TIP_B, hours=_HOURS_TO_V73 - 24)
@@ -813,6 +820,78 @@ def test_a_rejection_after_the_release_still_counts(seeded_db, mirror, bodies):
             s, held, "late-no@x", "Not pulling this.", hours=_HOURS_TO_V73 + 48
         )
         s.commit()
-    release = _v73()
-    _fill(seeded_db, release)
-    assert _states(release) == {"late-no@x": "rejected"}
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73, v74)
+    assert _states(v73) == {}
+    assert _states(v74) == {"late-no@x": "rejected"}
+
+
+def test_a_refusal_after_the_tag_does_not_drop_a_pull_from_both_pages(
+    seeded_db, mirror, bodies
+):
+    """vN's row is written once, on the first warm pass after its tag; vN+1's weeks later. A lead-in pull for vN+1 that Linus refuses during vN+1's merge window, after vN's row was written, must still be on exactly one page."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "early-for-v74@x", _TIP_B, hours=_HOURS_TO_V73 - 72)
+        s.commit()
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73)
+    with seeded_db() as s:
+        _linus_reply(
+            s, held, "early-for-v74@x", "Not pulling this.", hours=_HOURS_TO_V73 + 72
+        )
+        s.commit()
+    _fill(seeded_db, v74)
+    pages = [m for release in (v73, v74) for m in _states(release)]
+    assert pages == ["early-for-v74@x"]
+
+
+def test_a_refusal_at_the_tag_instant_counts_by_the_tag(seeded_db, mirror, bodies):
+    """ "By the tag" includes the tag's own instant, as for a bot reply."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "refused-at-tag@x", _TIP_B, hours=_HOURS_TO_V73 - 72)
+        _linus_reply(
+            s, held, "refused-at-tag@x", "Not pulling this.", hours=_HOURS_TO_V73
+        )
+        s.commit()
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73, v74)
+    assert _states(v73) == {"refused-at-tag@x": "rejected"}
+    assert _states(v74) == {}
+
+
+def test_a_bot_reply_by_the_tag_keeps_a_pull_whose_tip_is_elsewhere(
+    seeded_db, mirror, bodies
+):
+    """A re-pushed tag: the named tip is in no release, but pr-tracker-bot replied before vN's tag that it was merged. It made it into vN, as `_state` already says, so it is vN's and not vN+1's."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "repushed@x", _TIP_B, hours=_HOURS_TO_V73 - 72)
+        _bot_reply(s, held, "repushed@x", hours=_HOURS_TO_V73 - 24)
+        s.commit()
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73, v74)
+    assert _states(v73) == {"repushed@x": "merged"}
+    assert _states(v74) == {}
+
+
+def test_the_fill_waits_a_day_after_a_tag(seeded_db, monkeypatch):
+    """Replies dated by the tag can be ingested a little later, so a release
+    is classified only once its tag is PULLS_SETTLE old: on a later pass."""
+    releases = _fake(2)
+    tagged = datetime(2026, 11, 1, 12, tzinfo=UTC)
+    facts = cache.get(releases[0].key + ":facts") | {"release_date": tagged.isoformat()}
+    cache.set(releases[0].key + ":facts", facts, 10**9)
+    asked = _clocked(monkeypatch, step=1)
+    # A day, written out: the test must not move with the constant.
+    settled = tagged + timedelta(days=1)
+    for now, expected in (
+        (settled - timedelta(seconds=1), ["v9.1"]),
+        (settled, ["v9.2"]),
+    ):
+        monkeypatch.setattr(cache, "_now", lambda now=now: int(now.timestamp()))
+        asked.clear()
+        with seeded_db() as s:
+            history.warm_release_pulls(s, releases, budget_sec=100)
+        assert asked == expected, now

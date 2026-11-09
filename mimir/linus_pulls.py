@@ -207,8 +207,9 @@ class Pull(NamedTuple):
     # When pr-tracker-bot first replied it was merged, whatever the window;
     # None without a dated reply.
     bot_at: datetime | None
-    # Linus replied he is not pulling it, whether or not it was merged.
-    rejected: bool
+    # When Linus first replied he is not pulling it, merged or not; None
+    # without a dated refusal. The state counts any refusal, dated or not.
+    rejected_at: datetime | None
     state: PullState | ClosedPullState
 
 
@@ -246,9 +247,8 @@ def classify(
         tip = _TIP_RE.search(parsed.body or "")
         candidates.append((art, tip.group(1) if tip else None))
 
-    bot_at, linus_rejected = _replies(
-        session, [art.message_id for art, _ in candidates]
-    )
+    bot_at, rejected_at = _replies(session, [art.message_id for art, _ in candidates])
+    linus_rejected = set(rejected_at)
     if bot_window is None:
         bot_said = set(bot_at)
     else:
@@ -259,7 +259,7 @@ def classify(
             art,
             tip,
             bot_at.get(art.message_id),
-            art.message_id in linus_rejected,
+            rejected_at.get(art.message_id),
             _state(tip, art.message_id, merged_tips, bot_said, linus_rejected, closed),
         )
         for art, tip in candidates
@@ -336,16 +336,16 @@ def _recipients(headers: dict[str, str]) -> set[str]:
 
 def _replies(
     session: Session, message_ids: list[str]
-) -> tuple[dict[str, datetime | None], set[str]]:
-    """For the pull requests pr-tracker-bot replied were merged into
-    Linus's tree, the date of its first such dated reply (None when no
-    reply carries a date), by message-id; and the message-ids of those
-    Linus replied he will not pull. One query for the replies; only the
-    bot's and Linus's bodies are read."""
+) -> tuple[dict[str, datetime | None], dict[str, datetime | None]]:
+    """By message-id: the pull requests pr-tracker-bot replied were merged
+    into Linus's tree, and those Linus replied he will not pull, each with
+    the date of the first such dated reply (None when no reply carries a
+    date). One query for the replies; only the bot's and Linus's bodies
+    are read."""
     bot_at: dict[str, datetime | None] = {}
-    linus_rejected: set[str] = set()
+    rejected_at: dict[str, datetime | None] = {}
     if not message_ids:
-        return bot_at, linus_rejected
+        return bot_at, rejected_at
     replies = []
     for reply in session.execute(
         select(Article)
@@ -361,12 +361,7 @@ def _replies(
         body = (parsed.body or "") if parsed is not None else ""
         if sender == PR_TRACKER_BOT:
             if _BOT_MERGED in body:
-                at = aware_utc(reply.date) if reply.date is not None else None
-                known = bot_at.get(reply.thread_parent)
-                if reply.thread_parent not in bot_at or (
-                    at is not None and (known is None or at < known)
-                ):
-                    bot_at[reply.thread_parent] = at
+                _keep_first(bot_at, reply)
         # His own lines only: a quoted line is the maintainer's text.
         # Joined, because he wraps at about 72 columns and a phrase can
         # straddle the break.
@@ -375,8 +370,19 @@ def _replies(
                 line for line in body.splitlines() if not line.lstrip().startswith(">")
             )
         ):
-            linus_rejected.add(reply.thread_parent)
-    return bot_at, linus_rejected
+            _keep_first(rejected_at, reply)
+    return bot_at, rejected_at
+
+
+def _keep_first(dates: dict[str, datetime | None], reply: Article) -> None:
+    """Record `reply` under its parent unless an earlier dated one is
+    there; a dated reply replaces an undated one."""
+    at = aware_utc(reply.date) if reply.date is not None else None
+    known = dates.get(reply.thread_parent)
+    if reply.thread_parent not in dates or (
+        at is not None and (known is None or at < known)
+    ):
+        dates[reply.thread_parent] = at
 
 
 def _tag_time(path: Path | None, tag: str) -> datetime | None:

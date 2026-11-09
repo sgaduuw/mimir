@@ -147,6 +147,11 @@ PULL_ROWS = ":pull_rows:1"
 # they belong to vPREV only if they made it in or Linus rejected them. The same
 # span at vN's end is vN+1's lead-in (`_in_cycle`).
 PULLS_LEAD_IN = timedelta(days=14)
+# The fill classifies a release only once its tag is this old, so replies
+# dated by the tag that are ingested a little later are there when its
+# immutable rows are written. A judgement, not a measurement: mail reaches
+# the archive within minutes to hours.
+PULLS_SETTLE = timedelta(days=1)
 # Past this share of Unclear pulls the page says how many name no commit.
 # #1134: under 6% from v5.0 on (5.3% for v5.0), 20.8% for v4.20, the first
 # window with pr-tracker-bot replies, and 40% to 100% before it.
@@ -575,8 +580,8 @@ def calculate_pulls(
     outside the range) or unclear (no tip and no bot reply).
 
     Pull requests sent in the two weeks before a release count for it only
-    if they made it in or Linus rejected them; otherwise they count for the
-    next release (`_in_cycle`). Deciding that for vN's lead-in needs
+    if they made it in or Linus rejected them by the tag; otherwise they
+    count for the next release (`_in_cycle`). Deciding that for vN's lead-in needs
     `previous_members`, vPREV's range; None means vPREV has no range and
     so no page, and vN keeps its whole lead-in.
 
@@ -612,6 +617,13 @@ def calculate_pulls(
     return summary, [[p.article.id, p.state] for p in pulls]
 
 
+def _refused_by(pull: Pull, tagged: datetime) -> bool:
+    """Linus refused it by the tag. Rows are written once, at different
+    times, so a refusal sent after a tag must not change which release a
+    pull belongs to: vN's row would not see it, vN+1's would."""
+    return pull.rejected_at is not None and pull.rejected_at <= tagged
+
+
 def _made_it(pull: Pull, members: set[str], tagged: datetime) -> bool:
     """Whether `pull` made it into the release tagged at `tagged` with
     range `members`: its tip is in the range, or pr-tracker-bot replied it
@@ -631,10 +643,11 @@ def _in_cycle(
 
     Every pull sent in the PULLS_LEAD_IN overlap before a tag T, both ends
     included, belongs to exactly one of the release tagged T and the next
-    one: the release tagged T if it made it in or Linus rejected it,
-    otherwise the next one, with the next one's state. Both releases decide
-    with `_made_it` and Linus's refusal (not the state, where merged wins),
-    so they agree. Overlap pulls are early merge-window pulls for the next
+    one: the release tagged T if it made it in or Linus rejected it by the
+    tag, otherwise the next one, with the next one's state (Rejected, if he
+    refused it later). Both releases decide with `_made_it` and
+    `_refused_by`, never with the state, where merged wins, so they agree
+    whenever each row was written. Overlap pulls are early merge-window pulls for the next
     release more often than late fixes.
 
     `previous_members` None: vPREV has no range and no page, so vN keeps
@@ -642,9 +655,9 @@ def _in_cycle(
     """
     sent = aware_utc(pull.article.date)
     if sent >= end - PULLS_LEAD_IN:
-        return pull.rejected or _made_it(pull, members, end)
+        return _refused_by(pull, end) or _made_it(pull, members, end)
     if sent <= start and previous_members is not None:
-        return not (pull.rejected or _made_it(pull, previous_members, start))
+        return not (_refused_by(pull, start) or _made_it(pull, previous_members, start))
     return True
 
 
@@ -679,8 +692,8 @@ def warm_release_pulls(
     """Classify releases whose pulls are not cached, `releases` order
     (newest first), until the budget is spent; the next pass picks up the
     rest. A cached one is left alone (`warm_release` renews it). A release
-    whose Git facts, or whose predecessor's, are not cached yet waits for
-    them (`releases` must hold the predecessor), one without a Git range
+    tagged less than PULLS_SETTLE ago waits; one whose Git facts, or whose
+    predecessor's, are not cached yet waits for them (`releases` must hold the predecessor), one without a Git range
     has nothing to classify, and one that fails is logged and skipped."""
     deadline = time.monotonic() + budget_sec
     by_tag = {release.tag: release for release in releases}
@@ -692,6 +705,11 @@ def warm_release_pulls(
             continue
         cached = _cached_git(release)
         if cached is None or cached[1] is None:
+            continue
+        tagged = cached[0].release_date
+        # The cache's clock, which tests set.
+        now = datetime.fromtimestamp(cache._now(), UTC)
+        if tagged is None or tagged + PULLS_SETTLE > now:
             continue
         previous_members = None
         if release.previous_tag is not None:
