@@ -635,6 +635,7 @@ def test_cards_use_waiting_and_unclear(client, messages):
     assert "Pending" not in labels and "Unknown" not in labels
     unclear = cards[2]
     assert "pull-card--unclear" in unclear.classes
+    assert not any("pull-card--not-merged" in c.classes for c in cards)
     assert "Names no commit" in unclear.text()
 
 

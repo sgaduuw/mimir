@@ -470,7 +470,7 @@ def release_pull_pages(client):
 
     when = datetime(2026, 9, 14, 8, 0, tzinfo=UTC)
     long = "[GIT PULL] " + "drivers and a very long pull request subject " * 3
-    states = ["merged"] * 6 + ["not_merged", "unknown", "rejected"]
+    states = ["merged"] * 6 + ["not_merged"] * 6 + ["unknown", "rejected"]
     rows = [
         ReleasePull(
             subject=long if n % 2 else f"[GIT PULL] pull {n}",
@@ -493,7 +493,7 @@ def release_pull_pages(client):
             total=0,
             subsystems=None,
             pulls=ReleasePulls(
-                ReleasePullSummary(count=9, unclear=1, tips=8, bot_replies=0), rows
+                ReleasePullSummary(count=14, unclear=1, tips=13, bot_replies=0), rows
             ),
             lead_in_days=14,
             unclear_note_share=0.10,
@@ -576,6 +576,51 @@ def test_release_pull_cards_at_desktop_and_phone_widths(client, tmp_path):
                     )
                     assert layout["errors"] == [], (width, theme, layout)
                     assert layout["cards"] == 4
+                    # The not-merged card is muted (#1139): its own surface,
+                    # distinct from the other three, with readable text.
+                    look = page.locator(".pull-cards").evaluate(
+                        """grid => {
+                          // Pico fades link colours; read the settled ones.
+                          document.getAnimations().forEach(a => a.finish());
+                          const lum = c => {
+                            const v = c.match(/[\\d.]+/g).slice(0, 3).map(Number)
+                              .map(x => { x /= 255;
+                                return x <= .03928 ? x / 12.92 : ((x + .055) / 1.055) ** 2.4; });
+                            return .2126 * v[0] + .7152 * v[1] + .0722 * v[2];
+                          };
+                          const ratio = (a, b) => {
+                            const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+                            return (hi + .05) / (lo + .05);
+                          };
+                          const out = {};
+                          for (const card of grid.querySelectorAll('.pull-card')) {
+                            const cs = getComputedStyle(card);
+                            const bg = cs.backgroundColor;
+                            out[card.id] = {
+                              surface: [bg, cs.borderTopColor, cs.borderTopStyle].join(' '),
+                              count: ratio(getComputedStyle(card.querySelector('.count')).color, bg),
+                              label: ratio(getComputedStyle(card.querySelector('h3')).color, bg),
+                              summary: card.querySelector('summary') && ratio(
+                                getComputedStyle(card.querySelector('summary')).color, bg),
+                              link: ratio(getComputedStyle(card.querySelector('a')).color, bg),
+                              muted: card.classList.contains('pull-card--not-merged'),
+                            };
+                          }
+                          return out;
+                        }"""
+                    )
+                    assert [k for k, v in look.items() if v["muted"]] == [
+                        "pulls-not_merged"
+                    ], look
+                    others = {
+                        v["surface"] for k, v in look.items() if k != "pulls-not_merged"
+                    }
+                    assert look["pulls-not_merged"]["surface"] not in others, look
+                    assert look["pulls-not_merged"]["count"] >= 4.5, look
+                    assert look["pulls-not_merged"]["link"] >= 4.5, look
+                    # The uppercase label and the "All N" summary are small text too.
+                    assert look["pulls-not_merged"]["label"] >= 4.5, look
+                    assert look["pulls-not_merged"]["summary"] >= 4.5, look
                     # Side by side on a wide screen, one per row on a phone.
                     assert (layout["rows"] < 4) is (width == 1280), (width, layout)
     finally:
