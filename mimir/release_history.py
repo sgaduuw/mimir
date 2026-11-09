@@ -579,11 +579,7 @@ def calculate_pulls(
     after vPREV and by vN. The rest are rejected, not merged in vN (a tip
     outside the range) or unclear (no tip and no bot reply).
 
-    Pull requests sent in the two weeks before a release count for it only
-    if they made it in or Linus rejected them by the tag; otherwise they
-    count for the next release (`_in_cycle`). Deciding that for vN's lead-in needs
-    `previous_members`, vPREV's range; None means vPREV has no range and
-    so no page, and vN keeps its whole lead-in.
+    Window rule: `_in_cycle`.
 
     Cost: measured beside `PULLS_FILL_BUDGET_SEC`.
     """

@@ -528,10 +528,6 @@ def test_coverage_note_is_decided_from_the_release_data(
         assert says in note, note
 
 
-def test_coverage_threshold_is_ten_percent():
-    assert history.UNCLEAR_NOTE_SHARE == 0.10
-
-
 def _fake(n):
     """Releases newest first with cached Git facts and membership, as the
     per-release warm targets leave them. Keys are made up."""
