@@ -1,5 +1,6 @@
 """Time the subsystem grouping of one release's recorded references on
-production data (mimir#1136, step 3). Read-only.
+production data (mimir#1136, step 3). Writes no release cache; may fill
+the shared rules snapshot through the broker, as any subsystem page does.
 
 Run in the tasks container (it has the database and the broker client):
 
