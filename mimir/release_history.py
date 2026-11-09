@@ -25,8 +25,18 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
-from mimir.merge_window import _VERSION_TAG_RE, MERGE_WINDOW_PATH, _linus_path
+from mimir.merge_window import (
+    _VERSION_TAG_RE,
+    MERGE_WINDOW_PATH,
+    MergeWindowRow,
+    MergeWindowSection,
+    _linus_path,
+    primary_subsystem,
+    rank_postings,
+    subsystem_sections,
+)
 from mimir.models import Article, ArticleList
+from mimir.patch_series import series_head_sql, version_number_sql
 
 logger = logging.getLogger(__name__)
 MERGE_WINDOW_HISTORY_PATH = MERGE_WINDOW_PATH + "/history"
@@ -34,6 +44,9 @@ GIT_TTL_SEC = 30 * 86400
 LINKS_TTL_SEC = 86400
 GIT_TIMEOUT_SEC = 30
 PAGE_SIZE = 50
+# Below this many archived references a subsystem table is near-empty, so
+# the page says so in one line instead. A judgement, not a measurement.
+HANDFUL_OF_REFERENCES = 10
 
 
 def is_release_tag(tag: str) -> bool:
@@ -75,6 +88,18 @@ class ReleaseFacts(BaseModel):
 class ReleaseLinks(BaseModel):
     pair_count: int | None
     computed_at: datetime
+
+
+class ReleaseSubsystems(BaseModel):
+    """A release's archived references grouped as `/merge-window` groups
+    its queue. The sections carry counts, no rows: the references are
+    listed on the page, paginated."""
+
+    sections: list[MergeWindowSection]
+    smaller: list[MergeWindowSection]
+    smaller_patches: int
+    # Distinct archived references counted, what every bar is a share of.
+    references: int
 
 
 def _link_payload(
@@ -349,6 +374,78 @@ def calculate_links(
     return count, sorted(message_ids)
 
 
+_ARCHIVED_SERIES_SQL = text(
+    f"""
+SELECT a.id, a.patch_series_key,
+       {series_head_sql("a")} AS series_head,
+       {version_number_sql("a.patch_series_version")} AS series_rev
+  FROM articles a
+ WHERE a.message_id IN :ids
+   AND a.date IS NOT NULL
+   AND EXISTS (SELECT 1 FROM article_lists l WHERE l.article_id = a.id)
+"""
+).bindparams(bindparam("ids", expanding=True))
+
+
+def calculate_subsystems(session: Session, message_ids: list[str]) -> ReleaseSubsystems:
+    """Group the archived messages among `message_ids` by primary
+    subsystem with the merge window's own grouping (`rank_postings`,
+    `subsystem_sections`). The same archived test as `archived_page`, so
+    `references` equals its total.
+
+    Cost, production: NOT YET MEASURED (#1136 step 3). Put here v7.3, the
+    largest release (14,040 distinct recorded message IDs on 2026-11-08),
+    with what was counted and when: `tools/measure_release_subsystems.py`.
+    Until it is written the result is cached, not computed per request.
+
+    Cost, local floor (synthetic, NOT production): 2026-11-09, 14,040
+    archived references, 41,818 `article_files` rows, 2,501 subsystems of
+    three globs each, SQLite 3.54.1 on a laptop: 0.57 s and 34 statements
+    per call (the first also builds the rules index, 0.02 s more). The
+    page's own `archived_page` page 1 took 0.04 s there. The synthetic
+    paths are far simpler than real ones; treat this as a ratio, about
+    14 times the page's current request cost.
+    """
+    archived = []
+    for chunk in batched(set(message_ids), 900):
+        archived.extend(session.execute(_ARCHIVED_SERIES_SQL, {"ids": chunk}).all())
+    postings, ranked = rank_postings(session, archived)
+    rows: dict[str, list[MergeWindowRow]] = {}
+    counts: dict[str, int] = {}
+    for posting, members in postings.items():
+        primary = primary_subsystem(ranked[posting])
+        rows.setdefault(primary, [])
+        counts[primary] = counts.get(primary, 0) + len(members)
+    sections, smaller = subsystem_sections(rows, counts)
+    return ReleaseSubsystems(
+        sections=sections,
+        smaller=smaller,
+        smaller_patches=sum(g.patches for g in smaller),
+        references=len(archived),
+    )
+
+
+def release_subsystems(
+    session: Session, release: Release, message_ids: list[str]
+) -> ReleaseSubsystems:
+    """The cached grouping, rebuilt by the request when it is missing.
+
+    Written beside the links summary (`release_data`), so it is as old as
+    the links it derives from and refreshes with them. MAINTAINERS changes
+    reach it at the next daily refresh; the page carries no validator, so
+    nothing pins the older copy (AGENTS.md, cache validators).
+    """
+
+    def compute():
+        return calculate_subsystems(session, message_ids).model_dump(mode="json")
+
+    return ReleaseSubsystems.model_validate(
+        cache.get_or_compute(
+            session, release.key + ":subsystems", LINKS_TTL_SEC, compute
+        )
+    )
+
+
 def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str]]:
     """Compute at most one range, without holding a DB snapshot during Git."""
     facts = None
@@ -361,6 +458,11 @@ def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str
             session.rollback()
             facts, members = git_facts(release)
             pair_count, message_ids = calculate_links(session, members)
+            cache.set(
+                release.key + ":subsystems",
+                calculate_subsystems(session, message_ids).model_dump(mode="json"),
+                LINKS_TTL_SEC,
+            )
             session.rollback()
             return _link_payload(release, pair_count, message_ids)
 

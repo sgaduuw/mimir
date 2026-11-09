@@ -13,6 +13,15 @@
 <p>{{ links.pair_count|format_count }} recorded mailing-list references; {{ total|format_count }} distinct archived messages.</p>
 {% endif %}
 <p>References are commit/message pairs, not unique landed patches. They can name discussions or bug reports. This index may cover only part of the release, and some referenced messages are not archived here.</p>
+{% if subsystems %}
+<h2 id="subsystems">By subsystem</h2>
+{% if subsystems.references < handful %}
+<p>Only {{ subsystems.references|format_count }} archived reference{{ '' if subsystems.references == 1 else 's' }}, too few for a subsystem breakdown.</p>
+{% else %}
+{% with sections=subsystems.sections, smaller=subsystems.smaller, smaller_patches=subsystems.smaller_patches, section_min=section_min, unit="of this release's recorded references" %}{% include "_subsystem_sections.html" %}{% endwith %}
+<p><small>Counts are this release's recorded references that are archived here, each message once, and bars are relative to the largest subsystem of this release. Grouped by MAINTAINERS as of the last refresh: each series goes under the most specific subsystem that covers at least half as many of its files as the subsystem covering the most.</small></p>
+{% endif %}
+{% endif %}
 {% if rows %}
 <ul class="divided">
 {% for article, url in rows %}
@@ -29,4 +38,5 @@
 </nav>
 {% endif %}
 {% endif %}
+{% if subsystems and subsystems.references >= handful %}<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>{% endif %}
 {% endblock %}

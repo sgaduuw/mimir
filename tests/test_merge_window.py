@@ -1093,3 +1093,157 @@ def test_the_no_subsystem_bucket_can_set_the_scale(client):
     widths = _bar_widths(client)
     assert widths == {"(no subsystem)": "100.0", "named": "65.0"}
     assert all(float(w) <= 100 for w in widths.values())
+
+
+def _seed_for_the_pinned_section(s):
+    """Every shape the section renders: a section with a multi-patch
+    series that touches a second subsystem, a patch also in another
+    tree, a smaller subsystem, and the no-subsystem bucket."""
+    _subsystem(s, "KERNEL FOO (BAR)", ["foo/"])
+    _subsystem(s, "FOO HELPERS", ["foo/helpers/"])
+    _subsystem(s, "TINY", ["tiny/"])
+    _article(s, "cover@x", key="k", version="v2", pos=0, days=3)
+    for n in range(2):
+        _article(
+            s,
+            f"series{n}@x",
+            key="k",
+            version="v2",
+            pos=n + 1,
+            days=3,
+            files=[f"foo/a{n}.c", "foo/helpers/h.c"],
+        )
+        _commit(s, f"series{n}@x", "linux-next")
+    _article(s, "single@x", days=5, files=["foo/s.c"])
+    _commit(s, "single@x", "linux-next")
+    _commit(s, "single@x", "net-next")
+    _article(s, "tiny@x", days=1, files=["tiny/t.c"])
+    _commit(s, "tiny@x", "linux-next")
+    _article(s, "loose@x", days=2)
+    _commit(s, "loose@x", "linux-next")
+    s.commit()
+
+
+def _live_section_html(client):
+    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    start = html.index('<h2 id="queued">')
+    end = html.index('<p id="how-counted">')
+    return " ".join(html[start:end].split())
+
+
+PINNED_LIVE_SECTION = (
+    '<h2 id="queued">5 patches queued in linux-next</h2> '
+    '<p>Not in Linus\'s tree yet, grouped by MAINTAINERS subsystem. <a href="#how-counted">How these are counted</a></p> '
+    '<div class="mw-find" data-filter-controls hidden> '
+    '<div class="search-field"> '
+    '<label for="mw-find-input">Find a subsystem</label> '
+    '<input id="mw-find-input" type="search" data-filter-input="mw-subsystems" autocomplete="off"> '
+    "</div></div> "
+    '<ul class="mw-subsystems" id="mw-subsystems"> '
+    '<li data-filter-item data-filter-text="kernel foo (bar)"> '
+    '<details id="kernel-foo-bar" open> '
+    "<summary> "
+    '<span class="mw-name">kernel foo (bar)</span> '
+    '<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="100.0" height="6"/></svg> '
+    '<span class="count">3</span> '
+    "</summary> "
+    '<ul class="divided"> '
+    "<li> "
+    '<a href="/alpha/2026/09/8">[PATCH] single@x</a> '
+    "<br><small>Ann Author &middot; 2026-09-06 &middot; alpha &middot; also in net-next</small> "
+    "</li> "
+    "<li> "
+    '<a href="/alpha/2026/09/5">[PATCH] cover@x</a> '
+    "<small>2 patches</small> "
+    "<br><small>Ann Author &middot; 2026-09-04 &middot; alpha &middot; touches foo helpers</small> "
+    "</li> "
+    "</ul> "
+    "</details> "
+    "</li> "
+    "<li data-filter-item> "
+    '<details id="smaller-subsystems"> '
+    "<summary> "
+    '<span class="mw-name">2 smaller subsystems</span> '
+    '<span class="count">2</span> '
+    "</summary> "
+    "<p><small>Subsystems with fewer than 25 queued patches.</small></p> "
+    '<ul class="mw-subsystems mw-subsystems-nested"> '
+    '<li data-filter-item data-filter-text="tiny"> '
+    '<details id="tiny"> '
+    "<summary> "
+    '<span class="mw-name">tiny</span> '
+    '<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="33.3" height="6"/></svg> '
+    '<span class="count">1</span> '
+    "</summary> "
+    '<ul class="divided"> '
+    "<li> "
+    '<a href="/alpha/2026/09/9">[PATCH] tiny@x</a> '
+    "<br><small>Ann Author &middot; 2026-09-02 &middot; alpha</small> "
+    "</li> "
+    "</ul> "
+    "</details> "
+    "</li> "
+    '<li data-filter-item data-filter-text="(no subsystem)"> '
+    '<details id="no-subsystem"> '
+    "<summary> "
+    '<span class="mw-name">(no subsystem)</span> '
+    '<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="33.3" height="6"/></svg> '
+    '<span class="count">1</span> '
+    "</summary> "
+    '<ul class="divided"> '
+    "<li> "
+    '<a href="/alpha/2026/09/10">[PATCH] loose@x</a> '
+    "<br><small>Ann Author &middot; 2026-09-03 &middot; alpha</small> "
+    "</li> "
+    "</ul> "
+    "</details> "
+    "</li> "
+    "</ul> "
+    "</details> "
+    "</li> "
+    "</ul>"
+)
+
+
+def test_the_live_section_renders_as_pinned(client, monkeypatch):
+    """Pins the live `/merge-window` queue markup byte for byte (modulo
+    whitespace), so extracting the grouping and the rendering into
+    shared pieces (#1136) cannot change what the live page shows."""
+    import mimir.merge_window as mwmod
+    from mimir.extensions import SessionLocal
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    with SessionLocal() as s:
+        _seed_for_the_pinned_section(s)
+    assert _live_section_html(client) == PINNED_LIVE_SECTION
+
+
+def test_a_release_history_groups_the_same_input_into_the_same_sections(
+    seeded_db, monkeypatch
+):
+    """The queue and a release's recorded references are one grouping
+    (#1136): the same message ids must give the same sections, the same
+    smaller subsystems and the same counts on both pages."""
+    import mimir.merge_window as mwmod
+    from mimir.release_history import calculate_subsystems
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    with seeded_db() as s:
+        _seed_for_the_pinned_section(s)
+        live = merge_window(s)
+        queued = [m for (m,) in s.execute(select(MainlineCommit.message_id)).all()]
+        history = calculate_subsystems(s, queued)
+    shape = [
+        [(g.name, g.anchor, g.patches) for g in groups]
+        for groups in (live.sections, live.smaller)
+    ]
+    # The precondition: the seed built a section, smaller subsystems
+    # and the no-subsystem bucket, so the comparison is not of two empties.
+    assert [name for name, *_ in shape[0]] == ["KERNEL FOO (BAR)"]
+    assert [name for name, *_ in shape[1]] == ["TINY", NO_SUBSYSTEM]
+    assert [
+        [(g.name, g.anchor, g.patches) for g in groups]
+        for groups in (history.sections, history.smaller)
+    ] == shape
+    assert history.smaller_patches == live.smaller_patches
+    assert history.references == 5
