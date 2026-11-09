@@ -7,10 +7,10 @@
 <p>Release ranges follow Git ancestry from the previous final tag to the final tag.
   Dates use the annotated tag timestamp, or the commit timestamp for lightweight tags, in UTC.</p>
 {% if listed %}
-<p>Showing only releases with recorded mailing-list references: {{ listed|length|format_count }} of {{ checked|format_count }} checked releases.{% if checked < release_total %} {{ (release_total - checked)|format_count }} more {{ 'release has' if release_total - checked == 1 else 'releases have' }} not been checked yet and may appear later.{% endif %}</p>
+<p>Showing only releases with recorded mailing-list references or pull requests to Linus: {{ listed|length|format_count }} of {{ checked|format_count }} checked releases.{% if checked < release_total %} {{ (release_total - checked)|format_count }} more {{ 'release has' if release_total - checked == 1 else 'releases have' }} not been checked yet and may appear later.{% endif %}</p>
 <div class="overflow-auto">
 <table>
-  <caption>Closed releases with recorded references, newest first.</caption>
+  <caption>Closed releases with recorded references or pull requests, newest first.</caption>
   <thead><tr><th scope="col">Release</th><th scope="col">Date (UTC)</th><th scope="col">Merge window (days)</th><th scope="col">RC tags</th><th scope="col">Stabilization (days)</th><th scope="col">Commits</th><th scope="col">Recorded references</th></tr></thead>
   <tbody>
   {% for release, fact, summary in listed %}
@@ -29,6 +29,6 @@
 </div>
 <p><small>Merge-window duration runs from the preceding final tag to rc1; stabilization runs from rc1 to the final tag. Missing tags or non-commit tags leave the affected metrics unavailable.</small></p>
 <p><small>Recorded references count commit/message pairs, not unique patches. They can name discussions or bug reports. The index may cover only part of a release.</small></p>
-{% elif release_total %}<p>No release with recorded mailing-list references has been found yet{% if checked < release_total %}; {{ (release_total - checked)|format_count }} of {{ release_total|format_count }} releases have not been checked yet{% endif %}.</p>
+{% elif release_total %}<p>No release with recorded mailing-list references or pull requests to Linus has been found yet{% if checked < release_total %}; {{ (release_total - checked)|format_count }} of {{ release_total|format_count }} releases have not been checked yet{% endif %}.</p>
 {% else %}<p>No release tags are available yet.</p>{% endif %}
 {% endblock %}

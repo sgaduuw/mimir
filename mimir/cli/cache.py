@@ -288,6 +288,7 @@ def _build_slow_global_targets(
     from mimir.release_history import (
         release_catalog,
         warm_release,
+        warm_release_pulls,
         warm_release_subsystems,
     )
 
@@ -325,6 +326,11 @@ def _build_slow_global_targets(
             "release_history:subsystems",
             lambda s, r=releases: warm_release_subsystems(s, r),
         )
+    )
+    # After it, for the same reasons: it reads the membership the
+    # per-release targets write, and has its own time budget.
+    targets.append(
+        ("release_history:pulls", lambda s, r=releases: warm_release_pulls(s, r))
     )
     return targets
 

@@ -718,6 +718,11 @@ def test_sitemap_and_index_list_only_releases_with_cached_recorded_history(
     assert sorted(by_tag) == ["v2.6.11", "v6.19", "v7.0", "v7.1", "v7.2"]
     for tag in ("v2.6.11", "v6.19", "v7.0", "v7.1"):
         history.release_data(by_tag[tag])
+    # v7.1 has no reference, so it is decided once its pull requests are
+    # classified too (#1135): it has none.
+    with seeded_db() as s:
+        history.warm_release_pulls(s, [by_tag["v7.1"]])
+    assert history.cache.get(by_tag["v7.1"].key + history.PULLS)["count"] == 0
     # Preconditions: each excluded release is excluded for its own reason.
     facts, links = (
         history.cached_facts(by_tag.values()),
