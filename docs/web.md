@@ -121,7 +121,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
 | `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
 | `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references |
-| `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page |
+| `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page; page 1 first groups them by primary subsystem |
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
@@ -147,6 +147,24 @@ one release share a single Git walk; if it fails or times out the page answers
 503 with `Retry-After`.
 Git facts and membership live for 30 days under resolved tag identities;
 recorded references refresh after one day, independently of current-cycle walks.
+
+Page 1 of a release groups its archived references by primary subsystem, with
+the grouping `/merge-window` uses for its queue (one function and one template
+include serve both pages). Each series counts under the most specific subsystem
+covering at least half as many of its files as the best-covering one; a
+subsystem with 25 or more references gets its own row, the rest sit under "N
+smaller subsystems". Bars are relative to the release's largest subsystem, and
+the rows carry counts only, because the messages are listed below. A release
+with fewer than 10 archived references shows a one-line note instead of a table.
+The grouping is cached under `<release key>:subsystems`. A request only
+reads it and never computes it, so until it exists page 1 shows no "By
+subsystem" section, no note and no "Archived messages" heading. The daily
+links refresh in the background warm rewrites it with the links (a MAINTAINERS
+change reaches it within a day), and each hourly warm pass fills missing
+entries, newest release first, within a 60 s budget
+(`SUBSYSTEMS_FILL_BUDGET_SEC`), leaving the rest for the next pass. The budget
+rests on a production measurement of 2026-11-09 (grouping every release once
+takes about 17 s), recorded in `calculate_subsystems`.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
 form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias

@@ -7,6 +7,7 @@ from flask import Response, abort, render_template, request
 
 from mimir import release_history as history
 from mimir.extensions import SessionLocal
+from mimir.merge_window import SECTION_MIN_PATCHES
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
 
@@ -56,6 +57,9 @@ def release_history_detail(tag):
         )
     with SessionLocal() as session:
         rows, total = history.archived_page(session, message_ids, page)
+    # Page 1 only: later pages list more messages, not another table. None
+    # until the warm has filled it; a request never groups.
+    subsystems = history.release_subsystems(release) if page == 1 else None
     if page > 1 and (page - 1) * history.PAGE_SIZE >= total:
         abort(404)
     return render_template(
@@ -65,6 +69,9 @@ def release_history_detail(tag):
         links=links,
         rows=rows,
         total=total,
+        subsystems=subsystems,
+        handful=history.HANDFUL_OF_REFERENCES,
+        section_min=SECTION_MIN_PATCHES,
         page=page,
         previous=history.release_history_path(tag, page=page - 1) if page > 1 else None,
         following=history.release_history_path(tag, page=page + 1)

@@ -25,8 +25,18 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
-from mimir.merge_window import _VERSION_TAG_RE, MERGE_WINDOW_PATH, _linus_path
+from mimir.merge_window import (
+    _VERSION_TAG_RE,
+    MERGE_WINDOW_PATH,
+    MergeWindowRow,
+    MergeWindowSection,
+    _linus_path,
+    primary_subsystem,
+    rank_postings,
+    subsystem_sections,
+)
 from mimir.models import Article, ArticleList
+from mimir.patch_series import series_head_sql, version_number_sql
 
 logger = logging.getLogger(__name__)
 MERGE_WINDOW_HISTORY_PATH = MERGE_WINDOW_PATH + "/history"
@@ -34,6 +44,9 @@ GIT_TTL_SEC = 30 * 86400
 LINKS_TTL_SEC = 86400
 GIT_TIMEOUT_SEC = 30
 PAGE_SIZE = 50
+# Below this many archived references a subsystem table is near-empty, so
+# the page says so in one line instead. A judgement, not a measurement.
+HANDFUL_OF_REFERENCES = 10
 
 
 def is_release_tag(tag: str) -> bool:
@@ -75,6 +88,18 @@ class ReleaseFacts(BaseModel):
 class ReleaseLinks(BaseModel):
     pair_count: int | None
     computed_at: datetime
+
+
+class ReleaseSubsystems(BaseModel):
+    """A release's archived references grouped as `/merge-window` groups
+    its queue. The sections carry counts, no rows: the references are
+    listed on the page, paginated."""
+
+    sections: list[MergeWindowSection]
+    smaller: list[MergeWindowSection]
+    smaller_patches: int
+    # Distinct archived references counted, what every bar is a share of.
+    references: int
 
 
 def _link_payload(
@@ -349,8 +374,133 @@ def calculate_links(
     return count, sorted(message_ids)
 
 
-def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str]]:
-    """Compute at most one range, without holding a DB snapshot during Git."""
+_ARCHIVED_SERIES_SQL = text(
+    f"""
+SELECT a.id, a.patch_series_key,
+       {series_head_sql("a")} AS series_head,
+       {version_number_sql("a.patch_series_version")} AS series_rev
+  FROM articles a
+ WHERE a.message_id IN :ids
+   AND a.date IS NOT NULL
+   AND EXISTS (SELECT 1 FROM article_lists l WHERE l.article_id = a.id)
+"""
+).bindparams(bindparam("ids", expanding=True))
+
+
+def calculate_subsystems(session: Session, message_ids: list[str]) -> ReleaseSubsystems:
+    """Group the archived messages among `message_ids` by primary
+    subsystem with the merge window's own grouping (`rank_postings`,
+    `subsystem_sections`). The same archived test as `archived_page`, so
+    `references` equals its total for the same IDs and the same archive.
+    The page shows the cached copy, which can be up to a day older than
+    the page's own total.
+
+    Cost, measured on production, 2026-11-09 (3.48.0, read-only, cache
+    writes blocked, `tools/measure_release_subsystems.py`): v7.3, the
+    largest release, with 14,040 cached message IDs, 14,003 archived
+    references, 7,235 postings, 118 sections and 890 smaller subsystems
+    holding 4,992. Three runs took 0.769, 0.747 and 0.744 s, 34 statements
+    each, about 53 microseconds per reference. `archived_page` page 1 on
+    the same release took 0.156 s in 83 statements. All 114 releases had
+    a cached ID list, 313,565 distinct IDs in total, so grouping every
+    release once costs about 17 s.
+
+    Cost, local floor (synthetic, NOT production): 2026-11-09, 14,040
+    archived references, 41,818 `article_files` rows, 2,501 subsystems of
+    three globs each, SQLite 3.54.1 on a laptop: 0.57 s and 34 statements
+    per call (the first also builds the rules index, 0.02 s more). The
+    page's own `archived_page` page 1 took 0.04 s there. The synthetic
+    paths are far simpler than real ones: production came out at 1.3
+    times this floor.
+    """
+    archived = []
+    for chunk in batched(set(message_ids), 900):
+        archived.extend(session.execute(_ARCHIVED_SERIES_SQL, {"ids": chunk}).all())
+    postings, ranked = rank_postings(session, archived)
+    rows: dict[str, list[MergeWindowRow]] = {}
+    counts: dict[str, int] = {}
+    for posting, members in postings.items():
+        primary = primary_subsystem(ranked[posting])
+        rows.setdefault(primary, [])
+        counts[primary] = counts.get(primary, 0) + len(members)
+    sections, smaller = subsystem_sections(rows, counts)
+    return ReleaseSubsystems(
+        sections=sections,
+        smaller=smaller,
+        smaller_patches=sum(g.patches for g in smaller),
+        references=len(archived),
+    )
+
+
+def release_subsystems(release: Release) -> ReleaseSubsystems | None:
+    """The cached grouping, or None. A request never computes it: the
+    hourly warm (`warm_release_subsystems`) fills a missing one and the
+    daily links refresh rewrites it, so a page without it shows no
+    subsystem section until then.
+
+    Written beside the links summary, so it is as old as the links it
+    derives from. MAINTAINERS changes reach it at the next daily refresh;
+    the page carries no validator, so nothing pins the older copy
+    (AGENTS.md, cache validators).
+    """
+    raw = cache.get(release.key + ":subsystems")
+    return ReleaseSubsystems.model_validate(raw) if raw is not None else None
+
+
+# Time one warm pass may spend filling missing groupings. Measured on
+# production 2026-11-09 (see `calculate_subsystems`): about 53 microseconds
+# per reference and 313,565 distinct IDs across all 114 releases, so a cold
+# fill of every release takes about 17 s and 60 s fills them all in one
+# pass. It is not the whole allowance: the slow tier runs as one
+# `warm_global` op with a single 300 s timeout, shared with every other slow
+# target, including each release's `warm_release`, whose daily links refresh
+# also groups, with no budget (regrouping every release at once adds about
+# 17 s to a slow warm_global that took 3 to 10 s in 17 hourly runs on
+# 2026-11-08/09). The fill runs last for that reason. A release that starts
+# inside the budget finishes, so a pass can overrun by one.
+SUBSYSTEMS_FILL_BUDGET_SEC = 60
+
+
+def warm_release_subsystems(
+    session: Session,
+    releases: list[Release],
+    budget_sec: float = SUBSYSTEMS_FILL_BUDGET_SEC,
+) -> None:
+    """Fill missing groupings, `releases` order (newest first) until the
+    budget is spent. A cached one is left alone (the daily links refresh
+    rewrites it), and a release whose ID list is not cached yet waits for
+    its links. A release that fails is logged and skipped."""
+    deadline = time.monotonic() + budget_sec
+    for release in releases:
+        if time.monotonic() >= deadline:
+            return
+        key = release.key + ":subsystems"
+        session.rollback()
+        if cache.alive(session, key):
+            continue
+        payload = cache.get(release.key + ":links_data")
+        if payload is None:
+            continue
+        # One failing release must not block every older one on every pass.
+        try:
+            result = calculate_subsystems(session, payload["message_ids"])
+            session.rollback()
+            cache.set(key, result.model_dump(mode="json"), LINKS_TTL_SEC)
+        except Exception:
+            logger.warning(
+                "release subsystems failed for %s", release.tag, exc_info=True
+            )
+            session.rollback()
+
+
+def release_data(
+    release: Release, group: bool = False
+) -> tuple[ReleaseFacts, ReleaseLinks, list[str]]:
+    """Compute at most one range, without holding a DB snapshot during Git.
+
+    `group` also writes the subsystem grouping with the links. Only the
+    warm asks for it: a request that finds the links cold must not run the
+    grouping."""
     facts = None
     with SessionLocal() as session:
 
@@ -361,6 +511,12 @@ def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str
             session.rollback()
             facts, members = git_facts(release)
             pair_count, message_ids = calculate_links(session, members)
+            if group:
+                cache.set(
+                    release.key + ":subsystems",
+                    calculate_subsystems(session, message_ids).model_dump(mode="json"),
+                    LINKS_TTL_SEC,
+                )
             session.rollback()
             return _link_payload(release, pair_count, message_ids)
 
@@ -435,7 +591,7 @@ def warm_release(session: Session, release: Release) -> None:
     # adapter alone ends it; general service helpers never roll back callers.
     session.rollback()
     try:
-        release_data(release)
+        release_data(release, group=True)
         session.rollback()
         _renew_git(session, release)
     finally:

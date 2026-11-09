@@ -327,3 +327,136 @@ def test_inline_marks_chips_headers_and_year_alignment(client, tmp_path):
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def release_pages(client):
+    """A release history page with subsystem sections and the "smaller
+    subsystems" row (#1136), rendered from the real template."""
+    from mimir.merge_window import MergeWindowSection
+    from mimir.release_history import ReleaseSubsystems
+
+    def section(name, patches):
+        return MergeWindowSection(
+            name=name, anchor=name.lower().replace(" ", "-"), patches=patches, rows=[]
+        )
+
+    sections = [
+        section("NETWORKING DRIVERS (INCLUDING A VERY LONG SUBSYSTEM NAME)", 7000),
+        section("KERNEL VIRTUAL MACHINE FOR X86 (KVM/x86)", 12345),
+        section("DRM DRIVERS", 40),
+    ]
+    smaller = [section("TINY ONE", 20), section("(no subsystem)", 1)]
+    when = datetime(2026, 11, 3, 21, 2, 3, tzinfo=UTC)
+    article = SimpleNamespace(
+        subject="[PATCH] a subject", author="Ann Author <a@x>", date=when
+    )
+    with client.application.test_request_context("/merge-window/history/v7.3"):
+        html = render_template(
+            "release_history_detail.html",
+            release=SimpleNamespace(tag="v7.3", previous_tag="v7.2"),
+            facts=SimpleNamespace(
+                release_date=when, date_source="tagger", commit_count=14126
+            ),
+            links=SimpleNamespace(pair_count=14126),
+            rows=[(article, "/alpha/2026/11/1")],
+            total=14040,
+            subsystems=ReleaseSubsystems(
+                sections=sections,
+                smaller=smaller,
+                smaller_patches=21,
+                references=19425,
+            ),
+            handful=10,
+            section_min=25,
+            page=1,
+            previous=None,
+            following=None,
+            current_inbox=None,
+            canonical_url="http://localhost/merge-window/history/v7.3",
+        )
+    return {"release": html}
+
+
+def test_release_sample_has_sections_and_the_smaller_row(client):
+    """Keep the browser test's input runnable without Playwright."""
+    page = parse(release_pages(client)["release"])
+    listing = page.find("ul", id="mw-subsystems")
+    flat = listing.find_all("div", cls="mw-flat")
+    assert len(flat) == 5
+    assert listing.find_all("details")[0].attrs["id"] == "smaller-subsystems"
+    assert "of this release's recorded references" in page.text()
+
+
+def test_release_subsystem_rows_at_desktop_and_phone_widths(client, tmp_path):
+    playwright = playwright_api()
+    pages = release_pages(client)
+    app = client.application
+    app.add_url_rule("/_release/<name>", view_func=lambda name: pages[name])
+    server = make_server("127.0.0.1", 0, app, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page()
+            for width in (1280, 390):
+                page.set_viewport_size({"width": width, "height": 900})
+                for theme in ("light", "dark"):
+                    page.goto(f"http://127.0.0.1:{server.server_port}/_release/release")
+                    page.evaluate(
+                        "theme => document.documentElement.dataset.theme = theme",
+                        theme,
+                    )
+                    assert page.evaluate(
+                        "getComputedStyle(document.documentElement)"
+                        ".getPropertyValue('--pico-font-family')"
+                    ).strip()
+                    # The smaller row is a closed disclosure; open it so its
+                    # nested rows are measured too.
+                    page.evaluate(
+                        "document.getElementById('smaller-subsystems').open = true"
+                    )
+                    page.screenshot(
+                        path=str(tmp_path / f"release-{width}-{theme}.png"),
+                        full_page=True,
+                    )
+                    assert page.evaluate(
+                        "document.documentElement.scrollWidth <= innerWidth"
+                    ), (width, theme)
+                    errors = page.locator("#mw-subsystems").evaluate(
+                        """list => {
+                          const errors = [];
+                          for (const row of list.querySelectorAll('.mw-flat, summary')) {
+                            const box = row.getBoundingClientRect();
+                            for (const el of row.querySelectorAll('.mw-name, .count, .bar-meter')) {
+                              const r = el.getBoundingClientRect();
+                              if (r.right > box.right + 1 || r.left < box.left - 1)
+                                errors.push('outside its row: ' + el.getAttribute('class'));
+                            }
+                            // The count stays on one line, whatever its width.
+                            const count = row.querySelector('.count');
+                            if (count.getClientRects().length !== 1
+                                || count.getBoundingClientRect().height > 40)
+                              errors.push('count wraps: ' + count.textContent);
+                            const bar = row.querySelector('.bar-meter');
+                            if (bar && bar.getBoundingClientRect().width < 10)
+                              errors.push('bar collapsed: ' + row.textContent.trim());
+                            if (!bar) continue;  // the smaller-subsystems summary has none
+                            // One grid for both kinds of row: on a wide screen
+                            // name, bar and count share a line, on a phone the
+                            // bar drops under the name.
+                            const name = row.querySelector('.mw-name').getBoundingClientRect();
+                            const bar2 = bar.getBoundingClientRect();
+                            const sameLine = Math.abs(
+                              (bar2.top + bar2.bottom) / 2 - (name.top + name.bottom) / 2
+                            ) < 20;
+                            if (sameLine !== (innerWidth >= 768))
+                              errors.push('bar on the wrong line: ' + row.textContent.trim());
+                          }
+                          return errors;
+                        }"""
+                    )
+                    assert errors == [], (width, theme, errors)
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
