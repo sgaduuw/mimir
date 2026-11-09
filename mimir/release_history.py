@@ -143,9 +143,9 @@ PULLS = ":pulls:1"
 PULL_ROWS = ":pull_rows:1"
 # Merge-window pull requests are often sent in vPREV's last rc week, before
 # vPREV exists, so candidates start this long before it. #1134 measured 16
-# to 69 pulls per release in this lead-in that were not merged into vN and
-# are correctly left to vPREV. The same span at vN's end is vN+1's lead-in
-# (`_in_cycle`).
+# to 69 pulls per release in this lead-in that were not merged into vN;
+# they belong to vPREV only if they made it in or Linus rejected them. The same
+# span at vN's end is vN+1's lead-in (`_in_cycle`).
 PULLS_LEAD_IN = timedelta(days=14)
 # Past this share of Unclear pulls the page says how many name no commit.
 # #1134: under 6% from v5.0 on (5.3% for v5.0), 20.8% for v4.20, the first
@@ -559,7 +559,10 @@ def warm_release_subsystems(
 
 
 def calculate_pulls(
-    session: Session, release: Release, members: list[str]
+    session: Session,
+    release: Release,
+    members: list[str],
+    previous_members: list[str] | None,
 ) -> tuple[ReleasePullSummary, list[list]] | None:
     """Classify the pull requests to Linus of `release`'s cycle with
     `/merge-window`'s classifier (`linus_pulls.classify`), or None when a
@@ -568,11 +571,14 @@ def calculate_pulls(
     Candidates are sent from PULLS_LEAD_IN before vPREV to vN, tag dates
     as the page shows them. Merged: the named tip is in `members` (vN's
     range, a set lookup, no walk), or pr-tracker-bot replied it was merged
-    after vPREV and by vN. A pull sent before vPREV and not merged into vN
-    belongs to vPREV's cycle and is dropped; a tip merged in vPREV is
-    outside vPREV..vN by definition. The rest are rejected, not merged in
-    vN (a tip outside the range) or unclear (no tip and no bot reply),
-    except in vN's own last PULLS_LEAD_IN (`_in_cycle`).
+    after vPREV and by vN. The rest are rejected, not merged in vN (a tip
+    outside the range) or unclear (no tip and no bot reply).
+
+    Pull requests sent in the two weeks before a release count for it only
+    if they made it in or Linus rejected them; otherwise they count for the
+    next release (`_in_cycle`). Deciding that for vN's lead-in needs
+    `previous_members`, vPREV's range; None means vPREV has no range and
+    so no page, and vN keeps its whole lead-in.
 
     Cost: measured beside `PULLS_FILL_BUDGET_SEC`.
     """
@@ -581,47 +587,65 @@ def calculate_pulls(
         _, end, _ = _tag_metadata(repo, release.oid)
     if start is None or end is None:
         return None
+    merged = set(members)
+    previous = set(previous_members) if previous_members is not None else None
     pulls = [
         p
         for p in classify(
             session,
             start - PULLS_LEAD_IN,
             end,
-            set(members),
+            merged,
             closed=True,
             bot_window=(start, end),
         )
-        if _in_cycle(p, start, end)
+        if _in_cycle(p, start, end, merged, previous)
     ]
     summary = ReleasePullSummary(
         count=len(pulls),
         unclear=sum(p.state == "unknown" for p in pulls),
         tips=sum(p.tip is not None for p in pulls),
-        bot_replies=sum(p.bot_merged for p in pulls),
+        bot_replies=sum(
+            p.bot_at is not None and start < p.bot_at <= end for p in pulls
+        ),
     )
     return summary, [[p.article.id, p.state] for p in pulls]
 
 
-def _in_cycle(pull: Pull, start: datetime, end: datetime) -> bool:
+def _made_it(pull: Pull, members: set[str], tagged: datetime) -> bool:
+    """Whether `pull` made it into the release tagged at `tagged` with
+    range `members`: its tip is in the range, or pr-tracker-bot replied it
+    was merged by the tag (a re-pushed tag, or a tip-less pull)."""
+    return pull.tip in members or (pull.bot_at is not None and pull.bot_at <= tagged)
+
+
+def _in_cycle(
+    pull: Pull,
+    start: datetime,
+    end: datetime,
+    members: set[str],
+    previous_members: set[str] | None,
+) -> bool:
     """Whether a classified pull belongs to vPREV..vN's page. The window
-    rule's one place, symmetric at both ends with the same PULLS_LEAD_IN:
+    rule's one place (decided 2026-11-09, #1135).
 
-    - Merged into vN: always, whenever it was sent.
-    - Sent before vPREV: vPREV's cycle claims it.
-    - Sent in vN's last PULLS_LEAD_IN, which is vN+1's lead-in: vN+1
-      claims it, unless Linus rejected it (decided, and about vN). Early
-      merge-window pulls for vN+1 are sent then, so "not merged in vN"
-      would misread them (decided 2026-11-09, #1135).
+    Every pull sent in the PULLS_LEAD_IN overlap before a tag T, both ends
+    included, belongs to exactly one of the release tagged T and the next
+    one: the release tagged T if it made it in or Linus rejected it,
+    otherwise the next one, with the next one's state. Both releases decide
+    with `_made_it` and Linus's refusal (not the state, where merged wins),
+    so they agree. Overlap pulls are early merge-window pulls for the next
+    release more often than late fixes.
 
-    A late pull merged in neither release is on neither page: vN+1 keeps
-    a lead-in pull only when it was merged there.
+    `previous_members` None: vPREV has no range and no page, so vN keeps
+    its whole lead-in.
     """
-    if pull.state == "merged":
-        return True
     sent = aware_utc(pull.article.date)
-    if sent < start:
-        return False
-    return sent < end - PULLS_LEAD_IN or pull.state == "rejected"
+    if sent >= end - PULLS_LEAD_IN:
+        return pull.rejected or _made_it(pull, members, end)
+    if sent <= start and previous_members is not None:
+        return not (pull.rejected or _made_it(pull, previous_members, start))
+    return True
 
 
 # Time one warm pass may spend classifying releases' pull requests.
@@ -655,10 +679,11 @@ def warm_release_pulls(
     """Classify releases whose pulls are not cached, `releases` order
     (newest first), until the budget is spent; the next pass picks up the
     rest. A cached one is left alone (`warm_release` renews it). A release
-    whose Git facts are not cached yet waits for them, one without a Git
-    range has nothing to classify, and one that fails is logged and
-    skipped."""
+    whose Git facts, or whose predecessor's, are not cached yet waits for
+    them (`releases` must hold the predecessor), one without a Git range
+    has nothing to classify, and one that fails is logged and skipped."""
     deadline = time.monotonic() + budget_sec
+    by_tag = {release.tag: release for release in releases}
     for release in releases:
         if time.monotonic() >= deadline:
             return
@@ -668,9 +693,16 @@ def warm_release_pulls(
         cached = _cached_git(release)
         if cached is None or cached[1] is None:
             continue
+        previous_members = None
+        if release.previous_tag is not None:
+            previous = by_tag.get(release.previous_tag)
+            previous_git = _cached_git(previous) if previous else None
+            if previous_git is None:
+                continue
+            previous_members = previous_git[1]
         # One failing release must not block every older one on every pass.
         try:
-            result = calculate_pulls(session, release, cached[1])
+            result = calculate_pulls(session, release, cached[1], previous_members)
             session.rollback()
             if result is None:
                 continue

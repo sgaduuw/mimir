@@ -25,7 +25,7 @@
 <p id="pulls-how-counted"><small>Pull requests addressed to Linus, sent from {{ lead_in_days }} days before {{ release.previous_tag }} to {{ release.tag }}.
   Merged: the commit it names is in {{ release.tag }}, or pr-tracker-bot replied it was merged between {{ release.previous_tag }} and {{ release.tag }}.
   Not merged in {{ release.tag }}: it names a commit outside this release.
-  One sent before {{ release.previous_tag }} and not merged here is left to {{ release.previous_tag }}, and one sent in the last {{ lead_in_days }} days before {{ release.tag }} is left to the next release unless it made it in or Linus rejected it.
+  Pull requests sent in the {{ lead_in_days }} days before a release count for it only if they made it in or Linus rejected them; otherwise they count for the next release.
   {%- if counted.bot_replies == 0 and counted.tips == 0 and counted.unclear == counted.count %} None of these pull requests names its last commit, and pr-tracker-bot did not reply to any of them, so all are Unclear. Pull requests began naming their last commit around 2012, and pr-tracker-bot began replying in late 2018.
   {%- elif counted.bot_replies == 0 and counted.unclear %} pr-tracker-bot did not reply to any of these (it began replying in late 2018), so only a named commit marks one merged; {{ counted.unclear|format_count }} {{ 'names none and is' if counted.unclear == 1 else 'name none and are' }} Unclear.
   {%- elif counted.unclear > counted.count * unclear_note_share %} {{ counted.unclear|format_count }} of {{ counted.count|format_count }} {{ 'names no commit and has' if counted.unclear == 1 else 'name no commit and have' }} no pr-tracker-bot reply, so {{ 'it is' if counted.unclear == 1 else 'they are' }} Unclear.

@@ -204,8 +204,11 @@ class Pull(NamedTuple):
     article: Article
     # The body's "up to <sha>", or None.
     tip: str | None
-    # pr-tracker-bot replied it was merged (inside `bot_window`, if given).
-    bot_merged: bool
+    # When pr-tracker-bot first replied it was merged, whatever the window;
+    # None without a dated reply.
+    bot_at: datetime | None
+    # Linus replied he is not pulling it, whether or not it was merged.
+    rejected: bool
     state: PullState | ClosedPullState
 
 
@@ -243,14 +246,20 @@ def classify(
         tip = _TIP_RE.search(parsed.body or "")
         candidates.append((art, tip.group(1) if tip else None))
 
-    bot_said, linus_rejected = _replies(
-        session, [art.message_id for art, _ in candidates], bot_window
+    bot_at, linus_rejected = _replies(
+        session, [art.message_id for art, _ in candidates]
     )
+    if bot_window is None:
+        bot_said = set(bot_at)
+    else:
+        start, end = bot_window
+        bot_said = {m for m, at in bot_at.items() if at and start < at <= end}
     return [
         Pull(
             art,
             tip,
-            art.message_id in bot_said,
+            bot_at.get(art.message_id),
+            art.message_id in linus_rejected,
             _state(tip, art.message_id, merged_tips, bot_said, linus_rejected, closed),
         )
         for art, tip in candidates
@@ -326,18 +335,17 @@ def _recipients(headers: dict[str, str]) -> set[str]:
 
 
 def _replies(
-    session: Session,
-    message_ids: list[str],
-    bot_window: tuple[datetime, datetime] | None = None,
-) -> tuple[set[str], set[str]]:
-    """Message-ids of the pull requests pr-tracker-bot replied were
-    merged into Linus's tree (within `bot_window`, when given), and of
-    those Linus replied he will not pull. One query for the replies;
-    only the bot's and Linus's bodies are read."""
-    bot_said: set[str] = set()
+    session: Session, message_ids: list[str]
+) -> tuple[dict[str, datetime | None], set[str]]:
+    """For the pull requests pr-tracker-bot replied were merged into
+    Linus's tree, the date of its first such dated reply (None when no
+    reply carries a date), by message-id; and the message-ids of those
+    Linus replied he will not pull. One query for the replies; only the
+    bot's and Linus's bodies are read."""
+    bot_at: dict[str, datetime | None] = {}
     linus_rejected: set[str] = set()
     if not message_ids:
-        return bot_said, linus_rejected
+        return bot_at, linus_rejected
     replies = []
     for reply in session.execute(
         select(Article)
@@ -345,10 +353,6 @@ def _replies(
         .where(Article.thread_parent.in_(message_ids))
     ).scalars():
         sender = parseaddr(reply.author or "")[1].lower()
-        if sender == PR_TRACKER_BOT and bot_window is not None:
-            start, end = bot_window
-            if reply.date is None or not start < aware_utc(reply.date) <= end:
-                continue
         if sender in (PR_TRACKER_BOT, LINUS_ADDRESS):
             replies.append((reply, sender))
     bodies = _bodies(session, [reply for reply, _ in replies])
@@ -357,7 +361,12 @@ def _replies(
         body = (parsed.body or "") if parsed is not None else ""
         if sender == PR_TRACKER_BOT:
             if _BOT_MERGED in body:
-                bot_said.add(reply.thread_parent)
+                at = aware_utc(reply.date) if reply.date is not None else None
+                known = bot_at.get(reply.thread_parent)
+                if reply.thread_parent not in bot_at or (
+                    at is not None and (known is None or at < known)
+                ):
+                    bot_at[reply.thread_parent] = at
         # His own lines only: a quoted line is the maintainer's text.
         # Joined, because he wraps at about 72 columns and a phrase can
         # straddle the break.
@@ -367,7 +376,7 @@ def _replies(
             )
         ):
             linus_rejected.add(reply.thread_parent)
-    return bot_said, linus_rejected
+    return bot_at, linus_rejected
 
 
 def _tag_time(path: Path | None, tag: str) -> datetime | None:

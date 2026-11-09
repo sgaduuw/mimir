@@ -173,11 +173,12 @@ Page 1 of a release also lists its pull requests to Linus, with the cards
 `_pull_cards.html`, serve both pages). Candidates are `[GIT PULL]` mails to
 Linus sent from 14 days before the previous release to the release. Merged: the
 named tip is in the release's Git range, or pr-tracker-bot replied it was merged
-between the two releases. A pull sent before the previous release and not
-merged into this one is left to the previous release. The same 14 days at the
-end belong to the next release's window: a pull sent then that did not make it
-in, and that Linus did not reject, is left to the next release, which shows it
-only if it was merged there. The rest are Rejected (Linus replied he is not
+between the two releases. Pull requests sent in the 14 days before a release
+(tag instant included) count for it only if they made it in or Linus rejected
+them; otherwise they count for the next release, with its state. So every pull
+in that overlap is on exactly one page. Classifying a release therefore needs
+the previous release's Git range too; the oldest release with a range keeps
+its whole lead-in, as its predecessor has no page. The rest are Rejected (Linus replied he is not
 pulling it), "Not merged in vN" (a tip outside the range) or Unclear (no tip, no
 bot reply). A muted note gives these rules and, from the release's own counts,
 explains a high Unclear share: no pull naming a tip and no bot reply (before
@@ -190,9 +191,9 @@ them: mail ingested later for an old window, or a classifier change, reaches a
 cached release only when the key's version suffix is bumped. Subjects, authors
 and links are resolved at render time, so privacy and canonical inboxes are
 current. A request never classifies and never reads a mail: each hourly warm
-pass classifies uncached releases, newest first, within a 60 s budget
-(`PULLS_FILL_BUDGET_SEC`), and until a release is classified its page shows no
-pull-request section. The cost figures are recorded beside the budget.
+pass classifies uncached releases once their own and their predecessor's Git
+facts are cached, newest first, within a 60 s budget (`PULLS_FILL_BUDGET_SEC`),
+and until a release is classified its page shows no pull-request section. The cost figures are recorded beside the budget.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
 form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias
