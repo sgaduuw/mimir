@@ -6,7 +6,9 @@ rejected (Linus replied he will not pull it), unknown (no commit named)
 or pending (#803)."""
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -679,3 +681,49 @@ def test_columns_render_only_when_populated(client, messages):
         ("unknown", 1),
         ("rejected", 1),
     ]
+
+
+_PULL_SECTION = Path(__file__).parent / "data" / "merge_window_pull_section.html"
+
+
+def _pull_section(html):
+    """The live section from its heading to the end of the cards, with
+    whitespace runs squashed to one space: indentation may move, markup
+    and text may not."""
+    found = re.search(
+        r'<h2 id="pull-requests-to-linus".*?<div class="pull-cards">.*?</div>',
+        html,
+        re.DOTALL,
+    )
+    return re.sub(r"\s+", " ", found.group(0))
+
+
+def test_live_pull_section_renders_as_it_did_before_the_shared_include(
+    client, messages
+):
+    """#1135 moved the cards into an include shared with the release
+    history pages. Every state, a card past four rows (its disclosure), a
+    tip-less pull and a rejection, on fixed input, against the section
+    as develop rendered it before the move (the golden file)."""
+    from mimir.extensions import SessionLocal
+
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with SessionLocal() as s:
+        for n in range(6):
+            _pull(s, bodies, f"w{n}@x", _TIP_B, hours=10 + n)
+        _pull(s, bodies, "m@x", _TIP_A, hours=20)
+        _pull(s, bodies, "u@x", hours=30)
+        _pull(s, bodies, "r@x", _TIP_B, hours=40)
+        _linus_reply(s, bodies, "r@x", "Not pulling this.")
+        s.commit()
+    section = _pull_section(client.get(MERGE_WINDOW_PATH).get_data(as_text=True))
+    # Precondition: every state and the disclosure are in the input.
+    assert list(_columns(section + "</div>").items()) == [
+        ("pending", 6),
+        ("merged", 1),
+        ("unknown", 1),
+        ("rejected", 1),
+    ]
+    assert "<details>" in section
+    assert section == _PULL_SECTION.read_text().strip()
