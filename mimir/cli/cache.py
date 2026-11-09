@@ -301,13 +301,6 @@ def _build_slow_global_targets(
         (f"release_history:{release.tag}", lambda s, r=release: warm_release(s, r))
         for release in releases
     ]
-    # After the per-release links, newest first within a time budget.
-    targets.append(
-        (
-            "release_history:subsystems",
-            lambda s, r=releases: warm_release_subsystems(s, r),
-        )
-    )
     if sitemap_base:
         targets.extend(
             [
@@ -325,6 +318,14 @@ def _build_slow_global_targets(
         )
     )
     targets.append(("maintainer_review_counts", warm_maintainer_review_counts))
+    # Last, so nothing else waits behind it and an overrun costs only the
+    # fill. It reads the ID lists the per-release targets above write.
+    targets.append(
+        (
+            "release_history:subsystems",
+            lambda s, r=releases: warm_release_subsystems(s, r),
+        )
+    )
     return targets
 
 

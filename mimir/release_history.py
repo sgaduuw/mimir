@@ -447,9 +447,12 @@ def release_subsystems(release: Release) -> ReleaseSubsystems | None:
 # local floor in `calculate_subsystems` (about 40 microseconds per
 # reference, so a cold fill of ~800,000 references across every release is
 # about 30 s there; production is unmeasured, assume 10x): 60 s fills the
-# newest releases in the first pass and the rest over a few hourly passes,
-# and stays far inside the 300 s a broker warm op may run. A release that
-# starts inside the budget finishes, so a pass can overrun by one release.
+# newest releases in the first pass and the rest over a few hourly passes.
+# It is not the whole allowance: the slow tier runs as one `warm_global` op
+# with a single 300 s timeout, shared with every other slow target,
+# including each release's `warm_release`, whose daily links refresh also
+# groups, with no budget. The fill runs last for that reason. A release
+# that starts inside the budget finishes, so a pass can overrun by one.
 # PRODUCTION FIGURE: NOT YET MEASURED, see `tools/measure_release_subsystems.py`.
 SUBSYSTEMS_FILL_BUDGET_SEC = 60
 
@@ -462,7 +465,7 @@ def warm_release_subsystems(
     """Fill missing groupings, `releases` order (newest first) until the
     budget is spent. A cached one is left alone (the daily links refresh
     rewrites it), and a release whose ID list is not cached yet waits for
-    its links."""
+    its links. A release that fails is logged and skipped."""
     deadline = time.monotonic() + budget_sec
     for release in releases:
         if time.monotonic() >= deadline:
@@ -474,9 +477,16 @@ def warm_release_subsystems(
         payload = cache.get(release.key + ":links_data")
         if payload is None:
             continue
-        result = calculate_subsystems(session, payload["message_ids"])
-        session.rollback()
-        cache.set(key, result.model_dump(mode="json"), LINKS_TTL_SEC)
+        # One failing release must not block every older one on every pass.
+        try:
+            result = calculate_subsystems(session, payload["message_ids"])
+            session.rollback()
+            cache.set(key, result.model_dump(mode="json"), LINKS_TTL_SEC)
+        except Exception:
+            logger.warning(
+                "release subsystems failed for %s", release.tag, exc_info=True
+            )
+            session.rollback()
 
 
 def release_data(

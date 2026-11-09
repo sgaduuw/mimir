@@ -1183,3 +1183,44 @@ def test_the_warm_skips_a_release_whose_links_are_not_cached_yet(
     with seeded_db() as session:
         history.warm_release_subsystems(session, releases, budget_sec=100)
     assert asked == ["m1@x"]
+
+
+def test_a_release_whose_grouping_fails_does_not_block_the_older_ones(
+    seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(3)
+    asked = []
+
+    def stub(session, message_ids):
+        asked.append(message_ids[0])
+        if message_ids[0] == "m3@x":
+            raise RuntimeError("boom")
+        return history.ReleaseSubsystems(
+            sections=[], smaller=[], smaller_patches=0, references=1
+        )
+
+    monkeypatch.setattr(history, "calculate_subsystems", stub)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=100)
+    assert asked == ["m3@x", "m2@x", "m1@x"]
+    assert [bool(cache.get(r.key + ":subsystems")) for r in releases] == [
+        False,
+        True,
+        True,
+    ]
+
+
+def test_the_warm_links_refresh_writes_the_grouping(releases, seeded_db, monkeypatch):
+    """The daily links refresh in the warm rewrites the grouping with the links, so a row the hourly fill wrote is renewed before it expires and the section never drops out for an hour."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    release = _seed_references(
+        seeded_db, releases, monkeypatch, {"ALPHA SUB": 4}, warm=False
+    )
+    with seeded_db() as session:
+        history.warm_release(session, release)
+    assert cache.get(release.key + ":subsystems")["references"] == 4
