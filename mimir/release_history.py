@@ -391,12 +391,15 @@ def calculate_subsystems(session: Session, message_ids: list[str]) -> ReleaseSub
     """Group the archived messages among `message_ids` by primary
     subsystem with the merge window's own grouping (`rank_postings`,
     `subsystem_sections`). The same archived test as `archived_page`, so
-    `references` equals its total.
+    `references` equals its total for the same IDs and the same archive.
+    The page shows the cached copy, which can be up to a day older than
+    the page's own total.
 
     Cost, production: NOT YET MEASURED (#1136 step 3). Put here v7.3, the
     largest release (14,040 distinct recorded message IDs on 2026-11-08),
     with what was counted and when: `tools/measure_release_subsystems.py`.
-    Until it is written the result is cached, not computed per request.
+    Until it is written the cached copy is the intended read, but a cache
+    miss is computed in the request (`release_subsystems`).
 
     Cost, local floor (synthetic, NOT production): 2026-11-09, 14,040
     archived references, 41,818 `article_files` rows, 2,501 subsystems of

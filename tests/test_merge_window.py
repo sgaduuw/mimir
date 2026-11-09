@@ -1247,3 +1247,32 @@ def test_a_release_history_groups_the_same_input_into_the_same_sections(
     ] == shape
     assert history.smaller_patches == live.smaller_patches
     assert history.references == 5
+
+
+def test_the_no_subsystem_bucket_never_gets_a_section_of_its_own(
+    seeded_db, monkeypatch
+):
+    """However large, "(no subsystem)" stays in the smaller group, last,
+    on the queue and on a release's history alike."""
+    import mimir.merge_window as mwmod
+    from mimir.release_history import calculate_subsystems
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    with seeded_db() as s:
+        _subsystem(s, "NAMED", ["named/"])
+        for n in range(3):
+            _article(s, f"loose{n}@x", days=n)
+            _commit(s, f"loose{n}@x", "linux-next")
+        _article(s, "named@x", files=["named/a.c"])
+        _commit(s, "named@x", "linux-next")
+        s.commit()
+        live = merge_window(s)
+        history = calculate_subsystems(
+            s, ["loose0@x", "loose1@x", "loose2@x", "named@x"]
+        )
+    for result in (live, history):
+        assert [g.name for g in result.sections] == []
+        assert [(g.name, g.patches) for g in result.smaller] == [
+            ("NAMED", 1),
+            (NO_SUBSYSTEM, 3),
+        ]
