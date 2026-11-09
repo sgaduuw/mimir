@@ -16,9 +16,11 @@ Prints, per release: the cached membership size, then per run the seconds
 and SQL statements of `calculate_pulls`, the state counts and the summary
 the coverage note reads, and the merges on Linus's first-parent line in
 vPREV..vN whose subject names a remote ("Merge tag 'x' of git://...",
-"Merge branch 'y' of ..."), the manual check for the merged count. They
-need not match exactly: one pull can be merged twice, and a merge can
-come from a pull that was not sent to the list. Write the figures, the
+"Merge branch 'y' of ..."), the manual check for the merged count, and how many
+pulls the last-14-days rule leaves to the next release, by state. The
+merged count and the merges need not match exactly: one pull can be
+merged twice, and a merge can come from a pull that was not sent to the
+list. Write the figures, the
 date and what was counted next to `PULLS_FILL_BUDGET_SEC`.
 """
 
@@ -28,10 +30,13 @@ import subprocess
 import time
 from collections import Counter
 
+from dulwich.repo import Repo
 from sqlalchemy import event
 
 from mimir import release_history as history
+from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
+from mimir.linus_pulls import classify
 
 RUNS = int(os.environ.get("RUNS", "3"))
 catalog = history.release_catalog()
@@ -71,6 +76,26 @@ for release in releases:
     summary, rows = result
     print(f"  states: {dict(Counter(state for _, state in rows))}")
     print(f"  summary: {summary.model_dump()}")
+    # What the last-14-days rule (`_in_cycle`) removes: classified, sent in
+    # vN's last PULLS_LEAD_IN, neither merged nor rejected.
+    with Repo(str(release.path)) as repo:
+        _, start, _ = history._tag_metadata(repo, release.previous_oid)
+        _, end, _ = history._tag_metadata(repo, release.oid)
+    with SessionLocal() as s:
+        late = Counter(
+            p.state
+            for p in classify(
+                s,
+                start,
+                end,
+                set(members),
+                closed=True,
+                bot_window=(start, end),
+            )
+            if p.state not in ("merged", "rejected")
+            and aware_utc(p.article.date) >= end - history.PULLS_LEAD_IN
+        )
+    print(f"  left to the next release (last 14 days): {dict(late)}")
     subjects = subprocess.run(
         [
             "git",

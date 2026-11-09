@@ -174,9 +174,11 @@ Page 1 of a release also lists its pull requests to Linus, with the cards
 Linus sent from 14 days before the previous release to the release. Merged: the
 named tip is in the release's Git range, or pr-tracker-bot replied it was merged
 between the two releases. A pull sent before the previous release and not
-merged into this one is left to the previous release. The rest are Rejected
-(Linus replied he is not pulling it), "Not merged in vN" (a tip outside the
-range, including pulls sent early for the next window) or Unclear (no tip, no
+merged into this one is left to the previous release. The same 14 days at the
+end belong to the next release's window: a pull sent then that did not make it
+in, and that Linus did not reject, is left to the next release, which shows it
+only if it was merged there. The rest are Rejected (Linus replied he is not
+pulling it), "Not merged in vN" (a tip outside the range) or Unclear (no tip, no
 bot reply). A muted note gives these rules and, from the release's own counts,
 explains a high Unclear share: no pull naming a tip and no bot reply (before
 about 2012 neither exists), no bot reply (before late 2018), or more than 10%
