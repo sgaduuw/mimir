@@ -405,11 +405,17 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     cap = settings.thread_view_render_cap
+    from mimir.release_history import recorded_history, release_catalog
+    from mimir.seo.sitemaps import meta_sitemap_key
+
+    meta_key = meta_sitemap_key(
+        [r.tag for r, _f, _l in recorded_history(release_catalog()).listed]
+    )
     index = cache.get(f"sitemap:index:{cap}")
     assert index is not None, "missing cache row for the index"
     expected_root = {
         "sitemap index": (index, f"{{{ns}}}sitemapindex"),
-        "sitemap:meta": (cache.get("sitemap:meta"), f"{{{ns}}}urlset"),
+        "sitemap:meta": (cache.get(meta_key), f"{{{ns}}}urlset"),
         **{
             key: (cache.get(key), f"{{{ns}}}urlset")
             for key in ("sitemap:inboxhubs2:alpha", "sitemap:inboxhubs2:beta")
@@ -1136,3 +1142,21 @@ def test_recent_message_total_warms_on_the_fast_tier_only(session):
     with cache.warm_window(7200):
         dict(_build_fast_global_targets(""))[label](session)
     assert cached_recent_message_total() == 0  # the seed is dated 2024
+
+
+def test_the_slow_tier_fills_release_subsystems_last(monkeypatch):
+    """The fill reads the ID lists the per-release targets write, so it
+    follows them, and it is the last slow target: sitemaps and aggregators
+    never wait behind it, and an overrun costs only the fill."""
+    from mimir import release_history as history
+    from mimir.cli.cache import _build_slow_global_targets
+
+    releases = [
+        history.Release(f"v9.{n}", None, "0" * 40, None, None, (), f"k{n}")
+        for n in (2, 1)
+    ]
+    monkeypatch.setattr(history, "release_catalog", lambda: releases)
+    names = [name for name, _ in _build_slow_global_targets("http://x")]
+    assert names[:2] == ["release_history:v9.2", "release_history:v9.1"]
+    assert names[-2] == "release_history:subsystems"
+    assert len(names) > 3

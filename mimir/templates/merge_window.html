@@ -1,84 +1,16 @@
 {% extends "base.html" %}
-{% from "_search_field.html" import search_field %}
 
 {% block title %}Linux merge window: patches queued in linux-next | {{ site_name }}{% endblock %}
 {% block meta_description %}Patches in linux-next that are not yet in Linus's tree, grouped by kernel subsystem, each linked to its review thread: what the next Linux merge window is likely to bring.{% endblock %}
 
 {% block content %}
-{% from "_bar_meter.html" import bar_meter %}
-{% set pull_labels = {'pending': 'Waiting', 'merged': 'Merged', 'unknown': 'Unclear', 'rejected': 'Rejected'} %}
-
-{% macro pull_row(pr) %}
-<li>
-  <a href="{{ pr.url }}">{{ pr.subject|pull_label }}</a>
-  <br><small>{{ pr.author|display_name }}
-    {%- if pr.date %} &middot; {{ pr.date.strftime('%Y-%m-%d') }}{% endif %}</small>
-</li>
-{% endmacro %}
-
-{# The first four subjects stay in view; the rest sit in a native
-   disclosure, so every link is still in the HTML for crawlers (they were
-   in fold boxes before #1000) and nothing needs JS. #}
 {% macro pull_requests() %}
 <h2 id="pull-requests-to-linus">Pull requests to Linus{% if pulls.anchor %} <small>since {{ pulls.anchor }}</small>{% endif %}</h2>
 {% if pulls.rows %}
-<div class="pull-cards">
-  {% for state in ('pending', 'merged', 'unknown', 'rejected') %}
-  {% set rows = pulls.rows|selectattr('state', 'equalto', state)|list %}
-  {% if rows %}
-  <section class="pull-card{% if state == 'unknown' %} pull-card--unclear{% endif %}" id="pulls-{{ state }}">
-    <h3 class="pull-card-label">{{ pull_labels[state] }}</h3>
-    <p class="count pull-card-count">{{ rows|length }}</p>
-    {% if state == 'unknown' %}<p><small>Names no commit, and pr-tracker-bot has not replied.</small></p>{% endif %}
-    <ul class="divided">
-      {% for pr in rows[:4] %}{{ pull_row(pr) }}{% endfor %}
-    </ul>
-    {% if rows|length > 4 %}
-    <details>
-      <summary>All {{ rows|length }} {{ pull_labels[state]|lower }}</summary>
-      <ul class="divided">
-        {% for pr in rows[4:] %}{{ pull_row(pr) }}{% endfor %}
-      </ul>
-    </details>
-    {% endif %}
-  </section>
-  {% endif %}
-  {% endfor %}
-</div>
+{% with pull_rows=pulls.rows, closed_tag=none %}{% include "_pull_cards.html" %}{% endwith %}
 {% else %}
 <p>No pull requests to Linus since {{ pulls.anchor or 'the latest tag' }}.</p>
 {% endif %}
-{% endmacro %}
-
-{# One subsystem as a disclosure row: name, bar, count. The <details> keeps
-   the section's fragment id, so a link to it still lands on it. #}
-{% macro subsystem_row(sec, largest, is_open=false) %}
-<li data-filter-item data-filter-text="{{ sec.name|subsystem_label }}">
-  <details id="{{ sec.anchor }}"{% if is_open %} open{% endif %}>
-    <summary>
-      <span class="mw-name">{{ sec.name|subsystem_label }}</span>
-      {{ bar_meter(sec.patches, largest) }}
-      <span class="count">{{ sec.patches }}</span>
-    </summary>
-    {{ rows(sec.rows) }}
-  </details>
-</li>
-{% endmacro %}
-
-{% macro rows(items) %}
-<ul class="divided">
-  {% for row in items %}
-  <li>
-    <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
-    {%- if row.patches > 1 %} <small>{{ row.patches|format_count }} patches</small>{% endif %}
-    <br><small>{{ row.author|display_name }}
-      {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
-      &middot; {{ row.inbox_name }}
-      {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}
-      {%- if row.also %} &middot; touches {{ row.also|map('subsystem_label')|join(', ') }}{% endif %}</small>
-  </li>
-  {% endfor %}
-</ul>
 {% endmacro %}
 
 <section class="merge-window">
@@ -120,30 +52,7 @@
 <p>Not in Linus's tree yet, grouped by MAINTAINERS subsystem. <a href="#how-counted">How these are counted</a></p>
 
 {% if mw.sections or mw.smaller %}
-<div class="mw-find" data-filter-controls hidden>
-  {% call search_field('mw-find-input', 'Find a subsystem') %}
-  <input id="mw-find-input" type="search" data-filter-input="mw-subsystems" autocomplete="off">
-  {% endcall %}
-</div>
-<ul class="mw-subsystems" id="mw-subsystems">
-  {# One scale for every bar. `(no subsystem)` is always in `smaller` and can be the biggest bucket. #}
-  {% set largest = (mw.sections + mw.smaller)|map(attribute='patches')|max %}
-  {% for sec in mw.sections %}{{ subsystem_row(sec, largest, loop.first) }}{% endfor %}
-  {% if mw.smaller %}
-  <li data-filter-item>
-    <details id="smaller-subsystems">
-      <summary>
-        <span class="mw-name">{{ mw.smaller|length }} smaller subsystem{{ '' if mw.smaller|length == 1 else 's' }}</span>
-        <span class="count">{{ mw.smaller_patches }}</span>
-      </summary>
-      <p><small>Subsystems with fewer than {{ section_min|format_count }} queued patches.</small></p>
-      <ul class="mw-subsystems mw-subsystems-nested">
-        {% for sec in mw.smaller %}{{ subsystem_row(sec, largest) }}{% endfor %}
-      </ul>
-    </details>
-  </li>
-  {% endif %}
-</ul>
+{% with sections=mw.sections, smaller=mw.smaller, smaller_patches=mw.smaller_patches, section_min=section_min, unit='queued patches' %}{% include "_subsystem_sections.html" %}{% endwith %}
 {% endif %}
 
 <p id="how-counted"><small>{{ mw.queued|format_count }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next

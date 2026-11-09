@@ -6,7 +6,9 @@ rejected (Linus replied he will not pull it), unknown (no commit named)
 or pending (#803)."""
 
 import logging
+import re
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -51,17 +53,20 @@ def revlist_tags():
 
 @pytest.fixture
 def messages(monkeypatch, tags, revlist_tags):
-    """Bodies and headers by message-id, served where `read_message`
+    """Bodies and headers by message-id, served where `read_messages`
     would read them from git. The tags, their commit times and the set
-    `git rev-list <tag>..HEAD` returns are stubbed alongside."""
+    `git rev-list <tag>..HEAD` returns are stubbed alongside. Reading one
+    mail at a time fails: the section reads in batches (#1135)."""
     bodies: dict[str, ParsedArticle] = {}
 
-    def _read(session, inbox, message_id):
-        if message_id not in bodies:
-            raise store.MessageNotFound(message_id)
-        return bodies[message_id]
+    def _read_many(session, inbox, message_ids):
+        return {m: bodies[m] for m in message_ids if m in bodies}
 
-    monkeypatch.setattr(store, "read_message", _read)
+    def _read_one(*args):
+        pytest.fail("pull bodies are read per batch, never per mail")
+
+    monkeypatch.setattr(store, "read_messages", _read_many)
+    monkeypatch.setattr(store, "read_message", _read_one)
     for module in (lp, mw):
         monkeypatch.setattr(module, "version_tags", lambda path: tags)
     monkeypatch.setattr(lp, "_tag_time", lambda path, tag: _TAG_TIMES[tag])
@@ -306,6 +311,17 @@ def test_tipless_pull_with_a_bot_merge_reply_is_merged(seeded_db, messages):
         _bot_reply(s, bodies, "pr@x", hours=12)
         s.commit()
         assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
+
+
+def test_an_undated_bot_reply_still_marks_merged(seeded_db, messages):
+    """The live page takes pr-tracker-bot's word whenever it replied; only
+    a closed release's history needs the reply's date (#1135)."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "undated@x", hours=10)
+        _bot_reply(s, bodies, "undated@x", hours=20).date = None
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] undated@x", "merged")]
 
 
 def test_merged_wins_over_a_rejection_reply(seeded_db, messages):
@@ -619,6 +635,7 @@ def test_cards_use_waiting_and_unclear(client, messages):
     assert "Pending" not in labels and "Unknown" not in labels
     unclear = cards[2]
     assert "pull-card--unclear" in unclear.classes
+    assert not any("pull-card--not-merged" in c.classes for c in cards)
     assert "Names no commit" in unclear.text()
 
 
@@ -679,3 +696,145 @@ def test_columns_render_only_when_populated(client, messages):
         ("unknown", 1),
         ("rejected", 1),
     ]
+
+
+_PULL_SECTION = Path(__file__).parent / "data" / "merge_window_pull_section.html"
+
+
+def _pull_section(html):
+    """The live section from its heading to the end of the cards, with
+    whitespace runs squashed to one space: indentation may move, markup
+    and text may not."""
+    found = re.search(
+        r'<h2 id="pull-requests-to-linus".*?<div class="pull-cards">.*?</div>',
+        html,
+        re.DOTALL,
+    )
+    return re.sub(r"\s+", " ", found.group(0))
+
+
+def test_live_pull_section_renders_as_it_did_before_the_shared_include(
+    client, messages
+):
+    """#1135 moved the cards into an include shared with the release
+    history pages. Every state, a card past four rows (its disclosure), a
+    tip-less pull and a rejection, on fixed input, against the section
+    as develop rendered it before the move (the golden file)."""
+    from mimir.extensions import SessionLocal
+
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with SessionLocal() as s:
+        for n in range(6):
+            _pull(s, bodies, f"w{n}@x", _TIP_B, hours=10 + n)
+        _pull(s, bodies, "m@x", _TIP_A, hours=20)
+        _pull(s, bodies, "u@x", hours=30)
+        _pull(s, bodies, "r@x", _TIP_B, hours=40)
+        _linus_reply(s, bodies, "r@x", "Not pulling this.")
+        s.commit()
+    section = _pull_section(client.get(MERGE_WINDOW_PATH).get_data(as_text=True))
+    # Precondition: every state and the disclosure are in the input.
+    assert list(_columns(section + "</div>").items()) == [
+        ("pending", 6),
+        ("merged", 1),
+        ("unknown", 1),
+        ("rejected", 1),
+    ]
+    assert "<details>" in section
+    assert section == _PULL_SECTION.read_text().strip()
+
+
+def test_batched_bodies_keep_read_first_readables_inbox_order(seeded_db, monkeypatch):
+    """Each article's canonical inbox first, then its other inboxes by
+    name, as `read_first_readable` tries them; a mail one inbox cannot
+    serve comes from the next, and one no inbox serves is left out."""
+    from mimir.store import read_first_readable
+
+    held = {
+        ("alpha", "both@x"): "from alpha",
+        ("beta", "both@x"): "from beta",
+        ("alpha", "alpha-only@x"): "from alpha",
+    }
+
+    def read_many(session, inbox, message_ids):
+        return {
+            m: ParsedArticle(message_id=m, body=held[inbox.name, m], headers={})
+            for m in message_ids
+            if (inbox.name, m) in held
+        }
+
+    def read_one(session, inbox, message_id):
+        if (inbox.name, message_id) not in held:
+            raise store.MessageNotFound(message_id)
+        return read_many(session, inbox, [message_id])[message_id]
+
+    monkeypatch.setattr(store, "read_messages", read_many)
+    monkeypatch.setattr(store, "read_message", read_one)
+    with seeded_db() as s:
+        inboxes = {i.name: i for i in s.execute(select(Inbox)).scalars()}
+        arts = []
+        for mid in ("both@x", "alpha-only@x", "nowhere@x"):
+            art = Article(
+                message_id=mid,
+                subject=mid,
+                date=_TAG_TIME,
+                canonical_inbox_id=inboxes["beta"].id,
+                lists=[
+                    ArticleList(
+                        inbox_id=inboxes[n].id, epoch="0.git", commit_sha="f" * 40
+                    )
+                    for n in ("alpha", "beta")
+                ],
+            )
+            s.add(art)
+            arts.append(art)
+        s.flush()
+        got = lp._bodies(s, arts)
+        expected = {}
+        for art in arts:
+            one = read_first_readable(s, [art], art.canonical_inbox_id)
+            if one is not None:
+                expected[art.id] = one[1].body
+        assert {k: v.body for k, v in got.items()} == expected
+        assert expected == {arts[0].id: "from beta", arts[1].id: "from alpha"}
+
+
+def test_an_unlinked_pull_is_skipped_not_fatal(seeded_db, messages):
+    """An article with no `article_lists` row (an inbox removed with
+    --keep-orphan-articles, or an epoch reindexed from scratch) has no
+    readable body. `read_first_readable` returned None for it and the
+    section skipped it; the batched read must do the same, not raise.
+    Replies go through the same reader. (Review regression, #1135.)"""
+    bodies, merged = messages
+    merged.add(_TIP_A)
+    with seeded_db() as s:
+        _pull(s, bodies, "ok@x", _TIP_A, hours=10)
+        _pull(s, bodies, "tipless@x", hours=12)
+        for mid, parent, author in (
+            ("orphan@x", None, "Mae <mae@example.com>"),
+            ("orphan-bot@x", "tipless@x", _BOT),
+        ):
+            s.add(
+                Article(
+                    message_id=mid,
+                    subject=f"[GIT PULL] {mid}" if parent is None else "Re: x",
+                    author=author,
+                    date=_TAG_TIME + timedelta(hours=20),
+                    thread_parent=parent,
+                )
+            )
+        s.commit()
+        assert _rows(s) == [
+            ("[GIT PULL] tipless@x", "unknown"),
+            ("[GIT PULL] ok@x", "merged"),
+        ]
+
+
+def test_an_undated_refusal_still_marks_rejected(seeded_db, messages):
+    """The live page takes Linus's refusal whenever he sent it; only a closed release's overlap needs its date (#1135)."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "refused@x", _TIP_B, hours=10)
+        _linus_reply(s, bodies, "refused@x", "Not pulling this.", hours=20).date = None
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] refused@x", "rejected")]

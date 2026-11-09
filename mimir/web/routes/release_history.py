@@ -7,6 +7,7 @@ from flask import Response, abort, render_template, request
 
 from mimir import release_history as history
 from mimir.extensions import SessionLocal
+from mimir.merge_window import SECTION_MIN_PATCHES
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
 
@@ -14,11 +15,12 @@ from mimir.web.urls import _site_base
 @bp_web.route(history.MERGE_WINDOW_HISTORY_PATH)
 def release_history_index():
     releases = history.release_catalog()
+    recorded = history.recorded_history(releases)
     return render_template(
         "release_history.html",
-        releases=releases,
-        facts=history.cached_facts(releases),
-        links=history.cached_links(releases),
+        listed=recorded.listed,
+        checked=recorded.checked,
+        release_total=len(releases),
         release_path=history.release_history_path,
         current_inbox=None,
         canonical_url=_site_base() + history.release_history_path(),
@@ -55,6 +57,12 @@ def release_history_detail(tag):
         )
     with SessionLocal() as session:
         rows, total = history.archived_page(session, message_ids, page)
+        # Page 1 only: later pages list more messages, not the cards again.
+        # None until the warm has classified them; a request reads no mail.
+        pulls = history.release_pulls(session, release) if page == 1 else None
+    # Page 1 only: later pages list more messages, not another table. None
+    # until the warm has filled it; a request never groups.
+    subsystems = history.release_subsystems(release) if page == 1 else None
     if page > 1 and (page - 1) * history.PAGE_SIZE >= total:
         abort(404)
     return render_template(
@@ -64,6 +72,12 @@ def release_history_detail(tag):
         links=links,
         rows=rows,
         total=total,
+        subsystems=subsystems,
+        pulls=pulls,
+        lead_in_days=history.PULLS_LEAD_IN.days,
+        unclear_note_share=history.UNCLEAR_NOTE_SHARE,
+        handful=history.HANDFUL_OF_REFERENCES,
+        section_min=SECTION_MIN_PATCHES,
         page=page,
         previous=history.release_history_path(tag, page=page - 1) if page > 1 else None,
         following=history.release_history_path(tag, page=page + 1)

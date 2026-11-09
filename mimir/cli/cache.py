@@ -285,9 +285,23 @@ def _build_slow_global_targets(
     they are here because an hourly cadence is all their date-grained
     `<lastmod>` can express. `sitemap:index` is the exception and
     lives on the fast tier; see `_build_fast_global_targets`."""
-    from mimir.release_history import release_catalog, warm_release
+    from mimir.release_history import (
+        release_catalog,
+        warm_release,
+        warm_release_pulls,
+        warm_release_subsystems,
+    )
 
-    targets: list[tuple[str, object]] = []
+    releases = release_catalog()
+
+    # Release history first: the meta sitemap lists only releases whose
+    # history is cached. Broker writes are fire-and-forget, so this run's
+    # sitemap may still miss one; its key carries the listed tags, so the
+    # next request after the write lands rebuilds it either way.
+    targets: list[tuple[str, object]] = [
+        (f"release_history:{release.tag}", lambda s, r=release: warm_release(s, r))
+        for release in releases
+    ]
     if sitemap_base:
         targets.extend(
             [
@@ -305,9 +319,18 @@ def _build_slow_global_targets(
         )
     )
     targets.append(("maintainer_review_counts", warm_maintainer_review_counts))
-    targets.extend(
-        (f"release_history:{release.tag}", lambda s, r=release: warm_release(s, r))
-        for release in release_catalog()
+    # Last, so nothing else waits behind it and an overrun costs only the
+    # fill. It reads the ID lists the per-release targets above write.
+    targets.append(
+        (
+            "release_history:subsystems",
+            lambda s, r=releases: warm_release_subsystems(s, r),
+        )
+    )
+    # After it, for the same reasons: it reads the membership the
+    # per-release targets write, and has its own time budget.
+    targets.append(
+        ("release_history:pulls", lambda s, r=releases: warm_release_pulls(s, r))
     )
     return targets
 
