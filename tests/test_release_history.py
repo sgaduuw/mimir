@@ -1,5 +1,6 @@
 """Closed releases use tag identities and reachability, never commit dates."""
 
+import re
 from datetime import UTC, datetime
 
 import pytest
@@ -104,7 +105,7 @@ def test_git_cache_does_not_follow_walk_state(releases, seeded_db, monkeypatch):
     assert history.cached_facts([release])[release.tag] == before[0]
 
 
-def test_cold_index_lists_every_release_without_calculation(
+def test_cold_index_lists_nothing_unchecked_and_never_calculates(
     client, releases, monkeypatch
 ):
     from mimir import release_history as history
@@ -118,28 +119,72 @@ def test_cold_index_lists_every_release_without_calculation(
     response = client.get(history.release_history_path())
     assert response.status_code == 200
     body = response.get_data(as_text=True)
-    for release in history.release_catalog():
-        assert f'href="{history.release_history_path(release.tag)}"' in body
-    assert "Not calculated yet" in body
+    catalog = history.release_catalog()
+    assert catalog, "the fixture must provide releases for the index to omit"
+    for release in catalog:
+        assert f'href="{history.release_history_path(release.tag)}"' not in body
+    assert "Not calculated yet" not in body
+    # Nothing is checked yet, so the page says more may appear rather
+    # than that no release has references.
+    assert re.search(
+        r"\b(\d+) of (\d+) releases have not been checked", body
+    ).groups() == (
+        str(len(catalog)),
+        str(len(catalog)),
+    )
     assert response.headers["Cache-Control"] == "public, max-age=300"
     assert "ETag" not in response.headers
 
 
-def test_history_sitemap_and_canonical_share_url_bytes(client, releases, monkeypatch):
-    import re
+def _record(seeded_db, sha: bytes, message_id: str) -> None:
+    from mimir.models import MainlineCommit
+
+    with seeded_db() as session:
+        session.add(
+            MainlineCommit(
+                commit_sha=sha.decode(),
+                message_id=message_id,
+                tree_name="linus",
+                committed_at=datetime.now(UTC),
+            )
+        )
+        session.commit()
+
+
+def _sitemap_locations(client) -> list[str]:
     import xml.etree.ElementTree as ET
 
+    sitemap = ET.fromstring(client.get("/meta-sitemap.xml").data)
+    return [n.text for n in sitemap.findall("{*}url/{*}loc")]
+
+
+def _canonical(body: str) -> str:
+    return re.search(r'<link rel="canonical" href="([^"]+)"', body).group(1)
+
+
+def test_history_sitemap_and_canonical_share_url_bytes(
+    client, releases, seeded_db, monkeypatch
+):
     from mimir import release_history as history
 
     monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
-    body = client.get(history.release_history_path()).get_data(as_text=True)
-    canonical = re.search(r'<link rel="canonical" href="([^"]+)"', body).group(1)
-    sitemap = ET.fromstring(client.get("/meta-sitemap.xml").data)
-    locations = [n.text for n in sitemap.findall("{*}url/{*}loc")]
-    assert canonical in locations
-    base = canonical.removesuffix(history.release_history_path())
+    _record(seeded_db, releases[2], "art3@example.com")
     for release in history.release_catalog():
-        assert base + history.release_history_path(release.tag) in locations
+        history.release_data(release)
+    listed = history.recorded_history(history.release_catalog()).listed
+    # An empty list would run the loop below zero times and pass.
+    assert [release.tag for release, _f, _l in listed] == ["v7.0"]
+    index = client.get(history.release_history_path()).get_data(as_text=True)
+    locations = _sitemap_locations(client)
+    assert _canonical(index) in locations
+    for release, _facts, _links in listed:
+        path = history.release_history_path(release.tag)
+        detail = client.get(path)
+        assert detail.status_code == 200
+        canonical = _canonical(detail.get_data(as_text=True))
+        assert canonical in locations
+        assert canonical.endswith(path)
+        assert f'href="{path}"' in index
 
 
 def test_git_timeout_is_bounded_and_never_cached_as_zero(releases, monkeypatch):
@@ -158,7 +203,8 @@ def test_git_timeout_is_bounded_and_never_cached_as_zero(releases, monkeypatch):
     with pytest.raises(subprocess.TimeoutExpired):
         history.git_facts(release)
     assert len(calls) == 1
-    assert calls[0][1]["timeout"] == history.GIT_TIMEOUT_SEC
+    # The request's single Git budget, less what the cache lookup took.
+    assert 0 < calls[0][1]["timeout"] <= history.GIT_TIMEOUT_SEC
     assert history.cached_facts([release]) == {}
 
 
@@ -266,7 +312,7 @@ def test_release_data_refreshes_links_after_one_day_not_a_walk(
     monkeypatch.setattr(
         history,
         "calculate_git",
-        lambda release: pytest.fail("Git cache must survive link refresh"),
+        lambda release, **kwargs: pytest.fail("Git cache must survive link refresh"),
     )
     _, summary, mids = history.release_data(release)
     assert summary.pair_count == 1
@@ -337,9 +383,9 @@ def test_slow_warm_target_calculates_pending_release_and_ends_read_transaction(
     real = history.calculate_git
     with seeded_db() as session:
 
-        def checked(release):
+        def checked(release, **kwargs):
             assert not session.in_transaction()
-            return real(release)
+            return real(release, **kwargs)
 
         monkeypatch.setattr(history, "calculate_git", checked)
         from sqlalchemy import text
@@ -367,9 +413,9 @@ def test_cold_release_warm_walks_git_once_before_async_writes_land(
     calculate = history.calculate_git
     calls = []
 
-    def counted(release):
+    def counted(release, **kwargs):
         calls.append(release.tag)
-        return calculate(release)
+        return calculate(release, **kwargs)
 
     monkeypatch.setattr(history, "calculate_git", counted)
     writer = _context.get_active_writer()
@@ -434,7 +480,7 @@ def test_warmer_repairs_a_missing_small_summary_without_rewalking(
     assert history.cached_links([release]) == {}
     assert cache.get(release.key + ":links_data") is not None
 
-    def unexpected(release):
+    def unexpected(release, **kwargs):
         raise AssertionError(
             "persisted data should repair the index without a Git walk"
         )
@@ -525,7 +571,7 @@ def test_missing_git_is_retryable_not_a_false_empty_release(
 
     monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
 
-    def timeout(*args):
+    def timeout(*args, **kwargs):
         raise subprocess.TimeoutExpired("git", 30)
 
     monkeypatch.setattr(history, "calculate_git", timeout)
@@ -554,3 +600,637 @@ def test_small_summary_repair_cannot_extend_its_original_lifetime(
         lambda: summary.computed_at.timestamp() + history.LINKS_TTL_SEC + 1,
     )
     assert history.cached_links([release]) == {}
+
+
+def test_concurrent_cold_requests_for_one_release_walk_git_once(
+    client, releases, seeded_db, monkeypatch
+):
+    import threading
+
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    _record(seeded_db, releases[2], "art3@example.com")
+    release = history.release_catalog()[0]
+    assert history.cached_facts([release]) == {}, "the release must start cold"
+    calculate = history.calculate_git
+    calls = []
+    walking, finish = threading.Event(), threading.Event()
+
+    def slow(release, **kwargs):
+        calls.append(release.tag)
+        walking.set()
+        # Hold the first walk open until the second request is waiting
+        # on it, so the two genuinely overlap.
+        assert finish.wait(10), "test failed to release the walk"
+        return calculate(release, **kwargs)
+
+    monkeypatch.setattr(history, "calculate_git", slow)
+    responses = {}
+
+    def fetch(name):
+        responses[name] = client.application.test_client().get(
+            history.release_history_path(release.tag)
+        )
+
+    first = threading.Thread(target=fetch, args=("first",))
+    first.start()
+    assert walking.wait(10)
+    second = threading.Thread(target=fetch, args=("second",))
+    second.start()
+    # The second request is blocked on the walk, not finished.
+    second.join(0.5)
+    assert second.is_alive()
+    finish.set()
+    first.join(10)
+    second.join(10)
+    assert calls == [release.tag]
+    assert sorted(responses) == ["first", "second"]
+    for response in responses.values():
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        # Each 200 carries the release's data, never a placeholder.
+        assert "1 recorded mailing-list references" in body
+        assert "cross-posted note" in body
+
+
+def test_single_flight_excludes_another_process(tmp_path, monkeypatch):
+    import subprocess
+    import sys
+    import tempfile
+    import time
+
+    from mimir import release_history as history
+
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    key = "release_history:1:test"
+    path = tmp_path / ("mimir-" + key.replace(":", "-") + ".lock")
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, sys\n"
+            f"fd = os.open({str(path)!r}, os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.lockf(fd, fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n"
+            "sys.stdin.read()\n",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        started = time.monotonic()
+        with pytest.raises(subprocess.TimeoutExpired):
+            with history._single_flight(key, time.monotonic() + 0.3):
+                pytest.fail("acquired a lock another process holds")
+        assert time.monotonic() - started >= 0.3
+    finally:
+        holder.stdin.close()
+        holder.wait(10)
+    # Released by the holder's exit, so the next caller gets it at once.
+    with history._single_flight(key, time.monotonic() + 1):
+        pass
+
+
+def test_sitemap_and_index_list_only_releases_with_cached_recorded_history(
+    client, releases, seeded_db, monkeypatch
+):
+    from dulwich.objects import Tree
+
+    from mimir import release_history as history
+
+    path, baseline, patch, rc, final = releases
+    with Repo(str(path)) as repo:
+        tree = Tree()
+        repo.object_store.add_object(tree)
+        repo.refs[b"refs/tags/v2.6.11"] = tree.id
+        later = add_commit(repo, b"Linus <linus@x>", [final], b"7.1", when=500000).id
+        repo.refs[b"refs/tags/v7.1"] = later
+        last = add_commit(repo, b"Linus <linus@x>", [later], b"7.2", when=600000).id
+        repo.refs[b"refs/tags/v7.2"] = last
+    monkeypatch.setattr(history, "_linus_path", lambda: path)
+    _record(seeded_db, patch, "art3@example.com")
+    # v7.2 has a reference too, so only its uncached state can keep it out.
+    _record(seeded_db, last, "art4@example.com")
+    by_tag = {r.tag: r for r in history.release_catalog()}
+    assert sorted(by_tag) == ["v2.6.11", "v6.19", "v7.0", "v7.1", "v7.2"]
+    for tag in ("v2.6.11", "v6.19", "v7.0", "v7.1"):
+        history.release_data(by_tag[tag])
+    # v7.1 has no reference, so it is decided once its pull requests are
+    # classified too (#1135): it has none.
+    with seeded_db() as s:
+        history.warm_release_pulls(s, history.release_catalog())
+    assert (
+        history.cache.get(history.pull_cache_key(by_tag["v7.1"]) + history.PULLS)[
+            "count"
+        ]
+        == 0
+    )
+    # Preconditions: each excluded release is excluded for its own reason.
+    facts, links = (
+        history.cached_facts(by_tag.values()),
+        history.cached_links(by_tag.values()),
+    )
+    assert facts["v2.6.11"].commit_count is None
+    assert links["v7.1"].pair_count == 0 and facts["v7.1"].commit_count == 1
+    assert links["v7.0"].pair_count == 1
+    assert "v7.2" not in links
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("deciding what to list must never walk Git")
+
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    prefix = history.release_history_path() + "/"
+
+    def sitemap_tags():
+        return {
+            loc.rsplit("/", 1)[1] for loc in _sitemap_locations(client) if prefix in loc
+        }
+
+    def index():
+        return client.get(history.release_history_path()).get_data(as_text=True)
+
+    def index_tags(body):
+        return set(re.findall(re.escape(prefix) + r'(v[\d.]+)"', body))
+
+    assert sitemap_tags() == {"v7.0"}
+    body = index()
+    assert index_tags(body) == {"v7.0"}
+    assert "Not calculated yet" not in body
+    assert re.search(r"\b(\d+) of (\d+) checked releases", body).groups() == (
+        "1",
+        "4",
+    )
+    assert re.search(r"\b(\d+) more release has not been checked", body)[1] == "1"
+
+    # The warm fills v7.2 in: the cached sitemap must not hold it out.
+    monkeypatch.undo()
+    monkeypatch.setattr(history, "_linus_path", lambda: path)
+    history.release_data(by_tag["v7.2"])
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    assert sitemap_tags() == {"v7.0", "v7.2"}
+    body = index()
+    assert index_tags(body) == {"v7.0", "v7.2"}
+    assert re.search(r"\b(\d+) of (\d+) checked releases", body).groups() == (
+        "2",
+        "5",
+    )
+    assert "not been checked" not in body
+    # Releases without references stay reachable by URL.
+    assert client.get(history.release_history_path("v7.1")).status_code == 200
+
+
+def test_archive_total_counts_only_messages_that_get_a_url(seeded_db, monkeypatch):
+    from sqlalchemy import select, update
+
+    from mimir import release_history as history
+    from mimir.models import Article, ArticleList, Inbox
+
+    mids = [f"art{n}@example.com" for n in range(1, 5)]
+    with seeded_db() as session:
+        art2 = session.scalar(select(Article).where(Article.message_id == mids[1]))
+        # The two fallbacks `_advertised_urls_for` takes: a canonical inbox
+        # the article is not linked in, and a root not yet computed.
+        art2.canonical_inbox_id = session.scalar(
+            select(Inbox.id).where(Inbox.name == "alpha")
+        )
+        session.execute(
+            update(ArticleList)
+            .where(ArticleList.article_id == art2.id)
+            .values(thread_root_id=None)
+        )
+        session.commit()
+    for size in (1, 3, 50):
+        monkeypatch.setattr(history, "PAGE_SIZE", size)
+        with seeded_db() as session:
+            shown = 0
+            page = 1
+            while True:
+                rows, total = history.archived_page(session, mids, page)
+                if not rows:
+                    break
+                assert len(rows) == min(size, total - (page - 1) * size)
+                shown += len(rows)
+                page += 1
+            assert total == 4
+            assert shown == total, size
+
+
+def test_warm_renews_git_facts_so_listed_releases_never_lapse(
+    releases, seeded_db, monkeypatch
+):
+    import random
+
+    from mimir import cache
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    _record(seeded_db, releases[2], "art3@example.com")
+    release = history.release_catalog()[0]
+    now = cache._now()
+    clock = [now]
+    monkeypatch.setattr(cache, "_now", lambda: clock[0])
+    window = 7200
+    with cache.warm_window(window):
+        history.release_data(release)
+
+    def listed_tags():
+        catalog = history.release_catalog()
+        return [r.tag for r, _f, _l in history.recorded_history(catalog).listed]
+
+    assert listed_tags() == ["v7.0"]
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("renewing immutable Git facts must not walk Git")
+
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    # Refresh as early as the window allows, as warm runs do by chance.
+    # Links then refresh about 22 h apart, drifting against the 30-day
+    # facts expiry the way production's do, so a renewal tied to the
+    # links refresh misses the facts' window; one checked every pass
+    # cannot.
+    monkeypatch.setattr(random, "random", lambda: 0.0)
+    links_refreshes = 0
+    last_links = history.cached_links([release])[release.tag].computed_at
+    hours = (history.GIT_TTL_SEC + 3 * window) // 3600
+    for hour in range(1, hours + 1):
+        clock[0] = now + hour * 3600
+        with cache.warm_window(window), seeded_db() as session:
+            history.warm_release(session, release)
+        assert listed_tags() == ["v7.0"], f"left the listing at hour {hour}"
+        links = history.cached_links([release])[release.tag].computed_at
+        links_refreshes += links != last_links
+        last_links = links
+    # Precondition: the walk crossed the original facts expiry with links
+    # kept fresh by their own daily cadence, not recomputed on demand.
+    assert hours * 3600 > history.GIT_TTL_SEC + window
+    assert 30 <= links_refreshes <= hours // 20
+
+
+def _seed_references(seeded_db, releases, monkeypatch, sizes, warm=True):
+    """Record `{subsystem: n}` single-patch references in v7.0's range:
+    one archived article per reference, inside a directory named after its
+    subsystem. Git is faked to a range of exactly those commits, so the
+    test controls the count and no walk is needed. Returns the release."""
+    from mimir import release_history as history
+    from mimir.release_history import ReleaseFacts
+    from tests.test_merge_window import _article, _commit, _subsystem
+
+    shas = []
+    with seeded_db() as s:
+        for name, count in sizes.items():
+            directory = name.split()[0].lower()
+            _subsystem(s, name, [f"{directory}/"])
+            for n in range(count):
+                mid = f"{directory}{n}@x"
+                _article(s, mid, days=n, files=[f"{directory}/{n}.c"])
+                shas.append(f"{len(shas):040x}")
+                _commit(s, mid, "linus", sha=shas[-1])
+        s.commit()
+    facts = ReleaseFacts(
+        release_date=None,
+        date_source=None,
+        merge_days=None,
+        stabilization_days=None,
+        rc_count=0,
+        commit_count=len(shas),
+    )
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    monkeypatch.setattr(history, "calculate_git", lambda r, timeout=0: (facts, shas))
+    release = history.release_catalog(releases[0])[0]
+    if warm:
+        # What the hourly warm does: the links, and the grouping with them.
+        history.release_data(release, group=True)
+    return release
+
+
+def _history_page(client, tag="v7.0"):
+    from mimir import release_history as history
+    from tests._dom import parse
+
+    return parse(client.get(history.release_history_path(tag)).get_data(as_text=True))
+
+
+def test_detail_groups_references_by_subsystem_with_bars_in_the_release(
+    client, releases, seeded_db, monkeypatch
+):
+    import mimir.merge_window as mwmod
+    from mimir import release_history as history
+    from tests._dom import parse
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 3)
+    _seed_references(
+        seeded_db, releases, monkeypatch, {"ALPHA SUB": 8, "BETA": 3, "TINY": 1}
+    )
+    page = _history_page(client)
+    listing = page.find("ul", id="mw-subsystems")
+    rows = [c for c in listing.children if getattr(c, "tag", None) == "li"]
+    names = [r.find_all("span", cls="mw-name")[0].text() for r in rows]
+    assert names == ["alpha sub", "beta", "1 smaller subsystem"]
+    assert [r.find_all("span", cls="count")[0].text() for r in rows] == ["8", "3", "1"]
+    # Bars scale to the release's largest subsystem.
+    assert [r.find_all("rect")[0].attrs["width"] for r in rows[:2]] == [
+        "100.0",
+        "37.5",
+    ]
+    # The references are listed below, paginated; the groups do not repeat
+    # them, so a row has no disclosure of its own to open.
+    assert rows[0].find_all("details") == []
+    assert rows[2].find_all("details")[0].attrs["id"] == "smaller-subsystems"
+    assert "of this release's recorded references" in page.text()
+    # Page 2 lists more messages, not the table again.
+    monkeypatch.setattr(history, "PAGE_SIZE", 5)
+    assert _history_page(client).find_all("ul", id="mw-subsystems") != []
+    second = parse(
+        client.get(history.release_history_path("v7.0", page=2)).get_data(as_text=True)
+    )
+    assert second.find_all("ul", id="mw-subsystems") == []
+    assert second.find_all("ul", cls="divided") != []
+
+
+def test_detail_with_a_handful_of_references_gets_a_note_not_a_table(
+    client, releases, seeded_db, monkeypatch
+):
+    _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 3})
+    page = _history_page(client)
+    assert page.find_all("ul", id="mw-subsystems") == []
+    assert "Only 3 archived references, too few for a subsystem breakdown." in (
+        page.text()
+    )
+
+
+def test_subsystem_groups_are_cached_with_the_links_and_read_back(
+    client, releases, seeded_db, monkeypatch
+):
+    """Written under `<release key>:subsystems` by the warm's links
+    refresh, and only read by the page: a hit never groups, and a lost
+    entry means no section until the warm fills it again."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "HANDFUL_OF_REFERENCES", 1)
+    release = _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 4})
+    key = release.key + ":subsystems"
+    assert cache.get(key) is not None
+    monkeypatch.setattr(
+        history, "calculate_subsystems", lambda *a: pytest.fail("a request grouped")
+    )
+    assert "alpha sub" in _history_page(client).find("ul", id="mw-subsystems").text()
+    cache.delete(key)
+    assert _history_page(client).find_all("ul", id="mw-subsystems") == []
+
+
+def test_subsystem_groups_refresh_with_the_daily_links_refresh(
+    releases, seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    release = _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 4})
+    now = cache._now()
+    history.release_data(release, group=True)
+    first = cache.get(release.key + ":subsystems")
+    with seeded_db() as s:
+        from tests.test_merge_window import _article, _commit
+
+        _article(s, "alpha-late@x", files=["alpha/late.c"])
+        _commit(s, "alpha-late@x", "linus", sha="f" * 40)
+        s.commit()
+    monkeypatch.setattr(cache, "_now", lambda: now + history.LINKS_TTL_SEC + 2)
+    monkeypatch.setattr(
+        history,
+        "git_facts",
+        lambda r: (
+            history.ReleaseFacts.model_validate(cache.get(release.key + ":facts")),
+            [f"{n:040x}" for n in range(4)] + ["f" * 40],
+        ),
+    )
+    history.release_data(release, group=True)
+    assert first["references"] == 4
+    assert cache.get(release.key + ":subsystems")["references"] == 5
+
+
+def test_subsystem_references_are_the_messages_the_page_lists(seeded_db):
+    """The table counts what `archived_page` can reach: an undated message
+    or one on no list is not a reference here either."""
+    from mimir import release_history as history
+    from mimir.models import Article
+    from tests.test_merge_window import _article
+
+    with seeded_db() as s:
+        _article(s, "ok@x", files=["a/b.c"])
+        _article(s, "undated@x", files=["a/b.c"]).date = None
+        s.add(Article(message_id="nolist@x", subject="s", date=datetime.now(UTC)))
+        s.commit()
+        ids = ["ok@x", "undated@x", "nolist@x", "absent@x"]
+        assert history.archived_page(s, ids, 1)[1] == 1
+        assert history.calculate_subsystems(s, ids).references == 1
+
+
+def test_detail_with_no_archived_references_shows_no_subsystem_note(
+    client, releases, seeded_db, monkeypatch
+):
+    """A release with nothing archived already says so under the message list; a "By subsystem" heading over "Only 0 archived references" adds a second, odd sentence for the same fact."""
+    _seed_references(seeded_db, releases, monkeypatch, {})
+    page = _history_page(client)
+    assert "No archived messages are available for this range." in page.text()
+    assert page.find_all("h2", id="subsystems") == []
+    assert "Only 0 archived" not in page.text()
+
+
+def test_the_message_list_has_its_own_heading_under_the_subsystem_one(
+    client, releases, seeded_db, monkeypatch
+):
+    """Without it the messages sit under "By subsystem" for anyone
+    navigating by heading."""
+    from mimir import release_history as history
+    from tests._dom import parse
+
+    _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 12})
+    monkeypatch.setattr(history, "PAGE_SIZE", 5)
+    page = _history_page(client)
+    assert [h.attrs["id"] for h in page.find_all("h2") if "id" in h.attrs] == [
+        "subsystems",
+        "messages",
+    ]
+    assert page.find("h2", id="messages").text() == "Archived messages"
+    second = parse(
+        client.get(history.release_history_path("v7.0", page=2)).get_data(as_text=True)
+    )
+    assert second.find_all("h2", id="subsystems") == []
+    assert second.find_all("h2", id="messages") == []
+
+
+@pytest.mark.parametrize(("count", "table"), [(9, False), (10, True)])
+def test_the_handful_boundary_is_ten_references(
+    client, releases, seeded_db, monkeypatch, count, table
+):
+    from mimir import release_history as history
+
+    assert history.HANDFUL_OF_REFERENCES == 10
+    _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": count})
+    page = _history_page(client)
+    assert (page.find_all("ul", id="mw-subsystems") != []) is table
+    assert ("too few for a subsystem breakdown" in page.text()) is (not table)
+
+
+def test_a_page_view_on_a_cache_miss_never_groups_and_shows_no_section(
+    client, releases, seeded_db, monkeypatch
+):
+    """The grouping is filled by the warm pass, never by a request: a miss
+    renders no table, no note and no "Archived messages" heading, and the
+    cold links path of the request does not group either."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    release = _seed_references(
+        seeded_db, releases, monkeypatch, {"ALPHA SUB": 12}, warm=False
+    )
+    calls = []
+    monkeypatch.setattr(
+        history, "calculate_subsystems", lambda *a: calls.append(a) or pytest.fail()
+    )
+    page = _history_page(client)
+    assert page.find_all("h2", id="subsystems") == []
+    assert page.find_all("h2", id="messages") == []
+    assert page.find_all("ul", id="mw-subsystems") == []
+    assert "subsystem breakdown" not in page.text()
+    # The messages are still listed: only the grouping is missing.
+    assert page.find_all("ul", cls="divided") != []
+    assert calls == []
+    assert cache.get(release.key + ":subsystems") is None
+
+
+def _fake_releases(n):
+    """Releases newest first, with cached ID lists, as `release_catalog`
+    returns them. Their keys are made up: only the cache rows matter."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    out = []
+    for i in range(n):
+        release = history.Release(
+            f"v9.{n - i}", None, "0" * 40, None, None, (), f"fake:{n - i}"
+        )
+        cache.set(
+            release.key + ":links_data",
+            {"summary": {}, "message_ids": [f"m{n - i}@x"]},
+            history.LINKS_TTL_SEC,
+        )
+        out.append(release)
+    return out
+
+
+def _clocked_calculate(monkeypatch, step):
+    """Replace the grouping by a stub that costs `step` seconds on a fake
+    clock, and return the list of the releases it was asked for."""
+    from mimir import release_history as history
+
+    now = [0.0]
+    asked = []
+    monkeypatch.setattr(history.time, "monotonic", lambda: now[0])
+
+    def stub(session, message_ids):
+        now[0] += step
+        asked.append(message_ids[0])
+        return history.ReleaseSubsystems(
+            sections=[], smaller=[], smaller_patches=0, references=1
+        )
+
+    monkeypatch.setattr(history, "calculate_subsystems", stub)
+    return asked
+
+
+def test_the_warm_fills_missing_groupings_newest_first_within_its_budget(
+    seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(4)
+    asked = _clocked_calculate(monkeypatch, step=10)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+    # Newest first; the budget is checked before each one, so a release
+    # that starts in time finishes (10 s, then 20 s is past 15 s).
+    assert asked == ["m4@x", "m3@x"]
+    assert [bool(cache.get(r.key + ":subsystems")) for r in releases] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+
+
+def test_a_later_warm_pass_picks_up_the_rest_and_renews_nothing(seeded_db, monkeypatch):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(4)
+    asked = _clocked_calculate(monkeypatch, step=10)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+        asked.clear()
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+        assert asked == ["m2@x", "m1@x"]
+        asked.clear()
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+        assert asked == []
+    assert all(cache.get(r.key + ":subsystems") for r in releases)
+
+
+def test_the_warm_skips_a_release_whose_links_are_not_cached_yet(
+    seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(2)
+    cache.delete(releases[0].key + ":links_data")
+    asked = _clocked_calculate(monkeypatch, step=1)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=100)
+    assert asked == ["m1@x"]
+
+
+def test_a_release_whose_grouping_fails_does_not_block_the_older_ones(
+    seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(3)
+    asked = []
+
+    def stub(session, message_ids):
+        asked.append(message_ids[0])
+        if message_ids[0] == "m3@x":
+            raise RuntimeError("boom")
+        return history.ReleaseSubsystems(
+            sections=[], smaller=[], smaller_patches=0, references=1
+        )
+
+    monkeypatch.setattr(history, "calculate_subsystems", stub)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=100)
+    assert asked == ["m3@x", "m2@x", "m1@x"]
+    assert [bool(cache.get(r.key + ":subsystems")) for r in releases] == [
+        False,
+        True,
+        True,
+    ]
+
+
+def test_the_warm_links_refresh_writes_the_grouping(releases, seeded_db, monkeypatch):
+    """The daily links refresh in the warm rewrites the grouping with the links, so a row the hourly fill wrote is renewed before it expires and the section never drops out for an hour."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    release = _seed_references(
+        seeded_db, releases, monkeypatch, {"ALPHA SUB": 4}, warm=False
+    )
+    with seeded_db() as session:
+        history.warm_release(session, release)
+    assert cache.get(release.key + ":subsystems")["references"] == 4
