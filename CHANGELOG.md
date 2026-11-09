@@ -17,7 +17,6 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
-
 - The release history index and `/meta-sitemap.xml` list only releases with a Git range and at least one recorded mailing-list reference, chosen by one shared rule so the two always agree. Releases not yet calculated are left out until the background warm fills them in, instead of showing "Not calculated yet" rows; a note above the table gives how many releases are shown and checked. Detail pages for other releases stay reachable by URL (#1130).
 
 ### Fixed

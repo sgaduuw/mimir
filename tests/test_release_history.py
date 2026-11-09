@@ -1019,3 +1019,50 @@ def test_subsystem_references_are_the_messages_the_page_lists(seeded_db):
         ids = ["ok@x", "undated@x", "nolist@x", "absent@x"]
         assert history.archived_page(s, ids, 1)[1] == 1
         assert history.calculate_subsystems(s, ids).references == 1
+
+
+def test_detail_with_no_archived_references_shows_no_subsystem_note(
+    client, releases, seeded_db, monkeypatch
+):
+    """A release with nothing archived already says so under the message list; a "By subsystem" heading over "Only 0 archived references" adds a second, odd sentence for the same fact."""
+    _seed_references(seeded_db, releases, monkeypatch, {})
+    page = _history_page(client)
+    assert "No archived messages are available for this range." in page.text()
+    assert page.find_all("h2", id="subsystems") == []
+    assert "Only 0 archived" not in page.text()
+
+
+def test_the_message_list_has_its_own_heading_under_the_subsystem_one(
+    client, releases, seeded_db, monkeypatch
+):
+    """Without it the messages sit under "By subsystem" for anyone
+    navigating by heading."""
+    from mimir import release_history as history
+    from tests._dom import parse
+
+    _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 12})
+    monkeypatch.setattr(history, "PAGE_SIZE", 5)
+    page = _history_page(client)
+    assert [h.attrs["id"] for h in page.find_all("h2") if "id" in h.attrs] == [
+        "subsystems",
+        "messages",
+    ]
+    assert page.find("h2", id="messages").text() == "Archived messages"
+    second = parse(
+        client.get(history.release_history_path("v7.0", page=2)).get_data(as_text=True)
+    )
+    assert second.find_all("h2", id="subsystems") == []
+    assert second.find_all("h2", id="messages") == []
+
+
+@pytest.mark.parametrize(("count", "table"), [(9, False), (10, True)])
+def test_the_handful_boundary_is_ten_references(
+    client, releases, seeded_db, monkeypatch, count, table
+):
+    from mimir import release_history as history
+
+    assert history.HANDFUL_OF_REFERENCES == 10
+    _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": count})
+    page = _history_page(client)
+    assert (page.find_all("ul", id="mw-subsystems") != []) is table
+    assert ("too few for a subsystem breakdown" in page.text()) is (not table)
