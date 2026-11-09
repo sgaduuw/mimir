@@ -1131,6 +1131,15 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
 .pull-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(16rem, 100%), 1fr)); gap: 1rem; margin-bottom: 1.5rem; }
 .pull-card { border: 1px solid var(--pico-muted-border-color); border-radius: 10px; padding: 1rem; min-width: 0; }
 .pull-card--unclear { border-style: dashed; }
+/* Missed this window, not a failure: grey like the superseded badge. */
+.pull-card--not-merged {
+  background: light-dark(#f3f4f6, #1f2937); border-color: light-dark(#d1d5db, #374151);
+  /* Pico's muted grey is under 4.5:1 on the dark surface. */
+  --pico-muted-color: light-dark(#4b5563, #9ca3af);
+  --pico-accordion-close-summary-color: var(--pico-muted-color);
+  --pico-accordion-open-summary-color: var(--pico-muted-color);
+}
+.pull-card--not-merged .pull-card-count { color: var(--pico-muted-color); }
 .pull-card-label { margin: 0; font-size: .75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--pico-muted-color); }
 .pull-card-count { text-align: left; font-size: 2rem; line-height: 1.2; margin: 0 0 .5rem; }
 .pull-card details { margin: .5rem 0 0; }

@@ -27,7 +27,7 @@
   {% for state in pull_states %}
   {% set rows = pull_rows|selectattr('state', 'equalto', state)|list %}
   {% if rows %}
-  <section class="pull-card{% if state == 'unknown' %} pull-card--unclear{% endif %}" id="pulls-{{ state }}">
+  <section class="pull-card{% if state == 'unknown' %} pull-card--unclear{% elif state == 'not_merged' %} pull-card--not-merged{% endif %}" id="pulls-{{ state }}">
     <h3 class="pull-card-label">{{ pull_labels[state] }}</h3>
     <p class="count pull-card-count">{{ rows|length }}</p>
     {% if state == 'unknown' %}<p><small>Names no commit, and pr-tracker-bot has not replied.</small></p>{% endif %}
