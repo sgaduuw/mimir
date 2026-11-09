@@ -659,24 +659,33 @@ def _in_cycle(
 
 # Time one warm pass may spend classifying releases' pull requests.
 #
-# Cost, local floor (synthetic, NOT production): 2026-11-09, one release
-# shaped like v7.3's window in #1134 (880 `[GIT PULL]` candidates to Linus,
-# 733 naming a tip, 704 pr-tracker-bot replies, one packed epoch with all
-# bodies, a 20,260-commit member set), SQLite 3.54.1 on a laptop:
-# `calculate_pulls` took 0.262, 0.218 and 0.220 s, 9 statements each.
-# `release_pulls`, what a page view pays to resolve the 853 kept rows,
-# took 0.005 s in 3 statements.
+# Cost, measured on production 2026-11-09 (`tools/measure_release_pulls.py`
+# at 8acb7f7, read-only, cache writes blocked), `calculate_pulls` per
+# release, runs in seconds:
 #
-# Production is slower: #1134 measured the blob reads and parsing of
-# v7.3's candidates alone at 0.6 s with `git cat-file --batch`, against
-# much larger lkml packs, so expect about a second for the largest
-# release; older releases have fewer pulls (316 to Linus for v3.0). At
-# that rate the cold fill of every release takes one or two passes. The
-# budget shares the slow tier's single 300 s `warm_global` timeout with the
-# subsystem fill's 60 s and the other slow targets (3 to 10 s), so the
+#   v7.3    20,260 commits  2.404 / 1.928 / 1.938 s  310 statements
+#           478 pulls: 476 merged, 1 rejected, 1 unclear; 404 tips,
+#           472 bot replies
+#   v7.2    17,833 commits  2.329 / 1.823 / 1.913 s  594 statements
+#           454 pulls: 450 merged, 2 not merged, 2 unclear
+#   v4.20   2.031 s, 192 statements; 335 pulls: 255 merged, 76 unclear,
+#           3 not merged, 1 rejected; 151 bot replies
+#   v3.0    1.015 s, 184 statements; 273 pulls: 271 unclear, 2 rejected;
+#           no tips, no bot replies
+#   v2.6.30 0.714 s, 138 statements; 247 pulls: 244 unclear, 3 rejected
+#
+# So 0.7 to 2.4 s a release, and a cold fill of all 114 releases about 150
+# to 200 s: the budget spreads it over three or four hourly passes, newest
+# first. Merged counts against `git log --merges --first-parent` merges
+# naming a remote: 476 of 506 for v7.3, 450 of 480 for v7.2 (94% each; the
+# tool's docstring says why they need not match exactly). What a page view
+# pays to resolve the cached rows (`release_pulls`) was measured only
+# locally, on synthetic data: 0.005 s and 3 statements for 853 rows.
+#
+# The budget shares the slow tier's single 300 s `warm_global` timeout with
+# the subsystem fill's 60 s and the other slow targets (3 to 10 s), so the
 # fill runs last; once filled, a pass only renews. A release that starts
-# inside the budget finishes, so a pass can overrun by one.
-# `tools/measure_release_pulls.py` measures it on production.
+# inside the budget finishes, so a pass can overrun by one, about 2.4 s.
 PULLS_FILL_BUDGET_SEC = 60
 
 
