@@ -212,6 +212,77 @@ SELECT DISTINCT o.message_id, o.tree_name
 """)
 
 
+def rank_postings(
+    session: Session, archived: list
+) -> tuple[dict[tuple, list], dict[tuple, list[str]]]:
+    """Archived articles (rows with `id`, `patch_series_key`,
+    `series_head` and `series_rev`) as postings, and each posting's
+    subsystems, primary first. Shared by `/merge-window` and a release's
+    history page (#1136), so one grouping decides both.
+
+    A posting is one series revision (series, meaning key and head
+    (#816), plus revision number, so an unversioned `resend` or `rfc` is
+    the same posting as `v1`, #691); a patch without a series key is a
+    posting of its own. The posting's files together decide its primary
+    subsystem, so a series appears once, under the most specific
+    subsystem covering at least half as many of its files as the
+    best-covering one (`ranked_subsystems`)."""
+    postings: dict[tuple, list] = {}
+    for r in archived:
+        posting = (
+            (r.patch_series_key, r.series_head, r.series_rev)
+            if r.patch_series_key
+            else (None, r.id)
+        )
+        postings.setdefault(posting, []).append(r)
+    files = _files(session, [r.id for r in archived])
+    keys = list(postings)
+    ranked = ranked_subsystems(
+        session,
+        [[path for m in postings[k] for path in files.get(m.id, ())] for k in keys],
+    )
+    return postings, dict(zip(keys, ranked, strict=True))
+
+
+def primary_subsystem(ranked: list[str]) -> str:
+    return ranked[0] if ranked else NO_SUBSYSTEM
+
+
+def subsystem_sections(
+    rows_by_subsystem: dict[str, list[MergeWindowRow]],
+    patches_by_subsystem: dict[str, int],
+) -> tuple[list[MergeWindowSection], list[MergeWindowSection]]:
+    """Subsystems with at least `SECTION_MIN_PATCHES` patches, largest
+    first, then the rest by name with "(no subsystem)" last. A history
+    page passes no rows: it counts, and lists its messages elsewhere."""
+    groups = [
+        MergeWindowSection(
+            name=name,
+            anchor=_anchor(name),
+            patches=patches_by_subsystem[name],
+            rows=sorted(
+                rows,
+                key=lambda row: (row.date is not None, row.date),
+                reverse=True,
+            ),
+        )
+        for name, rows in rows_by_subsystem.items()
+    ]
+    sections = sorted(
+        (
+            g
+            for g in groups
+            if g.patches >= SECTION_MIN_PATCHES and g.name != NO_SUBSYSTEM
+        ),
+        key=lambda g: (-g.patches, g.name),
+    )
+    smaller = sorted(
+        (g for g in groups if g not in sections),
+        key=lambda g: (g.name == NO_SUBSYSTEM, g.name),
+    )
+    return sections, smaller
+
+
 def _compute(session: Session) -> MergeWindow:
     # Function-local: `mimir.web` imports this module for `LINUS_TREE`.
     from mimir.web.filters import _usable_display_name
@@ -231,18 +302,7 @@ def _compute(session: Session) -> MergeWindow:
     for message_id, tree_name in session.execute(_OTHER_TREES_SQL).all():
         trees_by_msgid.setdefault(message_id, set()).add(tree_name)
 
-    # A posting is one series revision (series, meaning key and head
-    # (#816), plus revision number, so an unversioned `resend` or `rfc`
-    # is the same posting as `v1`, #691); a patch without a series key
-    # is a posting of its own.
-    postings: dict[tuple, list] = {}
-    for r in archived:
-        posting = (
-            (r.patch_series_key, r.series_head, r.series_rev)
-            if r.patch_series_key
-            else (None, r.id)
-        )
-        postings.setdefault(posting, []).append(r)
+    postings, ranked_by_posting = rank_postings(session, archived)
 
     covers = _covers(session, [p for p in postings if p[0] is not None])
 
@@ -274,25 +334,6 @@ def _compute(session: Session) -> MergeWindow:
         session, [rep[0] for rep in representatives.values()]
     )
 
-    files = _files(session, [r.id for r in archived])
-    # The posting's files together decide its primary subsystem, so a
-    # series appears once, under the most specific subsystem covering at
-    # least half as many of its files as the best-covering one
-    # (`ranked_subsystems`).
-    posting_keys = list(postings)
-    ranked_by_posting = dict(
-        zip(
-            posting_keys,
-            ranked_subsystems(
-                session,
-                [
-                    [path for m in postings[k] for path in files.get(m.id, ())]
-                    for k in posting_keys
-                ],
-            ),
-            strict=True,
-        )
-    )
     by_subsystem: dict[str, list[MergeWindowRow]] = {}
     patches_by_subsystem: dict[str, int] = {}
     unlinked = 0
@@ -326,7 +367,7 @@ def _compute(session: Session) -> MergeWindow:
             }
         )
         ranked = ranked_by_posting[posting]
-        primary = ranked[0] if ranked else NO_SUBSYSTEM
+        primary = primary_subsystem(ranked)
         by_subsystem.setdefault(primary, []).append(
             MergeWindowRow(
                 subject=subject,
@@ -343,31 +384,7 @@ def _compute(session: Session) -> MergeWindow:
             members
         )
 
-    groups = [
-        MergeWindowSection(
-            name=name,
-            anchor=_anchor(name),
-            patches=patches_by_subsystem[name],
-            rows=sorted(
-                rows,
-                key=lambda row: (row.date is not None, row.date),
-                reverse=True,
-            ),
-        )
-        for name, rows in by_subsystem.items()
-    ]
-    sections = sorted(
-        (
-            g
-            for g in groups
-            if g.patches >= SECTION_MIN_PATCHES and g.name != NO_SUBSYSTEM
-        ),
-        key=lambda g: (-g.patches, g.name),
-    )
-    smaller = sorted(
-        (g for g in groups if g not in sections),
-        key=lambda g: (g.name == NO_SUBSYSTEM, g.name),
-    )
+    sections, smaller = subsystem_sections(by_subsystem, patches_by_subsystem)
 
     state = session.get(MainlineState, QUEUED_TREE)
     return MergeWindow(

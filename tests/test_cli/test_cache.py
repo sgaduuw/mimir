@@ -1142,3 +1142,21 @@ def test_recent_message_total_warms_on_the_fast_tier_only(session):
     with cache.warm_window(7200):
         dict(_build_fast_global_targets(""))[label](session)
     assert cached_recent_message_total() == 0  # the seed is dated 2024
+
+
+def test_the_slow_tier_fills_release_subsystems_last(monkeypatch):
+    """The fill reads the ID lists the per-release targets write, so it
+    follows them, and it is the last slow target: sitemaps and aggregators
+    never wait behind it, and an overrun costs only the fill."""
+    from mimir import release_history as history
+    from mimir.cli.cache import _build_slow_global_targets
+
+    releases = [
+        history.Release(f"v9.{n}", None, "0" * 40, None, None, (), f"k{n}")
+        for n in (2, 1)
+    ]
+    monkeypatch.setattr(history, "release_catalog", lambda: releases)
+    names = [name for name, _ in _build_slow_global_targets("http://x")]
+    assert names[:2] == ["release_history:v9.2", "release_history:v9.1"]
+    assert names[-1] == "release_history:subsystems"
+    assert len(names) > 3
