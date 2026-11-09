@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
-from mimir.linus_pulls import ClosedPullState, classify
+from mimir.linus_pulls import ClosedPullState, Pull, classify
 from mimir.merge_window import (
     _VERSION_TAG_RE,
     MERGE_WINDOW_PATH,
@@ -144,7 +144,8 @@ PULL_ROWS = ":pull_rows:1"
 # Merge-window pull requests are often sent in vPREV's last rc week, before
 # vPREV exists, so candidates start this long before it. #1134 measured 16
 # to 69 pulls per release in this lead-in that were not merged into vN and
-# are correctly left to vPREV.
+# are correctly left to vPREV. The same span at vN's end is vN+1's lead-in
+# (`_in_cycle`).
 PULLS_LEAD_IN = timedelta(days=14)
 # Past this share of Unclear pulls the page says how many name no commit.
 # #1134: under 6% from v5.0 on (5.3% for v5.0), 20.8% for v4.20, the first
@@ -570,11 +571,8 @@ def calculate_pulls(
     after vPREV and by vN. A pull sent before vPREV and not merged into vN
     belongs to vPREV's cycle and is dropped; a tip merged in vPREV is
     outside vPREV..vN by definition. The rest are rejected, not merged in
-    vN (a tip outside the range) or unclear (no tip and no bot reply).
-
-    A pull sent in vN's last rc weeks for the next merge window is not
-    merged into vN and shows as such here, and as merged on the next
-    release's page. Linking it forward is not in scope (#1135).
+    vN (a tip outside the range) or unclear (no tip and no bot reply),
+    except in vN's own last PULLS_LEAD_IN (`_in_cycle`).
 
     Cost: measured beside `PULLS_FILL_BUDGET_SEC`.
     """
@@ -593,7 +591,7 @@ def calculate_pulls(
             closed=True,
             bot_window=(start, end),
         )
-        if p.state == "merged" or aware_utc(p.article.date) >= start
+        if _in_cycle(p, start, end)
     ]
     summary = ReleasePullSummary(
         count=len(pulls),
@@ -602,6 +600,28 @@ def calculate_pulls(
         bot_replies=sum(p.bot_merged for p in pulls),
     )
     return summary, [[p.article.id, p.state] for p in pulls]
+
+
+def _in_cycle(pull: Pull, start: datetime, end: datetime) -> bool:
+    """Whether a classified pull belongs to vPREV..vN's page. The window
+    rule's one place, symmetric at both ends with the same PULLS_LEAD_IN:
+
+    - Merged into vN: always, whenever it was sent.
+    - Sent before vPREV: vPREV's cycle claims it.
+    - Sent in vN's last PULLS_LEAD_IN, which is vN+1's lead-in: vN+1
+      claims it, unless Linus rejected it (decided, and about vN). Early
+      merge-window pulls for vN+1 are sent then, so "not merged in vN"
+      would misread them (decided 2026-11-09, #1135).
+
+    A late pull merged in neither release is on neither page: vN+1 keeps
+    a lead-in pull only when it was merged there.
+    """
+    if pull.state == "merged":
+        return True
+    sent = aware_utc(pull.article.date)
+    if sent < start:
+        return False
+    return sent < end - PULLS_LEAD_IN or pull.state == "rejected"
 
 
 # Time one warm pass may spend classifying releases' pull requests.

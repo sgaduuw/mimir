@@ -23,8 +23,9 @@ _HOURS_TO_V73 = int(_CYCLE.total_seconds() // 3600)
 
 @pytest.fixture
 def mirror(tmp_path, monkeypatch):
-    """Lightweight tags v7.1, v7.2, v7.3, nine weeks apart, with one
-    commit inside each range: `old` lands in v7.2, `new` in v7.3."""
+    """Lightweight tags v7.1 to v7.4, nine weeks apart, with one commit
+    inside each range: `old` lands in v7.2, `new` in v7.3, `next` in
+    v7.4."""
     path = tmp_path / "linus.git"
     repo = Repo.init_bare(path, mkdir=True)
     author = b"Linus <linus@x>"
@@ -35,11 +36,14 @@ def mirror(tmp_path, monkeypatch):
     v72 = add_commit(repo, author, [old], b"7.2", when=t72).id
     new = add_commit(repo, author, [v72], b"new", when=t72 + 3600).id
     v73 = add_commit(repo, author, [new], b"7.3", when=t73).id
-    for tag, oid in (("v7.1", v71), ("v7.2", v72), ("v7.3", v73)):
+    nxt = add_commit(repo, author, [v73], b"next", when=t73 + 3600).id
+    t74 = t73 + int(_CYCLE.total_seconds())
+    v74 = add_commit(repo, author, [nxt], b"7.4", when=t74).id
+    for tag, oid in (("v7.1", v71), ("v7.2", v72), ("v7.3", v73), ("v7.4", v74)):
         repo.refs[b"refs/tags/" + tag.encode()] = oid
     repo.close()
     monkeypatch.setattr(history, "_linus_path", lambda: path)
-    return {"old": old.decode(), "new": new.decode()}
+    return {"old": old.decode(), "new": new.decode(), "next": nxt.decode()}
 
 
 @pytest.fixture
@@ -61,10 +65,13 @@ def bodies(monkeypatch):
     return held, reads
 
 
-def _v73():
-    release = history.release_catalog()[0]
-    assert release.tag == "v7.3"
+def _release(tag):
+    (release,) = [r for r in history.release_catalog() if r.tag == tag]
     return release
+
+
+def _v73():
+    return _release("v7.3")
 
 
 def _fill(seeded_db, release):
@@ -128,6 +135,40 @@ def test_window_rule_for_a_closed_release(seeded_db, mirror, bodies):
     }
     summary = cache.get(release.key + history.PULLS)
     assert summary == {"count": 7, "unclear": 2, "tips": 4, "bot_replies": 1}
+
+
+# The first hour of v7.4's lead-in: exactly 14 days before v7.3's tag.
+_LATE = _HOURS_TO_V73 - 14 * 24
+
+
+def test_late_pulls_are_left_to_the_next_release_unless_they_made_it(
+    seeded_db, mirror, bodies
+):
+    """A pull sent in the last 14 days before vN that did not make it into
+    vN, and that Linus did not reject, is dropped from vN: vN+1's lead-in
+    claims it. vN+1 shows it only if it was merged there, so one merged
+    in neither release is on neither page."""
+    held, _ = bodies
+    with seeded_db() as s:
+        # On the boundary itself, and merged into v7.4.
+        _pull(s, held, "late-for-v74@x", mirror["next"], hours=_LATE)
+        # One hour before it: still v7.3's, so not merged in v7.3.
+        _pull(s, held, "last-in-cycle@x", _TIP_B, hours=_LATE - 1)
+        _pull(s, held, "late-merged@x", mirror["new"], hours=_LATE + 24)
+        _pull(s, held, "late-rejected@x", _TIP_B, hours=_LATE + 24)
+        _linus_reply(s, held, "late-rejected@x", "Not pulling this.", hours=_LATE + 48)
+        _pull(s, held, "late-unclear@x", hours=_LATE + 24)
+        _pull(s, held, "late-nowhere@x", _TIP_B, hours=_LATE + 24)
+        s.commit()
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73)
+    _fill(seeded_db, v74)
+    assert _states(v73) == {
+        "late-merged@x": "merged",
+        "late-rejected@x": "rejected",
+        "last-in-cycle@x": "not_merged",
+    }
+    assert _states(v74) == {"late-for-v74@x": "merged"}
 
 
 def test_rows_are_newest_first(seeded_db, mirror, bodies):
@@ -361,6 +402,7 @@ def test_coverage_note_is_decided_from_the_release_data(
     cache.set(release.key + history.PULLS, summary, history.GIT_TTL_SEC)
     note = _note(_page(client))
     assert note is not None and "14 days before v7.2" in note
+    assert "in the last 14 days before v7.3" in note
     assert sum(c in note for c in _COVERAGE) == (1 if says else 0), note
     if says:
         assert says in note, note
