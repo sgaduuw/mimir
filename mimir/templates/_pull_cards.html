@@ -1,0 +1,48 @@
+{# The pull-request cards shared by `/merge-window` and a release's history
+   page (#1135), so one state always reads the same on both. Takes
+   `pull_rows` (newest first, each with subject, url, author, date and
+   state) and `closed_tag`: none on the live page, the release's tag on a
+   closed one, where "Waiting" makes no sense and a tip outside the release
+   reads "Not merged in <tag>". The first four subjects of a card stay in
+   view; the rest sit in a native disclosure, so every link is still in the
+   HTML for crawlers (they were in fold boxes before #1000) and nothing
+   needs JS. #}
+{% set pull_labels = {'pending': 'Waiting', 'merged': 'Merged', 'unknown': 'Unclear', 'rejected': 'Rejected'} %}
+{% if closed_tag %}
+  {% set pull_labels = dict(pull_labels, not_merged='Not merged in ' ~ closed_tag) %}
+  {% set pull_states = ('merged', 'not_merged', 'unknown', 'rejected') %}
+{% else %}
+  {% set pull_states = ('pending', 'merged', 'unknown', 'rejected') %}
+{% endif %}
+
+{% macro pull_row(pr) %}
+<li>
+  <a href="{{ pr.url }}">{{ pr.subject|pull_label }}</a>
+  <br><small>{{ pr.author|display_name }}
+    {%- if pr.date %} &middot; {{ pr.date.strftime('%Y-%m-%d') }}{% endif %}</small>
+</li>
+{% endmacro %}
+
+<div class="pull-cards">
+  {% for state in pull_states %}
+  {% set rows = pull_rows|selectattr('state', 'equalto', state)|list %}
+  {% if rows %}
+  <section class="pull-card{% if state == 'unknown' %} pull-card--unclear{% endif %}" id="pulls-{{ state }}">
+    <h3 class="pull-card-label">{{ pull_labels[state] }}</h3>
+    <p class="count pull-card-count">{{ rows|length }}</p>
+    {% if state == 'unknown' %}<p><small>Names no commit, and pr-tracker-bot has not replied.</small></p>{% endif %}
+    <ul class="divided">
+      {% for pr in rows[:4] %}{{ pull_row(pr) }}{% endfor %}
+    </ul>
+    {% if rows|length > 4 %}
+    <details>
+      <summary>All {{ rows|length }} {{ pull_labels[state]|lower }}</summary>
+      <ul class="divided">
+        {% for pr in rows[4:] %}{{ pull_row(pr) }}{% endfor %}
+      </ul>
+    </details>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endfor %}
+</div>

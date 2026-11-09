@@ -1158,5 +1158,5 @@ def test_the_slow_tier_fills_release_subsystems_last(monkeypatch):
     monkeypatch.setattr(history, "release_catalog", lambda: releases)
     names = [name for name, _ in _build_slow_global_targets("http://x")]
     assert names[:2] == ["release_history:v9.2", "release_history:v9.1"]
-    assert names[-1] == "release_history:subsystems"
+    assert names[-2] == "release_history:subsystems"
     assert len(names) > 3

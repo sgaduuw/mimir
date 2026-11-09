@@ -120,8 +120,8 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/subsystem/<name>/` | Subsystem dashboard |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
 | `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
-| `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references |
-| `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page; page 1 first groups them by primary subsystem |
+| `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references; lists releases with references or pull requests to Linus |
+| `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page; page 1 first shows the release's pull requests to Linus and groups the messages by primary subsystem |
 | `/<inbox>/feed.atom` | Inbox Atom feed |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
@@ -138,10 +138,12 @@ to discussions or reports rather than patches, and the index may cover only
 part of a historical release. Detail pages deduplicate the messages currently
 addressable in the archive and resolve their current privacy and thread links.
 The history index and `/meta-sitemap.xml` list the same releases: those with a
-Git range and at least one recorded mailing-list reference. Both decide from
-cached history and never calculate during a request, so a release not yet
-calculated stays out until slow warming or a detail request fills it in; the
-index says how many releases have been checked. Detail pages for releases
+Git range and at least one recorded mailing-list reference or classified pull
+request to Linus (any state, Unclear included). Both decide from cached history
+and never calculate during a request, so a release not yet calculated stays out
+until slow warming or a detail request fills it in; the index says how many
+releases have been checked. A release with no reference counts as checked once
+its pull requests are classified. Detail pages for releases
 without references remain reachable by URL. Concurrent cold detail requests for
 one release share a single Git walk; if it fails or times out the page answers
 503 with `Retry-After`.
@@ -165,6 +167,15 @@ entries, newest release first, within a 60 s budget
 (`SUBSYSTEMS_FILL_BUDGET_SEC`), leaving the rest for the next pass. The budget
 rests on a production measurement of 2026-11-09 (grouping every release once
 takes about 17 s), recorded in `calculate_subsystems`.
+
+Page 1 of a release also lists its pull requests to Linus, with the cards and
+classifier `/merge-window` uses (Merged, Not merged in vN, Unclear, Rejected),
+and a muted note on how they are counted and why older releases are mostly
+Unclear. Each hourly warm pass classifies uncached releases, newest first,
+within `PULLS_FILL_BUDGET_SEC`, into two immutable cache rows renewed with the
+Git facts; a request never classifies and never reads a mail, and until a
+release is classified its page has no pull-request section. The window rule is
+`release_history._in_cycle`, with `PULLS_LEAD_IN` and `PULLS_SETTLE`.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
 form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias
@@ -252,7 +263,7 @@ their membership can be determined.
 | Path | Contents |
 | --- | --- |
 | `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root, `/merge-window`, `/llms.txt`, release-history index and closed releases with recorded references |
+| `/meta-sitemap.xml` | Site root, `/merge-window`, `/llms.txt`, release-history index and closed releases with recorded references or pull requests to Linus |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |

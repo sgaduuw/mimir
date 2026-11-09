@@ -1,4 +1,5 @@
-"""Closed Linux releases: immutable Git ranges and expiring recorded links."""
+"""Closed Linux releases: immutable Git ranges and pull requests, and
+expiring recorded links."""
 
 import fcntl
 import hashlib
@@ -11,9 +12,10 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from itertools import batched
 from pathlib import Path
+from typing import NamedTuple
 
 from dulwich.errors import NotGitRepository
 from dulwich.objects import Commit, Tag
@@ -25,6 +27,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
+from mimir.linus_pulls import ClosedPullState, Pull, classify
 from mimir.merge_window import (
     _VERSION_TAG_RE,
     MERGE_WINDOW_PATH,
@@ -100,6 +103,59 @@ class ReleaseSubsystems(BaseModel):
     smaller_patches: int
     # Distinct archived references counted, what every bar is a share of.
     references: int
+
+
+class ReleasePullSummary(BaseModel):
+    """Counts over a release's classified pull requests, the small row the
+    history index and the sitemap read (`has_recorded_history`)."""
+
+    count: int
+    unclear: int
+    # Pulls whose body names its last commit ("up to <sha>").
+    tips: int
+    # Pulls pr-tracker-bot replied were merged, inside vPREV..vN.
+    bot_replies: int
+
+
+class ReleasePull(NamedTuple):
+    """One row as the shared cards render it, resolved at render time."""
+
+    subject: str | None
+    url: str
+    author: str | None
+    date: datetime | None
+    state: ClosedPullState
+
+
+@dataclass(frozen=True)
+class ReleasePulls:
+    summary: ReleasePullSummary
+    rows: list[ReleasePull]
+
+
+# A release's pull requests, as two immutable rows like `:facts` and
+# `:members`: the summary the index reads, and `[[article id, state], ...]`
+# newest first. Both live GIT_TTL_SEC and every warm pass renews them
+# (`_renew_immutable`); nothing recalculates them. Mail ingested later for
+# an old window, or a change to the classifier, does not reach a cached
+# release until this version suffix is bumped on purpose.
+PULLS = ":pulls:1"
+PULL_ROWS = ":pull_rows:1"
+# Merge-window pull requests are often sent in vPREV's last rc week, before
+# vPREV exists, so candidates start this long before it. #1134 measured 16
+# to 69 pulls per release in this lead-in that were not merged into vN;
+# they belong to vPREV only if they made it in or Linus rejected them. The same
+# span at vN's end is vN+1's lead-in (`_in_cycle`).
+PULLS_LEAD_IN = timedelta(days=14)
+# The fill classifies a release only once its tag is this old, so replies
+# dated by the tag that are ingested a little later are there when its
+# immutable rows are written. A judgement, not a measurement: mail reaches
+# the archive within minutes to hours.
+PULLS_SETTLE = timedelta(days=1)
+# Past this share of Unclear pulls the page says how many name no commit.
+# #1134: under 6% from v5.0 on (5.3% for v5.0), 20.8% for v4.20, the first
+# window with pr-tracker-bot replies, and 40% to 100% before it.
+UNCLEAR_NOTE_SHARE = 0.10
 
 
 def _link_payload(
@@ -315,14 +371,20 @@ def cached_facts(releases: list[Release]) -> dict[str, ReleaseFacts]:
     }
 
 
-def has_recorded_history(facts: ReleaseFacts, links: ReleaseLinks) -> bool:
-    """A Git range and at least one recorded mailing-list reference.
+def has_recorded_history(
+    facts: ReleaseFacts, links: ReleaseLinks, pulls: ReleasePullSummary | None
+) -> bool:
+    """A Git range and (at least one recorded mailing-list reference or at
+    least one classified pull request, Unclear included, #1132).
 
     The sitemap and the history index both list a release by this, so
     what one advertises the other shows. One reference is the bar (#1130):
-    early releases with a single reference still pass.
+    early releases with a single reference still pass. `pulls` is None
+    until the warm has classified the release.
     """
-    return facts.commit_count is not None and (links.pair_count or 0) > 0
+    return facts.commit_count is not None and (
+        (links.pair_count or 0) > 0 or (pulls is not None and pulls.count > 0)
+    )
 
 
 @dataclass(frozen=True)
@@ -334,8 +396,12 @@ class RecordedHistory:
 
 
 def recorded_history(releases: list[Release]) -> RecordedHistory:
-    """Decide from cached state only; deciding must never start a walk."""
-    keys = [r.key + suffix for r in releases for suffix in (":facts", ":links")]
+    """Decide from cached state only; deciding must never start a walk.
+
+    A release is checked once the decision is known: listed, without a
+    Git range, or with its pull requests classified. One with no recorded
+    reference and no pulls yet may still be listed when they arrive."""
+    keys = [r.key + suffix for r in releases for suffix in (":facts", ":links", PULLS)]
     values = cache.get_many(keys)
     listed = []
     checked = 0
@@ -344,11 +410,15 @@ def recorded_history(releases: list[Release]) -> RecordedHistory:
         raw_links = values.get(release.key + ":links")
         if raw_facts is None or raw_links is None:
             continue
-        checked += 1
         facts = ReleaseFacts.model_validate(raw_facts)
         links = ReleaseLinks.model_validate(raw_links)
-        if has_recorded_history(facts, links):
+        raw_pulls = values.get(release.key + PULLS)
+        pulls = ReleasePullSummary.model_validate(raw_pulls) if raw_pulls else None
+        if has_recorded_history(facts, links, pulls):
             listed.append((release, facts, links))
+        elif facts.commit_count is not None and pulls is None:
+            continue
+        checked += 1
     return RecordedHistory(listed, checked)
 
 
@@ -493,6 +563,222 @@ def warm_release_subsystems(
             session.rollback()
 
 
+def calculate_pulls(
+    session: Session,
+    release: Release,
+    members: list[str],
+    previous_members: list[str] | None,
+) -> tuple[ReleasePullSummary, list[list]] | None:
+    """Classify the pull requests to Linus of `release`'s cycle with
+    `/merge-window`'s classifier (`linus_pulls.classify`), or None when a
+    tag date is missing.
+
+    Candidates are sent from PULLS_LEAD_IN before vPREV to vN, tag dates
+    as the page shows them. Merged: the named tip is in `members` (vN's
+    range, a set lookup, no walk), or pr-tracker-bot replied it was merged
+    after vPREV and by vN. The rest are rejected, not merged in vN (a tip
+    outside the range) or unclear (no tip and no bot reply).
+
+    Window rule: `_in_cycle`.
+
+    Cost: measured beside `PULLS_FILL_BUDGET_SEC`.
+    """
+    with Repo(str(release.path)) as repo:
+        _, start, _ = _tag_metadata(repo, release.previous_oid)
+        _, end, _ = _tag_metadata(repo, release.oid)
+    if start is None or end is None:
+        return None
+    merged = set(members)
+    previous = set(previous_members) if previous_members is not None else None
+    pulls = [
+        p
+        for p in classify(
+            session,
+            start - PULLS_LEAD_IN,
+            end,
+            merged,
+            closed=True,
+            bot_window=(start, end),
+        )
+        if _in_cycle(p, start, end, merged, previous)
+    ]
+    summary = ReleasePullSummary(
+        count=len(pulls),
+        unclear=sum(p.state == "unknown" for p in pulls),
+        tips=sum(p.tip is not None for p in pulls),
+        bot_replies=sum(
+            p.bot_at is not None and start < p.bot_at <= end for p in pulls
+        ),
+    )
+    return summary, [[p.article.id, p.state] for p in pulls]
+
+
+def _refused_by(pull: Pull, tagged: datetime) -> bool:
+    """Linus refused it by the tag. Rows are written once, at different
+    times, so a refusal sent after a tag must not change which release a
+    pull belongs to: vN's row would not see it, vN+1's would."""
+    return pull.rejected_at is not None and pull.rejected_at <= tagged
+
+
+def _made_it(pull: Pull, members: set[str], tagged: datetime) -> bool:
+    """Whether `pull` made it into the release tagged at `tagged` with
+    range `members`: its tip is in the range, or pr-tracker-bot replied it
+    was merged by the tag (a re-pushed tag, or a tip-less pull)."""
+    return pull.tip in members or (pull.bot_at is not None and pull.bot_at <= tagged)
+
+
+def _in_cycle(
+    pull: Pull,
+    start: datetime,
+    end: datetime,
+    members: set[str],
+    previous_members: set[str] | None,
+) -> bool:
+    """Whether a classified pull belongs to vPREV..vN's page. The window
+    rule's one place (decided 2026-11-09, #1135).
+
+    Every pull sent in the PULLS_LEAD_IN overlap before a tag T, both ends
+    included, belongs to exactly one of the release tagged T and the next
+    one: the release tagged T if it made it in or Linus rejected it by the
+    tag, otherwise the next one, with the next one's state (Rejected, if he
+    refused it later). Both releases decide with `_made_it` and
+    `_refused_by`, never with the state, where merged wins, so they agree
+    whenever each row was written. Overlap pulls are early merge-window pulls for the next
+    release more often than late fixes.
+
+    `previous_members` None: vPREV has no range and no page, so vN keeps
+    its whole lead-in.
+    """
+    sent = aware_utc(pull.article.date)
+    if sent >= end - PULLS_LEAD_IN:
+        return _refused_by(pull, end) or _made_it(pull, members, end)
+    if sent <= start and previous_members is not None:
+        return not (_refused_by(pull, start) or _made_it(pull, previous_members, start))
+    return True
+
+
+# Time one warm pass may spend classifying releases' pull requests.
+#
+# Cost, measured on production 2026-11-09 (`tools/measure_release_pulls.py`
+# at 8acb7f7, read-only, cache writes blocked), `calculate_pulls` per
+# release, runs in seconds:
+#
+#   v7.3    20,260 commits  2.404 / 1.928 / 1.938 s  310 statements
+#           478 pulls: 476 merged, 1 rejected, 1 unclear; 404 tips,
+#           472 bot replies
+#   v7.2    17,833 commits  2.329 / 1.823 / 1.913 s  594 statements
+#           454 pulls: 450 merged, 2 not merged, 2 unclear
+#   v4.20   2.031 s, 192 statements; 335 pulls: 255 merged, 76 unclear,
+#           3 not merged, 1 rejected; 151 bot replies
+#   v3.0    1.015 s, 184 statements; 273 pulls: 271 unclear, 2 rejected;
+#           no tips, no bot replies
+#   v2.6.30 0.714 s, 138 statements; 247 pulls: 244 unclear, 3 rejected
+#
+# So 0.7 to 2.4 s a release, and a cold fill of all 114 releases about 150
+# to 200 s: the budget spreads it over three or four hourly passes, newest
+# first. Merged counts against `git log --merges --first-parent` merges
+# naming a remote: 476 of 506 for v7.3, 450 of 480 for v7.2 (94% each; the
+# tool's docstring says why they need not match exactly). What a page view
+# pays to resolve the cached rows (`release_pulls`) was measured only
+# locally, on synthetic data: 0.005 s and 3 statements for 853 rows.
+#
+# The budget shares the slow tier's single 300 s `warm_global` timeout with
+# the subsystem fill's 60 s and the other slow targets (3 to 10 s), so the
+# fill runs last; once filled, a pass only renews. A release that starts
+# inside the budget finishes, so a pass can overrun by one, about 2.4 s.
+PULLS_FILL_BUDGET_SEC = 60
+
+
+def warm_release_pulls(
+    session: Session,
+    releases: list[Release],
+    budget_sec: float = PULLS_FILL_BUDGET_SEC,
+) -> None:
+    """Classify releases whose pulls are not cached, `releases` order
+    (newest first), until the budget is spent; the next pass picks up the
+    rest. A cached one is left alone (`warm_release` renews it). A release
+    tagged less than PULLS_SETTLE ago waits; one whose Git facts, or whose
+    predecessor's, are not cached yet waits for them (`releases` must hold the predecessor), one without a Git range
+    has nothing to classify, and one that fails is logged and skipped."""
+    deadline = time.monotonic() + budget_sec
+    by_tag = {release.tag: release for release in releases}
+    for release in releases:
+        if time.monotonic() >= deadline:
+            return
+        session.rollback()
+        if cache.alive(session, release.key + PULLS):
+            continue
+        cached = _cached_git(release)
+        if cached is None or cached[1] is None:
+            continue
+        tagged = cached[0].release_date
+        # The cache's clock, which tests set.
+        now = datetime.fromtimestamp(cache._now(), UTC)
+        if tagged is None or tagged + PULLS_SETTLE > now:
+            continue
+        previous_members = None
+        if release.previous_tag is not None:
+            previous = by_tag.get(release.previous_tag)
+            previous_git = _cached_git(previous) if previous else None
+            if previous_git is None:
+                continue
+            previous_members = previous_git[1]
+        # One failing release must not block every older one on every pass.
+        try:
+            result = calculate_pulls(session, release, cached[1], previous_members)
+            session.rollback()
+            if result is None:
+                continue
+            summary, rows = result
+            # Rows first: a summary implies its rows are there.
+            cache.set(release.key + PULL_ROWS, rows, GIT_TTL_SEC)
+            cache.set(release.key + PULLS, summary.model_dump(mode="json"), GIT_TTL_SEC)
+        except Exception:
+            logger.warning("release pulls failed for %s", release.tag, exc_info=True)
+            session.rollback()
+
+
+def release_pulls(session: Session, release: Release) -> ReleasePulls | None:
+    """The cached pull requests, resolved for display, or None. A request
+    never classifies and never reads a mail: until the warm has filled
+    the release, its page has no pull-request section.
+
+    The cached rows hold article IDs and states only, so the subject,
+    author, date and canonical inbox are today's, as on the archived
+    messages list. A row whose article is gone or unlinked is skipped."""
+    from mimir.web.urls import _canonical_inbox_names_for, _msg_path
+
+    values = cache.get_many([release.key + PULLS, release.key + PULL_ROWS])
+    if release.key + PULLS not in values or release.key + PULL_ROWS not in values:
+        return None
+    stored = values[release.key + PULL_ROWS]
+    ids = [article_id for article_id, _ in stored]
+    articles = {}
+    for chunk in batched(ids, 900):
+        articles.update(
+            (row.id, row)
+            for row in session.execute(
+                select(Article.id, Article.subject, Article.author, Article.date).where(
+                    Article.id.in_(chunk)
+                )
+            )
+        )
+    names = _canonical_inbox_names_for(session, list(articles))
+    rows = [
+        ReleasePull(
+            subject=art.subject,
+            url=_msg_path(art.id, art.date, names[art.id]),
+            author=art.author,
+            date=art.date,
+            state=state,
+        )
+        for article_id, state in stored
+        if (art := articles.get(article_id)) is not None and article_id in names
+    ]
+    summary = ReleasePullSummary.model_validate(values[release.key + PULLS])
+    return ReleasePulls(summary, rows)
+
+
 def release_data(
     release: Release, group: bool = False
 ) -> tuple[ReleaseFacts, ReleaseLinks, list[str]]:
@@ -551,38 +837,46 @@ class _Lapsed(Exception):
     pass
 
 
-def _renew_git(session: Session, release: Release) -> None:
-    """Extend cached Git facts before they expire, on every warm pass.
+# Rows fixed under the release key, which carries the tag object IDs, each
+# group led by the row whose expiry decides when the group is rewritten.
+_IMMUTABLE_ROWS = ((":facts", ":members"), (PULLS, PULL_ROWS))
 
-    Nothing else rewrites them: links refreshes read them through a cache
-    hit. A cold fill writes every release in one run, so without renewal
-    they expire together and every release leaves the index and the
-    sitemap at once until the next walk (#1131 review). Checking on every
-    pass, not only when links recompute about once a day, is what lands
-    a check inside the facts' refresh window.
 
-    The facts are fixed under their key, which carries the tag object
-    IDs, so renewal rewrites the values held and never walks Git. Off
-    the window `get_or_compute` only reads the small facts row; members
-    are read only to be rewritten.
+def _renew_immutable(session: Session, release: Release) -> None:
+    """Extend each group of immutable rows before it expires, on every
+    warm pass.
+
+    Nothing else rewrites them: links refreshes read the facts through a
+    cache hit, and the pull fill skips a release whose pulls are cached. A
+    cold fill writes every release in one run, so without renewal they
+    expire together and every release leaves the index and the sitemap at
+    once until the next walk (#1131 review). Checking on every pass, not
+    only when links recompute about once a day, is what lands a check
+    inside the rows' refresh window.
+
+    Renewal rewrites the values held and never walks Git or reads mail.
+    Off the window `get_or_compute` only reads the small leading row; the
+    others are read only to be rewritten.
     """
-    facts_key, members_key = release.key + ":facts", release.key + ":members"
-    if not cache.alive(session, facts_key):
-        # Not filled yet, or a broker write still queued: nothing to renew.
-        return
+    for suffixes in _IMMUTABLE_ROWS:
+        lead, *rest = [release.key + suffix for suffix in suffixes]
+        if not cache.alive(session, lead):
+            # Not filled yet, or a broker write still queued: nothing to renew.
+            continue
 
-    def rewrite():
-        values = cache.get_many([facts_key, members_key])
-        if facts_key not in values or members_key not in values:
-            raise _Lapsed
-        cache.set(members_key, values[members_key], GIT_TTL_SEC)
-        return values[facts_key]
+        def rewrite(lead=lead, rest=rest):
+            values = cache.get_many([lead, *rest])
+            if any(key not in values for key in (lead, *rest)):
+                raise _Lapsed
+            for key in rest:
+                cache.set(key, values[key], GIT_TTL_SEC)
+            return values[lead]
 
-    try:
-        cache.get_or_compute(session, facts_key, GIT_TTL_SEC, rewrite)
-    except _Lapsed:
-        # Expired since the check; the next walk refills it.
-        pass
+        try:
+            cache.get_or_compute(session, lead, GIT_TTL_SEC, rewrite)
+        except _Lapsed:
+            # Expired since the check; the next walk or fill refills it.
+            pass
 
 
 def warm_release(session: Session, release: Release) -> None:
@@ -593,7 +887,7 @@ def warm_release(session: Session, release: Release) -> None:
     try:
         release_data(release, group=True)
         session.rollback()
-        _renew_git(session, release)
+        _renew_immutable(session, release)
     finally:
         session.rollback()
 
