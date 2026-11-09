@@ -895,3 +895,19 @@ def test_the_fill_waits_a_day_after_a_tag(seeded_db, monkeypatch):
         with seeded_db() as s:
             history.warm_release_pulls(s, releases, budget_sec=100)
         assert asked == expected, now
+
+
+def test_the_first_refusal_decides_which_release_a_pull_is_on(
+    seeded_db, mirror, bodies
+):
+    """Linus refuses a late pull before v7.3's tag and again after it. The first refusal decides, on both pages: v7.3's row cannot see the second one, v7.4's can."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "twice@x", _TIP_B, hours=_HOURS_TO_V73 - 72)
+        _linus_reply(s, held, "twice@x", "Not pulling this.", hours=_HOURS_TO_V73 - 24)
+        _linus_reply(s, held, "twice@x", "Still not pulling.", hours=_HOURS_TO_V73 + 48)
+        s.commit()
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73, v74)
+    assert _states(v73) == {"twice@x": "rejected"}
+    assert _states(v74) == {}
