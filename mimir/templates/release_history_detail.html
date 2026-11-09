@@ -13,7 +13,25 @@
 <p>{{ links.pair_count|format_count }} recorded mailing-list references; {{ total|format_count }} distinct archived messages.</p>
 {% endif %}
 <p>References are commit/message pairs, not unique landed patches. They can name discussions or bug reports. This index may cover only part of the release, and some referenced messages are not archived here.</p>
-{% if subsystems and subsystems.references %}
+{% set has_pulls = pulls and pulls.rows %}
+{% set has_subsystems = subsystems and subsystems.references %}
+{% if has_pulls %}
+{% set counted = pulls.summary %}
+<h2 id="pull-requests-to-linus">Pull requests to Linus</h2>
+{% with pull_rows=pulls.rows, closed_tag=release.tag %}{% include "_pull_cards.html" %}{% endwith %}
+{# Muted, like the merge window's "How these are counted": it describes the
+   data, it is not a warning. The coverage sentence is decided from this
+   release's own counts; the years come from #1134's measurement. #}
+<p id="pulls-how-counted"><small>Pull requests addressed to Linus, sent from {{ lead_in_days }} days before {{ release.previous_tag }} to {{ release.tag }}.
+  Merged: the commit it names is in {{ release.tag }}, or pr-tracker-bot replied it was merged between {{ release.previous_tag }} and {{ release.tag }}.
+  Not merged in {{ release.tag }}: it names a commit outside this release, which includes pull requests sent early for the next merge window.
+  One sent before {{ release.previous_tag }} and not merged here counts for {{ release.previous_tag }}.
+  {%- if counted.bot_replies == 0 and counted.tips == 0 %} None of these pull requests names its last commit, and pr-tracker-bot did not reply to any of them, so all are Unclear. Pull requests began naming their last commit around 2012, and pr-tracker-bot began replying in late 2018.
+  {%- elif counted.bot_replies == 0 and counted.unclear %} pr-tracker-bot did not reply to any of these (it began replying in late 2018), so only a named commit marks one merged; {{ counted.unclear|format_count }} {{ 'names none and is' if counted.unclear == 1 else 'name none and are' }} Unclear.
+  {%- elif counted.unclear > counted.count * unclear_note_share %} {{ counted.unclear|format_count }} of {{ counted.count|format_count }} {{ 'names no commit and has' if counted.unclear == 1 else 'name no commit and have' }} no pr-tracker-bot reply, so {{ 'it is' if counted.unclear == 1 else 'they are' }} Unclear.
+  {%- endif %}</small></p>
+{% endif %}
+{% if has_subsystems %}
 <h2 id="subsystems">By subsystem</h2>
 {% if subsystems.references < handful %}
 <p>Only {{ subsystems.references|format_count }} archived reference{{ '' if subsystems.references == 1 else 's' }}, too few for a subsystem breakdown.</p>
@@ -21,8 +39,8 @@
 {% with sections=subsystems.sections, smaller=subsystems.smaller, smaller_patches=subsystems.smaller_patches, section_min=section_min, unit="of this release's recorded references" %}{% include "_subsystem_sections.html" %}{% endwith %}
 <p><small>Counts are this release's recorded references that are archived here, each message once, and bars are relative to the largest subsystem of this release. Grouped by MAINTAINERS as of the last refresh: each series goes under the most specific subsystem that covers at least half as many of its files as the subsystem covering the most.</small></p>
 {% endif %}
-<h2 id="messages">Archived messages</h2>
 {% endif %}
+{% if has_pulls or has_subsystems %}<h2 id="messages">Archived messages</h2>{% endif %}
 {% if rows %}
 <ul class="divided">
 {% for article, url in rows %}
