@@ -22,7 +22,7 @@ run the seconds and SQL statements of `calculate_subsystems`, split into
 the archived-ID query and `rank_postings`, and for comparison one
 `archived_page` page 1 (what the page already pays per request). Write
 the run's figures, its date and what was counted next to
-`calculate_subsystems` and replace the NOT YET MEASURED note.
+`calculate_subsystems` (the 2026-11-09 figures are recorded there).
 """
 
 import os

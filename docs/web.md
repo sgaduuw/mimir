@@ -163,8 +163,8 @@ links refresh in the background warm rewrites it with the links (a MAINTAINERS
 change reaches it within a day), and each hourly warm pass fills missing
 entries, newest release first, within a 60 s budget
 (`SUBSYSTEMS_FILL_BUDGET_SEC`), leaving the rest for the next pass. The budget
-rests on a local timing; the production figure is not measured yet, see
-`calculate_subsystems`.
+rests on a production measurement of 2026-11-09 (grouping every release once
+takes about 17 s), recorded in `calculate_subsystems`.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
 form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias

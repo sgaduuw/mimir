@@ -395,19 +395,23 @@ def calculate_subsystems(session: Session, message_ids: list[str]) -> ReleaseSub
     The page shows the cached copy, which can be up to a day older than
     the page's own total.
 
-    Cost, production: NOT YET MEASURED (#1136 step 3). Put here v7.3, the
-    largest release (14,040 distinct recorded message IDs on 2026-11-08),
-    with what was counted and when: `tools/measure_release_subsystems.py`.
-    The warm pass's time budget (`SUBSYSTEMS_FILL_BUDGET_SEC`) is sized
-    from the figures here: revisit it when the production one is written.
+    Cost, measured on production, 2026-11-09 (3.48.0, read-only, cache
+    writes blocked, `tools/measure_release_subsystems.py`): v7.3, the
+    largest release, with 14,040 cached message IDs, 14,003 archived
+    references, 7,235 postings, 118 sections and 890 smaller subsystems
+    holding 4,992. Three runs took 0.769, 0.747 and 0.744 s, 34 statements
+    each, about 53 microseconds per reference. `archived_page` page 1 on
+    the same release took 0.156 s in 83 statements. All 114 releases had
+    a cached ID list, 313,565 distinct IDs in total, so grouping every
+    release once costs about 17 s.
 
     Cost, local floor (synthetic, NOT production): 2026-11-09, 14,040
     archived references, 41,818 `article_files` rows, 2,501 subsystems of
     three globs each, SQLite 3.54.1 on a laptop: 0.57 s and 34 statements
     per call (the first also builds the rules index, 0.02 s more). The
     page's own `archived_page` page 1 took 0.04 s there. The synthetic
-    paths are far simpler than real ones; treat this as a ratio, about
-    14 times the page's current request cost.
+    paths are far simpler than real ones: production came out at 1.3
+    times this floor.
     """
     archived = []
     for chunk in batched(set(message_ids), 900):
@@ -443,17 +447,17 @@ def release_subsystems(release: Release) -> ReleaseSubsystems | None:
     return ReleaseSubsystems.model_validate(raw) if raw is not None else None
 
 
-# Time one warm pass may spend filling missing groupings. Sized from the
-# local floor in `calculate_subsystems` (about 40 microseconds per
-# reference, so a cold fill of ~800,000 references across every release is
-# about 30 s there; production is unmeasured, assume 10x): 60 s fills the
-# newest releases in the first pass and the rest over a few hourly passes.
-# It is not the whole allowance: the slow tier runs as one `warm_global` op
-# with a single 300 s timeout, shared with every other slow target,
-# including each release's `warm_release`, whose daily links refresh also
-# groups, with no budget. The fill runs last for that reason. A release
-# that starts inside the budget finishes, so a pass can overrun by one.
-# PRODUCTION FIGURE: NOT YET MEASURED, see `tools/measure_release_subsystems.py`.
+# Time one warm pass may spend filling missing groupings. Measured on
+# production 2026-11-09 (see `calculate_subsystems`): about 53 microseconds
+# per reference and 313,565 distinct IDs across all 114 releases, so a cold
+# fill of every release takes about 17 s and 60 s fills them all in one
+# pass. It is not the whole allowance: the slow tier runs as one
+# `warm_global` op with a single 300 s timeout, shared with every other slow
+# target, including each release's `warm_release`, whose daily links refresh
+# also groups, with no budget (regrouping every release at once adds about
+# 17 s to a slow warm_global that took 3 to 10 s in 17 hourly runs on
+# 2026-11-08/09). The fill runs last for that reason. A release that starts
+# inside the budget finishes, so a pass can overrun by one.
 SUBSYSTEMS_FILL_BUDGET_SEC = 60
 
 
