@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.49.0] - 2026-11-09
+
 ### Added
 
 - Release history pages group a release's archived references by primary subsystem, on page 1, with the same rows, bars and "N smaller subsystems" group as `/merge-window`. Bars are relative to the release's largest subsystem and say so; a release with only a handful of references gets a one-line note instead of a table. The grouping is cached with the release's recorded references and refreshes with them. A request never computes it: the hourly background warm fills missing ones, newest release first, within a time budget, and until a release has one its page shows no subsystem section (#1136).
@@ -23,6 +25,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Correcting the lower tag of a preceding release's Git range invalidates the affected pull-request classification, without discarding unrelated release statistics. Historical pull cards also omit messages whose current metadata no longer supplies a valid date, preventing dead links after reindexing.
 - Concurrent requests for a release history page whose Git range is not cached yet now share one `git rev-list` walk across the web workers of a container, instead of each starting its own. Waiting and walking share the 30 s Git budget, so a request still fails with a retryable 503 rather than reaching the worker timeout (#1130).
 
 ## [3.48.0] - 2026-11-08

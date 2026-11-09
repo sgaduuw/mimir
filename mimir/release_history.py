@@ -77,6 +77,7 @@ class Release:
     previous_oid: str | None
     rc_refs: tuple[tuple[str, str], ...]
     key: str
+    previous_previous_oid: str | None = None
 
 
 class ReleaseFacts(BaseModel):
@@ -158,6 +159,12 @@ PULLS_SETTLE = timedelta(days=1)
 UNCLEAR_NOTE_SHARE = 0.10
 
 
+def pull_cache_key(release: Release) -> str:
+    # Lead-in ownership also uses the preceding release's Git range. Its
+    # lower endpoint can move while this release's own range stays fixed.
+    return release.key + ":previous_lower:" + (release.previous_previous_oid or "none")
+
+
 def _link_payload(
     release: Release, pair_count: int | None, message_ids: list[str]
 ) -> dict:
@@ -198,6 +205,7 @@ def release_catalog(path: Path | None = None) -> list[Release]:
     )
     releases = []
     previous = None
+    previous_previous = None
     for tag in finals:
         rc_refs = tuple(
             sorted((n, v) for n, v in refs.items() if n.startswith(tag + "-rc"))
@@ -214,9 +222,18 @@ def release_catalog(path: Path | None = None) -> list[Release]:
         )
         key = "release_history:1:" + hashlib.sha256(repr(identity).encode()).hexdigest()
         releases.append(
-            Release(tag, path, refs[tag], previous, previous_oid, rc_refs, key)
+            Release(
+                tag,
+                path,
+                refs[tag],
+                previous,
+                previous_oid,
+                rc_refs,
+                key,
+                refs[previous_previous] if previous_previous else None,
+            )
         )
-        previous = tag
+        previous_previous, previous = previous, tag
     return releases[::-1]
 
 
@@ -401,7 +418,11 @@ def recorded_history(releases: list[Release]) -> RecordedHistory:
     A release is checked once the decision is known: listed, without a
     Git range, or with its pull requests classified. One with no recorded
     reference and no pulls yet may still be listed when they arrive."""
-    keys = [r.key + suffix for r in releases for suffix in (":facts", ":links", PULLS)]
+    keys = [
+        key
+        for r in releases
+        for key in (r.key + ":facts", r.key + ":links", pull_cache_key(r) + PULLS)
+    ]
     values = cache.get_many(keys)
     listed = []
     checked = 0
@@ -412,7 +433,7 @@ def recorded_history(releases: list[Release]) -> RecordedHistory:
             continue
         facts = ReleaseFacts.model_validate(raw_facts)
         links = ReleaseLinks.model_validate(raw_links)
-        raw_pulls = values.get(release.key + PULLS)
+        raw_pulls = values.get(pull_cache_key(release) + PULLS)
         pulls = ReleasePullSummary.model_validate(raw_pulls) if raw_pulls else None
         if has_recorded_history(facts, links, pulls):
             listed.append((release, facts, links))
@@ -706,7 +727,8 @@ def warm_release_pulls(
         if time.monotonic() >= deadline:
             return
         session.rollback()
-        if cache.alive(session, release.key + PULLS):
+        pull_key = pull_cache_key(release)
+        if cache.alive(session, pull_key + PULLS):
             continue
         cached = _cached_git(release)
         if cached is None or cached[1] is None:
@@ -731,8 +753,8 @@ def warm_release_pulls(
                 continue
             summary, rows = result
             # Rows first: a summary implies its rows are there.
-            cache.set(release.key + PULL_ROWS, rows, GIT_TTL_SEC)
-            cache.set(release.key + PULLS, summary.model_dump(mode="json"), GIT_TTL_SEC)
+            cache.set(pull_key + PULL_ROWS, rows, GIT_TTL_SEC)
+            cache.set(pull_key + PULLS, summary.model_dump(mode="json"), GIT_TTL_SEC)
         except Exception:
             logger.warning("release pulls failed for %s", release.tag, exc_info=True)
             session.rollback()
@@ -748,10 +770,11 @@ def release_pulls(session: Session, release: Release) -> ReleasePulls | None:
     messages list. A row whose article is gone or unlinked is skipped."""
     from mimir.web.urls import _canonical_inbox_names_for, _msg_path
 
-    values = cache.get_many([release.key + PULLS, release.key + PULL_ROWS])
-    if release.key + PULLS not in values or release.key + PULL_ROWS not in values:
+    pull_key = pull_cache_key(release)
+    values = cache.get_many([pull_key + PULLS, pull_key + PULL_ROWS])
+    if pull_key + PULLS not in values or pull_key + PULL_ROWS not in values:
         return None
-    stored = values[release.key + PULL_ROWS]
+    stored = values[pull_key + PULL_ROWS]
     ids = [article_id for article_id, _ in stored]
     articles = {}
     for chunk in batched(ids, 900):
@@ -759,7 +782,7 @@ def release_pulls(session: Session, release: Release) -> ReleasePulls | None:
             (row.id, row)
             for row in session.execute(
                 select(Article.id, Article.subject, Article.author, Article.date).where(
-                    Article.id.in_(chunk)
+                    Article.id.in_(chunk), Article.date.is_not(None)
                 )
             )
         )
@@ -775,7 +798,7 @@ def release_pulls(session: Session, release: Release) -> ReleasePulls | None:
         for article_id, state in stored
         if (art := articles.get(article_id)) is not None and article_id in names
     ]
-    summary = ReleasePullSummary.model_validate(values[release.key + PULLS])
+    summary = ReleasePullSummary.model_validate(values[pull_key + PULLS])
     return ReleasePulls(summary, rows)
 
 
@@ -837,11 +860,6 @@ class _Lapsed(Exception):
     pass
 
 
-# Rows fixed under the release key, which carries the tag object IDs, each
-# group led by the row whose expiry decides when the group is rewritten.
-_IMMUTABLE_ROWS = ((":facts", ":members"), (PULLS, PULL_ROWS))
-
-
 def _renew_immutable(session: Session, release: Release) -> None:
     """Extend each group of immutable rows before it expires, on every
     warm pass.
@@ -858,8 +876,12 @@ def _renew_immutable(session: Session, release: Release) -> None:
     Off the window `get_or_compute` only reads the small leading row; the
     others are read only to be rewritten.
     """
-    for suffixes in _IMMUTABLE_ROWS:
-        lead, *rest = [release.key + suffix for suffix in suffixes]
+    # Each group has its own tag dependencies; renew only that identity.
+    for base, suffixes in (
+        (release.key, (":facts", ":members")),
+        (pull_cache_key(release), (PULLS, PULL_ROWS)),
+    ):
+        lead, *rest = [base + suffix for suffix in suffixes]
         if not cache.alive(session, lead):
             # Not filled yet, or a broker write still queued: nothing to renew.
             continue

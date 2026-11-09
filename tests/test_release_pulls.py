@@ -10,6 +10,7 @@ from dulwich.repo import Repo
 
 from mimir import cache, store
 from mimir import release_history as history
+from mimir.models import Article
 from mimir.parser import ParsedArticle
 from tests._dom import parse
 from tests._helpers import add_commit
@@ -101,7 +102,7 @@ def _fill(seeded_db, *releases):
 
 
 def _states(release):
-    rows = cache.get(release.key + history.PULL_ROWS)
+    rows = cache.get(history.pull_cache_key(release) + history.PULL_ROWS)
     return {_mid(article_id): state for article_id, state in rows}
 
 
@@ -153,7 +154,7 @@ def test_window_rule_for_a_closed_release(seeded_db, mirror, bodies):
         "bot@x": "merged",
         "bot-late@x": "unknown",
     }
-    summary = cache.get(release.key + history.PULLS)
+    summary = cache.get(history.pull_cache_key(release) + history.PULLS)
     assert summary == {"count": 9, "unclear": 3, "tips": 5, "bot_replies": 1}
 
 
@@ -456,7 +457,7 @@ def test_a_page_view_on_a_miss_never_classifies_and_shows_no_section(
     assert parse(html).find_all("section", cls="pull-card") == []
     assert 'id="pull-requests-to-linus"' not in html
     assert reads == []
-    assert cache.get(_v73().key + history.PULLS) is None
+    assert cache.get(history.pull_cache_key(_v73()) + history.PULLS) is None
 
 
 def test_page_two_has_no_pull_section(client, seeded_db, mirror, bodies, monkeypatch):
@@ -529,7 +530,9 @@ def test_coverage_note_is_decided_from_the_release_data(
     _seed_four_states(seeded_db, mirror, held)
     release = _v73()
     _fill(seeded_db, release)
-    cache.set(release.key + history.PULLS, summary, history.GIT_TTL_SEC)
+    cache.set(
+        history.pull_cache_key(release) + history.PULLS, summary, history.GIT_TTL_SEC
+    )
     note = _note(_page(client))
     assert note is not None and "14 days before v7.2" in note
     assert "made it in or Linus rejected them by the tag" in note
@@ -592,8 +595,10 @@ def test_the_warm_fills_missing_pulls_newest_first_within_its_budget(
         asked.clear()
         history.warm_release_pulls(s, releases, budget_sec=15)
         assert asked == []
-    assert all(cache.get(r.key + history.PULLS) for r in releases)
-    assert all(cache.get(r.key + history.PULL_ROWS) for r in releases)
+    assert all(cache.get(history.pull_cache_key(r) + history.PULLS) for r in releases)
+    assert all(
+        cache.get(history.pull_cache_key(r) + history.PULL_ROWS) for r in releases
+    )
 
 
 def test_the_pull_fill_waits_for_git_facts_and_skips_a_rangeless_release(
@@ -652,7 +657,9 @@ def test_a_release_whose_pulls_fail_does_not_block_the_older_ones(
     with seeded_db() as s:
         history.warm_release_pulls(s, releases, budget_sec=100)
     assert asked == ["v9.3", "v9.2", "v9.1"]
-    assert [bool(cache.get(r.key + history.PULLS)) for r in releases] == [
+    assert [
+        bool(cache.get(history.pull_cache_key(r) + history.PULLS)) for r in releases
+    ] == [
         False,
         True,
         True,
@@ -675,7 +682,10 @@ def test_pulls_survive_their_expiry_under_hourly_warm_passes(
     window = 7200
     with cache.warm_window(window):
         _fill(seeded_db, release)
-    keys = [release.key + history.PULLS, release.key + history.PULL_ROWS]
+    keys = [
+        history.pull_cache_key(release) + history.PULLS,
+        history.pull_cache_key(release) + history.PULL_ROWS,
+    ]
     assert set(cache.get_many(keys)) == set(keys)
     monkeypatch.setattr(
         history,
@@ -756,7 +766,7 @@ def test_a_release_with_neither_is_checked_and_not_listed(
     history.git_facts(_release("v7.2"))
     with seeded_db() as s:
         history.warm_release_pulls(s, history.release_catalog())
-    assert cache.get(release.key + history.PULLS)["count"] == 0
+    assert cache.get(history.pull_cache_key(release) + history.PULLS)["count"] == 0
     assert _sitemap_tags(client) == set()
     recorded = history.recorded_history([release])
     assert (recorded.listed, recorded.checked) == ([], 1)
@@ -917,3 +927,82 @@ def test_the_first_refusal_decides_which_release_a_pull_is_on(
     _fill(seeded_db, v73, v74)
     assert _states(v73) == {"twice@x": "rejected"}
     assert _states(v74) == {}
+
+
+def test_pull_cache_tracks_previous_release_range(seeded_db, mirror, bodies):
+    held, _ = bodies
+    with seeded_db() as session:
+        art = _pull(session, held, "ancestor-moved@x", mirror["old"], hours=-72)
+        session.commit()
+        article_id = art.id
+    release = _release("v7.3")
+    _fill(seeded_db, release)
+    assert _states(release) == {}, "initially belongs to v7.2"
+
+    # Correct the preceding range's lower tag. v7.2 and v7.3 stay fixed,
+    # but this tip is no longer in v7.1..v7.2, hence belongs to v7.3.
+    with Repo(str(release.path)) as repo:
+        repo.refs[b"refs/tags/v7.1"] = mirror["old"].encode()
+    release = _release("v7.3")
+    previous = _release("v7.2")
+    _, members = history.calculate_git(release)
+    _, previous_members = history.calculate_git(previous)
+    assert mirror["old"] not in previous_members
+    with seeded_db() as session:
+        summary, expected = history.calculate_pulls(
+            session, release, members, previous_members
+        )
+    assert summary.count == 1
+    assert expected == [[article_id, "not_merged"]]
+
+    _fill(seeded_db, release)
+    assert _states(release) == {"ancestor-moved@x": "not_merged"}
+
+
+def test_cached_pull_without_current_date_has_no_dead_link(
+    client, seeded_db, mirror, bodies
+):
+    held, _ = bodies
+    with seeded_db() as session:
+        article = _pull(session, held, "date-corrected@x", mirror["new"], hours=48)
+        session.commit()
+        article_id = article.id
+    release = _release("v7.3")
+    _fill(seeded_db, release)
+    with seeded_db() as session:
+        before = history.release_pulls(session, release)
+        assert len(before.rows) == 1
+        session.get(Article, article_id).date = None
+        session.commit()
+    with seeded_db() as session:
+        after = history.release_pulls(session, release)
+    failures = [(row.url, client.get(row.url).status_code) for row in after.rows]
+    assert all(status == 200 for _, status in failures), failures
+
+
+def test_retagged_previous_range_hides_stale_pulls_until_refilled(
+    client, seeded_db, mirror, bodies
+):
+    held, _ = bodies
+    with seeded_db() as session:
+        _pull(session, held, "current-cycle@x", _TIP_B, hours=48)
+        session.commit()
+    before = _v73()
+    history.release_data(before)
+    _fill(seeded_db, before)
+    assert "v7.3" in _sitemap_tags(client)
+    assert "v7.3" in _index_tags(client)[0]
+    with Repo(str(before.path)) as repo:
+        repo.refs[b"refs/tags/v7.1"] = mirror["old"].encode()
+    after = _v73()
+    # Its own Git range and recorded references remain usable. Only the
+    # classification's preceding range changed, so hide its stale cards.
+    assert after.key == before.key
+    with seeded_db() as session:
+        assert history.release_pulls(session, after) is None
+    assert "v7.3" not in _sitemap_tags(client)
+    assert "v7.3" not in _index_tags(client)[0]
+    _fill(seeded_db, after)
+    assert _states(after) == {"current-cycle@x": "not_merged"}
+    assert "v7.3" in _sitemap_tags(client)
+    assert "v7.3" in _index_tags(client)[0]
