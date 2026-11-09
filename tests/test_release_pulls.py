@@ -13,7 +13,15 @@ from mimir import release_history as history
 from mimir.parser import ParsedArticle
 from tests._dom import parse
 from tests._helpers import add_commit
-from tests.test_linus_pulls import _TAG_TIME, _TIP_B, _bot_reply, _linus_reply, _pull
+from tests.test_linus_pulls import (
+    _BOT,
+    _TAG_TIME,
+    _TIP_B,
+    _bot_reply,
+    _linus_reply,
+    _post,
+    _pull,
+)
 
 # v7.2 is tagged at the linus_pulls helpers' `_TAG_TIME`, so their
 # `hours=` offsets count from vPREV. Nine weeks a cycle.
@@ -74,12 +82,18 @@ def _v73():
     return _release("v7.3")
 
 
-def _fill(seeded_db, release):
-    """What the hourly warm does: the Git facts (as `warm_release` leaves
-    them), then the pull fill."""
-    history.git_facts(release)
+def _fill(seeded_db, *releases):
+    """What the hourly warm does: the Git facts of each release and its
+    predecessor (as `warm_release` leaves them), then the pull fill over
+    the whole catalog, which classifies whatever has both."""
+    catalog = history.release_catalog()
+    by_tag = {r.tag: r for r in catalog}
+    for release in releases:
+        history.git_facts(release)
+        if release.previous_tag:
+            history.git_facts(by_tag[release.previous_tag])
     with seeded_db() as s:
-        history.warm_release_pulls(s, [release])
+        history.warm_release_pulls(s, catalog)
 
 
 def _states(release):
@@ -97,9 +111,9 @@ def _mid(article_id):
 
 def test_window_rule_for_a_closed_release(seeded_db, mirror, bodies):
     """Candidates run from 14 days before vPREV to vN. A pull sent in
-    vPREV's last rc weeks and merged in vN counts for vN; one merged in
-    vPREV, or never merged, belongs to vPREV's cycle and is dropped. A
-    pr-tracker-bot reply counts only inside vPREV..vN."""
+    vPREV's last two weeks counts for vPREV only if it made it into vPREV
+    or Linus rejected it; otherwise it counts here, with this release's
+    state. A pr-tracker-bot reply marks merged only inside vPREV..vN."""
     held, _ = bodies
     day = 24
     with seeded_db() as s:
@@ -126,6 +140,8 @@ def test_window_rule_for_a_closed_release(seeded_db, mirror, bodies):
     _fill(seeded_db, release)
     assert _states(release) == {
         "early-for-v73@x": "merged",
+        "lead-in-unclear@x": "unknown",
+        "lead-in-unmerged@x": "not_merged",
         "merged@x": "merged",
         "not-merged@x": "not_merged",
         "unclear@x": "unknown",
@@ -134,20 +150,19 @@ def test_window_rule_for_a_closed_release(seeded_db, mirror, bodies):
         "bot-late@x": "unknown",
     }
     summary = cache.get(release.key + history.PULLS)
-    assert summary == {"count": 7, "unclear": 2, "tips": 4, "bot_replies": 1}
+    assert summary == {"count": 9, "unclear": 3, "tips": 5, "bot_replies": 1}
 
 
 # The first hour of v7.4's lead-in: exactly 14 days before v7.3's tag.
 _LATE = _HOURS_TO_V73 - 14 * 24
 
 
-def test_late_pulls_are_left_to_the_next_release_unless_they_made_it(
+def test_late_pulls_count_for_the_next_release_unless_they_made_it(
     seeded_db, mirror, bodies
 ):
     """A pull sent in the last 14 days before vN that did not make it into
-    vN, and that Linus did not reject, is dropped from vN: vN+1's lead-in
-    claims it. vN+1 shows it only if it was merged there, so one merged
-    in neither release is on neither page."""
+    vN, and that Linus did not reject, counts for vN+1 with vN+1's state:
+    merged, not merged or Unclear. It is on exactly one page."""
     held, _ = bodies
     with seeded_db() as s:
         # On the boundary itself, and merged into v7.4.
@@ -161,14 +176,112 @@ def test_late_pulls_are_left_to_the_next_release_unless_they_made_it(
         _pull(s, held, "late-nowhere@x", _TIP_B, hours=_LATE + 24)
         s.commit()
     v73, v74 = _release("v7.3"), _release("v7.4")
-    _fill(seeded_db, v73)
-    _fill(seeded_db, v74)
+    _fill(seeded_db, v73, v74)
     assert _states(v73) == {
         "late-merged@x": "merged",
         "late-rejected@x": "rejected",
         "last-in-cycle@x": "not_merged",
     }
-    assert _states(v74) == {"late-for-v74@x": "merged"}
+    assert _states(v74) == {
+        "late-for-v74@x": "merged",
+        "late-unclear@x": "unknown",
+        "late-nowhere@x": "not_merged",
+    }
+
+
+def test_a_pull_sent_at_the_tag_instant_is_in_the_overlap(seeded_db, mirror, bodies):
+    """The overlap is closed at both ends: a pull sent exactly at v7.3's
+    tag is v7.3's if it made it in, else v7.4's, never both."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "at-tag-in@x", mirror["new"], hours=_HOURS_TO_V73)
+        _pull(s, held, "at-tag-out@x", mirror["next"], hours=_HOURS_TO_V73)
+        s.commit()
+    v73, v74 = _release("v7.3"), _release("v7.4")
+    _fill(seeded_db, v73, v74)
+    assert _states(v73) == {"at-tag-in@x": "merged"}
+    assert _states(v74) == {"at-tag-out@x": "merged"}
+
+
+def test_a_pull_merged_in_vprev_with_a_late_bot_reply_is_not_merged_in_vn(
+    seeded_db, mirror, bodies
+):
+    """#1135 acceptance: "one merged in vPREV does not appear on vN".
+    Release-day fix pulls are merged, then tagged, then pushed; the bot
+    sees the push and replies after the tag. The tip says vPREV.
+    (Review finding 2, kept as written.)"""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "final-fixes@x", mirror["old"], hours=-6)
+        _bot_reply(s, held, "final-fixes@x", hours=1)
+        s.commit()
+    release = _v73()
+    _fill(seeded_db, release)
+    assert "final-fixes@x" not in _states(release)
+
+
+def test_a_tipless_lead_in_pull_goes_by_its_bot_reply_date(seeded_db, mirror, bodies):
+    """No tip: a pr-tracker-bot reply at or before vPREV's tag says it made
+    it into vPREV; one after it says vN merged it. With two replies, the
+    first decides."""
+    held, _ = bodies
+    with seeded_db() as s:
+        _pull(s, held, "in-v72@x", hours=-48)
+        _bot_reply(s, held, "in-v72@x", hours=0)
+        _post(
+            s,
+            held,
+            "bot-again@x",
+            subject="Re: [GIT PULL] in-v72@x",
+            author=_BOT,
+            body="has been merged into torvalds/linux.git:\n",
+            hours=5,
+            parent="in-v72@x",
+        )
+        _pull(s, held, "in-v73@x", hours=-48)
+        _bot_reply(s, held, "in-v73@x", hours=1)
+        s.commit()
+    v72, v73 = _release("v7.2"), _release("v7.3")
+    _fill(seeded_db, v72, v73)
+    assert _states(v72) == {"in-v72@x": "merged"}
+    assert _states(v73) == {"in-v73@x": "merged"}
+
+
+def test_every_candidate_pull_is_on_exactly_one_page(seeded_db, mirror, bodies):
+    """v7.2, v7.3 and v7.4 side by side, with every kind of pull at the
+    edges and inside both overlaps and in each middle: each is on exactly
+    one page. v7.4's own tail is left out: what did not make it into v7.4
+    belongs to v7.5, which has no page here (the late-pull test covers
+    that tail)."""
+    held, _ = bodies
+    t73 = _HOURS_TO_V73
+    offsets = [-14 * 24, -72, 0, 120, t73 - 14 * 24, t73 - 24, t73, t73 + 120]
+    # "refused-next" is refused, then merged into v7.4 all the same.
+    kinds = ["old", "new", "next", "nowhere", "unclear", "bot", "refused"]
+    kinds += ["refused-next"]
+    mids = []
+    with seeded_db() as s:
+        for hours in offsets:
+            for kind in kinds:
+                mid = f"{kind}-{hours}@x"
+                tip = {
+                    "nowhere": _TIP_B,
+                    "refused": _TIP_B,
+                    "refused-next": mirror["next"],
+                }.get(kind, mirror.get(kind))
+                _pull(s, held, mid, tip, hours=hours)
+                if kind == "bot":
+                    _bot_reply(s, held, mid, hours=hours + 1)
+                if kind.startswith("refused"):
+                    _linus_reply(s, held, mid, "Not pulling this.", hours=hours + 2)
+                mids.append(mid)
+        s.commit()
+    pages = [_release(t) for t in ("v7.2", "v7.3", "v7.4")]
+    _fill(seeded_db, *pages)
+    seen = [mid for release in pages for mid in _states(release)]
+    # Precondition: every page classified something.
+    assert all(_states(release) for release in pages)
+    assert sorted(seen) == sorted(mids)
 
 
 def test_rows_are_newest_first(seeded_db, mirror, bodies):
@@ -405,7 +518,7 @@ def test_coverage_note_is_decided_from_the_release_data(
     cache.set(release.key + history.PULLS, summary, history.GIT_TTL_SEC)
     note = _note(_page(client))
     assert note is not None and "14 days before v7.2" in note
-    assert "in the last 14 days before v7.3" in note
+    assert "sent in the 14 days before a release count for it only if" in note
     assert sum(c in note for c in _COVERAGE) == (1 if says else 0), note
     if says:
         assert says in note, note
@@ -428,9 +541,9 @@ def _fake(n):
         commit_count=1,
     )
     for i in range(n):
-        release = history.Release(
-            f"v9.{n - i}", None, "0" * 40, "v9.0", "1" * 40, (), f"fake:{n - i}"
-        )
+        k = n - i
+        previous = (f"v9.{k - 1}", "1" * 40) if k > 1 else (None, None)
+        release = history.Release(f"v9.{k}", None, "0" * 40, *previous, (), f"fake:{k}")
         cache.set(release.key + ":facts", facts.model_dump(mode="json"), 3600)
         cache.set(release.key + ":members", [f"m{n - i}"], 3600)
         out.append(release)
@@ -442,7 +555,7 @@ def _clocked(monkeypatch, step, fail=()):
     asked = []
     monkeypatch.setattr(history.time, "monotonic", lambda: now[0])
 
-    def stub(session, release, members):
+    def stub(session, release, members, previous_members):
         now[0] += step
         asked.append(release.tag)
         if release.tag in fail:
@@ -483,6 +596,42 @@ def test_the_pull_fill_waits_for_git_facts_and_skips_a_rangeless_release(
     with seeded_db() as s:
         history.warm_release_pulls(s, releases, budget_sec=100)
     assert asked == ["v9.1"]
+
+
+def test_the_pull_fill_waits_for_the_previous_releases_membership(
+    seeded_db, monkeypatch
+):
+    """Deciding the lead-in needs vPREV's members: without them a release
+    waits for the next pass, as the subsystem fill waits for its links."""
+    releases = _fake(3)
+    cache.delete(releases[1].key + ":members")
+    asked = _clocked(monkeypatch, step=1)
+    with seeded_db() as s:
+        history.warm_release_pulls(s, releases, budget_sec=100)
+    # v9.3 waits for v9.2's members, v9.2 for its own; v9.1 is the oldest.
+    assert asked == ["v9.1"]
+
+
+def test_the_oldest_release_keeps_its_whole_lead_in(seeded_db, mirror, bodies):
+    """v7.2's predecessor v7.1 has no Git range, so it has no page to hand
+    a lead-in pull to: v7.2 keeps them all, rejected ones included."""
+    held, _ = bodies
+    # v7.2's lead-in is the two weeks before v7.1's tag.
+    lead_in = -_HOURS_TO_V73 - 48
+    with seeded_db() as s:
+        _pull(s, held, "lead-in-refused@x", _TIP_B, hours=lead_in)
+        _linus_reply(
+            s, held, "lead-in-refused@x", "Not pulling this.", hours=lead_in + 24
+        )
+        _pull(s, held, "lead-in-old@x", mirror["old"], hours=lead_in)
+        s.commit()
+    v72 = _release("v7.2")
+    _fill(seeded_db, v72)
+    assert history._cached_git(_release("v7.1"))[1] is None
+    assert _states(v72) == {
+        "lead-in-refused@x": "rejected",
+        "lead-in-old@x": "merged",
+    }
 
 
 def test_a_release_whose_pulls_fail_does_not_block_the_older_ones(
@@ -529,7 +678,7 @@ def test_pulls_survive_their_expiry_under_hourly_warm_passes(
         clock[0] = now + hour * 3600
         with cache.warm_window(window), seeded_db() as session:
             history.warm_release(session, release)
-            history.warm_release_pulls(session, [release])
+            history.warm_release_pulls(session, history.release_catalog())
         assert set(cache.get_many(keys)) == set(keys), f"lapsed at hour {hour}"
     assert hours * 3600 > history.GIT_TTL_SEC + window
 
@@ -570,6 +719,7 @@ def test_pulls_qualify_a_release_for_the_index_and_the_sitemap(
         s.commit()
     release = _v73()
     history.release_data(release)
+    history.git_facts(_release("v7.2"))
     # Precondition: no recorded reference, so only the pull can list it.
     assert history.cached_links([release])[release.tag].pair_count == 0
     assert _sitemap_tags(client) == set()
@@ -579,7 +729,7 @@ def test_pulls_qualify_a_release_for_the_index_and_the_sitemap(
     # its pulls, so it is not counted as checked yet.
     assert history.recorded_history([release]).checked == 0
     with seeded_db() as s:
-        history.warm_release_pulls(s, [release])
+        history.warm_release_pulls(s, history.release_catalog())
     assert _states(release) == {"unclear@x": "unknown"}
     assert _sitemap_tags(client) == {"v7.3"}
     tags, body = _index_tags(client)
@@ -593,8 +743,9 @@ def test_a_release_with_neither_is_checked_and_not_listed(
 ):
     release = _v73()
     history.release_data(release)
+    history.git_facts(_release("v7.2"))
     with seeded_db() as s:
-        history.warm_release_pulls(s, [release])
+        history.warm_release_pulls(s, history.release_catalog())
     assert cache.get(release.key + history.PULLS)["count"] == 0
     assert _sitemap_tags(client) == set()
     recorded = history.recorded_history([release])

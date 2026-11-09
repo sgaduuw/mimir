@@ -313,6 +313,17 @@ def test_tipless_pull_with_a_bot_merge_reply_is_merged(seeded_db, messages):
         assert _rows(s) == [("[GIT PULL] pr@x", "merged")]
 
 
+def test_an_undated_bot_reply_still_marks_merged(seeded_db, messages):
+    """The live page takes pr-tracker-bot's word whenever it replied; only
+    a closed release's history needs the reply's date (#1135)."""
+    bodies, _ = messages
+    with seeded_db() as s:
+        _pull(s, bodies, "undated@x", hours=10)
+        _bot_reply(s, bodies, "undated@x", hours=20).date = None
+        s.commit()
+        assert _rows(s) == [("[GIT PULL] undated@x", "merged")]
+
+
 def test_merged_wins_over_a_rejection_reply(seeded_db, messages):
     bodies, merged = messages
     merged.add(_TIP_A)
