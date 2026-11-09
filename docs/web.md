@@ -176,6 +176,10 @@ within `PULLS_FILL_BUDGET_SEC`, into two immutable cache rows renewed with the
 Git facts; a request never classifies and never reads a mail, and until a
 release is classified its page has no pull-request section. The window rule is
 `release_history._in_cycle`, with `PULLS_LEAD_IN` and `PULLS_SETTLE`.
+Pull-cache identity also includes the preceding range's lower tag, so correcting
+that tag invalidates affected pull ownership without discarding the release's
+Git facts, references or subsystem grouping. Cached pull cards resolve current
+metadata and omit messages that no longer have a valid date or inbox link.
 
 The lore aliases preserve the shared Message-ID normalizer and unknown-ID lookup
 form. `/all/<message-id>` also accepts an omitted terminal delimiter. The all alias
