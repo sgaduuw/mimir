@@ -343,6 +343,16 @@ def test_detail_shows_the_four_closed_states_without_reading_mail(
         "rejected": ("Rejected", 1),
     }
     assert "Waiting" not in html
+    # Only the not-merged card is muted (#1139); Unclear keeps its own style.
+    assert {
+        c.attrs["id"]: sorted(c.classes)
+        for c in parse(html).find_all("section", cls="pull-card")
+    } == {
+        "pulls-merged": ["pull-card"],
+        "pulls-not_merged": ["pull-card", "pull-card--not-merged"],
+        "pulls-unknown": ["pull-card", "pull-card--unclear"],
+        "pulls-rejected": ["pull-card"],
+    }
     # No subsystem grouping is cached, so the message list's heading is
     # there because of the pulls alone.
     assert 'id="subsystems"' not in html
