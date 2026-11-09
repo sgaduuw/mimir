@@ -859,7 +859,7 @@ def test_warm_renews_git_facts_so_listed_releases_never_lapse(
     assert 30 <= links_refreshes <= hours // 20
 
 
-def _seed_references(seeded_db, releases, monkeypatch, sizes):
+def _seed_references(seeded_db, releases, monkeypatch, sizes, warm=True):
     """Record `{subsystem: n}` single-patch references in v7.0's range:
     one archived article per reference, inside a directory named after its
     subsystem. Git is faked to a range of exactly those commits, so the
@@ -889,7 +889,11 @@ def _seed_references(seeded_db, releases, monkeypatch, sizes):
     )
     monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
     monkeypatch.setattr(history, "calculate_git", lambda r, timeout=0: (facts, shas))
-    return history.release_catalog(releases[0])[0]
+    release = history.release_catalog(releases[0])[0]
+    if warm:
+        # What the hourly warm does: the links, and the grouping with them.
+        history.release_data(release, group=True)
+    return release
 
 
 def _history_page(client, tag="v7.0"):
@@ -950,28 +954,22 @@ def test_detail_with_a_handful_of_references_gets_a_note_not_a_table(
 def test_subsystem_groups_are_cached_with_the_links_and_read_back(
     client, releases, seeded_db, monkeypatch
 ):
-    """Cached under `<release key>:subsystems`, written with the links
-    refresh. A page hit never groups again; a lost entry is rebuilt by
-    the next request, not left as a missing section."""
+    """Written under `<release key>:subsystems` by the warm's links
+    refresh, and only read by the page: a hit never groups, and a lost
+    entry means no section until the warm fills it again."""
     from mimir import cache
     from mimir import release_history as history
 
     monkeypatch.setattr(history, "HANDFUL_OF_REFERENCES", 1)
     release = _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 4})
     key = release.key + ":subsystems"
-    history.release_data(release)
     assert cache.get(key) is not None
-    calls = []
-    real = history.calculate_subsystems
     monkeypatch.setattr(
-        history, "calculate_subsystems", lambda *a: calls.append(a) or real(*a)
+        history, "calculate_subsystems", lambda *a: pytest.fail("a request grouped")
     )
     assert "alpha sub" in _history_page(client).find("ul", id="mw-subsystems").text()
-    assert calls == []
     cache.delete(key)
-    assert "alpha sub" in _history_page(client).find("ul", id="mw-subsystems").text()
-    assert len(calls) == 1
-    assert cache.get(key) is not None
+    assert _history_page(client).find_all("ul", id="mw-subsystems") == []
 
 
 def test_subsystem_groups_refresh_with_the_daily_links_refresh(
@@ -982,7 +980,7 @@ def test_subsystem_groups_refresh_with_the_daily_links_refresh(
 
     release = _seed_references(seeded_db, releases, monkeypatch, {"ALPHA SUB": 4})
     now = cache._now()
-    history.release_data(release)
+    history.release_data(release, group=True)
     first = cache.get(release.key + ":subsystems")
     with seeded_db() as s:
         from tests.test_merge_window import _article, _commit
@@ -999,7 +997,7 @@ def test_subsystem_groups_refresh_with_the_daily_links_refresh(
             [f"{n:040x}" for n in range(4)] + ["f" * 40],
         ),
     )
-    history.release_data(release)
+    history.release_data(release, group=True)
     assert first["references"] == 4
     assert cache.get(release.key + ":subsystems")["references"] == 5
 
@@ -1066,3 +1064,122 @@ def test_the_handful_boundary_is_ten_references(
     page = _history_page(client)
     assert (page.find_all("ul", id="mw-subsystems") != []) is table
     assert ("too few for a subsystem breakdown" in page.text()) is (not table)
+
+
+def test_a_page_view_on_a_cache_miss_never_groups_and_shows_no_section(
+    client, releases, seeded_db, monkeypatch
+):
+    """The grouping is filled by the warm pass, never by a request: a miss
+    renders no table, no note and no "Archived messages" heading, and the
+    cold links path of the request does not group either."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    release = _seed_references(
+        seeded_db, releases, monkeypatch, {"ALPHA SUB": 12}, warm=False
+    )
+    calls = []
+    monkeypatch.setattr(
+        history, "calculate_subsystems", lambda *a: calls.append(a) or pytest.fail()
+    )
+    page = _history_page(client)
+    assert page.find_all("h2", id="subsystems") == []
+    assert page.find_all("h2", id="messages") == []
+    assert page.find_all("ul", id="mw-subsystems") == []
+    assert "subsystem breakdown" not in page.text()
+    # The messages are still listed: only the grouping is missing.
+    assert page.find_all("ul", cls="divided") != []
+    assert calls == []
+    assert cache.get(release.key + ":subsystems") is None
+
+
+def _fake_releases(n):
+    """Releases newest first, with cached ID lists, as `release_catalog`
+    returns them. Their keys are made up: only the cache rows matter."""
+    from mimir import cache
+    from mimir import release_history as history
+
+    out = []
+    for i in range(n):
+        release = history.Release(
+            f"v9.{n - i}", None, "0" * 40, None, None, (), f"fake:{n - i}"
+        )
+        cache.set(
+            release.key + ":links_data",
+            {"summary": {}, "message_ids": [f"m{n - i}@x"]},
+            history.LINKS_TTL_SEC,
+        )
+        out.append(release)
+    return out
+
+
+def _clocked_calculate(monkeypatch, step):
+    """Replace the grouping by a stub that costs `step` seconds on a fake
+    clock, and return the list of the releases it was asked for."""
+    from mimir import release_history as history
+
+    now = [0.0]
+    asked = []
+    monkeypatch.setattr(history.time, "monotonic", lambda: now[0])
+
+    def stub(session, message_ids):
+        now[0] += step
+        asked.append(message_ids[0])
+        return history.ReleaseSubsystems(
+            sections=[], smaller=[], smaller_patches=0, references=1
+        )
+
+    monkeypatch.setattr(history, "calculate_subsystems", stub)
+    return asked
+
+
+def test_the_warm_fills_missing_groupings_newest_first_within_its_budget(
+    seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(4)
+    asked = _clocked_calculate(monkeypatch, step=10)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+    # Newest first; the budget is checked before each one, so a release
+    # that starts in time finishes (10 s, then 20 s is past 15 s).
+    assert asked == ["m4@x", "m3@x"]
+    assert [bool(cache.get(r.key + ":subsystems")) for r in releases] == [
+        True,
+        True,
+        False,
+        False,
+    ]
+
+
+def test_a_later_warm_pass_picks_up_the_rest_and_renews_nothing(seeded_db, monkeypatch):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(4)
+    asked = _clocked_calculate(monkeypatch, step=10)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+        asked.clear()
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+        assert asked == ["m2@x", "m1@x"]
+        asked.clear()
+        history.warm_release_subsystems(session, releases, budget_sec=15)
+        assert asked == []
+    assert all(cache.get(r.key + ":subsystems") for r in releases)
+
+
+def test_the_warm_skips_a_release_whose_links_are_not_cached_yet(
+    seeded_db, monkeypatch
+):
+    from mimir import cache
+    from mimir import release_history as history
+
+    releases = _fake_releases(2)
+    cache.delete(releases[0].key + ":links_data")
+    asked = _clocked_calculate(monkeypatch, step=1)
+    with seeded_db() as session:
+        history.warm_release_subsystems(session, releases, budget_sec=100)
+    assert asked == ["m1@x"]

@@ -285,7 +285,13 @@ def _build_slow_global_targets(
     they are here because an hourly cadence is all their date-grained
     `<lastmod>` can express. `sitemap:index` is the exception and
     lives on the fast tier; see `_build_fast_global_targets`."""
-    from mimir.release_history import release_catalog, warm_release
+    from mimir.release_history import (
+        release_catalog,
+        warm_release,
+        warm_release_subsystems,
+    )
+
+    releases = release_catalog()
 
     # Release history first: the meta sitemap lists only releases whose
     # history is cached. Broker writes are fire-and-forget, so this run's
@@ -293,8 +299,15 @@ def _build_slow_global_targets(
     # next request after the write lands rebuilds it either way.
     targets: list[tuple[str, object]] = [
         (f"release_history:{release.tag}", lambda s, r=release: warm_release(s, r))
-        for release in release_catalog()
+        for release in releases
     ]
+    # After the per-release links, newest first within a time budget.
+    targets.append(
+        (
+            "release_history:subsystems",
+            lambda s, r=releases: warm_release_subsystems(s, r),
+        )
+    )
     if sitemap_base:
         targets.extend(
             [

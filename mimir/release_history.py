@@ -398,8 +398,8 @@ def calculate_subsystems(session: Session, message_ids: list[str]) -> ReleaseSub
     Cost, production: NOT YET MEASURED (#1136 step 3). Put here v7.3, the
     largest release (14,040 distinct recorded message IDs on 2026-11-08),
     with what was counted and when: `tools/measure_release_subsystems.py`.
-    Until it is written the cached copy is the intended read, but a cache
-    miss is computed in the request (`release_subsystems`).
+    The warm pass's time budget (`SUBSYSTEMS_FILL_BUDGET_SEC`) is sized
+    from the figures here: revisit it when the production one is written.
 
     Cost, local floor (synthetic, NOT production): 2026-11-09, 14,040
     archived references, 41,818 `article_files` rows, 2,501 subsystems of
@@ -428,29 +428,65 @@ def calculate_subsystems(session: Session, message_ids: list[str]) -> ReleaseSub
     )
 
 
-def release_subsystems(
-    session: Session, release: Release, message_ids: list[str]
-) -> ReleaseSubsystems:
-    """The cached grouping, rebuilt by the request when it is missing.
+def release_subsystems(release: Release) -> ReleaseSubsystems | None:
+    """The cached grouping, or None. A request never computes it: the
+    hourly warm (`warm_release_subsystems`) fills a missing one and the
+    daily links refresh rewrites it, so a page without it shows no
+    subsystem section until then.
 
-    Written beside the links summary (`release_data`), so it is as old as
-    the links it derives from and refreshes with them. MAINTAINERS changes
-    reach it at the next daily refresh; the page carries no validator, so
-    nothing pins the older copy (AGENTS.md, cache validators).
+    Written beside the links summary, so it is as old as the links it
+    derives from. MAINTAINERS changes reach it at the next daily refresh;
+    the page carries no validator, so nothing pins the older copy
+    (AGENTS.md, cache validators).
     """
-
-    def compute():
-        return calculate_subsystems(session, message_ids).model_dump(mode="json")
-
-    return ReleaseSubsystems.model_validate(
-        cache.get_or_compute(
-            session, release.key + ":subsystems", LINKS_TTL_SEC, compute
-        )
-    )
+    raw = cache.get(release.key + ":subsystems")
+    return ReleaseSubsystems.model_validate(raw) if raw is not None else None
 
 
-def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str]]:
-    """Compute at most one range, without holding a DB snapshot during Git."""
+# Time one warm pass may spend filling missing groupings. Sized from the
+# local floor in `calculate_subsystems` (about 40 microseconds per
+# reference, so a cold fill of ~800,000 references across every release is
+# about 30 s there; production is unmeasured, assume 10x): 60 s fills the
+# newest releases in the first pass and the rest over a few hourly passes,
+# and stays far inside the 300 s a broker warm op may run. A release that
+# starts inside the budget finishes, so a pass can overrun by one release.
+# PRODUCTION FIGURE: NOT YET MEASURED, see `tools/measure_release_subsystems.py`.
+SUBSYSTEMS_FILL_BUDGET_SEC = 60
+
+
+def warm_release_subsystems(
+    session: Session,
+    releases: list[Release],
+    budget_sec: float = SUBSYSTEMS_FILL_BUDGET_SEC,
+) -> None:
+    """Fill missing groupings, `releases` order (newest first) until the
+    budget is spent. A cached one is left alone (the daily links refresh
+    rewrites it), and a release whose ID list is not cached yet waits for
+    its links."""
+    deadline = time.monotonic() + budget_sec
+    for release in releases:
+        if time.monotonic() >= deadline:
+            return
+        key = release.key + ":subsystems"
+        session.rollback()
+        if cache.alive(session, key):
+            continue
+        payload = cache.get(release.key + ":links_data")
+        if payload is None:
+            continue
+        result = calculate_subsystems(session, payload["message_ids"])
+        session.rollback()
+        cache.set(key, result.model_dump(mode="json"), LINKS_TTL_SEC)
+
+
+def release_data(
+    release: Release, group: bool = False
+) -> tuple[ReleaseFacts, ReleaseLinks, list[str]]:
+    """Compute at most one range, without holding a DB snapshot during Git.
+
+    `group` also writes the subsystem grouping with the links. Only the
+    warm asks for it: a request that finds the links cold must not run the
+    grouping."""
     facts = None
     with SessionLocal() as session:
 
@@ -461,11 +497,12 @@ def release_data(release: Release) -> tuple[ReleaseFacts, ReleaseLinks, list[str
             session.rollback()
             facts, members = git_facts(release)
             pair_count, message_ids = calculate_links(session, members)
-            cache.set(
-                release.key + ":subsystems",
-                calculate_subsystems(session, message_ids).model_dump(mode="json"),
-                LINKS_TTL_SEC,
-            )
+            if group:
+                cache.set(
+                    release.key + ":subsystems",
+                    calculate_subsystems(session, message_ids).model_dump(mode="json"),
+                    LINKS_TTL_SEC,
+                )
             session.rollback()
             return _link_payload(release, pair_count, message_ids)
 
@@ -540,7 +577,7 @@ def warm_release(session: Session, release: Release) -> None:
     # adapter alone ends it; general service helpers never roll back callers.
     session.rollback()
     try:
-        release_data(release)
+        release_data(release, group=True)
         session.rollback()
         _renew_git(session, release)
     finally:
