@@ -18,6 +18,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The "Not merged in vN" card on a release history page is grey, like the superseded badge in both colour schemes, so a pull request that only missed that release does not read like a failure. Merged, Unclear and Rejected look as before, and `/merge-window` is unchanged (#1139).
 - The release history index and `/meta-sitemap.xml` list only releases with a Git range and at least one recorded mailing-list reference or classified pull request to Linus (#1135), chosen by one shared rule so the two always agree. Releases not yet calculated are left out until the background warm fills them in, instead of showing "Not calculated yet" rows; a note above the table gives how many releases are shown and checked. Detail pages for other releases stay reachable by URL (#1130).
 
 ### Fixed
