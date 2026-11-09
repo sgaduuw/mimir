@@ -722,7 +722,12 @@ def test_sitemap_and_index_list_only_releases_with_cached_recorded_history(
     # classified too (#1135): it has none.
     with seeded_db() as s:
         history.warm_release_pulls(s, history.release_catalog())
-    assert history.cache.get(by_tag["v7.1"].key + history.PULLS)["count"] == 0
+    assert (
+        history.cache.get(history.pull_cache_key(by_tag["v7.1"]) + history.PULLS)[
+            "count"
+        ]
+        == 0
+    )
     # Preconditions: each excluded release is excluded for its own reason.
     facts, links = (
         history.cached_facts(by_tag.values()),
