@@ -7,25 +7,26 @@ learned by one is learned by both (#668).
 
 from urllib.parse import unquote, urlsplit
 
-# `patch.msgid.link/<msgid>` is b4's default `Link:` since 2024;
-# `msgid.link` is its alias.
-MSGID_URL_HOSTS = frozenset({"lore.kernel.org", "patch.msgid.link", "msgid.link"})
-# Hosts that name a Message-ID only under one path prefix; their other paths
-# (`lkml.kernel.org/lkml/...`, `patchwork.freedesktop.org/patch/<n>`) do not.
-# `lkml.kernel.org/r/<msgid>` redirects a Message-ID to lore (tip tree and
-# Andrew Morton's scripts, 2011 on); `/n/tip-...@git.kernel.org` is a tip-tree
-# synthetic tag that matches no posted message, so it is excluded on purpose.
-# `patchwork.freedesktop.org/patch/msgid/<msgid>` is the i915/xe/drm form.
-MSGID_URL_PATH_PREFIXES = {
+# Host -> the path prefix under which it names a Message-ID; "/" is any path.
+# `patch.msgid.link/<msgid>` is b4's default `Link:` since 2024; `msgid.link`
+# is its alias. The other hosts name one only under a prefix, and their other
+# paths (`lkml.kernel.org/lkml/...`, `patchwork.freedesktop.org/patch/<n>`) do
+# not. `lkml.kernel.org/r/<msgid>` redirects a Message-ID to lore (tip tree
+# and Andrew Morton's scripts, 2011 on); `/n/tip-...@git.kernel.org` is a
+# tip-tree synthetic tag that matches no posted message, so it is excluded on
+# purpose. `patchwork.freedesktop.org/patch/msgid/<msgid>` is the i915/xe/drm
+# form.
+MSGID_URL_PREFIXES = {
+    "lore.kernel.org": "/",
+    "patch.msgid.link": "/",
+    "msgid.link": "/",
     "lkml.kernel.org": "/r/",
     "patchwork.freedesktop.org": "/patch/msgid/",
 }
 
 
 def msgid_from_url(url: str) -> str | None:
-    """Return the Message-ID a lore, patch.msgid.link, lkml.kernel.org/r or
-    patchwork.freedesktop.org/patch/msgid URL names, or `None` if `url` is
-    none of those or has no msgid-shaped path segment.
+    """Return the Message-ID a known msgid URL names, or `None`.
 
     Recognises every shape seen in the wild:
 
@@ -47,9 +48,8 @@ def msgid_from_url(url: str) -> str | None:
         return None
     if parts.scheme not in ("http", "https"):
         return None
-    host = parts.netloc.lower()
-    prefix = MSGID_URL_PATH_PREFIXES.get(host)
-    if host not in MSGID_URL_HOSTS and not (prefix and parts.path.startswith(prefix)):
+    prefix = MSGID_URL_PREFIXES.get(parts.netloc.lower())
+    if prefix is None or not parts.path.startswith(prefix):
         return None
     for segment in parts.path.split("/"):
         if "@" in segment:
