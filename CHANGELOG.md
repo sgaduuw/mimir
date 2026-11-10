@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- `mimir doctor` no longer prints the `SECRET_KEY` row. It could only ever report `ok`, because startup already fails on a missing or short key (#1145).
+
 ## [3.49.1] - 2026-11-10
 
 ### Fixed

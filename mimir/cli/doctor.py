@@ -31,8 +31,10 @@ import json
 import socket
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 
 import click
+from sqlalchemy.engine import make_url
 
 # Status tokens kept as module-level constants so JSON output and
 # the render-time symbol map don't drift apart.
@@ -88,26 +90,12 @@ CheckFunc = Callable[[str, "object", "object"], CheckResult]
 
 
 def _check_database_url(role, settings, session_factory) -> CheckResult:
-    """DATABASE_URL must be set; for sqlite, the parent directory
-    must exist (else the broker can't even create the file)."""
-    url = settings.database_url or ""
-    if not url:
-        return CheckResult(
-            name="DATABASE_URL",
-            status=STATUS_ERROR,
-            value="UNSET",
-            remediation="Set DATABASE_URL in the deploy env (e.g. sqlite:////data/db/mimir.db).",
-        )
+    """For sqlite, the parent directory of DATABASE_URL must exist
+    (else the broker can't even create the file)."""
+    url = settings.database_url
     if url.startswith("sqlite:///"):
         # sqlite:////abs/path → /abs/path; sqlite:///rel/path → rel/path
-        from pathlib import Path
-
-        path_part = url[len("sqlite:///") :]
-        # Triple-slash forms: the fourth slash makes it absolute.
-        if not path_part.startswith("/") and url.startswith("sqlite:////"):
-            path_part = "/" + path_part
-        db_path = Path(path_part)
-        parent = db_path.parent
+        parent = Path(make_url(url).database or "").parent
         if not parent.exists():
             return CheckResult(
                 name="DATABASE_URL",
@@ -116,26 +104,6 @@ def _check_database_url(role, settings, session_factory) -> CheckResult:
                 remediation=f"Create {parent} or fix DATABASE_URL to point at an existing parent directory.",
             )
     return CheckResult(name="DATABASE_URL", status=STATUS_OK, value=url)
-
-
-def _check_secret_key(role, settings, session_factory) -> CheckResult:
-    """SECRET_KEY non-empty. The pydantic validator already enforces
-    min_length=16 at Settings construction time, so by the time the
-    doctor runs an empty key would have crashed startup; the check
-    is still useful as a reassurance row in the report."""
-    key = settings.secret_key or ""
-    if not key:
-        return CheckResult(
-            name="SECRET_KEY",
-            status=STATUS_ERROR,
-            value="UNSET",
-            remediation="Set SECRET_KEY in the deploy env (>= 16 chars).",
-        )
-    return CheckResult(
-        name="SECRET_KEY",
-        status=STATUS_OK,
-        value=f"set ({len(key)} chars)",
-    )
 
 
 def _check_site_base_url(role, settings, session_factory) -> CheckResult:
@@ -193,29 +161,17 @@ def _check_broker_socket(role, settings, session_factory) -> CheckResult:
             value="N/A (this IS the broker)",
         )
     path = settings.broker_socket_path
-    if path is None:
-        return CheckResult(
-            name="Broker socket",
-            status=STATUS_ERROR,
-            value="UNSET",
-            remediation="Set BROKER_SOCKET_PATH in this container's env (default /data/.broker.sock).",
-        )
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(2.0)
-    try:
-        s.connect(str(path))
-    except OSError as exc:
-        return CheckResult(
-            name="Broker socket",
-            status=STATUS_ERROR,
-            value=f"unreachable at {path} ({exc})",
-            remediation="Confirm mimir-broker container is running and the socket path matches.",
-        )
-    finally:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(2.0)
         try:
-            s.close()
-        except OSError:
-            pass
+            s.connect(str(path))
+        except OSError as exc:
+            return CheckResult(
+                name="Broker socket",
+                status=STATUS_ERROR,
+                value=f"unreachable at {path} ({exc})",
+                remediation="Confirm mimir-broker container is running and the socket path matches.",
+            )
     return CheckResult(name="Broker socket", status=STATUS_OK, value=str(path))
 
 
@@ -299,8 +255,6 @@ def _check_mirror_paths(role, settings, session_factory) -> CheckResult:
     `update` tick can't fetch into it, and the read path can't
     fetch blobs out of it. Warning, not error: the broker still
     runs."""
-    from pathlib import Path
-
     from sqlalchemy import select
 
     from mimir.models import Inbox
@@ -340,7 +294,6 @@ def _check_mirror_paths(role, settings, session_factory) -> CheckResult:
 # here. The frame iterates this list in order; output order matches.
 _CHECKS: list[CheckFunc] = [
     _check_database_url,
-    _check_secret_key,
     _check_site_base_url,
     _check_indexnow_key,
     _check_broker_socket,

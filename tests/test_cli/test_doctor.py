@@ -294,3 +294,23 @@ def test_warm_cadence_remediation_names_vars_the_scheduler_reads():
     assert names, "remediations should name a cadence variable"
     for name in names:
         assert f"${{{name}:-" in scheduler, f"{name} is not read by scheduler.sh"
+
+
+@pytest.mark.parametrize(
+    ("url", "status"),
+    [
+        ("sqlite:////no/such/dir/x.db", "error"),
+        ("sqlite:///no/such/dir/x.db", "error"),
+        ("sqlite:///x.db", "ok"),
+        ("sqlite:///:memory:", "ok"),
+        ("postgresql://u@h/db", "ok"),
+    ],
+)
+def test_database_url_check_wants_an_existing_sqlite_parent(url, status):
+    from types import SimpleNamespace
+
+    from mimir.cli.doctor import _check_database_url
+
+    result = _check_database_url("app", SimpleNamespace(database_url=url), None)
+    assert result.status == status
+    assert result.value.startswith(url)
