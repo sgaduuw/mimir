@@ -13,7 +13,7 @@ from mimir import release_history as history
 from mimir.models import Article
 from mimir.parser import ParsedArticle
 from tests._dom import parse
-from tests._helpers import add_commit
+from tests._helpers import add_commit, cached_links
 from tests.test_linus_pulls import (
     _BOT,
     _TAG_TIME,
@@ -741,7 +741,7 @@ def test_pulls_qualify_a_release_for_the_index_and_the_sitemap(
     history.release_data(release)
     history.git_facts(_release("v7.2"))
     # Precondition: no recorded reference, so only the pull can list it.
-    assert history.cached_links([release])[release.tag].pair_count == 0
+    assert cached_links([release])[release.tag].pair_count == 0
     assert _sitemap_tags(client) == set()
     tags, _ = _index_tags(client)
     assert tags == set()

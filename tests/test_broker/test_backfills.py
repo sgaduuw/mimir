@@ -118,7 +118,6 @@ def test_walk_articles_returns_partial_when_deadline_expires(seeded_db, broker_a
         process,
         flush_batch,
         batch_size=2,
-        label="test_walk_partial",
         max_seconds=0.0,
     )
     assert partial is True
@@ -151,7 +150,6 @@ def test_walk_articles_returns_full_completion_without_deadline(
         lambda _s, _a, _r: ("no_diff", None),
         flush_batch,
         batch_size=2,
-        label="test_walk_full",
     )
     assert partial is False
     assert result.examined == 4  # all seeded articles
@@ -187,7 +185,6 @@ def test_walk_articles_starts_below_the_run_cursor(seeded_db, broker_active):
         process,
         flush_batch,
         batch_size=2,
-        label="test_resume",
         run=Run(
             id=0,
             started_at=datetime(2026, 1, 1),

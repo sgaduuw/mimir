@@ -7,7 +7,7 @@ import pytest
 from dulwich.objects import Tag, Tree
 from dulwich.repo import Repo
 
-from tests._helpers import add_commit
+from tests._helpers import add_commit, cached_facts, cached_links
 
 
 @pytest.fixture
@@ -102,7 +102,7 @@ def test_git_cache_does_not_follow_walk_state(releases, seeded_db, monkeypatch):
 
     monkeypatch.setattr(history, "calculate_git", unexpected)
     assert history.git_facts(release) == before
-    assert history.cached_facts([release])[release.tag] == before[0]
+    assert cached_facts([release])[release.tag] == before[0]
 
 
 def test_cold_index_lists_nothing_unchecked_and_never_calculates(
@@ -205,7 +205,7 @@ def test_git_timeout_is_bounded_and_never_cached_as_zero(releases, monkeypatch):
     assert len(calls) == 1
     # The request's single Git budget, less what the cache lookup took.
     assert 0 < calls[0][1]["timeout"] <= history.GIT_TIMEOUT_SEC
-    assert history.cached_facts([release]) == {}
+    assert cached_facts([release]) == {}
 
 
 def test_archive_page_is_deduplicated_and_resolves_current_thread(
@@ -254,10 +254,10 @@ def test_link_summary_has_one_day_lifetime_separate_from_git(releases, monkeypat
     monkeypatch.setattr(cache, "_now", lambda: now)
     history.git_facts(release)
     history._link_payload(release, 3, ["a@x", "b@x"])
-    assert history.cached_links([release])[release.tag].pair_count == 3
+    assert cached_links([release])[release.tag].pair_count == 3
     monkeypatch.setattr(cache, "_now", lambda: now + history.LINKS_TTL_SEC + 1)
-    assert history.cached_links([release]) == {}
-    assert release.tag in history.cached_facts([release])
+    assert cached_links([release]) == {}
+    assert release.tag in cached_facts([release])
 
 
 def test_recorded_links_use_membership_and_count_pairs(seeded_db):
@@ -395,8 +395,8 @@ def test_slow_warm_target_calculates_pending_release_and_ends_read_transaction(
         target(session)
         assert not session.in_transaction()
     release = history.release_catalog()[0]
-    assert history.cached_facts([release])[release.tag].commit_count == 3
-    assert history.cached_links([release])[release.tag].pair_count == 0
+    assert cached_facts([release])[release.tag].commit_count == 3
+    assert cached_links([release])[release.tag].pair_count == 0
 
 
 def test_cold_release_warm_walks_git_once_before_async_writes_land(
@@ -475,9 +475,9 @@ def test_warmer_repairs_a_missing_small_summary_without_rewalking(
 
     release = history.release_catalog(releases[0])[0]
     _, summary, _ = history.release_data(release)
-    assert release.tag in history.cached_links([release])
+    assert release.tag in cached_links([release])
     cache.delete(release.key + ":links")
-    assert history.cached_links([release]) == {}
+    assert cached_links([release]) == {}
     assert cache.get(release.key + ":links_data") is not None
 
     def unexpected(release, **kwargs):
@@ -488,7 +488,7 @@ def test_warmer_repairs_a_missing_small_summary_without_rewalking(
     monkeypatch.setattr(history, "calculate_git", unexpected)
     with seeded_db() as session:
         history.warm_release(session, release)
-    assert history.cached_links([release]).get(release.tag) == summary
+    assert cached_links([release]).get(release.tag) == summary
 
 
 @pytest.mark.parametrize("production_stats", [False, True])
@@ -593,13 +593,13 @@ def test_small_summary_repair_cannot_extend_its_original_lifetime(
     cache.delete(release.key + ":links")
     monkeypatch.setattr(cache, "_now", lambda: summary.computed_at.timestamp() + 1000)
     history.release_data(release)
-    assert history.cached_links([release])[release.tag] == summary
+    assert cached_links([release])[release.tag] == summary
     monkeypatch.setattr(
         cache,
         "_now",
         lambda: summary.computed_at.timestamp() + history.LINKS_TTL_SEC + 1,
     )
-    assert history.cached_links([release]) == {}
+    assert cached_links([release]) == {}
 
 
 def test_concurrent_cold_requests_for_one_release_walk_git_once(
@@ -612,7 +612,7 @@ def test_concurrent_cold_requests_for_one_release_walk_git_once(
     monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
     _record(seeded_db, releases[2], "art3@example.com")
     release = history.release_catalog()[0]
-    assert history.cached_facts([release]) == {}, "the release must start cold"
+    assert cached_facts([release]) == {}, "the release must start cold"
     calculate = history.calculate_git
     calls = []
     walking, finish = threading.Event(), threading.Event()
@@ -730,8 +730,8 @@ def test_sitemap_and_index_list_only_releases_with_cached_recorded_history(
     )
     # Preconditions: each excluded release is excluded for its own reason.
     facts, links = (
-        history.cached_facts(by_tag.values()),
-        history.cached_links(by_tag.values()),
+        cached_facts(by_tag.values()),
+        cached_links(by_tag.values()),
     )
     assert facts["v2.6.11"].commit_count is None
     assert links["v7.1"].pair_count == 0 and facts["v7.1"].commit_count == 1
@@ -853,14 +853,14 @@ def test_warm_renews_git_facts_so_listed_releases_never_lapse(
     # cannot.
     monkeypatch.setattr(random, "random", lambda: 0.0)
     links_refreshes = 0
-    last_links = history.cached_links([release])[release.tag].computed_at
+    last_links = cached_links([release])[release.tag].computed_at
     hours = (history.GIT_TTL_SEC + 3 * window) // 3600
     for hour in range(1, hours + 1):
         clock[0] = now + hour * 3600
         with cache.warm_window(window), seeded_db() as session:
             history.warm_release(session, release)
         assert listed_tags() == ["v7.0"], f"left the listing at hour {hour}"
-        links = history.cached_links([release])[release.tag].computed_at
+        links = cached_links([release])[release.tag].computed_at
         links_refreshes += links != last_links
         last_links = links
     # Precondition: the walk crossed the original facts expiry with links

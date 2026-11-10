@@ -94,9 +94,9 @@ def test_global_empty_refuses_without_charging_per_ua_bucket(monkeypatch):
     clock = Clock()
     gate = _gate(clock, total=1, uas={"Applebot": 10, "bingbot": 100})
     assert gate.check(BINGBOT) is None  # drains the global bucket
-    before = gate.ua_tokens("Applebot")
+    before = gate._find("Applebot").tokens
     assert gate.check(APPLEBOT) == "Applebot"
-    assert gate.ua_tokens("Applebot") == before
+    assert gate._find("Applebot").tokens == before
 
 
 @pytest.mark.parametrize("ua", [LOUNGE, LOUNGE.lower(), LOUNGE.upper()])
@@ -116,13 +116,13 @@ def test_lounge_previews_pass_depleted_buckets_without_charging(
     _install(monkeypatch, gate)
     for _ in range(admitted):
         assert gate.check(FACEBOOK) is None
-    assert gate.ua_tokens("facebookexternalhit") == 0
+    assert gate._find("facebookexternalhit").tokens == 0
     if total == 1:
-        assert gate.global_tokens() == 0
-    before = (gate.global_tokens(), gate.ua_tokens("facebookexternalhit"))
+        assert gate._global.tokens == 0
+    before = (gate._global.tokens, gate._find("facebookexternalhit").tokens)
     assert _get(client, "/privacy", FACEBOOK).status_code == 429
     assert _get(client, "/privacy", LOUNGE).status_code == 200
-    assert (gate.global_tokens(), gate.ua_tokens("facebookexternalhit")) == before
+    assert (gate._global.tokens, gate._find("facebookexternalhit").tokens) == before
     assert _get(client, "/privacy", FACEBOOK).status_code == 429
 
 
@@ -178,9 +178,9 @@ def test_ua_exemption_does_not_disable_impossible_headers_check():
 def test_ua_empty_refuses_without_charging_global_bucket():
     gate = _gate(Clock(), total=10, uas={"Applebot": 10})
     assert gate.check(APPLEBOT) is None
-    before = gate.global_tokens()
+    before = gate._global.tokens
     assert gate.check(APPLEBOT) == "Applebot"
-    assert gate.global_tokens() == before
+    assert gate._global.tokens == before
 
 
 def test_crawlers_share_the_global_budget():
@@ -283,12 +283,10 @@ def test_shared_buckets_hold_the_whole_share_unlisted_divide_by_workers():
     # server's, 12 a minute for Applebot and a 20-token global bucket.
     # An unlisted crawler's bucket is one worker's: 10% / 8 = 1.5.
     gate = _gate(Clock(), total=120, uas={"Applebot": 10}, workers=8)
-    assert gate.ua_per_minute("Applebot") == pytest.approx(12)
-    assert gate.global_tokens() == pytest.approx(
-        120 * crawler_budget.BURST_SECONDS / 60
-    )
+    assert gate._find("Applebot").rate * 60 == pytest.approx(12)
+    assert gate._global.tokens == pytest.approx(120 * crawler_budget.BURST_SECONDS / 60)
     assert gate.check(GPTBOT) is None
-    assert gate.ua_per_minute("gptbot") == pytest.approx(1.5)
+    assert gate._find("gptbot").rate * 60 == pytest.approx(1.5)
 
 
 def test_sub_one_per_minute_share_admits_one_then_every_60_over_rate_seconds():
@@ -296,7 +294,7 @@ def test_sub_one_per_minute_share_admits_one_then_every_60_over_rate_seconds():
     clock = Clock()
     gate = _gate(clock, total=60, uas={"Applebot": 10}, workers=8)
     assert gate.check(GPTBOT) is None
-    assert gate.ua_per_minute("gptbot") == pytest.approx(0.75)
+    assert gate._find("gptbot").rate * 60 == pytest.approx(0.75)
     assert gate.check(GPTBOT) == "gptbot"
     clock.now += 80  # 60 / 0.75
     assert gate.check(GPTBOT) is None
@@ -419,8 +417,8 @@ def test_unlisted_crawler_gets_the_default_percentage_listed_gets_its_own():
     assert gate.check(APPLEBOT) is None
     # unlisted: default 10% of 120 = 12 a minute overall = 1.5 per worker;
     # listed and shared: 25% of 120 for the whole server
-    assert gate.ua_per_minute("googlebot") == pytest.approx(1.5)
-    assert gate.ua_per_minute("Applebot") == pytest.approx(30)
+    assert gate._find("googlebot").rate * 60 == pytest.approx(1.5)
+    assert gate._find("Applebot").rate * 60 == pytest.approx(30)
 
 
 def test_unlisted_crawler_over_default_share_gets_429(client, monkeypatch):
@@ -434,11 +432,11 @@ def test_unlisted_crawler_over_default_share_gets_429(client, monkeypatch):
 def test_unlisted_crawler_needs_a_global_token_and_refusal_charges_neither():
     gate = _gate(Clock(), total=6, uas={"Applebot": 50})  # global holds 1 token
     assert gate.check(BINGBOT) is None
-    assert gate.global_tokens() < 1
-    before = gate.global_tokens()
+    assert gate._global.tokens < 1
+    before = gate._global.tokens
     assert gate.check(GPTBOT) == "gptbot"  # its own bucket is full
-    assert gate.ua_tokens("gptbot") == gate._find("gptbot").capacity
-    assert gate.global_tokens() == before
+    assert gate._find("gptbot").tokens == gate._find("gptbot").capacity
+    assert gate._global.tokens == before
 
 
 def test_cubot_browser_never_gated_with_buckets_empty(client, monkeypatch):
@@ -454,12 +452,12 @@ def test_unlisted_buckets_are_capped_and_overflow_shares_one(monkeypatch):
     gate = _gate(clock, total=1000, uas={"Applebot": 100})
     assert gate.check(GOOGLEBOT) is None
     assert gate.check(BINGBOT) is None
-    assert gate.unlisted_count() == 2
+    assert len(gate._unlisted) == 2
     clock.now += 1  # the global bucket is full again, the overflow untouched
     # Past the cap, new crawlers share ONE bucket at the default share:
     # 10% of 1000 = 100 a minute, a 10 s bucket holds 16.67 tokens.
     results = [gate.check(f"x{i}bot/1.0 ") for i in range(17)]
-    assert gate.unlisted_count() == 2
+    assert len(gate._unlisted) == 2
     assert results[:16] == [None] * 16
     assert results[16] == OVERFLOW_KEY
 
@@ -472,11 +470,11 @@ def test_idle_full_unlisted_bucket_is_dropped_after_ten_minutes(monkeypatch):
     gate.check(BINGBOT)
     clock.now += 599
     gate.check(GPTBOT)  # too early: both still held, so it overflows
-    assert gate.unlisted_count() == 2
+    assert len(gate._unlisted) == 2
     clock.now += 62
     gate.check(GPTBOT)  # sweep drops the two idle, full buckets
-    assert gate.unlisted_count() == 1
-    assert gate.ua_tokens("gptbot") < 100
+    assert len(gate._unlisted) == 1
+    assert gate._find("gptbot").tokens < 100
 
 
 def test_idle_bucket_that_has_not_refilled_is_kept():
@@ -486,10 +484,10 @@ def test_idle_bucket_that_has_not_refilled_is_kept():
     gate.check(GOOGLEBOT)
     clock.now += 700
     gate.check(BROWSER)  # sweeping runs on any check
-    assert gate.unlisted_count() == 1
+    assert len(gate._unlisted) == 1
     clock.now += 6000
     gate.check(BROWSER)
-    assert gate.unlisted_count() == 0
+    assert len(gate._unlisted) == 0
 
 
 def test_log_line_names_the_unlisted_bucket_key(client, monkeypatch):
@@ -618,27 +616,27 @@ def test_invented_crawler_names_share_the_unlisted_pool():
     # (10% of 120 = 12 a minute, 2 tokens) during the flood, once the
     # global bucket is back above its 90% line.
     clock.now += 4
-    pool = gate.pool_tokens()
+    pool = gate._pool.tokens
     assert gate.check(APPLEBOT) is None
     assert gate.check(APPLEBOT) is None
     assert gate.check(APPLEBOT) == "Applebot"
-    assert gate.pool_tokens() == pool
+    assert gate._pool.tokens == pool
 
 
 def test_pool_refusal_charges_no_bucket():
     gate = _gate(Clock(), total=120, uas={"Applebot": 10}, unlisted_pool_pct=1)
     assert gate.check(GOOGLEBOT) is None  # pool of 1 token is now empty
-    before = (gate.global_tokens(), gate.ua_tokens("googlebot"))
+    before = (gate._global.tokens, gate._find("googlebot").tokens)
     assert gate.check(BINGBOT) == "bingbot"
-    assert (gate.global_tokens(), gate.ua_tokens("googlebot")) == before
-    assert gate.ua_tokens("bingbot") == gate._find("bingbot").capacity
+    assert (gate._global.tokens, gate._find("googlebot").tokens) == before
+    assert gate._find("bingbot").tokens == gate._find("bingbot").capacity
 
 
 def test_listed_crawlers_do_not_draw_on_the_pool():
     gate = _gate(Clock(), total=120, uas={"Applebot": 100}, unlisted_pool_pct=1)
-    pool_before = gate.pool_tokens()
+    pool_before = gate._pool.tokens
     gate.check(APPLEBOT)
-    assert gate.pool_tokens() == pool_before
+    assert gate._pool.tokens == pool_before
 
 
 @pytest.mark.parametrize("value", ["0", "101"])
@@ -721,7 +719,7 @@ def test_search_crawlers_are_listed_by_default(ua, key):
     assert gate.crawler_key(ua) == key
     # 80% of 100, shared by every worker. An unlisted crawler has no
     # bucket, so this also fails when the key merely equals the token.
-    assert gate.ua_per_minute(key) == 80
+    assert gate._find(key).rate * 60 == 80
 
 
 def _burst(gate, clock, ua, step=20):
@@ -811,7 +809,7 @@ def test_from_settings_uses_the_merged_map(monkeypatch):
     assert gate.crawler_key(DEFAULT_LISTED["Slurp"]) == "Slurp"
     assert gate.crawler_key(APPLEBOT) == "Applebot"
     gate.check(APPLEBOT)
-    assert gate.ua_per_minute("Applebot") == pytest.approx(60)
+    assert gate._find("Applebot").rate * 60 == pytest.approx(60)
 
 
 def test_nested_env_form_overrides_a_default_despite_lowercasing(monkeypatch):
@@ -851,9 +849,9 @@ def test_impossible_headers_get_a_one_percent_bucket_that_charges_global():
     assert gate.check(BROWSER, **IMPOSSIBLE) is None
     assert gate.check(BROWSER, **IMPOSSIBLE) is None
     assert gate.check(BROWSER, **IMPOSSIBLE) == crawler_budget.IMPOSSIBLE_KEY
-    assert gate.global_tokens() == pytest.approx(200 - 2)
-    assert gate.unlisted_count() == 0
-    assert gate.pool_tokens() == pytest.approx(60)  # 30% of 200, untouched
+    assert gate._global.tokens == pytest.approx(200 - 2)
+    assert len(gate._unlisted) == 0
+    assert gate._pool.tokens == pytest.approx(60)  # 30% of 200, untouched
 
 
 def test_impossible_bucket_capacity_follows_the_setting():
@@ -889,9 +887,9 @@ def test_impossible_refusal_charges_no_bucket():
     gate = _gate(Clock(), total=1200)
     for _ in range(2):
         gate.check(BROWSER, **IMPOSSIBLE)
-    before = gate.global_tokens()
+    before = gate._global.tokens
     assert gate.check(BROWSER, **IMPOSSIBLE) == crawler_budget.IMPOSSIBLE_KEY
-    assert gate.global_tokens() == before
+    assert gate._global.tokens == before
 
 
 def test_impossible_headers_route_gets_429_but_real_navigation_never_does(
@@ -989,7 +987,7 @@ def test_impossible_headers_pct_setting(monkeypatch):
     s = Settings()
     assert s.crawler_impossible_headers_pct == 7
     gate = CrawlerBudget.from_settings(s)
-    assert gate.impossible_per_minute() == pytest.approx(84)
+    assert gate._impossible.rate * 60 == pytest.approx(84)
 
 
 @pytest.mark.parametrize("value", ["-1", "101"])
@@ -1032,9 +1030,9 @@ def test_a_low_share_crawler_is_served_only_from_the_top_of_the_global_bucket():
         Clock(), total=600, uas={"bingbot": 50, "Googlebot": 80, "Applebot": 10}
     )
     assert sum(gate.check(BINGBOT) is None for _ in range(200)) == 50
-    assert gate.global_tokens() == pytest.approx(50)
+    assert gate._global.tokens == pytest.approx(50)
     # Applebot's own bucket is full, but 50 is below its 90% line...
-    assert gate.ua_tokens("Applebot") == pytest.approx(10)
+    assert gate._find("Applebot").tokens == pytest.approx(10)
     assert gate.check(APPLEBOT) == "Applebot"
     # ...while Googlebot may draw the bucket down to 20%.
     assert gate.check(GOOGLEBOT) is None
@@ -1070,7 +1068,7 @@ def test_two_gates_on_one_file_share_their_buckets(tmp_path):
     assert a.check(APPLEBOT) is None  # 1% of 1200 holds 2 tokens
     assert b.check(APPLEBOT) == "Applebot"
     # The second gate found the slots running and did not refill them.
-    assert b.ua_tokens("Applebot") == pytest.approx(0)
+    assert b._find("Applebot").tokens == pytest.approx(0)
 
 
 def _hammer(path, deadline):
@@ -1127,7 +1125,7 @@ def test_a_worker_whose_clock_read_lags_never_moves_a_stamp_back(tmp_path):
     clock_b.now = 1005.0
     assert b.check(APPLEBOT) is None  # 49
     assert a.check(APPLEBOT) is None  # still 1010: nothing to refill
-    assert a.ua_tokens("Applebot") == pytest.approx(48)
+    assert a._find("Applebot").tokens == pytest.approx(48)
 
 
 # Found by the pre-PR whole-diff review; each was red at dfd2268.
@@ -1186,7 +1184,7 @@ def test_fallback_keeps_pre_3_37_per_worker_totals(tmp_path, monkeypatch):
     monkeypatch.setenv("CRAWLER_BUDGET_PER_MINUTE", "120")
     monkeypatch.setenv("WORKERS", "8")
     gate = CrawlerBudget.from_settings(Settings())
-    assert gate.ua_per_minute("Applebot") == pytest.approx(120 * 10 / 100 / 8)
-    assert gate.global_tokens() == pytest.approx(
+    assert gate._find("Applebot").rate * 60 == pytest.approx(120 * 10 / 100 / 8)
+    assert gate._global.tokens == pytest.approx(
         120 / 8 * crawler_budget.BURST_SECONDS / 60
     )
