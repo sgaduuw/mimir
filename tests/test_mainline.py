@@ -144,6 +144,19 @@ def test_extract_msgid_link_alias():
     assert extract_message_ids(msg) == ["abc@x", "def@x"]
 
 
+def test_extract_freedesktop_patchwork_links():
+    """i915/xe commits name the posted patch by Message-ID; the numeric
+    `/patch/<n>` and `/series/<n>` links name none (#1142)."""
+    msg = (
+        b"Fix.\n\n"
+        b"Link: https://patchwork.freedesktop.org/patch/msgid/abc@x\n"
+        b"Link: https://patchwork.freedesktop.org/patch/123456/\n"
+        b"Link: https://patchwork.freedesktop.org/series/99/\n"
+        b"Link: https://patchwork.freedesktop.org/patch/msgid\n"
+    )
+    assert extract_message_ids(msg) == ["abc@x"]
+
+
 def test_extract_message_id_trailer():
     """`git am --message-id` writes the posted patch's Message-ID as a
     trailer; same claim as a `Link:`, so same row (#668)."""
