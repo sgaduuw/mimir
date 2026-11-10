@@ -206,9 +206,6 @@ def _replies_to(session: Session, message_id: str, pending_articles: list | None
 
 def _to_article_insert(
     parsed: ParsedArticle,
-    inbox_id: int,
-    epoch: str,
-    commit_sha: str,
     date: datetime,
     canonical_inbox_id: int | None = None,
     session: Session | None = None,
@@ -565,9 +562,6 @@ def ingest_epoch(
         canonical_inbox_id = repick(frozenset({inbox_id}))
         art_insert = _to_article_insert(
             parsed,
-            inbox_id=inbox_id,
-            epoch=epoch_name,
-            commit_sha=commit_sha,
             date=commit_time,
             canonical_inbox_id=canonical_inbox_id,
             session=session,
