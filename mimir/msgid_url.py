@@ -9,17 +9,22 @@ from urllib.parse import unquote, urlsplit
 
 # `patch.msgid.link/<msgid>` is b4's default `Link:` since 2024.
 MSGID_URL_HOSTS = frozenset({"lore.kernel.org", "patch.msgid.link"})
+# `lkml.kernel.org/r/<msgid>` redirects a Message-ID to lore (tip tree and
+# Andrew Morton's scripts, 2011 on). Its other paths are not Message-IDs.
+LKML_HOST = "lkml.kernel.org"
 
 
 def msgid_from_url(url: str) -> str | None:
-    """Return the Message-ID a lore or patch.msgid.link URL names, or
-    `None` if `url` is neither or has no msgid-shaped path segment.
+    """Return the Message-ID a lore, patch.msgid.link or lkml.kernel.org/r
+    URL names, or `None` if `url` is none of those or has no msgid-shaped
+    path segment.
 
     Recognises every shape seen in the wild:
 
         https://lore.kernel.org/<msgid>
         https://lore.kernel.org/<slug>/<msgid>(/T/|/raw|/t.mbox.gz|/...)?
         https://patch.msgid.link/<msgid>
+        http://lkml.kernel.org/r/<msgid>
         ...with or without trailing slash, query, anchor.
 
     The Message-ID is the first path segment containing `@`; everything
@@ -33,7 +38,10 @@ def msgid_from_url(url: str) -> str | None:
         return None
     if parts.scheme not in ("http", "https"):
         return None
-    if parts.netloc.lower() not in MSGID_URL_HOSTS:
+    host = parts.netloc.lower()
+    if host not in MSGID_URL_HOSTS and not (
+        host == LKML_HOST and parts.path.startswith("/r/")
+    ):
         return None
     for segment in parts.path.split("/"):
         if "@" in segment:
