@@ -139,6 +139,11 @@ def test_extract_lkml_kernel_org_link():
     assert extract_message_ids(msg) == ["20111111-x@example.com"]
 
 
+def test_extract_msgid_link_alias():
+    msg = b"Fix.\n\nLink: https://msgid.link/r/abc@x\nLink: https://msgid.link/def@x\n"
+    assert extract_message_ids(msg) == ["abc@x", "def@x"]
+
+
 def test_extract_message_id_trailer():
     """`git am --message-id` writes the posted patch's Message-ID as a
     trailer; same claim as a `Link:`, so same row (#668)."""

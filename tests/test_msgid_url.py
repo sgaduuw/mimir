@@ -17,6 +17,8 @@ def test_lkml_kernel_org_r_path_names_the_msgid(scheme):
     [
         "http://lkml.kernel.org/lkml/2011/1/2/3",
         "http://lkml.kernel.org/lkml/2011/1/2/3@x",
+        # tip-tree synthetic tags: match no posted message, excluded on purpose
+        "http://lkml.kernel.org/n/tip-abc123@git.kernel.org",
         "http://lkml.kernel.org/x/r/a@example.com",
         "http://lkml.kernel.org/rr/a@example.com",
         "http://lkml.kernel.org/r/",
@@ -30,3 +32,12 @@ def test_lkml_kernel_org_other_paths_are_not_msgids(url):
 def test_lore_shapes_still_resolve():
     assert msgid_from_url("https://lore.kernel.org/all/a@x/T/") == "a@x"
     assert msgid_from_url("https://patch.msgid.link/a@x") == "a@x"
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://msgid.link/a@x", "https://msgid.link/r/a@x", "http://msgid.link/a@x/"],
+)
+def test_msgid_link_alias_names_the_msgid(url):
+    """b4's alias of patch.msgid.link (#1142)."""
+    assert msgid_from_url(url) == "a@x"

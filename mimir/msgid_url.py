@@ -7,10 +7,13 @@ learned by one is learned by both (#668).
 
 from urllib.parse import unquote, urlsplit
 
-# `patch.msgid.link/<msgid>` is b4's default `Link:` since 2024.
-MSGID_URL_HOSTS = frozenset({"lore.kernel.org", "patch.msgid.link"})
+# `patch.msgid.link/<msgid>` is b4's default `Link:` since 2024;
+# `msgid.link` is its alias.
+MSGID_URL_HOSTS = frozenset({"lore.kernel.org", "patch.msgid.link", "msgid.link"})
 # `lkml.kernel.org/r/<msgid>` redirects a Message-ID to lore (tip tree and
-# Andrew Morton's scripts, 2011 on). Its other paths are not Message-IDs.
+# Andrew Morton's scripts, 2011 on). Its other paths are not Message-IDs; in particular
+# `/n/tip-...@git.kernel.org` is a tip-tree synthetic tag that matches no
+# posted message, so it is excluded on purpose.
 LKML_HOST = "lkml.kernel.org"
 
 
