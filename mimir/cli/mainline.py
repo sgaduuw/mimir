@@ -70,7 +70,7 @@ def update_mainline_command(
        pass entirely for the tick.
 
     2. Commit trailer walk: scan every commit since the last walker
-       cursor for `Link:` (lore or patch.msgid.link) and `Message-ID:`
+       cursor for `Link:` (any URL `msgid_from_url` resolves) and `Message-ID:`
        trailers, insert into `mainline_commits`. Resumable; the
        second cursor on `MainlineState` advances monotonically.
        First run walks the full history (slow); subsequent ticks

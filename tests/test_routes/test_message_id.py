@@ -178,6 +178,7 @@ def test_form_partial_escapes_the_prefill(client):
         "https://lore.kernel.org/linux-fsdevel/art3@example.com/T/",
         "https://lore.kernel.org/linux-fsdevel/art3@example.com/raw",
         "https://lore.kernel.org/linux-fsdevel/art3@example.com/t.mbox.gz",
+        "http://lkml.kernel.org/r/art3@example.com",
     ],
 )
 def test_form_route_opens_lore_thread_and_raw_links(client, typed):
