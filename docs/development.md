@@ -35,10 +35,12 @@ The explicit Ruff rules live in [pyproject.toml](../pyproject.toml). Format only
 touched files while working to keep unrelated changes out of a diff. For a
 regression, demonstrate that the test fails before the fix.
 
-Browser checks use Chromium and real CDN assets against a temporary local
+Browser checks use Chromium and the vendored frontend assets against a temporary local
 database and Git mirror. They cover listing layout at desktop and phone widths
 in both themes, HTMX swaps, keyboard navigation, history, load-more controls,
-failed requests, and links with JavaScript disabled:
+failed requests, and links with JavaScript disabled. The navigation and listing
+layout checks also block requests outside their local server, verifying that
+HTMX and Pico load without a third-party connection:
 
 ```sh
 uv run --frozen --with playwright playwright install chromium

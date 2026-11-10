@@ -7,7 +7,7 @@ Three Cloudflare cookies, set by the edge for security and availability:
 All three are strictly necessary for operating the service. Under the ePrivacy Directive (Art. 5(3)(b)) and EDPB guidance, strictly necessary cookies do not require consent. Cloudflare’s published cookie list documents them.
 Local storage preferences, set by mimir itself:
 Page navigation does not store copies of pages in local or session storage. Back and forward navigation reload pages from the server.
-No analytics. No tracking pixels. No advertising. No third-party embeds beyond the static-asset CDNs listed below.
+No analytics. No tracking pixels. No advertising. No third-party embeds.
 What gets processed server-side
 Standard HTTP request metadata in the application access log, one record per request except successful /healthz requests:
 the time, a request ID, and how long the response took;
@@ -21,7 +21,6 @@ Inbox search terms are not recorded in these access logs. Retained in operator-s
 Legal basis: legitimate interest (GDPR Art. 6(1)(f)) in operating and securing the service.
 Third parties in the request path
 Cloudflare (US) fronts mimir as an edge proxy and bot-mitigation layer. It sees your IP and request metadata. Cloudflare’s Data Processing Addendum and the EU Standard Contractual Clauses cover the EU-to-US transfer.
-jsdelivr.net and unpkg.com serve the two vendored frontend assets (Pico CSS, htmx). Visiting their CDNs reveals your IP to them. Both files are integrity-pinned (SRI), so their content cannot change without breaking the page.
 GitHub Container Registry hosts the deployment image. Not visitor-facing.
 Email-address redaction
 Visible HTML on message pages, and their Markdown versions, redact non-allowlisted sender addresses to <hidden> and DCO-trailer addresses to <redacted>. This is a friction layer, not a privacy guarantee. The same bytes are public via lore.kernel.org and every other public-inbox mirror; a determined scraper can fetch the original RFC 5322 message in a single HTTP call. The redaction aims to make casual scraping less rewarding, not to claim that mimir hides the addresses.
