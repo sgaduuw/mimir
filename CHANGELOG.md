@@ -17,6 +17,8 @@ changes, not internal refactors. Categories: **Added**,
 
 - Cold subsystem dashboards load activity, volume, and reviewers without scanning matching paths across the entire archive. Patch series status also looks up the latest revision once per selected series and patch position (#1150).
 
+- The front page uses the last warmed inbox volumes while the slow cache warmer refreshes them, so requests skip expensive volume queries (#1150).
+
 ## [3.49.2] - 2026-11-10
 
 ### Removed
