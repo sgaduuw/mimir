@@ -527,7 +527,7 @@ class MainlineState(Base):
 
 class MainlineCommit(Base):
     """One (commit, referenced message-id) pair extracted from a
-    `Link:` (lore or patch.msgid.link) or `Message-ID:` trailer in a
+    `Link:` (any URL `msgid_from_url` resolves) or `Message-ID:` trailer in a
     mainline-tree commit message.
 
     Composite PK so a commit can carry multiple `Link:` trailers
