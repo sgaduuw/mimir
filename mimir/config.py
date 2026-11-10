@@ -644,11 +644,8 @@ class Settings(BaseSettings):
     # hazard and says so: bump `cache.NAMESPACE_VERSION` alongside any
     # change so stale sitemaps cannot advertise the old page count.
     #
-    # Blob cost still applies per rendered message (~10 ms each, one
-    # `read_messages` bulk fetch per page) but is no longer the binding
-    # constraint the pre-3.8.0 comment here described: it reasoned
-    # entirely about blob fetches while 93% of the response was a
-    # recursive thread walk that no longer happens.
+    # Blob cost (~10 ms per rendered message, one `read_messages` bulk
+    # fetch per page) is not the binding constraint.
     #
     # Also the threshold above which the message page windows its
     # thread tree (#798): a thread that fits on one thread page is shown

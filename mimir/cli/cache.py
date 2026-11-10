@@ -470,7 +470,7 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
     # the (label, fn) tuples produced by the per-tier builders;
     # only the labels matter on the CLI side because the broker
     # handler re-derives the callables from the inbox name.
-    sitemap_base = settings.site_base_url or ""
+    sitemap_base = settings.site_base_url
     if tier == "fast":
 
         def per_inbox_targets(inbox):
