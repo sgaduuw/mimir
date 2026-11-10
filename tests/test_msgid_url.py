@@ -41,3 +41,30 @@ def test_lore_shapes_still_resolve():
 def test_msgid_link_alias_names_the_msgid(url):
     """b4's alias of patch.msgid.link (#1142)."""
     assert msgid_from_url(url) == "a@x"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://patchwork.freedesktop.org/patch/msgid/a@x",
+        "http://patchwork.freedesktop.org/patch/msgid/a@x/",
+    ],
+)
+def test_freedesktop_patchwork_msgid_path_names_the_msgid(url):
+    assert msgid_from_url(url) == "a@x"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://patchwork.freedesktop.org/patch/123456/",
+        "https://patchwork.freedesktop.org/patch/123456@x/",
+        "https://patchwork.freedesktop.org/series/123456/",
+        "https://patchwork.freedesktop.org/patch/msgid",
+        "https://patchwork.freedesktop.org/patch/msgid/",
+        "https://patchwork.freedesktop.org/patch/msgids/a@x",
+        "https://patchwork.freedesktop.org/series/msgid/a@x",
+    ],
+)
+def test_freedesktop_patchwork_other_paths_are_not_msgids(url):
+    assert msgid_from_url(url) is None
