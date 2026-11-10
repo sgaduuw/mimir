@@ -129,9 +129,6 @@ def _replay_loop(
             # `--reprocess` clears a reply stored as a cover (#820).
             rec = _to_article_insert(
                 parsed,
-                inbox_id,
-                row_epoch,
-                row_commit_sha,
                 commit_time,
                 canonical_inbox_id=None,
                 session=None,

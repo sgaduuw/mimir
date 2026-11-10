@@ -65,7 +65,6 @@ def walk_articles(
     progress: Callable[[Any], None] | None = None,
     preload_lists: bool = True,
     batch_size: int = 1000,
-    label: str = "walk_articles",
     max_seconds: float | None = None,
     run: Run | None = None,
 ) -> bool:
@@ -90,10 +89,6 @@ def walk_articles(
 
     `progress(result)` fires once per batch boundary, after the
     WriteOp commits.
-
-    `label` is preserved for slow-write WARNING correlation in
-    callers (the writer thread does its own slow-write logging on
-    the composite WriteOp's wall time).
 
     `max_seconds`: when not None, time-bound this chunk. Deadline
     checked at batch boundaries (after `flush_batch(...).result()`)
