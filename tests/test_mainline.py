@@ -157,6 +157,16 @@ def test_extract_freedesktop_patchwork_links():
     assert extract_message_ids(msg) == ["abc@x"]
 
 
+def test_extract_percent_encoded_at_dedupes_against_plain_form():
+    msg = (
+        b"Fix.\n\n"
+        b"Link: https://lore.kernel.org/r/a%40x\n"
+        b"Link: http://lkml.kernel.org/r/a@x\n"
+        b"Link: https://lore.kernel.org/r/b%40x\n"
+    )
+    assert extract_message_ids(msg) == ["a@x", "b@x"]
+
+
 def test_extract_message_id_trailer():
     """`git am --message-id` writes the posted patch's Message-ID as a
     trailer; same claim as a `Link:`, so same row (#668)."""

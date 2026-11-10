@@ -68,3 +68,39 @@ def test_freedesktop_patchwork_msgid_path_names_the_msgid(url):
 )
 def test_freedesktop_patchwork_other_paths_are_not_msgids(url):
     assert msgid_from_url(url) is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://lore.kernel.org/r/a%40x",
+        "https://lore.kernel.org/all/a%40x/T/",
+        "http://lkml.kernel.org/r/a%40x",
+        "https://patch.msgid.link/a%40x",
+        "https://msgid.link/a%40x",
+        "https://patchwork.freedesktop.org/patch/msgid/a%40x",
+    ],
+)
+def test_percent_encoded_at_is_unquoted(url):
+    """Mainline trailers carry `%40` for `@` on every accepted host (#1142)."""
+    assert msgid_from_url(url) == "a@x"
+
+
+def test_percent_encoded_slash_stays_inside_the_msgid():
+    assert msgid_from_url("https://lore.kernel.org/r/a%2Fb%40x") == "a/b@x"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://lore.kernel.org/r/a%2Fb",
+        "https://lore.kernel.org/r/a%2540x",
+        "http://lkml.kernel.org/lkml/a%40x",
+        "https://patchwork.freedesktop.org/patch/123%40x/",
+        "http://lkml.kernel.org/%72/a@x",
+    ],
+)
+def test_encoded_oddities_without_an_at_are_not_msgids(url):
+    """`%2F` alone makes no msgid, `%2540` unquotes once to `a%40x` (no
+    `@`), and the host's path prefix is still read from the raw path."""
+    assert msgid_from_url(url) is None
