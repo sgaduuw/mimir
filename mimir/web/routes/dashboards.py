@@ -18,6 +18,7 @@ from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
     author_recent,
+    cached_inbox_volumes,
     cached_recent_message_total,
     daily_volume,
     latest_pull_requests,
@@ -97,22 +98,20 @@ def index():
     (settings.pinned_inboxes) stay first in config order; the rest follow
     alphabetically.
 
-    Nothing here is computed on the request. `archive_stats` and
-    `daily_volume` are cached helpers (one cache-row read each per inbox)
-    and the 30-day total is read from the cache the fast warm tier fills,
-    so a cold cache omits that one figure instead of running a count. The
-    page has no validator, only `max-age=300`, so it is at most that stale.
+    Inbox volumes and the 30-day total come from warmed cache rows.
+    On a miss, the page omits the corresponding figure.
     """
     pinned = set(settings.pinned_inboxes)
     now = datetime.now(UTC)
     with SessionLocal() as session:
         inboxes = pinned_first(session.execute(select(Inbox)).scalars().all())
+        volumes = cached_inbox_volumes(inboxes)
         inbox_summaries = []
         for inbox in inboxes:
             stats = archive_stats(session, inbox)
             # 30 UTC days, today included: the window `recent_message_total`
             # shares, so the cards and the header figure agree.
-            spark = daily_volume(session, inbox, days=30)
+            spark = volumes.get(inbox.name)
             inbox_summaries.append(
                 {
                     "name": inbox.name,
@@ -123,7 +122,11 @@ def index():
                         _relative_time(stats.last_date) if stats.last_date else None
                     ),
                     "spark": spark,
-                    "messages_30d": sum(count for _, count in spark.days),
+                    "messages_30d": (
+                        sum(count for _, count in spark.days)
+                        if spark is not None
+                        else None
+                    ),
                     "active_24h": bool(
                         stats.last_date
                         and aware_utc(stats.last_date) >= now - timedelta(hours=24)

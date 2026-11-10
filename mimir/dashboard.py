@@ -25,6 +25,7 @@ from mimir.pull_requests import PULL_LIKE
 
 STATS_CACHE_TTL_SEC = 86400  # 1 day
 DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
+INDEX_VOLUME_RETENTION_SEC = 2 * 3600  # Two hourly slow warm intervals
 RECENT_TOTAL_CACHE_KEY = "recent_message_total:30"
 LISTING_CACHE_TTL_SEC = 300  # 5 minutes, trackers, pulls, stable, history
 
@@ -286,6 +287,17 @@ def this_day_in_history(
     )
 
 
+def _daily_volume_key(inbox_name: str, days: int) -> str:
+    return f"daily_volume:{inbox_name}:{days}"
+
+
+def cached_inbox_volumes(inboxes: Sequence[Inbox]) -> dict[str, DailyVolume]:
+    """Read the last warmed 30-day volume per inbox for the index."""
+    keys = {inbox.name: _daily_volume_key(inbox.name, 30) for inbox in inboxes}
+    cached = cache.get_many(list(keys.values()))
+    return {name: cached[key] for name, key in keys.items() if key in cached}
+
+
 def daily_volume(
     session: Session, inbox: Inbox, days: int = 30, force: bool = False
 ) -> DailyVolume:
@@ -323,10 +335,11 @@ def daily_volume(
 
     return cache.get_or_compute(
         session,
-        f"daily_volume:{inbox.name}:{days}",
+        _daily_volume_key(inbox.name, days),
         DAILY_VOLUME_CACHE_TTL_SEC,
         compute,
         force=force,
+        retain_for=INDEX_VOLUME_RETENTION_SEC if days == 30 else 0,
     )
 
 

@@ -50,6 +50,12 @@ the sitemap index, `/sitemap.xml`. The front page leaves that total out until th
 tier covers the other sitemaps, subsystem dashboards, trackers, release history, and other expensive queries. The unqualified
 command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 
+The slow tier warms the per-inbox 30-day volumes used by the front page.
+Those rows survive for two hours past their refresh deadline so the page
+can show the previous counts during a refresh. An inbox without a retained
+value stays in the inbox list and enters the busiest-inbox ranking once
+it has a warmed count and recent activity.
+
 The container scheduler runs fast warming every minute and slow warming hourly.
 Cache entries are reused or refreshed according to their remaining lifetime;
 a tick does not necessarily rebuild every entry. Non-archive sitemaps keep a
