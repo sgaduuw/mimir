@@ -122,7 +122,7 @@ def notify(urls: list[str]) -> int:
     if not urls:
         return 0
     key = settings.indexnow_key
-    base = (settings.site_base_url or "").rstrip("/")
+    base = settings.site_base_url.rstrip("/")
     if not key or not base:
         if urls and not key:
             logger.debug("indexnow: skipping push, no key configured")
