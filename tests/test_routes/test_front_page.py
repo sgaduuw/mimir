@@ -45,6 +45,15 @@ def _warm_total():
         return recent_message_total(s, force=True)
 
 
+def _warm_volumes():
+    from mimir.dashboard import daily_volume
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        for inbox in s.scalars(select(Inbox)).all():
+            daily_volume(s, inbox, force=True)
+
+
 def _page(client):
     return parse(client.get("/").get_data(as_text=True))
 
@@ -136,6 +145,7 @@ def test_the_window_matches_the_daily_volume_window(seeded_db):
 
 def test_busiest_cards_lead_with_the_thirty_day_count(client, recent):
     _warm_total()
+    _warm_volumes()
     page = _page(client)
     cards = page.find_all("a", cls="front-card")
     assert [c.attrs["href"] for c in cards] == ["/alpha/", "/beta/"]
@@ -156,6 +166,7 @@ def test_only_six_inboxes_are_busiest(client, seeded_db):
             for m in range(n + 1):
                 _post(s, f"l{n}m{m}@x", [f"list-{n}"], hours_ago=5)
         s.commit()
+    _warm_volumes()
     cards = _page(client).find_all("a", cls="front-card")
     assert [c.attrs["href"] for c in cards] == [
         f"/list-{n}/" for n in (7, 6, 5, 4, 3, 2)
@@ -164,6 +175,7 @@ def test_only_six_inboxes_are_busiest(client, seeded_db):
 
 def test_the_inbox_list_has_every_inbox_once_and_no_sparklines(client, recent):
     _warm_total()
+    _warm_volumes()
     page = _page(client)
     listing = page.find("ul", id="inbox-list")
     rows = listing.find_all("li")
@@ -263,3 +275,64 @@ def test_the_tagline_names_no_scale_figure(client, seeded_db):
 def test_short_count(client, n, text):
     env = client.application.jinja_env
     assert env.from_string("{{ n|short_count }}").render(n=n) == text
+
+
+def test_index_uses_retained_volume_until_the_warmer_refreshes_it(
+    client, recent, seeded_db, monkeypatch
+):
+    from sqlalchemy import event
+
+    from mimir import cache
+    from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, archive_stats, daily_volume
+    from mimir.extensions import engine
+
+    now = cache._now()
+    monkeypatch.setattr(cache, "_now", lambda: now)
+    warm_window = 1200
+    with seeded_db() as s, cache.warm_window(warm_window):
+        alpha = _inbox(s, "alpha")
+        for inbox in (alpha, _inbox(s, "beta")):
+            archive_stats(s, inbox, force=True)
+        assert sum(n for _, n in daily_volume(s, alpha, force=True).days) == 2
+
+    with seeded_db() as s:
+        _post(s, "new@x", ["alpha"], hours_ago=1)
+        s.commit()
+
+    with seeded_db() as s, cache.warm_window(warm_window):
+        early = daily_volume(s, _inbox(s, "alpha"))
+    assert sum(n for _, n in early.days) == 2
+
+    now += DAILY_VOLUME_CACHE_TTL_SEC + warm_window + 1
+    cache.purge_expired()
+
+    statements = []
+
+    def grab(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    with monkeypatch.context() as scoped:
+
+        def unexpected_write(*args, **kwargs):
+            pytest.fail("the index attempted a cache write")
+
+        scoped.setattr(cache, "set", unexpected_write)
+        event.listen(engine, "before_cursor_execute", grab)
+        try:
+            page = _page(client)
+        finally:
+            event.remove(engine, "before_cursor_execute", grab)
+
+    assert statements
+    assert not any("SELECT date(a.date) AS day" in sql for sql in statements)
+    cards = page.find_all("a", cls="front-card")
+    assert [card.attrs["href"] for card in cards] == ["/alpha/"]
+    assert cards[0].find("p", cls="count").text() == "2"
+    rows = page.find("ul", id="inbox-list").find_all("li")
+    assert "data-active" not in rows[1].attrs
+
+    with seeded_db() as s, cache.warm_window(warm_window):
+        daily_volume(s, _inbox(s, "alpha"))
+
+    cards = _page(client).find_all("a", cls="front-card")
+    assert cards[0].find("p", cls="count").text() == "3"
