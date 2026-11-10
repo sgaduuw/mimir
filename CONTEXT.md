@@ -375,8 +375,8 @@ path must fit measured deployment budgets; no population work runs at boot.
 - **`mainline_state`**, single-row cursor (`commits_walked_to_sha`)
   for the `update-mainline` `Link:` trailer walker.
 - **`mainline_commits`**, one row per tree per commit whose message
-  names a posted patch (a lore or patch.msgid.link `Link:`, or a
-  `Message-ID:` trailer),
+  names a posted patch (a `Link:` URL that `msgid_from_url`
+  resolves, or a `Message-ID:` trailer),
   enabling the "applied as <sha>" backlink on patch views. The
   tree is part of the key: a patch applied in a subsystem tree and
   later merged by Linus has the same SHA in both, and lifecycle
