@@ -475,9 +475,6 @@ def test_inseries_links_to_a_cover_in_the_same_batch(seeded_db):
     with seeded_db() as s:
         rec = _to_article_insert(
             parsed,
-            1,
-            "0.git",
-            "f" * 40,
             datetime(2024, 6, 1, tzinfo=UTC),
             session=s,
             pending_articles=[pending],

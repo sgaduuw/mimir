@@ -308,7 +308,6 @@ def backfill_article_files(
         limit=limit,
         reprocess=reprocess,
         progress=progress,
-        label="backfill_article_files",
         max_seconds=max_seconds,
         run=run,
     )

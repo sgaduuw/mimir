@@ -148,7 +148,6 @@ def backfill_article_trailers(
         limit=limit,
         reprocess=reprocess,
         progress=progress,
-        label="backfill_article_trailers",
         max_seconds=max_seconds,
         run=run,
     )

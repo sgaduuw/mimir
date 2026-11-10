@@ -787,7 +787,6 @@ def backfill_patch_series(
         reprocess=reprocess,
         progress=progress,
         preload_lists=False,
-        label="backfill_patch_series",
         max_seconds=max_seconds,
         run=run,
     )

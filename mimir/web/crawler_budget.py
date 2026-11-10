@@ -586,21 +586,3 @@ class CrawlerBudget:
 
     def _find(self, key: str) -> _Bucket:
         return self._listed[key][1] if key in self._listed else self._unlisted[key]
-
-    def ua_tokens(self, key: str) -> float:
-        return self._find(key).tokens
-
-    def ua_per_minute(self, key: str) -> float:
-        return self._find(key).rate * 60
-
-    def impossible_per_minute(self) -> float:
-        return self._impossible.rate * 60 if self._impossible else 0.0
-
-    def unlisted_count(self) -> int:
-        return len(self._unlisted)
-
-    def pool_tokens(self) -> float:
-        return self._pool.tokens
-
-    def global_tokens(self) -> float:
-        return self._global.tokens

@@ -175,15 +175,6 @@ def _link_payload(
     return {"summary": summary.model_dump(mode="json"), "message_ids": message_ids}
 
 
-def cached_links(releases: list[Release]) -> dict[str, ReleaseLinks]:
-    values = cache.get_many([r.key + ":links" for r in releases])
-    return {
-        r.tag: ReleaseLinks.model_validate(values[r.key + ":links"])
-        for r in releases
-        if r.key + ":links" in values
-    }
-
-
 def release_catalog(path: Path | None = None) -> list[Release]:
     """Read refs only; opening the index never starts a history walk."""
     path = path if path is not None else _linus_path()
@@ -377,15 +368,6 @@ def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
         cache.set(release.key + ":members", members, GIT_TTL_SEC)
         cache.set(release.key + ":facts", facts.model_dump(mode="json"), GIT_TTL_SEC)
     return facts, members
-
-
-def cached_facts(releases: list[Release]) -> dict[str, ReleaseFacts]:
-    values = cache.get_many([r.key + ":facts" for r in releases])
-    return {
-        r.tag: ReleaseFacts.model_validate(values[r.key + ":facts"])
-        for r in releases
-        if r.key + ":facts" in values
-    }
 
 
 def has_recorded_history(
