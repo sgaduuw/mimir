@@ -114,9 +114,11 @@ def test_hyphen_redirect_keeps_encoded_inbox_in_path(client, encoded_inbox, thre
         ("%5Cevil.example", "%5Cevil.example"),
         ("evil.example%5C", "evil.example%5C"),
         ("@evil.example", "%40evil.example"),
+        # Browsers strip a tab before parsing, so `/<TAB>\host` is `//host` too.
+        ("%09%5Cevil.example", "%09%5Cevil.example"),
         # Routing merges the slashes first, leaving an ordinary inbox name.
         ("%2F%2Fevil.example", "evil.example"),
-        # The `:` plus encoded slashes never match the route at all.
+        # Merging leaves three segments (`https:`, host, date), so no route matches.
         ("https:%2F%2Fevil.example", None),
     ],
 )
@@ -132,7 +134,7 @@ def test_hyphen_redirect_cannot_leave_the_site(client, hostile, encoded, thread)
     assert (target.scheme, target.netloc) == ("", "")
     assert location.startswith("/")
     assert not location.startswith(("//", "/\\"))
-    assert location.startswith(f"/{encoded}/2026/05/1")
+    assert location == f"/{encoded}/2026/05/1" + ("/t" if thread else "")
 
 
 @pytest.mark.parametrize("prefix", ["/r/", "/all/"])
