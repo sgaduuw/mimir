@@ -114,6 +114,32 @@ def test_linkify_patch_msgid_link_appends_local_when_in_archive():
     assert '(<a href="/lkml/2024/01/123">local</a>)' in out
 
 
+def test_linkify_freedesktop_patchwork_msgid_appends_local_only_for_msgid_path():
+    """The patchwork msgid link keeps its anchor and gains `(local)` when
+    archived; a numeric `/patch/<n>` link names no Message-ID and gets none
+    (#1142)."""
+    mirror = {"abc@example.com": "/lkml/2024/01/123"}
+    out = linkify(
+        "Link: https://patchwork.freedesktop.org/patch/msgid/abc@example.com",
+        lore_mirror_urls=mirror,
+    )
+    assert 'href="https://patchwork.freedesktop.org/patch/msgid/abc@example.com"' in out
+    assert '(<a href="/lkml/2024/01/123">local</a>)' in out
+    out = linkify(
+        "Link: https://patchwork.freedesktop.org/patch/123456/",
+        lore_mirror_urls=mirror,
+    )
+    assert "local</a>" not in out
+
+
+def test_linkify_percent_encoded_msgid_url_appends_local():
+    out = linkify(
+        "Link: https://lore.kernel.org/r/abc%40example.com",
+        lore_mirror_urls={"abc@example.com": "/lkml/2024/01/123"},
+    )
+    assert '(<a href="/lkml/2024/01/123">local</a>)' in out
+
+
 def test_linkify_lore_url_not_in_archive_unchanged():
     """A lore URL whose msgid isn't in `lore_mirror_urls` renders as
     the bare external anchor, no `(local)` suffix."""

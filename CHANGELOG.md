@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Commits whose trailer reads `Link: http://lkml.kernel.org/r/<msgid>` (or `https`), or `Link: https://msgid.link/<msgid>` (b4's alias of patch.msgid.link, also with `/r/`), now count as message references, like the lore and patch.msgid.link forms. So do `Link: https://patchwork.freedesktop.org/patch/msgid/<msgid>` trailers, used by i915, xe and other drm commits; `/patch/<number>` and `/series/<number>` links on that host name no Message-ID and are still skipped. The tip tree and Andrew Morton's scripts used it from about 2011, so older release history pages showed few or no references. Other `lkml.kernel.org` paths are not Message-IDs and are still skipped, including `/n/tip-...@git.kernel.org`, tip-tree tags that match no posted message. In a message body these URLs now get a `(local)` link too; the message lookup already accepted them. Trailers that write `@` as `%40` count too (#1142).
+
+### Upgrade notes
+
+- After deploying, run `update-mainline --rewalk` once. The walker's cursor only moves forward, so commits already walked keep missing these references until it reads them again; existing rows are kept. A rewalk walks every tree and takes a long time (the Linus tree alone took about 13 minutes on production in 2026-10); past the CLI's 600 s timeout the command exits with `rpc timed out` while the broker keeps walking, so judge completion from the broker log. Nothing else is needed: each release's recorded references and subsystem grouping are cached for 24 hours, and the hourly background warm recomputes them from the new rows as they expire, so release history pages pick them up within a day.
+
 ## [3.49.0] - 2026-11-09
 
 ### Added
