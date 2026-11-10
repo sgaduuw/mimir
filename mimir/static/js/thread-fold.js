@@ -16,7 +16,7 @@
  * actual .thread-context section to exist in the DOM.
  *
  * Lives in mimir/static/ rather than inline because the production CSP
- * (script-src 'self' https://unpkg.com) blocks inline <script> tags
+ * (script-src 'self') blocks inline <script> tags
  * without an explicit nonce or 'unsafe-inline'; external scripts under
  * 'self' are allowed.
  */

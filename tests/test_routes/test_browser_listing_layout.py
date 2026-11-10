@@ -13,7 +13,7 @@ from flask import render_template
 from werkzeug.serving import make_server
 
 from mimir.lifecycle_status import LifecycleStatusInfo, _format_count_suffix
-from tests._browser import playwright_api
+from tests._browser import block_external_requests, playwright_api
 from tests._dom import parse
 
 
@@ -121,6 +121,9 @@ def test_listing_layout_at_desktop_and_phone_widths(client, tmp_path):
     try:
         with playwright.sync_playwright() as p, p.chromium.launch() as browser:
             page = browser.new_page()
+            blocked = block_external_requests(
+                page, f"http://127.0.0.1:{server.server_port}"
+            )
             for width in (1280, 390):
                 page.set_viewport_size({"width": width, "height": 900})
                 for theme in ("light", "dark"):
@@ -132,7 +135,7 @@ def test_listing_layout_at_desktop_and_phone_widths(client, tmp_path):
                             "theme => document.documentElement.dataset.theme = theme",
                             theme,
                         )
-                        # The site relies on Pico; a failed CDN load is not a pass.
+                        # The real vendored Pico stylesheet must have loaded.
                         assert page.evaluate(
                             "getComputedStyle(document.documentElement)"
                             ".getPropertyValue('--pico-font-family')"
@@ -174,6 +177,7 @@ def test_listing_layout_at_desktop_and_phone_widths(client, tmp_path):
                             }"""
                         )
                         assert errors == [], (name, width, theme, errors)
+            assert blocked == [], blocked
     finally:
         server.shutdown()
         thread.join(timeout=5)
