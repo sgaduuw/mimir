@@ -58,8 +58,8 @@ def normalise_message_id(raw: str | None) -> str | None:
         segments = [unquote(s) for s in parts.path.split("/") if s]
         # The FIRST segment holding an `@`, as `msgid_from_url` reads it:
         # lore appends `T/`, `raw` or `t.mbox.gz` after the ID. Not reused
-        # directly because it only knows a few hosts (lore, msgid.link and others) and wants
-        # a scheme, while a person also pastes a bare path or our own host.
+        # directly because it only knows a few hosts and wants a scheme,
+        # while a person also pastes a bare path or our own host.
         candidate = next((seg for seg in segments if "@" in seg), "")
         if not candidate:
             return None
