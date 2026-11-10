@@ -127,6 +127,46 @@ def test_extract_dedupes_patch_msgid_link_against_lore_form():
     assert extract_message_ids(msg) == ["same@x"]
 
 
+def test_extract_lkml_kernel_org_link():
+    """The tip tree and Andrew Morton's scripts wrote
+    `Link: http://lkml.kernel.org/r/<msgid>`, a Message-ID redirector to
+    lore (#1142). Other lkml paths are not, and stay unresolved."""
+    msg = (
+        b"Fix.\n\n"
+        b"Link: http://lkml.kernel.org/r/20111111-x@example.com\n"
+        b"Link: http://lkml.kernel.org/lkml/2011/1/2/3\n"
+    )
+    assert extract_message_ids(msg) == ["20111111-x@example.com"]
+
+
+def test_extract_msgid_link_alias():
+    msg = b"Fix.\n\nLink: https://msgid.link/r/abc@x\nLink: https://msgid.link/def@x\n"
+    assert extract_message_ids(msg) == ["abc@x", "def@x"]
+
+
+def test_extract_freedesktop_patchwork_links():
+    """i915/xe commits name the posted patch by Message-ID; the numeric
+    `/patch/<n>` and `/series/<n>` links name none (#1142)."""
+    msg = (
+        b"Fix.\n\n"
+        b"Link: https://patchwork.freedesktop.org/patch/msgid/abc@x\n"
+        b"Link: https://patchwork.freedesktop.org/patch/123456/\n"
+        b"Link: https://patchwork.freedesktop.org/series/99/\n"
+        b"Link: https://patchwork.freedesktop.org/patch/msgid\n"
+    )
+    assert extract_message_ids(msg) == ["abc@x"]
+
+
+def test_extract_percent_encoded_at_dedupes_against_plain_form():
+    msg = (
+        b"Fix.\n\n"
+        b"Link: https://lore.kernel.org/r/a%40x\n"
+        b"Link: http://lkml.kernel.org/r/a@x\n"
+        b"Link: https://lore.kernel.org/r/b%40x\n"
+    )
+    assert extract_message_ids(msg) == ["a@x", "b@x"]
+
+
 def test_extract_message_id_trailer():
     """`git am --message-id` writes the posted patch's Message-ID as a
     trailer; same claim as a `Link:`, so same row (#668)."""

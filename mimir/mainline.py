@@ -62,10 +62,8 @@ logger = logging.getLogger(__name__)
 
 
 # A commit names the posted patch it came from in one of two trailers:
-#   Link: https://lore.kernel.org/r/aNU-FkJEcA3T4aDB@intel.com
-#   Link: https://lore.kernel.org/all/175824455687...@devnote2/
-#   Link: https://patch.msgid.link/<msgid>     (b4's default since 2024)
-#   Message-ID: <msgid>                        (`git am --message-id`)
+#   Link: <URL naming a Message-ID>   (hosts and shapes: `msgid_from_url`)
+#   Message-ID: <msgid>               (`git am --message-id`)
 # A `Link:` URL is resolved by `msgid_from_url`, the same function the
 # body linkifier uses, so the two cannot disagree on a host (#668).
 # Other `Link:` targets (GitHub issues, bugzilla) resolve to None.
