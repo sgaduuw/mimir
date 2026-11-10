@@ -106,6 +106,35 @@ def test_hyphen_redirect_keeps_encoded_inbox_in_path(client, encoded_inbox, thre
     assert target.fragment == ""
 
 
+@pytest.mark.parametrize("thread", [False, True], ids=["message", "thread"])
+@pytest.mark.parametrize(
+    ("hostile", "encoded"),
+    [
+        # `/\host` is read by browsers as `//host`, so the backslash must stay encoded.
+        ("%5Cevil.example", "%5Cevil.example"),
+        ("evil.example%5C", "evil.example%5C"),
+        ("@evil.example", "%40evil.example"),
+        # Routing merges the slashes first, leaving an ordinary inbox name.
+        ("%2F%2Fevil.example", "evil.example"),
+        # The `:` plus encoded slashes never match the route at all.
+        ("https:%2F%2Fevil.example", None),
+    ],
+)
+def test_hyphen_redirect_cannot_leave_the_site(client, hostile, encoded, thread):
+    response = client.get(f"/{hostile}/2026-05-1" + ("/t" if thread else ""))
+    if encoded is None:
+        assert response.status_code == 404
+        assert "Location" not in response.headers
+        return
+    assert response.status_code == 301
+    location = response.headers["Location"]
+    target = urlsplit(location)
+    assert (target.scheme, target.netloc) == ("", "")
+    assert location.startswith("/")
+    assert not location.startswith(("//", "/\\"))
+    assert location.startswith(f"/{encoded}/2026/05/1")
+
+
 @pytest.mark.parametrize("prefix", ["/r/", "/all/"])
 def test_lore_alias_uses_shared_canonical_inbox_policy(client, prefix):
     from sqlalchemy import select
