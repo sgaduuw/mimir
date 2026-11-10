@@ -8,6 +8,7 @@ from sqlalchemy import event, select, text
 
 from mimir import cache
 from mimir.dashboard import ArchiveStats, _archive_stats_key
+from mimir.release_history import ReleaseFacts, ReleaseLinks
 
 
 def _cache_total(inbox, total):
@@ -17,6 +18,25 @@ def _cache_total(inbox, total):
         ArchiveStats(total=total, epochs=1, first_date=None, last_date=None),
         3600,
     )
+
+
+def _cached(releases, suffix, model):
+    values = cache.get_many([r.key + suffix for r in releases])
+    return {
+        r.tag: model.model_validate(values[r.key + suffix])
+        for r in releases
+        if r.key + suffix in values
+    }
+
+
+def cached_links(releases):
+    """The cached `ReleaseLinks` per tag, absent where nothing is cached."""
+    return _cached(releases, ":links", ReleaseLinks)
+
+
+def cached_facts(releases):
+    """The cached `ReleaseFacts` per tag, absent where nothing is cached."""
+    return _cached(releases, ":facts", ReleaseFacts)
 
 
 @contextmanager

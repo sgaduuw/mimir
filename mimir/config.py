@@ -644,13 +644,6 @@ class Settings(BaseSettings):
     # hazard and says so: bump `cache.NAMESPACE_VERSION` alongside any
     # change so stale sitemaps cannot advertise the old page count.
     #
-    # The 100 -> 75 change on this branch did NOT bump it, and that is
-    # the one exemption: thread pagination is unreleased, so no cached
-    # sitemap row anywhere was ever cut at 100. Stated explicitly
-    # because otherwise this reads as a rule sitting directly above a
-    # counter-example, with nothing telling a future reader which of
-    # the two to follow. Any change after this ships needs the bump.
-    #
     # Blob cost still applies per rendered message (~10 ms each, one
     # `read_messages` bulk fetch per page) but is no longer the binding
     # constraint the pre-3.8.0 comment here described: it reasoned
