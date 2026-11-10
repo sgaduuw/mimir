@@ -11,9 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.49.1] - 2026-11-10
+
 ### Fixed
 
-- Commits whose trailer reads `Link: http://lkml.kernel.org/r/<msgid>` (or `https`), or `Link: https://msgid.link/<msgid>` (b4's alias of patch.msgid.link, also with `/r/`), now count as message references, like the lore and patch.msgid.link forms. So do `Link: https://patchwork.freedesktop.org/patch/msgid/<msgid>` trailers, used by i915, xe and other drm commits; `/patch/<number>` and `/series/<number>` links on that host name no Message-ID and are still skipped. The tip tree and Andrew Morton's scripts used it from about 2011, so older release history pages showed few or no references. Other `lkml.kernel.org` paths are not Message-IDs and are still skipped, including `/n/tip-...@git.kernel.org`, tip-tree tags that match no posted message. In a message body these URLs now get a `(local)` link too; the message lookup already accepted them. Trailers that write `@` as `%40` count too (#1142).
+- Commits whose trailer reads `Link: http://lkml.kernel.org/r/<msgid>` (or `https`) now count as message references, like the lore and patch.msgid.link forms. The tip tree and Andrew Morton's scripts used that form from about 2011, so older release history pages showed few or no references. Other `lkml.kernel.org` paths are not Message-IDs and are still skipped, including `/n/tip-...@git.kernel.org`, tip-tree tags that match no posted message. `Link: https://msgid.link/<msgid>` (b4's alias of patch.msgid.link, also with `/r/`) and `Link: https://patchwork.freedesktop.org/patch/msgid/<msgid>` (used by i915, xe and other drm commits) count too; `/patch/<number>` and `/series/<number>` links on that host name no Message-ID and are still skipped. Trailers that write `@` as `%40` count too. In a message body these URLs now get a `(local)` link; the message lookup already accepted them (#1142).
 
 ### Upgrade notes
 
