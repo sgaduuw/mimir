@@ -274,20 +274,20 @@ latest_revision AS MATERIALIZED (
      GROUP BY s.series_key, s.head, COALESCE(a2.patch_series_position, 0)
 ),
 patch_flags AS MATERIALIZED (
-    SELECT p.cover,
+    SELECT sp.cover,
            EXISTS (SELECT 1 FROM mainline_commits m
-                    WHERE m.message_id = p.message_id
+                    WHERE m.message_id = sp.message_id
                       AND m.tree_name = 'linus') AS landed,
            EXISTS (SELECT 1 FROM mainline_commits m
-                    WHERE m.message_id = p.message_id
+                    WHERE m.message_id = sp.message_id
                       AND m.tree_name != 'linus') AS other,
            EXISTS (SELECT 1 FROM article_trailers t
-                    WHERE t.article_id = p.id
+                    WHERE t.article_id = sp.id
                       AND t.role IN :review_roles) AS reviewed,
-           NOT (r.revision > p.revision) AS live
-      FROM selected_patches p
-      JOIN latest_revision r ON r.series_key = p.series_key
-                            AND r.head = p.head AND r.position = p.position
+           NOT (r.revision > sp.revision) AS live
+      FROM selected_patches sp
+      JOIN latest_revision r ON r.series_key = sp.series_key
+                            AND r.head = sp.head AND r.position = sp.position
 ),
 rollup AS (
     SELECT cover,
