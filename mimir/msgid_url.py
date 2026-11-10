@@ -37,10 +37,11 @@ def msgid_from_url(url: str) -> str | None:
         https://patchwork.freedesktop.org/patch/msgid/<msgid>
         ...with or without trailing slash, query, anchor.
 
-    The Message-ID is the first path segment containing `@`; everything
-    after (e.g. `T/`, `raw`, `t.mbox.gz`) is ignored. Percent-encoded
-    msgids are unquoted before return, so the result is comparable
-    against the normalised value stored in `articles.message_id`.
+    The Message-ID is the first path segment containing `@` once
+    percent-decoded (`%40` is common in old trailers); everything after
+    (e.g. `T/`, `raw`, `t.mbox.gz`) is ignored. The decoded value is
+    returned, so it is comparable against the normalised value stored in
+    `articles.message_id`. A host's path prefix is checked on the raw path.
     """
     try:
         parts = urlsplit(url)
@@ -52,6 +53,7 @@ def msgid_from_url(url: str) -> str | None:
     if prefix is None or not parts.path.startswith(prefix):
         return None
     for segment in parts.path.split("/"):
-        if "@" in segment:
-            return unquote(segment)
+        decoded = unquote(segment)
+        if "@" in decoded:
+            return decoded
     return None
