@@ -111,7 +111,7 @@ def _check_site_base_url(role, settings, session_factory) -> CheckResult:
     silently degrades sitemap warming; severity warning, not error,
     because the rest of the surface (request-time canonical URLs
     via ProxyFix) continues to work."""
-    raw = (settings.site_base_url or "").strip()
+    raw = settings.site_base_url.strip()
     if not raw:
         return CheckResult(
             name="SITE_BASE_URL",
@@ -119,7 +119,7 @@ def _check_site_base_url(role, settings, session_factory) -> CheckResult:
             value="UNSET (sitemap warming disabled)",
             remediation="Set SITE_BASE_URL in the broker container's environment to enable sitemap warming.",
         )
-    if not (raw.startswith("http://") or raw.startswith("https://")):
+    if not raw.startswith(("http://", "https://")):
         return CheckResult(
             name="SITE_BASE_URL",
             status=STATUS_WARNING,
@@ -267,10 +267,7 @@ def _check_mirror_paths(role, settings, session_factory) -> CheckResult:
             status=STATUS_INFO,
             value="no inboxes configured",
         )
-    missing: list[str] = []
-    for name, mirror_path in rows:
-        if not Path(mirror_path).exists():
-            missing.append(name)
+    missing = [name for name, mirror_path in rows if not Path(mirror_path).exists()]
     if missing:
         # Cap the displayed list so a 200-inbox corpus with a bad
         # mount doesn't smear across the report.

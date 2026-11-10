@@ -293,7 +293,7 @@ def _push_indexnow(message_ids: list[str]) -> None:
             cap,
         )
         return
-    base = (settings.site_base_url or "").rstrip("/")
+    base = settings.site_base_url.rstrip("/")
     if not base:
         logger.warning(
             "indexnow: key set but SITE_BASE_URL empty, cannot build URLs, "

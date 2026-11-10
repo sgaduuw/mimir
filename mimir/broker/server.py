@@ -1410,7 +1410,7 @@ def build_server(socket_path: Path) -> _BrokerServer:
     # Driven by the 2026-06-01 production incident where SITE_BASE_URL
     # was set on mimir-tasks and mimir-app but missing on
     # mimir-broker. Don't fail-fast: non-sitemap surfaces still work.
-    if not (settings.site_base_url or "").strip():
+    if not settings.site_base_url.strip():
         logger.warning(
             "broker startup: SITE_BASE_URL is unset; sitemap warming "
             "(sitemap:index, sitemap:meta, sitemap:inbox:*) will be a "

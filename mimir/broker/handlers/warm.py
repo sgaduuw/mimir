@@ -84,7 +84,7 @@ def _maybe_warn_sitemap_targets_dropped(req_targets) -> None:
         return
     if not any(t.startswith("sitemap:") for t in req_targets):
         return
-    if (settings.site_base_url or "").strip():
+    if settings.site_base_url.strip():
         return
     # Slow path: claim the "first warner" slot under the lock. The
     # double-check inside the lock makes the warning fire exactly once
@@ -238,7 +238,7 @@ def handle_warm_inbox(req: WarmInboxRequest) -> Reply:
     # cannot make the two bases straddle midnight).
     today = datetime.now(UTC).date()
     yesterday = today - timedelta(days=1)
-    sitemap_base = (settings.site_base_url or "").rstrip("/")
+    sitemap_base = settings.site_base_url.rstrip("/")
     targets = _build_inbox_targets(inbox, today, yesterday, sitemap_base)
     if req.targets is not None:
         wanted = set(req.targets)
@@ -363,7 +363,7 @@ def handle_warm_global(req: WarmGlobalRequest) -> Reply:
 
     _maybe_warn_sitemap_targets_dropped(req.targets)
 
-    sitemap_base = (settings.site_base_url or "").rstrip("/")
+    sitemap_base = settings.site_base_url.rstrip("/")
     targets = _build_global_targets(sitemap_base)
     if req.targets is not None:
         wanted = set(req.targets)
