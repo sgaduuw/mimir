@@ -15,6 +15,8 @@ changes, not internal refactors. Categories: **Added**,
 
 - Serve the pinned HTMX 4.0.1 and Pico CSS 2.1.1 files locally, so visiting a page no longer contacts unpkg or jsDelivr for scripts or styles. Content Security Policy permits only same-origin scripts and styles, and the privacy notice reflects the removed frontend CDN requests (#1149).
 
+- The front page uses the last warmed inbox volumes while the slow cache warmer refreshes them, so requests skip expensive volume queries (#1150).
+
 ## [3.49.2] - 2026-11-10
 
 ### Removed
