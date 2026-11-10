@@ -255,23 +255,25 @@ posting AS (
        AND COALESCE(c.patch_series_position, 0) = 0
 ),
 selected_patches AS MATERIALIZED (
-    SELECT po.cover, p.id, p.message_id, p.patch_series_key AS series_key,
-           {series_head_sql("p")} AS head, p.patch_series_position AS position,
+    SELECT po.cover, p.id, p.message_id, p.patch_series_key,
+           {series_head_sql("p")} AS patch_series_head_id,
+           p.patch_series_position AS position,
            {version_number_sql("p.patch_series_version")} AS revision
       FROM posting po
       JOIN articles p ON p.id = po.patch
      WHERE po.rn = 1
 ),
 selected_series AS (
-    SELECT DISTINCT series_key, head FROM selected_patches
+    SELECT DISTINCT patch_series_key, patch_series_head_id FROM selected_patches
 ),
 latest_revision AS MATERIALIZED (
-    SELECT s.series_key, s.head, COALESCE(a2.patch_series_position, 0) AS position,
+    SELECT s.patch_series_key, s.patch_series_head_id,
+           COALESCE(a2.patch_series_position, 0) AS position,
            MAX({_V2}) AS revision
       FROM selected_series s
-      JOIN articles a2 ON a2.patch_series_key = s.series_key
-                       AND {series_head_sql("a2")} = s.head
-     GROUP BY s.series_key, s.head, COALESCE(a2.patch_series_position, 0)
+      JOIN articles a2 ON {same_series_sql("a2", "s")}
+     GROUP BY s.patch_series_key, s.patch_series_head_id,
+              COALESCE(a2.patch_series_position, 0)
 ),
 patch_flags AS MATERIALIZED (
     SELECT sp.cover,
@@ -286,8 +288,8 @@ patch_flags AS MATERIALIZED (
                       AND t.role IN :review_roles) AS reviewed,
            NOT (r.revision > sp.revision) AS live
       FROM selected_patches sp
-      JOIN latest_revision r ON r.series_key = sp.series_key
-                            AND r.head = sp.head AND r.position = sp.position
+      JOIN latest_revision r ON {same_series_sql("r", "sp")}
+                            AND r.position = sp.position
 ),
 rollup AS (
     SELECT cover,
