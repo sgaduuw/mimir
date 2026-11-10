@@ -944,7 +944,6 @@ def _active_thread_rows(
     *,
     order_by: str = "score",
     limit: int | None = None,
-    extra_ctes_sql: str = "",
     extra_seed_filter_sql: str = "",
     extra_params: dict | None = None,
 ) -> list:
@@ -954,15 +953,8 @@ def _active_thread_rows(
     `limit`: None means unbounded (return every thread with at least one
     message in the window).
 
-    `extra_ctes_sql`: optional comma-suffixed CTE definitions injected
-    after `WITH RECURSIVE` and before `chains`. The per-subsystem
-    dashboard uses this to materialise the path-matched article ids
-    once (via `AS MATERIALIZED`) instead of re-evaluating the
-    `article_files` subquery for every seed row.
-
     `extra_seed_filter_sql`: optional SQL fragment AND-ed into the
-    seed step's WHERE clause. Used together with `extra_ctes_sql`
-    to reference the materialised CTE. Caller-supplied, must
+    seed step's WHERE clause. The caller-supplied fragment must
     reference bind parameters only via the `extra_params` dict
     (not string-interpolated values).
     """
@@ -972,7 +964,7 @@ def _active_thread_rows(
     # scan at every recursive depth (SQLite 3.54 otherwise reorders it).
     sql = text(
         f"""
-        WITH RECURSIVE {extra_ctes_sql} chains AS (
+        WITH RECURSIVE chains AS (
             SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
                    a.date AS recent_date, 0 AS depth
             FROM articles a
