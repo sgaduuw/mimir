@@ -153,7 +153,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 # and error pages also get them.
 #
 # CSP: HTML escaping is correct, but a CSP narrows the blast radius of
-#   any future bug. `default-src 'self'` plus the two CDNs we SRI-pin.
+#   any future bug. Scripts and styles are served from this origin only.
 #   `style-src` no longer carries `'unsafe-inline'`: every inline
 #   `<style>` block moved to `mimir/static/css/mimir.css` under #228,
 #   and every per-element `style="..."` attribute moved to a CSS class
@@ -161,10 +161,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 #   as `data-depth="N"` rules so a dynamic value still works). Any
 #   regression that re-introduces inline styles will fail to render
 #   instead of silently widening the attack surface.
-#   `script-src` is pinned to the specific htmx version path
-#   (`unpkg.com/htmx.org@4.0.1/`); an htmx bump in `base.html` must
-#   update this CSP entry in lockstep, the test
-#   `test_csp_script_src_pins_specific_htmx_version` enforces that.
+#   Vendored HTMX and Pico assets need no third-party allowance. Keep
+#   `script-src` and `style-src` at 'self' when updating their versions.
 #   Pygments is configured `noclasses=False` (both inline-renderer in
 #   `mimir/rendering/diff.py` and attachment-preview in
 #   `mimir/web/routes/attachments.py`) so it emits class names, not
@@ -183,8 +181,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
 _SECURITY_HEADERS = {
     "Content-Security-Policy": (
         "default-src 'self'; "
-        "style-src 'self' https://cdn.jsdelivr.net; "
-        "script-src 'self' https://unpkg.com/htmx.org@4.0.1/; "
+        "style-src 'self'; "
+        "script-src 'self'; "
         "img-src 'self' data:; "
         "frame-ancestors 'none'; "
         "base-uri 'self'"

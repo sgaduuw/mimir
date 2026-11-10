@@ -9,7 +9,7 @@
  *   ?     toggle help overlay
  *
  * Lives in mimir/static/ rather than inline because the production CSP
- * (script-src 'self' https://unpkg.com) blocks inline <script>. Loaded
+ * (script-src 'self') blocks inline <script>. Loaded
  * with `defer` so it runs after the DOM is parsed; nothing here needs
  * to run before paint.
  *

@@ -1643,8 +1643,12 @@ is an open opportunity, not yet done.
 
 ## Web UI stack choice
 
-Flask + Jinja2 (already in the project) + Pico CSS + HTMX (both from
-CDN; no build step) + Pygments for server-side syntax highlighting.
+Flask + Jinja2 (already in the project) + Pico CSS + HTMX (both vendored
+under `mimir/static/vendor/`; no build step) + Pygments for server-side
+syntax highlighting. Self-hosting avoids extra visitor connections and CDN
+availability dependencies. Version updates follow the source, license and
+checksum instructions in `mimir/static/vendor/README.md`; the script/style
+CSP stays at 'self'.
 
 Heavier alternatives (FastAPI, Tailwind + a build pipeline, React)
 were considered and rejected, they'd add operational and code weight

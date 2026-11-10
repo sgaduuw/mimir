@@ -31,7 +31,7 @@
   <article class="privacy-article">
   <hgroup>
     <h1>Privacy</h1>
-    <p><small><em>Last updated: 7 November 2026.</em></small></p>
+    <p><small><em>Last updated: 10 November 2026.</em></small></p>
   </hgroup>
 
   {# The summary says nothing the sections below do not. If one of these
@@ -102,7 +102,7 @@
     Back and forward navigation reload pages from the server.</p>
   <p>
     No analytics. No tracking pixels. No advertising. No
-    third-party embeds beyond the static-asset CDNs listed below.
+    third-party embeds.
   </p>
 
   {{ heading('server-side') }}
@@ -145,14 +145,6 @@
       and request metadata. Cloudflare&rsquo;s Data Processing
       Addendum and the EU Standard Contractual Clauses cover the
       EU-to-US transfer.
-    </li>
-    <li>
-      <a href="https://www.jsdelivr.com/">jsdelivr.net</a> and
-      <a href="https://unpkg.com/">unpkg.com</a> serve the two
-      vendored frontend assets (Pico CSS, htmx). Visiting their
-      CDNs reveals your IP to them. Both files are integrity-pinned
-      (SRI), so their content cannot change without breaking the
-      page.
     </li>
     <li>
       <strong>GitHub Container Registry</strong> hosts the
