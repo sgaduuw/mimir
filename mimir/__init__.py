@@ -10,6 +10,10 @@ try:
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
+import json
+import logging
+from datetime import UTC, datetime
+
 from flask import Flask, Response
 from werkzeug.middleware.proxy_fix import ProxyFix
 
@@ -69,6 +73,43 @@ def create_app() -> Flask:
     _register_indexnow_key_route(app)
     register_cli(app)
     return app
+
+
+class _JsonFormatter(logging.Formatter):
+    """One JSON object per record, a traceback included as one string,
+    so every line the web container writes parses like the access log."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        out = {
+            "ts": datetime.fromtimestamp(record.created, UTC).isoformat(
+                timespec="milliseconds"
+            ),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage(),
+        }
+        if record.exc_info:
+            out["exc"] = self.formatException(record.exc_info)
+        return json.dumps(out)
+
+
+def create_web_app() -> Flask:
+    """The gunicorn factory: `create_app()` with JSON log lines.
+
+    Without a root handler, a web warning (the crawler budget's
+    deferrals) went to Python's last-resort handler as a bare message,
+    and a traceback as many plain lines, between the access log's JSON
+    lines. Not in `create_app()`: the CLI builds the app too, and its
+    `_configure_logging` keeps the broker and tasks format. Installed
+    before the app exists, so Flask sees a handler and adds none of its
+    own to `app.logger`. gunicorn's own lines (worker boots, timeouts)
+    still use its format."""
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(_JsonFormatter())
+        root.addHandler(handler)
+    return create_app()
 
 
 def _register_indexnow_key_route(app: Flask) -> None:
