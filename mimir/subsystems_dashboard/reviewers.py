@@ -20,7 +20,7 @@ from mimir.datetime_utils import coerce_dt
 from mimir.mailmap import identity_addresses, rules_version
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
-from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
+from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_exists_sql
 from mimir.trailers import INDEXED_TRAILER_ROLES
 
 
@@ -238,10 +238,10 @@ def active_reviewers_in_subsystem(
     version = rules_version(session)
 
     def compute() -> list[ReviewerStat]:
-        path_filter = _subsystem_path_filter_sql(subsystem, prefix="arss")
+        path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="arss")
         if path_filter is None:
             return []
-        path_sql, path_params = path_filter
+        path_predicate, path_params = path_filter
         end = datetime.now(UTC)
         start = end - timedelta(days=days)
         # Pull every matching trailer row for the window. ORDER BY
@@ -267,7 +267,7 @@ def active_reviewers_in_subsystem(
                 LEFT JOIN mailmap m ON m.old_address = t.address_normalized
                 WHERE al.inbox_id = :inbox_id
                   AND a.date >= :start
-                  AND a.id IN ({path_sql})
+                  AND {path_predicate}
                 ORDER BY a.date DESC
                 """
             ).bindparams(bindparam("start", type_=DateTime)),
