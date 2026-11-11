@@ -197,6 +197,12 @@ content length is known. Logging does not read streamed bodies or measure
 bytes actually delivered, and downstream compression can change wire size.
 Requests served entirely by a CDN cache do not reach this access log.
 
+The web container's other log records (warnings such as the `crawler budget:`
+lines, and tracebacks) are JSON lines in the same stream, with `ts`, `level`,
+`logger`, `msg` and, for an exception, `exc`: an access record is a line with
+`method`, an application record a line with `level`. gunicorn's own lines
+(worker start, worker timeout) keep gunicorn's plain format.
+
 ## Crawler budgets
 
 One crawler can take most of the web tier, and a CDN limit cannot single it
