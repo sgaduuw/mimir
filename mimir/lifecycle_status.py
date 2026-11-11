@@ -28,6 +28,7 @@ from mimir.patch_series import (
     newer_revision_sql,
     parse_cover_letter,
     same_series_sql,
+    series_head_sql,
     version_number_sql,
 )
 from mimir.threading import unmaterialised_roots
@@ -156,13 +157,12 @@ _REVIEW_ROLES_PARAM = bindparam(
 _V2 = version_number_sql("a2.patch_series_version")
 _NEWER = newer_revision_sql("a1", "a2")
 # A cover's posting (#938): the patches of its series and version string
-# (`patch_series.same_posting`, in SQL), and a patch's own newer revision.
+# (`patch_series.same_posting`, in SQL).
 _POSTING = (
     same_series_sql("p", "c")
     + " AND p.patch_series_version = c.patch_series_version"
     + " AND p.patch_series_position > 0"
 )
-_NEWER_PATCH = newer_revision_sql("p", "a2")
 # Has-diff probe: sorts a diff-carrying row ahead of a bare one (#949, #938).
 _NO_DIFF = (
     "NOT EXISTS (SELECT f.article_id FROM article_files f WHERE f.article_id = {}.id)"
@@ -254,29 +254,50 @@ posting AS (
        AND c.patch_series_key IS NOT NULL
        AND COALESCE(c.patch_series_position, 0) = 0
 ),
+selected_patches AS MATERIALIZED (
+    SELECT po.cover, p.id, p.message_id, p.patch_series_key,
+           {series_head_sql("p")} AS patch_series_head_id,
+           p.patch_series_position AS position,
+           {version_number_sql("p.patch_series_version")} AS revision
+      FROM posting po
+      JOIN articles p ON p.id = po.patch
+     WHERE po.rn = 1
+),
+selected_series AS (
+    SELECT DISTINCT patch_series_key, patch_series_head_id FROM selected_patches
+),
+latest_revision AS MATERIALIZED (
+    SELECT s.patch_series_key, s.patch_series_head_id,
+           COALESCE(a2.patch_series_position, 0) AS position,
+           MAX({_V2}) AS revision
+      FROM selected_series s
+      JOIN articles a2 ON {same_series_sql("a2", "s")}
+     GROUP BY s.patch_series_key, s.patch_series_head_id,
+              COALESCE(a2.patch_series_position, 0)
+),
+patch_flags AS MATERIALIZED (
+    SELECT sp.cover,
+           EXISTS (SELECT 1 FROM mainline_commits m
+                    WHERE m.message_id = sp.message_id
+                      AND m.tree_name = 'linus') AS landed,
+           EXISTS (SELECT 1 FROM mainline_commits m
+                    WHERE m.message_id = sp.message_id
+                      AND m.tree_name != 'linus') AS other,
+           EXISTS (SELECT 1 FROM article_trailers t
+                    WHERE t.article_id = sp.id
+                      AND t.role IN :review_roles) AS reviewed,
+           NOT (r.revision > sp.revision) AS live
+      FROM selected_patches sp
+      JOIN latest_revision r ON {same_series_sql("r", "sp")}
+                            AND r.position = sp.position
+),
 rollup AS (
     SELECT cover,
            COUNT(*) AS slots,
            SUM(landed) AS n_landed,
            SUM(landed OR (live AND other)) AS n_queued,
            SUM(landed OR (live AND (other OR reviewed))) AS n_reviewed
-      FROM (
-        SELECT po.cover AS cover,
-               EXISTS (SELECT 1 FROM mainline_commits m
-                        WHERE m.message_id = p.message_id
-                          AND m.tree_name = 'linus') AS landed,
-               EXISTS (SELECT 1 FROM mainline_commits m
-                        WHERE m.message_id = p.message_id
-                          AND m.tree_name != 'linus') AS other,
-               EXISTS (SELECT t.article_id FROM article_trailers t
-                        WHERE t.article_id = p.id
-                          AND t.role IN :review_roles) AS reviewed,
-               NOT EXISTS (SELECT 1 FROM articles a2
-                            WHERE {_NEWER_PATCH}) AS live
-          FROM posting po
-          JOIN articles p ON p.id = po.patch
-         WHERE po.rn = 1
-      )
+      FROM patch_flags
      GROUP BY cover
 )
 SELECT a.id,
