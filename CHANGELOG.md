@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.50.0] - 2026-11-11
+
 ### Changed
 
 - Serve the pinned HTMX 4.0.1 and Pico CSS 2.1.1 files locally, so visiting a page no longer contacts unpkg or jsDelivr for scripts or styles. Content Security Policy permits only same-origin scripts and styles, and the privacy notice reflects the removed frontend CDN requests (#1149).
