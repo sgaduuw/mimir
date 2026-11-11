@@ -203,5 +203,6 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 # JSON access-log line per request via `mimir.web.hooks._log_request`
 # (carries the same fields plus request_id + duration_ms). Letting
 # gunicorn also write its stock Apache-style line produced two
-# entries per request in the container log.
-CMD ["sh", "-c", "exec gunicorn 'mimir:create_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --timeout ${WORKER_TIMEOUT} --error-logfile -"]
+# entries per request in the container log. `create_web_app` makes the
+# app's other log records JSON lines too.
+CMD ["sh", "-c", "exec gunicorn 'mimir:create_web_app()' --bind 0.0.0.0:5000 --workers ${WORKERS} --timeout ${WORKER_TIMEOUT} --error-logfile -"]

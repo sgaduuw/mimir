@@ -88,7 +88,7 @@
   </div>
   <ul class="front-inboxes" id="inbox-list">
     {% for ix in inbox_summaries %}
-    <li data-filter-item data-filter-text="{{ ix.name }}" data-order="{{ loop.index0 }}" data-active="{{ ix.messages_30d }}">
+    <li data-filter-item data-filter-text="{{ ix.name }}" data-order="{{ loop.index0 }}"{% if ix.messages_30d is not none %} data-active="{{ ix.messages_30d }}"{% endif %}>
       <a class="inbox-link" href="/{{ ix.name }}/">{{ ix.name }}</a>
       {% if ix.pinned %}<span class="inbox-pinned" title="Pinned via Settings.pinned_inboxes">pinned</span>{% endif %}
       <span class="inbox-meta">{% if ix.stats.total %}{{ ix.stats.total|short_count }} &middot; {{ ix.last_activity_rel or 'no activity' }}{% else %}not yet ingested{% endif %}</span>

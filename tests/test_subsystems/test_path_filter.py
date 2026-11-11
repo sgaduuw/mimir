@@ -80,7 +80,7 @@ def test_subsystem_path_filter_uses_index_seeks(seeded_db):
     ],
     ids=lambda helper: helper.__name__,
 )
-def test_path_filter_consumers_keep_all_three_seeks(seeded_db, helper):
+def test_path_filter_consumers_use_the_expected_index(seeded_db, helper):
     with seeded_db() as session:
         sub = _add_subsystem(
             session,
@@ -121,17 +121,24 @@ def test_path_filter_consumers_keep_all_three_seeks(seeded_db, helper):
             run,
             "WITH candidates"
             if helper is recent_postings_query
-            else "FROM article_files",
-            required_sql=("article_files INDEXED BY ix_article_files_path",),
+            else "FROM article_files af",
         )
-    steps = [line for line in plan.splitlines() if "article_files" in line]
-    assert len(steps) == 3, plan
-    assert all(
-        line.startswith("SEARCH article_files USING INDEX ix_article_files_path")
-        for line in steps
-    ), plan
-    assert sum("path>? AND path<?" in line for line in steps) == 1, plan
-    assert sum("path=?" in line for line in steps) == 2, plan
+    if helper is recent_postings_query:
+        steps = [line for line in plan.splitlines() if "article_files" in line]
+        assert len(steps) == 3, plan
+        assert all(
+            line.startswith("SEARCH article_files USING INDEX ix_article_files_path")
+            for line in steps
+        ), plan
+        assert sum("path>? AND path<?" in line for line in steps) == 1, plan
+        assert sum("path=?" in line for line in steps) == 2, plan
+    else:
+        assert any(
+            line.startswith("SEARCH af ")
+            and "sqlite_autoindex_article_files_1 (article_id=?" in line
+            for line in plan.splitlines()
+        ), plan
+        assert "ix_article_files_path" not in plan, plan
     assert len(results) == 1
     result = results[0]
     if helper is daily_volume_in_subsystem:

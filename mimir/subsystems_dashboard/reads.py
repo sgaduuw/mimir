@@ -22,7 +22,7 @@ from mimir.models import (
 from mimir.subsystems import (
     SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
 )
-from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
+from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_exists_sql
 from mimir.threading import ActiveThread, _active_threads_query
 
 
@@ -51,13 +51,15 @@ def daily_volume_in_subsystem(
         # articles outside the range on any non-UTC TZ.
         today = datetime.now(UTC).date()
         start = today - timedelta(days=days - 1)
-        path_filter = _subsystem_path_filter_sql(subsystem, prefix="dvss")
+        # The date window lets us probe files for recent articles without
+        # enumerating every historical match for broad paths like drivers/net/.
+        path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="dvss")
         if path_filter is None:
             return DailyVolume(
                 days=[(start + timedelta(days=i), 0) for i in range(days)],
                 max_count=1,
             )
-        path_sql, path_params = path_filter
+        path_predicate, path_params = path_filter
         rows = session.execute(
             text(
                 f"""
@@ -65,7 +67,7 @@ def daily_volume_in_subsystem(
                 FROM articles a
                 JOIN article_lists al ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id AND a.date >= :start
-                  AND a.id IN ({path_sql})
+                  AND {path_predicate}
                 GROUP BY day
                 """
             ),
@@ -113,18 +115,12 @@ def active_threads_in_subsystem(
     """
 
     def compute() -> list[ActiveThread]:
-        path_filter = _subsystem_path_filter_sql(subsystem, prefix="atss")
+        path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="atss")
         if path_filter is None:
             return []
-        path_sql, path_params = path_filter
+        path_predicate, path_params = path_filter
         end = datetime.now(UTC)
         start = end - timedelta(days=days)
-        # Materialise the path-matched article ids once before the
-        # recursive CTE runs. Without `MATERIALIZED`, SQLite inlines
-        # the CTE and re-evaluates the `article_files` lookup per
-        # seed row, order-of-seconds on wide subsystems like
-        # "open firmware and flattened device tree bindings" with
-        # many F: globs. The temp-table form runs the lookup once.
         return _active_threads_query(
             session,
             inbox,
@@ -132,8 +128,7 @@ def active_threads_in_subsystem(
             end,
             order_by="score",
             limit=limit,
-            extra_ctes_sql=f"path_articles AS MATERIALIZED ({path_sql}),",
-            extra_seed_filter_sql=" AND a.id IN (SELECT article_id FROM path_articles)",
+            extra_seed_filter_sql=f" AND {path_predicate}",
             extra_params=path_params,
         )
 
