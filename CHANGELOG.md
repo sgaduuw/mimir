@@ -11,6 +11,18 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.50.0] - 2026-11-11
+
+### Changed
+
+- Serve the pinned HTMX 4.0.1 and Pico CSS 2.1.1 files locally, so visiting a page no longer contacts unpkg or jsDelivr for scripts or styles. Content Security Policy permits only same-origin scripts and styles, and the privacy notice reflects the removed frontend CDN requests (#1149).
+
+- Cold subsystem dashboards load activity, volume, and reviewers without scanning matching paths across the entire archive. Patch series status also looks up the latest revision once per selected series and patch position (#1150).
+
+- The front page uses the last warmed inbox volumes while the slow cache warmer refreshes them, so requests skip expensive volume queries (#1150).
+
+- The web container writes its other log records (such as crawler budget deferrals and tracebacks) as one JSON object per line, with `ts`, `level`, `logger`, `msg` and, for an exception, `exc`, so every application line parses like the access log. The image's gunicorn command uses the new `mimir:create_web_app()` factory; the CLI's log format is unchanged.
+
 ## [3.49.2] - 2026-11-10
 
 ### Removed

@@ -379,51 +379,26 @@ def test_security_headers_values_pin_csp_contract(client):
     assert r.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
 
 
-def test_csp_script_src_pins_specific_htmx_version(client):
-    """`script-src` carries a version-pinned unpkg path
-    (`https://unpkg.com/htmx.org@<X.Y.Z>/`), not the bare unpkg.com
-    origin. The version-pinned form means an htmx bump in
-    `base.html` MUST update the CSP in lockstep; the bare origin
-    would silently allow any unpkg package or version to load.
+@pytest.mark.parametrize("path", ["/", "/no-such-vendor-test-page"])
+def test_scripts_and_styles_are_same_origin(client, path):
+    """Normal and error pages need no third-party script or style origin."""
+    from urllib.parse import urlsplit
 
-    Pinned via a positive allowlist over every source token: each
-    must be either `'self'` or match the anchored htmx-version
-    regex. Any other shape (a stray `unpkg.com` bare origin,
-    `cdn.example.com`, …) fails the pin. Anchored-regex checks
-    avoid CodeQL's `py/incomplete-url-substring-sanitization`
-    rule, which flags substring / startswith / endswith URL
-    comparisons indiscriminately.
-    """
-    import re
+    from tests._dom import parse
 
-    r = client.get("/")
-    directives = _parse_csp(r.headers.get("Content-Security-Policy", ""))
-    script_src = directives.get("script-src", [])
-    htmx_pin = re.compile(r"^https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/$")
-    allowed = re.compile(r"^'self'$")
-    for src in script_src:
-        ok = bool(allowed.match(src) or htmx_pin.match(src))
-        assert ok, (
-            f"script-src source {src!r} does not match the pinned "
-            f"allowlist (`'self'` or `{htmx_pin.pattern}`); full "
-            f"script-src was {script_src!r}"
-        )
-    # And the pinned htmx source must actually be present, not just
-    # be allowed.
-    assert any(htmx_pin.match(s) for s in script_src), (
-        "script-src missing the version-pinned htmx source matching "
-        f"`{htmx_pin.pattern}`; full script-src was {script_src!r}"
-    )
-
-    rendered_pins = re.findall(
-        r'<script\s+src="(https://unpkg\.com/htmx\.org@\d+\.\d+\.\d+/)'
-        r'dist/htmx\.min\.js"',
-        r.get_data(as_text=True),
-    )
-    assert rendered_pins == ["https://unpkg.com/htmx.org@4.0.1/"]
-    assert rendered_pins == [s for s in script_src if htmx_pin.fullmatch(s)], (
-        "The rendered HTMX script must match the version allowed by CSP"
-    )
+    response = client.get(path)
+    assert response.status_code == (200 if path == "/" else 404)
+    directives = _parse_csp(response.headers["Content-Security-Policy"])
+    assert directives["script-src"] == ["'self'"]
+    assert directives["style-src"] == ["'self'"]
+    page = parse(response.get_data(as_text=True))
+    scripts = [n for n in page.find_all("script") if "src" in n.attrs]
+    styles = page.find_all("link", rel="stylesheet")
+    assert scripts and styles
+    for node in scripts + styles:
+        url = urlsplit(node.attrs.get("src") or node.attrs["href"])
+        assert not url.scheme and not url.netloc
+        assert url.path.startswith("/static/"), url
 
 
 def test_permissions_policy_denies_powerful_features(client):

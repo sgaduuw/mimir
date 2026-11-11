@@ -489,14 +489,15 @@ def get_or_compute(
     fn: Callable[[], Any],
     *,
     force: bool = False,
+    retain_for: int = 0,
 ) -> Any:
     """Cache-aside fetch riding on the caller's session for the read.
 
     On hit (and not `force`), returns the decoded value without
     opening a fresh connection. On miss, calls `fn()` and persists
     the result via `set()` (which owns its own session, so the
-    caller's transaction stays untouched). Saves one connection per
-    hit and one per miss vs separate `get()` + `set()` calls.
+    caller's transaction stays untouched). `retain_for` keeps the last
+    value available to read-only callers after its refresh deadline.
     """
     nskey = _ns(key)
     if not force:
@@ -505,7 +506,8 @@ def get_or_compute(
                 CacheEntry.key == nskey
             )
         ).one_or_none()
-        if row is not None and row.expires_at >= _now():
+        remaining = row.expires_at - _now() - retain_for if row else -1
+        if remaining >= 0:
             window = _warm_window.get()
             if window is None:
                 return _decode(json.loads(row.value))
@@ -518,13 +520,13 @@ def get_or_compute(
             if not should_refresh(
                 nominal_ttl=ttl,
                 window_sec=int(window),
-                remaining=int(row.expires_at - _now()),
+                remaining=int(remaining),
             ):
                 return _decode(json.loads(row.value))
             # Probabilistic / deterministic check said yes: fall
             # through to recompute.
     value = fn()
-    set(key, value, ttl)
+    set(key, value, ttl + retain_for)
     return value
 
 

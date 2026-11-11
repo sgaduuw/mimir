@@ -12,7 +12,7 @@ import pytest
 from werkzeug.serving import make_server
 
 from mimir.config import settings
-from tests._browser import playwright_api
+from tests._browser import block_external_requests, playwright_api
 from tests.test_routes._helpers import build_thread, seed_thread_shape
 
 
@@ -97,10 +97,15 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
     try:
         with playwright.sync_playwright() as p, p.chromium.launch() as browser:
             page = browser.new_page()
+            blocked = block_external_requests(page, base)
             errors = []
             page.on("pageerror", lambda error: errors.append(str(error)))
             page.goto(base + root_path)
             assert page.evaluate("htmx.version") == "4.0.1"
+            assert page.evaluate(
+                "getComputedStyle(document.documentElement)"
+                ".getPropertyValue('--pico-font-family')"
+            ).strip()
             page.locator('[data-fold-set="expanded"]').click()
             page.locator("#theme-select").select_option("dark")
             page.evaluate("window.navigationSentinel = 42")
@@ -301,6 +306,7 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 expect(plain).to_have_url(base + next_page)
                 expect(plain.locator(".thread-message")).to_have_count(5)
                 expect(plain.locator(f"#m{root_id}")).to_have_count(0)
+            assert blocked == [], blocked
     finally:
         server.shutdown()
         thread.join()
