@@ -19,6 +19,8 @@ changes, not internal refactors. Categories: **Added**,
 
 - The front page uses the last warmed inbox volumes while the slow cache warmer refreshes them, so requests skip expensive volume queries (#1150).
 
+- The web container writes its other log records (such as crawler budget deferrals and tracebacks) as one JSON object per line, with `ts`, `level`, `logger`, `msg` and, for an exception, `exc`, so every application line parses like the access log. The image's gunicorn command uses the new `mimir:create_web_app()` factory; the CLI's log format is unchanged.
+
 ## [3.49.2] - 2026-11-10
 
 ### Removed
