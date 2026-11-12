@@ -158,6 +158,10 @@ def test_reviewer_display_name_ties_resolve_to_the_newest_article(
         )
         second.date = first.date
         s.commit()
+    # Stats pinned: with an empty sqlite_stat1 left by earlier tests, the
+    # plan returns the higher id first even without the tie-break.
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        sub = s.execute(select(Subsystem)).scalars().one()
         out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
     assert [r.name for r in out] == ["New Name"]
