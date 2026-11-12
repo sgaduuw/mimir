@@ -9,6 +9,8 @@ from io import StringIO
 
 import pytest
 
+from tests._helpers import planner_stats
+
 
 @contextlib.contextmanager
 def capture_metric_lines():
@@ -523,8 +525,17 @@ class TestRelatedDiscussions:
             root.setLevel(saved)
 
 
+@pytest.fixture
+def restore_planner_stats(seeded_db):
+    """For a test that runs its own ANALYZE: put the statistics back."""
+    with planner_stats(seeded_db):
+        yield
+
+
 class TestCandidatePlanPin:
-    def test_candidate_query_drives_on_date_index(self, seeded_db):
+    def test_candidate_query_drives_on_date_index(
+        self, seeded_db, restore_planner_stats
+    ):
         """The candidate query must SEARCH via ix_articles_date,
         never SCAN articles. The LIKE predicates ride the date walk;
         a regression to a subject-index OR shape (which cannot use
