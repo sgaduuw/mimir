@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.50.2] - 2026-11-12
+
 ### Changed
 
 - Cold subsystem dashboards on very large inboxes (lkml-sized, 1M articles or more) load faster. Active threads, daily volume and active reviewers now walk the date window instead of every message of the inbox, and the needs-attention and quiet lists test inbox and path membership before the engagement checks. Smaller inboxes keep their current queries. The unused trailer summary is removed from the cached triage lists; the new cache namespace starts cold and background warm-cache runs repopulate it. On lkml, those three sections went from seconds to tens of milliseconds in a read-only A/B (#1156).
