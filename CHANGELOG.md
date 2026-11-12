@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.50.1] - 2026-11-12
+
+### Fixed
+
+- A cache miss no longer makes the viewer wait while the database writer is busy (for example during ANALYZE). The cache write is still queued and committed, but the page does not wait for it. If the writer queue is full the write is dropped and logged as `cache_set dropped: writer queue full`; that line shows how often it happens. A write that fails after the page was served is logged as `cache_set failed` (#1157).
+
 ## [3.50.0] - 2026-11-11
 
 ### Changed
@@ -6771,7 +6777,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.49.2...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.50.1...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
