@@ -331,7 +331,7 @@ def test_run_analyze_dispatches_via_writer_when_active(broker_active):
     writer = get_active_writer()
     submits = []
     original = writer.submit
-    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
     try:
         result = run_analyze()
     finally:
@@ -388,7 +388,7 @@ def test_load_maintainers_dispatches_via_writer(
     writer = get_active_writer()
     submits = []
     original = writer.submit
-    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
     try:
         ran, loaded, sha = load_maintainers(repo_path, tree_name="linus", force=True)
     finally:
@@ -462,7 +462,7 @@ def test_update_mainline_last_walked_at_dispatches_via_writer(
     writer = get_active_writer()
     submits = []
     original = writer.submit
-    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
     try:
         update_mainline(
             skip_fetch=True,
