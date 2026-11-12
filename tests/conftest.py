@@ -426,7 +426,12 @@ def _reset_db():
         )
         s.commit()
 
-    yield
+    # Restore after function-scoped sessions and broker fixtures close, so
+    # an uncommitted ANALYZE cannot hold the writer lock during restoration.
+    from tests._helpers import planner_stats
+
+    with planner_stats(SessionLocal, rows=None):
+        yield
 
 
 @pytest.fixture(autouse=True)
