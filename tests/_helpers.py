@@ -69,11 +69,21 @@ def planner_stats(session_factory, rows=()):
             # ones so the next connection reads the table afresh.
             s.get_bind().dispose()
 
+        def drop():
+            s.execute(text("DROP TABLE IF EXISTS sqlite_stat1"))
+            s.commit()
+            s.get_bind().dispose()
+
         load(rows)
         try:
             yield
         finally:
-            load(before)
+            # ANALYZE created the table when it was absent: remove it,
+            # an empty table plans differently from none (#1161).
+            if has_stats:
+                load(before)
+            else:
+                drop()
 
 
 @contextmanager
