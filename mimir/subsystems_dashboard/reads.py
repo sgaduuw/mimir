@@ -23,7 +23,11 @@ from mimir.subsystems import (
     SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC,
 )
 from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_exists_sql
-from mimir.threading import ActiveThread, _active_threads_query
+from mimir.threading import (
+    ActiveThread,
+    _active_threads_query,
+    articles_in_inbox_from,
+)
 
 
 def daily_volume_in_subsystem(
@@ -60,17 +64,12 @@ def daily_volume_in_subsystem(
                 max_count=1,
             )
         path_predicate, path_params = path_filter
-        # A huge inbox walks the date window; a small one its own rows (#1156).
-        source = (
-            "articles a JOIN article_lists al"
-            if _inbox_first(inbox)
-            else "articles a INDEXED BY ix_articles_date CROSS JOIN article_lists al"
-        )
         rows = session.execute(
             text(
                 f"""
                 SELECT date(a.date) AS day, COUNT(*) AS n
-                FROM {source} ON al.article_id = a.id
+                FROM {articles_in_inbox_from(date_first=not _inbox_first(inbox))}
+                  ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id AND a.date >= :start
                   AND {path_predicate}
                 GROUP BY day

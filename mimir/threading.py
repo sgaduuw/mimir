@@ -936,6 +936,16 @@ _ORDER_CLAUSES = {
 }
 
 
+def articles_in_inbox_from(*, date_first: bool) -> str:
+    """FROM source joining `articles a` to `article_lists al` (the caller
+    adds the ON clause). Date-first walks `ix_articles_date` and tests
+    inbox membership per row, for a huge inbox; otherwise the inbox's own
+    rows drive (#1156)."""
+    if date_first:
+        return "articles a INDEXED BY ix_articles_date CROSS JOIN article_lists al"
+    return "articles a JOIN article_lists al"
+
+
 def _active_thread_rows(
     session: Session,
     inbox: Inbox,
@@ -963,11 +973,6 @@ def _active_thread_rows(
     inbox membership per row, instead of walking every `article_lists`
     row of the inbox (#1156). Wins on a huge inbox; loses on a small one.
     """
-    seed_from = (
-        "articles a INDEXED BY ix_articles_date CROSS JOIN article_lists al"
-        if date_first
-        else "articles a JOIN article_lists al"
-    )
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
     # Ancestor membership is one composite seek per parent, not an inbox
@@ -977,7 +982,7 @@ def _active_thread_rows(
         WITH RECURSIVE chains AS (
             SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
                    a.date AS recent_date, 0 AS depth
-            FROM {seed_from} ON al.article_id = a.id
+            FROM {articles_in_inbox_from(date_first=date_first)} ON al.article_id = a.id
             WHERE al.inbox_id = :inbox_id AND a.date >= :start AND a.date < :end
               {extra_seed_filter_sql}
             UNION ALL
