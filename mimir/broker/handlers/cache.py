@@ -32,7 +32,8 @@ out via TTL). Without this catch, a long writer-lock hold
 handler logs each one as an ERROR with full traceback, which
 is noisy. During VACUUM, reject new cache mutations before writer submission
 and count them for one maintenance summary. A write admitted before
-the VACUUM gate closes can still hit the ordinary timeout.
+the VACUUM gate closes can still hit the ordinary timeout (the delete
+and purge handlers; `handle_cache_set` has no timeout).
 """
 
 import logging
@@ -98,12 +99,19 @@ def handle_cache_set(req: CacheSetRequest) -> Reply:
     # not after the commit: a held writer (ANALYZE) must not stall the
     # viewer (#1157). A full queue drops the write rather than block.
     try:
-        cache._set_via_writer_for_nskey(
+        future = cache._set_via_writer_for_nskey(
             writer, req.key, req.value_json, req.ttl, block=False
         )
     except queue.Full:
         logger.warning("cache_set dropped: writer queue full (key=%s)", req.key)
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+
+    # Nobody reads the future, so log a failed commit here.
+    def _log_failure(f):
+        if (exc := f.exception()) is not None:
+            logger.warning("cache_set failed (key=%s): %s", req.key, exc)
+
+    future.add_done_callback(_log_failure)
     return Reply(rpc_id=req.rpc_id, ok=True)
 
 
