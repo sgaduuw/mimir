@@ -133,3 +133,31 @@ def test_plan_follows_the_inbox_size(seeded_db, monkeypatch, fn, match, inbox_fi
         ), plan
         assert "ix_article_lists_inbox_id" not in plan, plan
         assert "SCAN al" not in plan, plan
+
+
+@pytest.mark.parametrize("inbox_first", [False, True])
+def test_reviewer_display_name_ties_resolve_to_the_newest_article(
+    seeded_db, monkeypatch, inbox_first
+):
+    """Two attestations from one address on articles with the same date:
+    the higher article id supplies the display name in either shape."""
+    _force_shape(monkeypatch, inbox_first)
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "BCACHEFS", "Supported", files=["fs/bcachefs/"])
+        first = _add_recent_patch_with_trailers(
+            s,
+            "tie1@x",
+            ["fs/bcachefs/a.c"],
+            [("Reviewed-by", "Old Name", "alice@kernel.org")],
+        )
+        second = _add_recent_patch_with_trailers(
+            s,
+            "tie2@x",
+            ["fs/bcachefs/b.c"],
+            [("Reviewed-by", "New Name", "alice@kernel.org")],
+        )
+        second.date = first.date
+        s.commit()
+        alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
+        out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
+    assert [r.name for r in out] == ["New Name"]
