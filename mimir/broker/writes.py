@@ -106,16 +106,17 @@ class WriterThread:
         )
         self._thread.start()
 
-    def submit(self, op: WriteOp) -> WriteFuture:
+    def submit(self, op: WriteOp, *, block: bool = True) -> WriteFuture:
         """Enqueue an op for the writer to commit. Returns a Future
         that resolves when the commit lands (or rejects with the
         exception on rollback). Blocks if the queue is full
-        (backpressure)."""
+        (backpressure); with `block=False` raises `queue.Full`
+        instead."""
         future: WriteFuture = Future()
         with self._stop_lock:
             if self._stopped.is_set():
                 raise RuntimeError("WriterThread is stopped")
-            self._queue.put((op, future))
+            self._queue.put((op, future), block=block)
         return future
 
     def stop(self, timeout: float = 30.0) -> None:

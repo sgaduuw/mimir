@@ -1273,7 +1273,7 @@ def test_delete_dispatches_via_writer_in_broker(broker_active):
     writer = get_active_writer()
     submits = []
     original = writer.submit
-    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
 
     try:
         cache.set("del-route-probe", {"x": 1}, ttl=60)  # seed via writer
@@ -1297,7 +1297,7 @@ def test_delete_for_inbox_dispatches_via_writer_in_broker(
     writer = get_active_writer()
     submits = []
     original = writer.submit
-    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
 
     try:
         cache.delete_for_inbox("some-inbox")
