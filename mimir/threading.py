@@ -936,6 +936,16 @@ _ORDER_CLAUSES = {
 }
 
 
+def articles_in_inbox_from(*, date_first: bool) -> str:
+    """FROM source joining `articles a` to `article_lists al` (the caller
+    adds the ON clause). Date-first walks `ix_articles_date` and tests
+    inbox membership per row, for a huge inbox; otherwise the inbox's own
+    rows drive (#1156)."""
+    if date_first:
+        return "articles a INDEXED BY ix_articles_date CROSS JOIN article_lists al"
+    return "articles a JOIN article_lists al"
+
+
 def _active_thread_rows(
     session: Session,
     inbox: Inbox,
@@ -946,6 +956,7 @@ def _active_thread_rows(
     limit: int | None = None,
     extra_seed_filter_sql: str = "",
     extra_params: dict | None = None,
+    date_first: bool = False,
 ) -> list:
     """Run the active-threads recursive CTE over a `[start, end)` window.
 
@@ -957,6 +968,10 @@ def _active_thread_rows(
     seed step's WHERE clause. The caller-supplied fragment must
     reference bind parameters only via the `extra_params` dict
     (not string-interpolated values).
+
+    `date_first`: seed from `ix_articles_date` over the window and test
+    inbox membership per row, instead of walking every `article_lists`
+    row of the inbox (#1156). Wins on a huge inbox; loses on a small one.
     """
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
@@ -967,8 +982,7 @@ def _active_thread_rows(
         WITH RECURSIVE chains AS (
             SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
                    a.date AS recent_date, 0 AS depth
-            FROM articles a
-            JOIN article_lists al ON al.article_id = a.id
+            FROM {articles_in_inbox_from(date_first=date_first)} ON al.article_id = a.id
             WHERE al.inbox_id = :inbox_id AND a.date >= :start AND a.date < :end
               {extra_seed_filter_sql}
             UNION ALL

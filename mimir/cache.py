@@ -43,7 +43,7 @@ logger = logging.getLogger(__name__)
 # type's fields fails `test_a_cached_field_change_bumps_the_namespace`
 # until this is bumped: an older release reads the cache on rollback.
 # Plain container values and encoder changes still need a bump by hand.
-NAMESPACE_VERSION = 5
+NAMESPACE_VERSION = 6
 
 # Warm handlers use one window for proactive refresh and stored-TTL insurance.
 # None keeps ordinary request reads and writes at their nominal lifetime.
