@@ -158,8 +158,9 @@ def test_reviewer_display_name_ties_resolve_to_the_newest_article(
         )
         second.date = first.date
         s.commit()
-    # Stats pinned: with an empty sqlite_stat1 left by earlier tests, the
-    # plan returns the higher id first even without the tie-break.
+    # Stats pinned: sqlite_stat4 samples left behind by earlier tests'
+    # ANALYZE make the plan return the higher id first even without the
+    # tie-break.
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         sub = s.execute(select(Subsystem)).scalars().one()

@@ -42,48 +42,56 @@ def cached_facts(releases):
 @contextmanager
 def planner_stats(session_factory, rows=()):
     """Run with `sqlite_stat1` holding exactly `rows` ((table, index,
-    stat) tuples), then put back what was there. The table lives in the
-    shared test database and other tests' ANALYZE leaves rows behind,
-    so a plan or a step budget that depends on statistics must pin them
-    and not inherit them."""
+    stat) tuples) and `sqlite_stat4` empty, then put both back as they
+    were. The tables live in the shared test database and other tests'
+    ANALYZE leaves rows behind (stat4 holds samples of the test's own
+    data), so a plan or a step budget that depends on statistics must pin
+    them and not inherit them."""
+
+    def exists(s, table):
+        return bool(
+            s.execute(
+                text("SELECT 1 FROM sqlite_master WHERE name = :t"), {"t": table}
+            ).first()
+        )
+
     with session_factory() as s:
-        has_stats = s.execute(
-            text("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'")
-        ).first()
-        before = (
-            [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat1"))]
-            if has_stats
+        # stat4 exists only in a SQLite built with STAT4.
+        has_stat4 = exists(s, "sqlite_stat4")
+        before = [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat1"))]
+        before4 = (
+            [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat4"))]
+            if has_stat4
             else []
         )
 
-        def load(stats):
-            s.execute(text("ANALYZE"))  # creates the table when absent
+        def load(stats, stat4=()):
+            s.execute(text("ANALYZE"))  # creates the tables when absent
             s.execute(text("DELETE FROM sqlite_stat1"))
             for tbl, idx, stat in stats:
                 s.execute(
                     text("INSERT INTO sqlite_stat1 VALUES (:t, :i, :s)"),
                     {"t": tbl, "i": idx, "s": stat},
                 )
+            if has_stat4:
+                s.execute(text("DELETE FROM sqlite_stat4"))
+                for row in stat4:
+                    s.execute(
+                        text(
+                            "INSERT INTO sqlite_stat4 VALUES (:a, :b, :c, :d, :e, :f)"
+                        ),
+                        dict(zip("abcdef", row, strict=True)),
+                    )
             s.commit()
             # SQLite reads statistics per connection: drop the pooled
-            # ones so the next connection reads the table afresh.
-            s.get_bind().dispose()
-
-        def drop():
-            s.execute(text("DROP TABLE IF EXISTS sqlite_stat1"))
-            s.commit()
+            # ones so the next connection reads the tables afresh.
             s.get_bind().dispose()
 
         load(rows)
         try:
             yield
         finally:
-            # ANALYZE created the table when it was absent: remove it,
-            # an empty table plans differently from none (#1161).
-            if has_stats:
-                load(before)
-            else:
-                drop()
+            load(before, before4)
 
 
 @contextmanager
