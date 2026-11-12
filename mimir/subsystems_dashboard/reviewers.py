@@ -278,7 +278,7 @@ def active_reviewers_in_subsystem(
                 WHERE al.inbox_id = :inbox_id
                   AND a.date >= :start
                   AND {path_predicate}
-                ORDER BY a.date DESC
+                ORDER BY a.date DESC, a.id DESC
                 """
             ).bindparams(bindparam("start", type_=DateTime)),
             {
