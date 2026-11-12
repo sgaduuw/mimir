@@ -113,7 +113,6 @@ def test_doctor_errors_on_unreachable_broker(runner, seeded_db, monkeypatch, tmp
     from mimir.extensions import SessionLocal
     from mimir.models import Inbox
 
-    monkeypatch.setattr(live_settings, "mimir_is_broker", False)
     monkeypatch.setattr(live_settings, "site_base_url", "https://example.com")
     monkeypatch.setattr(live_settings, "indexnow_key", None)
     # Nonexistent socket path: AF_UNIX connect will raise ENOENT.
@@ -131,6 +130,7 @@ def test_doctor_errors_on_unreachable_broker(runner, seeded_db, monkeypatch, tmp
             ix.mirror_path = str(mp)
         s.commit()
 
+    monkeypatch.setattr(live_settings, "mimir_is_broker", False)
     result = runner.invoke(doctor_command, [])
     assert result.exit_code == 1, result.output
     assert "Broker socket" in result.output
