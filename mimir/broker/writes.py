@@ -79,9 +79,11 @@ class WriterThread:
         # `put()` AFTER `stop()` enqueued the shutdown sentinel; the
         # writer would process the sentinel and exit, leaving the
         # submitted future unresolved and the caller hung on `.result()`.
-        # Holding the lock briefly across `_queue.put()` is fine: the
-        # writer thread drains continuously, so backpressure stalls are
-        # bounded by the writer's per-op commit time, not by the lock.
+        # A blocking `submit()` holds the lock across `_queue.put()`, so
+        # while the queue is full (a long op such as ANALYZE holds the
+        # writer) the lock is held for as long as the writer is. A
+        # `block=False` submit therefore takes the lock with a 50 ms
+        # timeout and raises `queue.Full` rather than wait behind it.
         # `_stopped` is a `threading.Event` rather than a bool so that
         # the set/is_set primitives are documented thread-safe (the
         # internal `_cond` provides the memory barrier).
@@ -113,10 +115,17 @@ class WriterThread:
         (backpressure); with `block=False` raises `queue.Full`
         instead."""
         future: WriteFuture = Future()
-        with self._stop_lock:
+        # A lock held past 50 ms means a producer is parked in put on a
+        # full queue (or stop() is draining): a non-blocking caller drops
+        # rather than wait behind it (#1157).
+        if not self._stop_lock.acquire(timeout=-1 if block else 0.05):
+            raise queue.Full
+        try:
             if self._stopped.is_set():
                 raise RuntimeError("WriterThread is stopped")
             self._queue.put((op, future), block=block)
+        finally:
+            self._stop_lock.release()
         return future
 
     def stop(self, timeout: float = 30.0) -> None:
