@@ -3,10 +3,10 @@
 import json
 from collections import defaultdict
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
-from sqlalchemy import bindparam, select, text
+from sqlalchemy import DateTime, bindparam, select, text
 
 from mimir import cache
 from mimir.canonical import fallback_canonical_name
@@ -15,10 +15,15 @@ from mimir.models import ArticleList, Inbox
 from mimir.patch_series import parse_cover_letter, same_series_sql, series_head_sql
 from mimir.patch_subjects import _is_patch_subject, _is_reply_to_patch
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
-from mimir.subsystems_dashboard._path_filter import _subsystem_path_filter_sql
+from mimir.subsystems_dashboard._path_filter import (
+    _subsystem_path_filter_exists_sql,
+    _subsystem_path_filter_sql,
+)
+from mimir.threading import articles_in_inbox_from
 
 RECENT_POSTINGS_LIMIT = 30
 RECENT_PREVIEW_LIMIT = 30
+RECENT_POSTINGS_WINDOW_DAYS = 1
 
 
 @dataclass
@@ -59,23 +64,72 @@ def _canonical_patch(subject, position, key):
     return _is_patch_subject(subject) and not _is_reply_to_patch(article)
 
 
-def recent_postings_sql(subsystem):
-    """The actual group/member statement, also used by read-only measurements.
+def recent_postings_sql(subsystem, *, since=None):
+    """Build a posting query, optionally selecting from a recent date window.
 
-    The SQLite function calls the existing Python subject predicates, keeping
-    reply rejection before LIMIT without a second mail parser. CASE gates
-    parsing on indexed inbox membership: a plain join lets SQLite invoke the
-    Python parser before rejecting another inbox's path-matched article.
-    The shared UNION of path-index seeks remains the candidate driver.
+    The date window limits representative selection only. Selected postings
+    still collect matching members across all history, including old slot
+    winners and undated children. Without a window the path index remains
+    the driver, which is cheaper than an open-ended date walk for quiet lists.
     """
-    path_filter = _subsystem_path_filter_sql(subsystem, prefix="rps")
+    path_filter = (
+        _subsystem_path_filter_sql(subsystem, prefix="rps")
+        if since is None
+        else _subsystem_path_filter_exists_sql(subsystem, prefix="rps")
+    )
     if path_filter is None:
         return None
     path_sql, params = path_filter
     head = series_head_sql("a")
     identity = "series_key, series_head, version, singleton"
-    return text(f"""
-        WITH candidates AS MATERIALIZED (
+    eligibility = """
+        COALESCE(a.patch_series_position, 1) != 0
+        AND CASE WHEN EXISTS (
+            SELECT 1 FROM article_lists al
+             WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
+        ) THEN canonical_patch(a.subject, a.patch_series_position,
+                               a.patch_series_key)
+          ELSE 0 END
+    """
+    if since is None:
+        candidates = "candidates"
+        source = "articles a"
+        predicate = f"a.id IN ({path_sql})"
+        members = ""
+        slot_source = """
+            selected g JOIN candidates c
+              ON c.singleton = g.singleton
+             AND c.series_key IS g.series_key
+             AND c.series_head = g.series_head
+             AND c.version IS g.version
+        """
+    else:
+        candidates = "recent_candidates"
+        source = articles_in_inbox_from(date_first=True) + " ON al.article_id = a.id"
+        predicate = "al.inbox_id = :inbox_id AND a.date >= :since AND " + path_sql
+        params["since"] = since
+        # The shared series predicate compares actual articles, keeping the
+        # head normalization in one place. The date bound never reaches members.
+        members = f"""
+        members AS MATERIALIZED (
+            SELECT g.id AS representative_id, a.id,
+                   a.patch_series_position AS position
+              FROM selected g JOIN articles r ON r.id = g.id
+              CROSS JOIN articles a INDEXED BY ix_articles_patch_series_key
+             WHERE (SELECT COUNT(*) FROM selected) = :limit
+               AND g.singleton = 0 AND {same_series_sql("a", "r")}
+               AND a.patch_series_version = g.version
+               AND a.patch_series_position > 0
+               AND {path_sql} AND {eligibility}
+            UNION ALL
+            SELECT g.id, g.id, g.position FROM selected g
+             WHERE (SELECT COUNT(*) FROM selected) = :limit
+               AND g.singleton != 0
+        ),
+        """
+        slot_source = "selected g JOIN members c ON c.representative_id = g.id"
+    statement = text(f"""
+        WITH {candidates} AS MATERIALIZED (
             SELECT a.id, a.date, a.patch_series_position AS position,
                    a.patch_series_key AS series_key,
                    {head} AS series_head,
@@ -84,33 +138,22 @@ def recent_postings_sql(subsystem):
                               AND a.patch_series_version IS NOT NULL
                               AND a.patch_series_position > 0
                         THEN 0 ELSE a.id END AS singleton
-              FROM articles a
-             WHERE a.id IN ({path_sql})
-               AND COALESCE(a.patch_series_position, 1) != 0
-               AND CASE WHEN EXISTS (
-                       SELECT 1 FROM article_lists al
-                        WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
-                   ) THEN canonical_patch(a.subject, a.patch_series_position,
-                                          a.patch_series_key)
-                   ELSE 0 END
+              FROM {source}
+             WHERE {predicate} AND {eligibility}
         ), ranked_groups AS (
             SELECT *, ROW_NUMBER() OVER (
                 PARTITION BY {identity} ORDER BY date DESC, id DESC
-            ) AS group_rank FROM candidates
+            ) AS group_rank FROM {candidates}
         ), selected AS MATERIALIZED (
             SELECT * FROM ranked_groups WHERE group_rank = 1
              ORDER BY date DESC, id DESC LIMIT :limit
-        ), slots AS (
+        ), {members} slots AS (
             SELECT g.id AS representative_id, g.date AS newest_date,
                    g.version, g.singleton, c.id, c.position,
                    ROW_NUMBER() OVER (
                        PARTITION BY g.id, c.position ORDER BY c.id
                    ) AS slot_rank
-              FROM selected g JOIN candidates c
-                ON c.singleton = g.singleton
-               AND c.series_key IS g.series_key
-               AND c.series_head = g.series_head
-               AND c.version IS g.version
+              FROM {slot_source}
         ), preview AS (
             SELECT *, COUNT(*) OVER (PARTITION BY representative_id) AS matching_count,
                    ROW_NUMBER() OVER (
@@ -123,29 +166,36 @@ def recent_postings_sql(subsystem):
           FROM preview p JOIN articles a ON a.id = p.id
          WHERE preview_rank <= :preview_limit
          ORDER BY newest_date DESC, representative_id DESC, preview_rank
-    """), params
+    """)
+    if since is not None:
+        statement = statement.bindparams(bindparam("since", type_=DateTime))
+    return statement, params
 
 
 def recent_postings_query(session, inbox, subsystem, limit=30, preview_limit=30):
     """Read the bounded dataset without cache writes or lifecycle work."""
-    built = recent_postings_sql(subsystem)
-    if built is None:
-        return []
-    if limit < 1 or preview_limit < 1:
-        raise ValueError("Posting and preview limits must be positive")
-    session.connection().connection.driver_connection.create_function(
-        "canonical_patch", 3, _canonical_patch, deterministic=True
-    )
-    statement, params = built
-    rows = session.execute(
-        statement,
-        {
-            **params,
-            "inbox_id": inbox.id,
-            "limit": limit,
-            "preview_limit": preview_limit,
-        },
-    ).all()
+    since = datetime.now(UTC) - timedelta(days=RECENT_POSTINGS_WINDOW_DAYS)
+    for start in (since, None):
+        built = recent_postings_sql(subsystem, since=start)
+        if built is None:
+            return []
+        if limit < 1 or preview_limit < 1:
+            raise ValueError("Posting and preview limits must be positive")
+        session.connection().connection.driver_connection.create_function(
+            "canonical_patch", 3, _canonical_patch, deterministic=True
+        )
+        statement, params = built
+        rows = session.execute(
+            statement,
+            {
+                **params,
+                "inbox_id": inbox.id,
+                "limit": limit,
+                "preview_limit": preview_limit,
+            },
+        ).all()
+        if rows:
+            break
     if not rows:
         return []
     ids = list(dict.fromkeys(r.representative_id for r in rows))
