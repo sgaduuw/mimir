@@ -21,6 +21,9 @@ to be sub-ms.
 Best-effort posture (2.15.1 hotfix): each handler catches
 `TimeoutError` from `.result(timeout=5)` and returns
 `Reply(ok=False, error="writer busy")` with a WARNING log line.
+`handle_cache_set` is the exception (#1157): it replies once the
+write is queued and never waits on the commit; a full writer queue
+drops the write with a "cache_set dropped" WARNING.
 The web tier's `cache.set` is already best-effort by contract
 (it logs + swallows non-OK replies; the cached value still ages
 out via TTL). Without this catch, a long writer-lock hold
@@ -28,11 +31,13 @@ out via TTL). Without this catch, a long writer-lock hold
 `TimeoutError` per cache RPC and `dispatch`'s outer exception
 handler logs each one as an ERROR with full traceback, which
 is noisy. During VACUUM, reject new cache mutations before writer submission
-and count them for one maintenance summary. A write admitted before
-the VACUUM gate closes can still hit the ordinary timeout.
+and count them for one maintenance summary. A delete or purge
+admitted before the VACUUM gate closes can still hit the ordinary
+timeout; a cache.set admitted then just waits in the writer queue.
 """
 
 import logging
+import queue
 import threading
 
 from mimir import cache
@@ -90,15 +95,23 @@ def handle_cache_set(req: CacheSetRequest) -> Reply:
     writer = get_active_writer()
     # req.key is already namespaced and req.value_json already JSON-encoded
     # (the web tier's cache.set did both, and checked the size cap, before
-    # sending), hence the nskey helper. Await .result() so the reply
-    # doesn't go out before the commit lands.
+    # sending), hence the nskey helper. Reply once the write is queued,
+    # not after the commit: a held writer (ANALYZE) must not stall the
+    # viewer (#1157). A full queue drops the write rather than block.
     try:
-        cache._set_via_writer_for_nskey(
-            writer, req.key, req.value_json, req.ttl
-        ).result(timeout=5)
-    except TimeoutError:
-        logger.warning("cache_set timeout: writer busy (key=%s)", req.key)
+        future = cache._set_via_writer_for_nskey(
+            writer, req.key, req.value_json, req.ttl, block=False
+        )
+    except queue.Full:
+        logger.warning("cache_set dropped: writer queue full (key=%s)", req.key)
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+
+    # Nobody reads the future, so log a failed commit here.
+    def _log_failure(f):
+        if (exc := f.exception()) is not None:
+            logger.warning("cache_set failed (key=%s): %s", req.key, exc)
+
+    future.add_done_callback(_log_failure)
     return Reply(rpc_id=req.rpc_id, ok=True)
 
 

@@ -79,9 +79,12 @@ class WriterThread:
         # `put()` AFTER `stop()` enqueued the shutdown sentinel; the
         # writer would process the sentinel and exit, leaving the
         # submitted future unresolved and the caller hung on `.result()`.
-        # Holding the lock briefly across `_queue.put()` is fine: the
-        # writer thread drains continuously, so backpressure stalls are
-        # bounded by the writer's per-op commit time, not by the lock.
+        # A blocking `submit()` holds the lock across `_queue.put()`, so
+        # while the queue is full (a long op such as ANALYZE holds the
+        # writer) the lock is held for as long as the writer is. A
+        # `block=False` submit therefore takes the lock with a 50 ms
+        # timeout and raises `queue.Full` rather than wait behind a parked
+        # producer (or a draining `stop()`) (#1157).
         # `_stopped` is a `threading.Event` rather than a bool so that
         # the set/is_set primitives are documented thread-safe (the
         # internal `_cond` provides the memory barrier).
@@ -106,16 +109,21 @@ class WriterThread:
         )
         self._thread.start()
 
-    def submit(self, op: WriteOp) -> WriteFuture:
+    def submit(self, op: WriteOp, *, block: bool = True) -> WriteFuture:
         """Enqueue an op for the writer to commit. Returns a Future
         that resolves when the commit lands (or rejects with the
         exception on rollback). Blocks if the queue is full
-        (backpressure)."""
+        (backpressure); with `block=False` raises `queue.Full`
+        instead."""
         future: WriteFuture = Future()
-        with self._stop_lock:
+        if not self._stop_lock.acquire(timeout=-1 if block else 0.05):
+            raise queue.Full
+        try:
             if self._stopped.is_set():
                 raise RuntimeError("WriterThread is stopped")
-            self._queue.put((op, future))
+            self._queue.put((op, future), block=block)
+        finally:
+            self._stop_lock.release()
         return future
 
     def stop(self, timeout: float = 30.0) -> None:

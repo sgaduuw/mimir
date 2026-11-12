@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- A cache miss no longer makes the viewer wait while the database writer is busy (for example during ANALYZE). The cache write is still queued and committed, but the page does not wait for it. If the writer queue is full the write is dropped and logged as `cache_set dropped: writer queue full`; that line shows how often it happens (#1157).
+
 ## [3.50.0] - 2026-11-11
 
 ### Changed
