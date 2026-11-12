@@ -1490,8 +1490,17 @@ oversized warm reports an error. No truncation is hidden inside a cached result.
 `subsystems_dashboard/recent.py` groups path/inbox-qualified canonical patches
 by series key, the shared normalized head, and exact stored version before
 selecting the newest 30 postings. Incomplete series metadata is a singleton
-by article ID. The existing UNION of path-index seeks keeps F/X semantics;
-a deterministic connection-local SQLite function calls the existing subject
+by article ID. Selection first walks the last day through the date index,
+testing inbox and F/X path membership per article. If it finds the full posting
+limit, only those selected identities expand through the series-key index,
+across all dates, for their complete matching counts and previews. A recent
+resend can therefore surface an old posting with its original slot winners and
+undated members intact. If the window yields fewer postings than the limit, the
+UNION of path-index seeks selects from all history. This keeps quiet inboxes
+complete and avoids an open-ended date walk (#1165). Future-dated articles
+remain eligible in both paths.
+
+A deterministic connection-local SQLite function calls the existing subject
 predicates so replies and non-patches cannot consume grouped slots. A CASE
 expression gates that callback on indexed inbox membership, since a plain join
 lets SQLite parse a path-matched subject before rejecting its inbox. Registering
