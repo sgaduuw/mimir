@@ -493,3 +493,54 @@ def test_unsupported_paths_return_empty_before_limit_validation(seeded_db):
         sub = _add_subsystem(session, "UNSUPPORTED", None, ["drivers/*/a.c"])
         inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
         assert recent_postings_query(session, inbox, sub, limit=0) == []
+
+
+def test_recent_window_members_keep_their_version(seeded_db):
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "VERSIONS", None, ["drivers/demo/"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        now = datetime.now(UTC)
+        _patch(session, "v1-1@x").date = now
+        _patch(session, "v1-2@x", position=2).date = now - timedelta(days=60)
+        _patch(session, "v2-1@x", version="v2").date = now
+        session.commit()
+        rows = recent_postings_query(session, inbox, sub, limit=2)
+    children = {p.version: [c.message_id for c in p.children] for p in rows}
+    assert children == {"v1": ["v1-1@x", "v1-2@x"], "v2": ["v2-1@x"]}
+    assert {p.version: p.matching_count for p in rows} == {"v1": 2, "v2": 1}
+
+
+def test_recent_window_ignores_series_members_outside_the_paths(seeded_db):
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "WINDOW PATHS", None, ["drivers/demo/"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        now = datetime.now(UTC)
+        # An in-path member keeps an out-of-path representative visible if the window loses its path filter.
+        _patch(session, "old-inside@x").date = now - timedelta(days=60)
+        _patch(session, "new-outside@x", position=2, paths=("other/x.c",)).date = now
+        _patch(session, "recent@x", key="other").date = now - timedelta(hours=1)
+        session.commit()
+        rows = recent_postings_query(session, inbox, sub, limit=1)
+    assert [p.representative.message_id for p in rows] == ["recent@x"]
+
+
+def test_recent_window_short_of_limit_falls_back_to_history(seeded_db):
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "FALLBACK", None, ["drivers/demo/"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        now = datetime.now(UTC)
+        for index in range(2):
+            _patch(session, f"new-{index}@x", key=f"new-{index}").date = now
+        for index in range(3):
+            article = _patch(session, f"old-{index}@x", key=f"old-{index}")
+            article.date = now - timedelta(days=60 + index)
+        session.commit()
+        rows = recent_postings_query(session, inbox, sub, limit=5)
+    # Only the history query can return the old postings, so they prove the fallback ran.
+    assert [p.representative.message_id for p in rows] == [
+        "new-1@x",
+        "new-0@x",
+        "old-0@x",
+        "old-1@x",
+        "old-2@x",
+    ]
