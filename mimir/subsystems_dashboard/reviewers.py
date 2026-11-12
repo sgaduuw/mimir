@@ -16,6 +16,7 @@ from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
+from mimir.dashboard import _inbox_first
 from mimir.datetime_utils import coerce_dt
 from mimir.mailmap import identity_addresses, rules_version
 from mimir.models import Inbox, Subsystem
@@ -244,6 +245,17 @@ def active_reviewers_in_subsystem(
         path_predicate, path_params = path_filter
         end = datetime.now(UTC)
         start = end - timedelta(days=days)
+        # A huge inbox walks the date window; a small one its own rows
+        # and then their trailers (#1156).
+        source = (
+            """article_trailers t
+                JOIN articles a ON a.id = t.article_id
+                JOIN article_lists al ON al.article_id = a.id"""
+            if _inbox_first(inbox)
+            else """articles a INDEXED BY ix_articles_date
+                CROSS JOIN article_lists al ON al.article_id = a.id
+                CROSS JOIN article_trailers t ON t.article_id = a.id"""
+        )
         # Pull every matching trailer row for the window. ORDER BY
         # date DESC so the in-Python aggregator sees the freshest
         # attestation per reviewer first; that's the row whose
@@ -261,14 +273,12 @@ def active_reviewers_in_subsystem(
                        COALESCE(m.address, t.address) AS address,
                        COALESCE(m.address, t.address_normalized) AS identity,
                        a.date AS art_date
-                FROM article_trailers t
-                JOIN articles a ON a.id = t.article_id
-                JOIN article_lists al ON al.article_id = a.id
+                FROM {source}
                 LEFT JOIN mailmap m ON m.old_address = t.address_normalized
                 WHERE al.inbox_id = :inbox_id
                   AND a.date >= :start
                   AND {path_predicate}
-                ORDER BY a.date DESC
+                ORDER BY a.date DESC, a.id DESC
                 """
             ).bindparams(bindparam("start", type_=DateTime)),
             {
