@@ -1,5 +1,6 @@
 """Helpers shared by test modules."""
 
+from collections import Counter
 from contextlib import contextmanager
 from types import SimpleNamespace
 
@@ -46,7 +47,9 @@ def planner_stats(session_factory, rows=()):
     were. The tables live in the shared test database and other tests'
     ANALYZE leaves rows behind (stat4 holds samples of the test's own
     data), so a plan or a step budget that depends on statistics must pin
-    them and not inherit them."""
+    them and not inherit them. Pass `rows=None` to preserve the incoming
+    statistics without pinning new ones; the suite uses that mode around
+    each test, including indirect ANALYZE calls from broker startup."""
 
     with session_factory() as s:
         # stat4 exists only in a SQLite built with STAT4.
@@ -84,11 +87,23 @@ def planner_stats(session_factory, rows=()):
             # ones so the next connection reads the tables afresh.
             s.get_bind().dispose()
 
-        load(rows)
+        if rows is not None:
+            load(rows)
         try:
             yield
         finally:
-            load(before, before4)
+            after = [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat1"))]
+            after4 = (
+                [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat4"))]
+                if has_stat4
+                else []
+            )
+            if Counter(after) != Counter(before) or Counter(after4) != Counter(before4):
+                load(before, before4)
+            else:
+                # A rolled-back ANALYZE restores the rows but leaves its
+                # planner estimates cached on the connection.
+                s.get_bind().dispose()
 
 
 @contextmanager
