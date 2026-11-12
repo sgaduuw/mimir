@@ -327,7 +327,6 @@ def test_dashboard_disclosures_source_counts_and_unusable_links(
                 author="Safe Author <private@example.net>",
                 date=reviewed.date,
                 inbox_name="alpha",
-                trailer_summary="false formatted suffix",
                 series_more=2,
             )
             for i in range(10)
@@ -347,7 +346,6 @@ def test_dashboard_disclosures_source_counts_and_unusable_links(
     assert "<summary>Show all 10 (5 more)</summary>" in after
     assert "4 reviews, 4 by maintainers" in html
     assert "review trailers," not in triage_html
-    assert "false formatted suffix" not in html
     assert "Showing first 30 of 35 matching patches" in html
     children = re.search(
         r'<ul class="subsystem-children">(.*?)</ul>', html, re.DOTALL

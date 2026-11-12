@@ -50,10 +50,7 @@ from mimir.trailers import REVIEW_TRAILER_ROLES
 
 
 class PatchAttention(BaseModel):
-    """One entry in a triage queue (needs-attention or quiet).
-    `trailer_summary` is non-empty for needs-attention (e.g.
-    "3 Reviewed-by, 1 Tested-by") and empty for the quiet list
-    (which by definition has no trailers)."""
+    """One entry in a triage queue (needs-attention or quiet)."""
 
     article_id: int
     message_id: str
@@ -61,7 +58,6 @@ class PatchAttention(BaseModel):
     author: str | None
     date: datetime | None
     inbox_name: str
-    trailer_summary: str = ""
     # The posting's other patches (same series key and version, other
     # positions), shown as "+N more in this series". A posting is one
     # row, not one per patch, so a long series cannot fill the list
@@ -144,42 +140,6 @@ def _filter_superseded(session: Session, article_ids: list[int]) -> set[int]:
     return set(session.execute(stmt, {"ids": article_ids}).scalars())
 
 
-def _trailer_summary(
-    session: Session,
-    article_ids: list[int],
-) -> dict[int, str]:
-    """Build a human-readable per-article trailer count summary
-    keyed by article_id. Empty articles produce empty strings.
-    One query, cheap, used only on the small needs-attention list."""
-    if not article_ids:
-        return {}
-    rows = session.execute(
-        select(
-            ArticleTrailer.article_id,
-            ArticleTrailer.role,
-        ).where(
-            ArticleTrailer.role.in_(REVIEW_TRAILER_ROLES),
-            ArticleTrailer.article_id.in_(article_ids),
-        )
-    ).all()
-    by_article: dict[int, dict[str, int]] = {}
-    for art_id, role in rows:
-        by_article.setdefault(art_id, {})[role] = (
-            by_article.setdefault(art_id, {}).get(role, 0) + 1
-        )
-    out: dict[int, str] = {}
-    for art_id, counts in by_article.items():
-        # Stable order matches the trailer-canon order on the patch-
-        # state card.
-        pieces = []
-        for role in REVIEW_TRAILER_ROLES:
-            n = counts.get(role, 0)
-            if n:
-                pieces.append(f"{n} {role}")
-        out[art_id] = ", ".join(pieces)
-    return out
-
-
 # Ceiling for the doubling page in `_run_triage`.
 MAX_PAGE = 2000
 # First page of an inbox-first walk: it costs the inbox scan plus the
@@ -219,6 +179,9 @@ def _triage_sql(
             "        CROSS JOIN articles a ON a.id = al_in.article_id"
         )
         in_inbox = "al_in.inbox_id = :inbox_id"
+        where = f"""AND {in_inbox}
+          AND {path_predicate}
+          AND {engagement_predicates}"""
     else:
         source = "articles a"
         in_inbox = """EXISTS (
@@ -226,6 +189,10 @@ def _triage_sql(
               WHERE al.article_id = a.id
                 AND al.inbox_id = :inbox_id
           )"""
+        # The engagement checks need the article row; membership is
+        # index-only. CASE keeps the cheap tests first (#1156).
+        where = f"""AND CASE WHEN {in_inbox} AND {path_predicate}
+          THEN ({engagement_predicates}) ELSE 0 END"""
     return f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
@@ -235,9 +202,7 @@ def _triage_sql(
         FROM {source}
         WHERE a.date BETWEEN :min_date AND :cutoff_date
           AND NOT (a.date = :min_date AND a.id <= :after_id)
-          AND {in_inbox}
-          AND {path_predicate}
-          {engagement_predicates}
+          {where}
         ORDER BY a.date ASC, a.id ASC
         LIMIT :page
     """
@@ -273,7 +238,7 @@ def _candidate_query_needs_attention(
     sql = _triage_sql(
         inbox_first=inbox_first,
         path_predicate=path_predicate,
-        engagement_predicates=f"""AND EXISTS (
+        engagement_predicates=f"""EXISTS (
               SELECT 1 FROM article_trailers t
               WHERE t.article_id = a.id
                 AND t.role IN ({review_role_params})
@@ -316,7 +281,7 @@ def _candidate_query_quiet(
     sql = _triage_sql(
         inbox_first=inbox_first,
         path_predicate=path_predicate,
-        engagement_predicates="""AND NOT EXISTS (
+        engagement_predicates="""NOT EXISTS (
               SELECT 1 FROM article_trailers t
               WHERE t.article_id = a.id
           )
@@ -358,11 +323,10 @@ def _run_triage(
     build_query: Callable[..., tuple[str, dict] | None],
     *,
     drop_maintainer_acked: bool,
-    include_trailer_summary: bool,
 ) -> list[PatchAttention]:
     """Shared post-processing across the two triage queries: run
     the candidate SELECT a page at a time, drop superseded rows (a
-    newer revision exists), optionally drop maintainer-Acked rows, optionally annotate with trailer summary,
+    newer revision exists), optionally drop maintainer-Acked rows,
     and fold every patch of one posting (series, meaning key and head
     (#816), and revision number, so an unversioned `resend` or `rfc` joins `v1`) into one
     row, the `representative_key` winner: a stored `vN` over `rfc` and
@@ -383,10 +347,6 @@ def _run_triage(
         drop_ids = _filter_superseded(session, candidate_ids)
         if drop_maintainer_acked:
             drop_ids |= _filter_maintainer_acked(session, candidate_ids)
-        summaries: dict[int, str] = {}
-        if include_trailer_summary:
-            kept_ids = [aid for aid in candidate_ids if aid not in drop_ids]
-            summaries = _trailer_summary(session, kept_ids)
         for r in rows:
             if r.article_id in drop_ids:
                 continue
@@ -409,7 +369,6 @@ def _run_triage(
                 author=r.author,
                 date=coerce_dt(r.art_date),
                 inbox_name=inbox.name,
-                trailer_summary=summaries.get(r.article_id, ""),
             )
             if series in by_series:
                 # Rows arrive in date order: the replacement is newer, so it
@@ -482,7 +441,6 @@ def needs_attention_patches_in_subsystem(
             limit,
             _candidate_query_needs_attention,
             drop_maintainer_acked=True,
-            include_trailer_summary=True,
         )
 
     return cache.get_or_compute(
@@ -522,7 +480,6 @@ def quiet_patches_in_subsystem(
             limit,
             _candidate_query_quiet,
             drop_maintainer_acked=False,
-            include_trailer_summary=False,
         )
 
     return cache.get_or_compute(
