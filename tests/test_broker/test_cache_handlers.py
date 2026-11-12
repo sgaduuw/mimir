@@ -304,21 +304,15 @@ def test_cache_set_handler_replies_without_waiting_for_commit(broker_active):
         raise AssertionError("queued cache write never landed")
 
 
-def test_cache_set_handler_drops_write_when_queue_full(broker_active, caplog):
-    """#1157: a full writer queue must not block the cache worker. The
-    write is dropped, the reply is ok=False, and the drop is logged with
-    the key so saturation shows up in prod logs."""
-    import logging
+def _saturate(writer):
+    """Hold the writer on one op and fill its bounded queue behind it.
+    Returns (release, futures); the caller sets `release` and resolves
+    the futures when done."""
     import queue
     import threading
-    import time
 
-    from mimir.broker import _context
-    from mimir.broker.handlers.cache import handle_cache_set
-    from mimir.broker.protocol import CacheSetRequest
     from mimir.broker.writes import WriteOp
 
-    writer = _context.get_active_writer()
     release = threading.Event()
     started = threading.Event()
 
@@ -327,20 +321,33 @@ def test_cache_set_handler_drops_write_when_queue_full(broker_active, caplog):
         release.wait(timeout=15)
 
     futures = [writer.submit(WriteOp(label="test:hold", fn=_hold))]
-    try:
-        # Only fill once the writer has dequeued the held op, else it
-        # frees a slot behind us and the queue is not really full.
-        assert started.wait(timeout=5)
-        # Fill the bounded queue behind the held op.
-        while True:
-            try:
-                futures.append(
-                    writer.submit(
-                        WriteOp(label="test:fill", fn=lambda c: None), block=False
-                    )
+    # Only fill once the writer has dequeued the held op, else it frees
+    # a slot behind us and the queue is not really full.
+    assert started.wait(timeout=5)
+    while True:
+        try:
+            futures.append(
+                writer.submit(
+                    WriteOp(label="test:fill", fn=lambda c: None), block=False
                 )
-            except queue.Full:
-                break
+            )
+        except queue.Full:
+            return release, futures
+
+
+def test_cache_set_handler_drops_write_when_queue_full(broker_active, caplog):
+    """#1157: a full writer queue must not block the cache worker. The
+    write is dropped, the reply is ok=False, and the drop is logged with
+    the key so saturation shows up in prod logs."""
+    import logging
+    import time
+
+    from mimir.broker import _context
+    from mimir.broker.handlers.cache import handle_cache_set
+    from mimir.broker.protocol import CacheSetRequest
+
+    release, futures = _saturate(_context.get_active_writer())
+    try:
         key = "v3:full-queue-drop"
         start = time.monotonic()
         with caplog.at_level(logging.WARNING, logger="mimir.broker.handlers.cache"):
@@ -355,3 +362,97 @@ def test_cache_set_handler_drops_write_when_queue_full(broker_active, caplog):
         release.set()
         for f in futures:
             f.result(timeout=10)
+
+
+def test_cache_set_handler_does_not_wait_behind_blocked_producer(broker_active):
+    """#1157: handle_cache_set must not block when another producer is
+    already blocked on the full writer queue (submit used to hold
+    _stop_lock across a blocking put)."""
+    import threading
+    import time
+
+    from mimir.broker import _context
+    from mimir.broker.handlers.cache import handle_cache_set
+    from mimir.broker.protocol import CacheSetRequest
+    from mimir.broker.writes import WriteOp
+
+    writer = _context.get_active_writer()
+    release, futures = _saturate(writer)
+    producer = None
+    try:
+        # A blocking producer (stands in for a warm-run cache.set) parks
+        # in put on the full queue.
+        def _blocking_producer():
+            futures.append(
+                writer.submit(WriteOp(label="test:warm-like", fn=lambda c: None))
+            )
+
+        producer = threading.Thread(target=_blocking_producer, daemon=True)
+        producer.start()
+        time.sleep(0.2)
+        assert producer.is_alive(), "producer should be parked on the full queue"
+
+        result = {}
+
+        def _call():
+            result["reply"] = handle_cache_set(
+                CacheSetRequest(
+                    rpc_id=1, key="v3:behind-producer", value_json='"x"', ttl=60
+                )
+            )
+
+        caller = threading.Thread(target=_call, daemon=True)
+        caller.start()
+        caller.join(timeout=2.0)
+        assert not caller.is_alive(), (
+            "handle_cache_set still blocked after 2 s behind a producer "
+            "parked on the full writer queue"
+        )
+        assert result["reply"].ok is False
+        assert result["reply"].error == "writer busy"
+    finally:
+        release.set()
+        if producer is not None:
+            producer.join(timeout=10)
+        for f in list(futures):
+            f.result(timeout=10)
+
+
+def test_cache_set_handler_logs_commit_failure(broker_active, caplog):
+    """#1157: handle_cache_set no longer reads the WriteFuture, so a
+    failed commit must still leave a log line."""
+    import logging
+    import time
+    from unittest.mock import patch
+
+    from mimir.broker.handlers.cache import handle_cache_set
+    from mimir.broker.protocol import CacheSetRequest
+    from mimir.broker.writes import WriteOp
+
+    submitted = []
+
+    def _failing_set(w, nskey, value_json, ttl, *, block=True):
+        def _boom(conn):
+            raise RuntimeError("disk I/O error")
+
+        f = w.submit(WriteOp(label=f"cache.set:{nskey}", fn=_boom), block=block)
+        submitted.append(f)
+        return f
+
+    key = "v3:commit-fails"
+    with caplog.at_level(logging.WARNING, logger="mimir.broker.handlers.cache"):
+        with patch("mimir.cache._set_via_writer_for_nskey", _failing_set):
+            reply = handle_cache_set(
+                CacheSetRequest(rpc_id=1, key=key, value_json='"x"', ttl=60)
+            )
+        assert reply.ok is True
+        deadline = time.monotonic() + 5
+        # The done callback runs on the writer thread just after the
+        # future resolves, so poll the log, not the future.
+        while (
+            f"cache_set failed (key={key})" not in caplog.text
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+        assert submitted[0].exception(timeout=1) is not None
+        assert f"cache_set failed (key={key})" in caplog.text

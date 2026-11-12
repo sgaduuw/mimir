@@ -83,7 +83,8 @@ class WriterThread:
         # while the queue is full (a long op such as ANALYZE holds the
         # writer) the lock is held for as long as the writer is. A
         # `block=False` submit therefore takes the lock with a 50 ms
-        # timeout and raises `queue.Full` rather than wait behind it.
+        # timeout and raises `queue.Full` rather than wait behind a parked
+        # producer (or a draining `stop()`) (#1157).
         # `_stopped` is a `threading.Event` rather than a bool so that
         # the set/is_set primitives are documented thread-safe (the
         # internal `_cond` provides the memory barrier).
@@ -115,9 +116,6 @@ class WriterThread:
         (backpressure); with `block=False` raises `queue.Full`
         instead."""
         future: WriteFuture = Future()
-        # A lock held past 50 ms means a producer is parked in put on a
-        # full queue (or stop() is draining): a non-blocking caller drops
-        # rather than wait behind it (#1157).
         if not self._stop_lock.acquire(timeout=-1 if block else 0.05):
             raise queue.Full
         try:
