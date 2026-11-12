@@ -102,7 +102,6 @@ def test_needs_attention_includes_review_trailered_patch(seeded_db, role):
         s.commit()
         result = needs_attention_patches_in_subsystem(s, _alpha(s), sub, limit=10)
     assert [p.message_id for p in result] == ["needs-1@x"]
-    assert result[0].trailer_summary == f"1 {role}"
 
 
 def test_needs_attention_excludes_too_recent(seeded_db):
@@ -453,9 +452,7 @@ def test_triage_queries_use_date_index_no_full_scans(seeded_db):
 
 
 def test_quiet_excludes_patch_whose_only_trailer_is_not_a_review_role(seeded_db):
-    """`PatchAttention.trailer_summary`'s docstring justifies being
-    empty on the quiet list because that list "by definition has no
-    trailers". The quiet query's predicate really is
+    """The quiet list is "no trailers": the query's predicate is
     `NOT EXISTS (SELECT 1 FROM article_trailers ...)` with no role
     filter, and this pins the difference.
 
@@ -466,8 +463,7 @@ def test_quiet_excludes_patch_whose_only_trailer_is_not_a_review_role(seeded_db)
     `trailers.INDEXED_TRAILER_ROLES`) but is NOT in the review set, so
     it separates the two readings: under the documented "no trailers"
     rule this patch is not quiet; under a review-roles-only rule it
-    would be, and it would then render with an empty summary while
-    carrying attestations.
+    would be, though it carries attestations.
     """
     with seeded_db() as s:
         sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
@@ -1071,6 +1067,34 @@ def test_inbox_first_plan_drives_from_the_inbox_index(seeded_db):
             assert "SEARCH al_in USING INDEX ix_article_lists_inbox_id" in plan, plan
             assert "SCAN articles" not in plan, plan
             assert "SCAN article_lists" not in plan, plan
+
+
+@pytest.mark.parametrize("inbox_first", [False, True])
+def test_date_first_gates_engagement_checks_behind_membership(seeded_db, inbox_first):
+    """The engagement checks need the article row; the inbox and path
+    membership tests are index-only. Date-first must evaluate membership
+    first (a CASE short-circuit), so rows of other lists and paths never
+    pay for the engagement lookups (#1156). Inbox-first already drives
+    from the membership index and needs no gate."""
+    from mimir.subsystems_dashboard.triage import (
+        _candidate_query_needs_attention,
+        _candidate_query_quiet,
+    )
+
+    with seeded_db() as s:
+        sub = _add_subsystem(s, "NETPLAN", "Supported", files=["net/"])
+        s.commit()
+        cutoff = datetime.now(UTC) - timedelta(days=14)
+        for fn in (_candidate_query_needs_attention, _candidate_query_quiet):
+            sql, _ = fn(_alpha(s), sub, cutoff, 10, inbox_first=inbox_first)
+            assert ("ELSE 0 END" in sql) is (not inbox_first), sql
+            if not inbox_first:
+                # Membership inside the WHEN, engagement inside the THEN.
+                gate = sql.split("ELSE 0 END")[0].rsplit("CASE WHEN", 1)[1]
+                when, then = gate.split("THEN")
+                assert "article_lists" in when and "article_files" in when, sql
+                assert "article_trailers" not in when, sql
+                assert "article_trailers" in then, sql
 
 
 # Superseded post-filter (#785)

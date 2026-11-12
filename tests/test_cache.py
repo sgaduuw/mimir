@@ -1605,6 +1605,6 @@ def test_a_cached_field_change_bumps_the_namespace():
     A Python upgrade or an annotation-style change can also move the
     digest: confirm no field changed, then record the new one."""
     assert (cache.NAMESPACE_VERSION, _registered_field_signature()) == (
-        5,
-        "bd9b639e1086eaaf",
+        6,
+        "edd970f6d990aec1",
     )
