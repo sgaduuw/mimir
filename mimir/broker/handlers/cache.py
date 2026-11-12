@@ -31,9 +31,9 @@ out via TTL). Without this catch, a long writer-lock hold
 `TimeoutError` per cache RPC and `dispatch`'s outer exception
 handler logs each one as an ERROR with full traceback, which
 is noisy. During VACUUM, reject new cache mutations before writer submission
-and count them for one maintenance summary. A write admitted before
-the VACUUM gate closes can still hit the ordinary timeout (the delete
-and purge handlers; `handle_cache_set` has no timeout).
+and count them for one maintenance summary. A delete or purge
+admitted before the VACUUM gate closes can still hit the ordinary
+timeout; a cache.set admitted then just waits in the writer queue.
 """
 
 import logging
