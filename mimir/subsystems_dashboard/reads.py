@@ -14,7 +14,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume
+from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume, _inbox_first
 from mimir.models import (
     Inbox,
     Subsystem,
@@ -60,12 +60,17 @@ def daily_volume_in_subsystem(
                 max_count=1,
             )
         path_predicate, path_params = path_filter
+        # A huge inbox walks the date window; a small one its own rows (#1156).
+        source = (
+            "articles a JOIN article_lists al"
+            if _inbox_first(inbox)
+            else "articles a INDEXED BY ix_articles_date CROSS JOIN article_lists al"
+        )
         rows = session.execute(
             text(
                 f"""
                 SELECT date(a.date) AS day, COUNT(*) AS n
-                FROM articles a
-                JOIN article_lists al ON al.article_id = a.id
+                FROM {source} ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id AND a.date >= :start
                   AND {path_predicate}
                 GROUP BY day
@@ -130,6 +135,7 @@ def active_threads_in_subsystem(
             limit=limit,
             extra_seed_filter_sql=f" AND {path_predicate}",
             extra_params=path_params,
+            date_first=not _inbox_first(inbox),
         )
 
     return cache.get_or_compute(

@@ -946,6 +946,7 @@ def _active_thread_rows(
     limit: int | None = None,
     extra_seed_filter_sql: str = "",
     extra_params: dict | None = None,
+    date_first: bool = False,
 ) -> list:
     """Run the active-threads recursive CTE over a `[start, end)` window.
 
@@ -957,7 +958,16 @@ def _active_thread_rows(
     seed step's WHERE clause. The caller-supplied fragment must
     reference bind parameters only via the `extra_params` dict
     (not string-interpolated values).
+
+    `date_first`: seed from `ix_articles_date` over the window and test
+    inbox membership per row, instead of walking every `article_lists`
+    row of the inbox (#1156). Wins on a huge inbox; loses on a small one.
     """
+    seed_from = (
+        "articles a INDEXED BY ix_articles_date CROSS JOIN article_lists al"
+        if date_first
+        else "articles a JOIN article_lists al"
+    )
     order_sql = _ORDER_CLAUSES[order_by]
     limit_sql = f"LIMIT {int(limit)}" if limit is not None else ""
     # Ancestor membership is one composite seek per parent, not an inbox
@@ -967,8 +977,7 @@ def _active_thread_rows(
         WITH RECURSIVE chains AS (
             SELECT a.id AS recent_id, a.message_id AS curr, a.thread_parent,
                    a.date AS recent_date, 0 AS depth
-            FROM articles a
-            JOIN article_lists al ON al.article_id = a.id
+            FROM {seed_from} ON al.article_id = a.id
             WHERE al.inbox_id = :inbox_id AND a.date >= :start AND a.date < :end
               {extra_seed_filter_sql}
             UNION ALL
