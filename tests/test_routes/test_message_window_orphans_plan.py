@@ -14,16 +14,16 @@ from sqlalchemy import event
 from mimir.config import settings
 from mimir.extensions import SessionLocal
 from mimir.models import ArticleFile
-from tests._helpers import PRODUCTION_STATS, planner_stats
+from tests._helpers import planner_stats
 from tests.test_routes._helpers import _metadata_url, build_thread
 
 
 def test_windowed_orphans_query_is_driven_by_the_subject_index(
     client, tmp_path, monkeypatch, seeded_db
 ):
-    # The plan depends on the statistics (a bare date-index row flips it
-    # to a date scan): pin them, do not inherit whatever earlier tests left.
-    with planner_stats(seeded_db, PRODUCTION_STATS):
+    # No statistics, as the module docstring describes: the plan depends on
+    # them, so pin that state, do not inherit whatever earlier tests left.
+    with planner_stats(seeded_db):
         monkeypatch.setattr(settings, "thread_view_render_cap", 5)
         seeded = build_thread(tmp_path, "alpha", shape="off_list", size=30)
         with SessionLocal() as s:
