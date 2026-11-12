@@ -48,16 +48,13 @@ def planner_stats(session_factory, rows=()):
     data), so a plan or a step budget that depends on statistics must pin
     them and not inherit them."""
 
-    def exists(s, table):
-        return bool(
-            s.execute(
-                text("SELECT 1 FROM sqlite_master WHERE name = :t"), {"t": table}
-            ).first()
-        )
-
     with session_factory() as s:
         # stat4 exists only in a SQLite built with STAT4.
-        has_stat4 = exists(s, "sqlite_stat4")
+        has_stat4 = bool(
+            s.execute(
+                text("SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat4'")
+            ).first()
+        )
         before = [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat1"))]
         before4 = (
             [tuple(r) for r in s.execute(text("SELECT * FROM sqlite_stat4"))]
