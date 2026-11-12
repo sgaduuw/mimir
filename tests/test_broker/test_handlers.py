@@ -3,6 +3,7 @@ broker daemon, just `dispatch(line: bytes) -> Reply` against the
 seeded test DB. Covers the happy path for each op, plus the error
 boundary (malformed JSON / unknown op / invalid request)."""
 
+import time
 from datetime import UTC
 
 from mimir import cache
@@ -42,8 +43,12 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
         )
     )
     assert reply.ok is True
-    # The request carried a namespaced key, so round-trip via the
-    # public API with the matching un-namespaced key.
+    # The reply goes out once the write is queued (#1157), so wait for
+    # the commit. The request carried a namespaced key, so round-trip
+    # via the public API with the matching un-namespaced key.
+    deadline = time.monotonic() + 5
+    while cache.get("test_dispatch_set") is None and time.monotonic() < deadline:
+        time.sleep(0.05)
     assert cache.get("test_dispatch_set") == "hello"
 
 

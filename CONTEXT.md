@@ -726,7 +726,12 @@ shim that obtains the active WriterThread via
 `mimir/cache.py` paralleling the `_direct_*` family:
 `_set_via_writer_for_nskey`, `delete_via_writer`,
 `delete_for_inbox_via_writer`, `purge_expired_via_writer`), and
-awaits `.result()` for the rowcount the reply needs.
+awaits `.result()` for the rowcount the reply needs. (#1157: all but
+`handle_cache_set`. That one replies once the write is queued, never
+after the commit, so a held writer cannot stall a viewer. It submits
+with `block=False`; on a full writer queue it drops the write, logs
+`cache_set dropped: writer queue full (key=...)` and replies
+`ok=False` "writer busy".)
 
 Reply shapes preserved exactly: `handle_cache_set` and
 `handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);

@@ -364,7 +364,7 @@ def set(key: str, value: Any, ttl: int) -> None:
 
 
 def _set_via_writer_for_nskey(
-    writer: Any, nskey: str, value_json: str, ttl: int
+    writer: Any, nskey: str, value_json: str, ttl: int, *, block: bool = True
 ) -> Any:
     """Submit the cache UPSERT for a pre-namespaced key and a
     pre-JSON-encoded payload to the writer and return the WriteFuture.
@@ -372,7 +372,8 @@ def _set_via_writer_for_nskey(
     Callers: `set` (inside the broker) and the broker's
     `handle_cache_set`, which receives both on the wire from a web
     tier that already namespaced + encoded. Performs no size check;
-    `set` owns that. Closure returns None.
+    `set` owns that. Closure returns None. `block=False` raises
+    `queue.Full` rather than wait on a full writer queue.
     """
     from mimir.broker.writes import WriteOp
 
@@ -393,7 +394,7 @@ def _set_via_writer_for_nskey(
             )
         )
 
-    return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn))
+    return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn), block=block)
 
 
 def _submit_stmt(writer: Any, label: str, stmt: Any) -> Any:
