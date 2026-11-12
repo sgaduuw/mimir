@@ -1,6 +1,6 @@
 """Cache-op handlers. Each is a sub-ms operation: dispatch a
 WriteOp through the active WriterThread and reply. The delete and
-purge handlers await `.result()` for the rowcount; `handle_cache_set`
+purge handlers await `.result()` before replying; `handle_cache_set`
 replies once the write is queued (#1157).
 
 Phase 4 of the broker two-pool restructure
