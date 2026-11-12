@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
 from sqlalchemy import select
 
 from mimir.models import Article, Inbox
@@ -73,7 +74,8 @@ def _patch(
     return article
 
 
-def test_exact_identity_slot_winners_and_canonical_patch_filter(seeded_db):
+@pytest.mark.parametrize("limit", [5, 30], ids=["recent-window", "history-fallback"])
+def test_exact_identity_slot_winners_and_canonical_patch_filter(seeded_db, limit):
     with seeded_db() as session:
         sub = _add_subsystem(
             session, "IDENTITY", None, ["drivers/demo/"], ["drivers/demo/excluded/"]
@@ -101,8 +103,14 @@ def test_exact_identity_slot_winners_and_canonical_patch_filter(seeded_db):
         _patch(session, "reply@x", subject="Re: [PATCH 1/40] reply")
         _patch(session, "prose@x", key=None, position=None, subject="Discussion")
         _patch(session, "incomplete@x", version=None)
+        # Both branches see the same recent identity fixture. Five groups fill
+        # the bounded request; a limit of thirty must use the history fallback.
+        now = datetime.now(UTC)
+        for article in session.scalars(select(Article)).all():
+            article.date = now
         session.commit()
-        rows = recent_postings_query(session, inbox, sub)
+        assert winner.date == now
+        rows = recent_postings_query(session, inbox, sub, limit=limit)
         assert len(rows) == 5  # v1, v2, RFC, a distinct head, and singleton fallback
         first = next(p for p in rows if len(p.children) == 2)
         assert first.matching_count == 2
@@ -193,7 +201,7 @@ def test_query_statement_count_and_selected_cover_plan(seeded_db):
         finally:
             event.remove(engine, "before_cursor_execute", capture)
         assert len(rows) == 12
-        assert len(statements) == 4
+        assert len(statements) == 5  # One bounded attempt, then the full-history path.
         plan = plan_of(
             session,
             lambda: recent_postings_query(session, inbox, sub),
@@ -399,3 +407,89 @@ def test_only_inbox_matching_candidates_reach_subject_parser(seeded_db, monkeypa
         }
         assert len(parsed) == 4
         assert all("other-inbox" not in subject for subject in parsed)
+
+
+def test_recent_selection_probes_full_posting_members_by_series(seeded_db):
+    from mimir.models import Subsystem
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "RECENT WINDOW", None, ["drivers/demo/"])
+        sid = sub.id
+        original = _patch(session, "original@x")
+        original.date = datetime.now(UTC) - timedelta(days=60)
+        undated = _patch(session, "undated@x", position=2)
+        undated.date = None
+        resend = _patch(session, "recent-resend@x")
+        resend.date = datetime.now(UTC)
+        _patch(session, "other-inbox@x", position=3, inbox="beta")
+        session.commit()
+        assert original.id < resend.id
+        assert resend.date > datetime.now(UTC) - timedelta(hours=1)
+        assert undated.date is None
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        sub = session.get(Subsystem, sid)
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        results = []
+        statements = []
+
+        def run():
+            from sqlalchemy import event
+
+            def capture(conn, cursor, statement, parameters, context, executemany):
+                statements.append(statement)
+
+            engine = session.get_bind()
+            event.listen(engine, "before_cursor_execute", capture)
+            try:
+                results.extend(recent_postings_query(session, inbox, sub, limit=1))
+            finally:
+                event.remove(engine, "before_cursor_execute", capture)
+
+        plan = plan_of(
+            session,
+            run,
+            "WITH recent_candidates",
+            required_sql=("INDEXED BY ix_articles_date", "a.date >="),
+        )
+    assert "ix_articles_patch_series_key" in plan, plan
+    assert not any("WITH candidates AS" in sql for sql in statements)
+    assert len(results) == 1
+    posting = results[0]
+    assert posting.representative.message_id == "recent-resend@x"
+    assert posting.matching_count == 2
+    assert [p.message_id for p in posting.children] == ["original@x", "undated@x"]
+
+
+def test_recent_selection_falls_back_for_old_and_undated_postings(seeded_db):
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "QUIET", None, ["drivers/demo/"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        for index in range(35):
+            article = _patch(session, f"quiet-{index}@x", key=f"quiet-{index}")
+            article.date = datetime.now(UTC) - timedelta(days=60 + index)
+        article = _patch(session, "quiet-undated@x", key="undated")
+        article.date = None
+        session.commit()
+        rows = recent_postings_query(session, inbox, sub, limit=40)
+    assert len(rows) == 36
+    assert [p.representative.message_id for p in rows[:2]] == ["quiet-0@x", "quiet-1@x"]
+    assert rows[-1].representative.message_id == "quiet-undated@x"
+
+
+def test_recent_selection_keeps_future_dated_postings(seeded_db):
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "FUTURE", None, ["drivers/demo/"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        article = _patch(session, "future@x")
+        article.date = datetime.now(UTC) + timedelta(days=60)
+        session.commit()
+        rows = recent_postings_query(session, inbox, sub, limit=1)
+    assert [p.representative.message_id for p in rows] == ["future@x"]
+
+
+def test_unsupported_paths_return_empty_before_limit_validation(seeded_db):
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "UNSUPPORTED", None, ["drivers/*/a.c"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        assert recent_postings_query(session, inbox, sub, limit=0) == []
