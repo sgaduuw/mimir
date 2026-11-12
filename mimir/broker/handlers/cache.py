@@ -1,12 +1,13 @@
 """Cache-op handlers. Each is a sub-ms operation: dispatch a
-WriteOp through the active WriterThread, await `.result()` for
-the rowcount, return the reply.
+WriteOp through the active WriterThread and reply. The delete and
+purge handlers await `.result()` for the rowcount; `handle_cache_set`
+replies once the write is queued (#1157).
 
 Phase 4 of the broker two-pool restructure
 (`_claude/specs/2026-05-29-broker-two-pool-design.md`): the
 handlers do not write inline on the cache worker thread.
 Instead, they submit single-statement WriteOps
-through `_context.get_active_writer()` and await `.result()`.
+through `_context.get_active_writer()` (all but set await `.result()`).
 The cache worker thread keeps running (it dequeues from
 `cache_queue` and dispatches) but the actual SQLite write
 lands on the WriterThread, serialised with long-op WriteOps.

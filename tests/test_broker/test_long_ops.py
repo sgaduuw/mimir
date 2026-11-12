@@ -363,7 +363,7 @@ def test_bootstrap_inboxes_dispatches_via_writer(seeded_db, broker_active):
     writer = get_active_writer()
     submits = []
     original = writer.submit
-    writer.submit = lambda op: (submits.append(op), original(op))[1]
+    writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
     try:
         result = bootstrap_inboxes()
     finally:
