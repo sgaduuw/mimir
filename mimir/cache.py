@@ -460,34 +460,6 @@ def purge_expired_via_writer(writer: Any, *, block: bool = True) -> Any:
     )
 
 
-def _delete_routed(
-    rpc: Callable[[], dict],
-    failure_msg: str,
-    *failure_args: Any,
-    via_writer: Callable[[Any], Any],
-) -> int:
-    """Run a cache delete where it belongs: RPC to the broker from
-    outside it (`BrokerUnavailable` counts as 0 rows and is logged unless
-    VACUUM deliberately skipped the write; entries age out via TTL), the active WriterThread inside it.
-
-    `rpc` is a thunk rather than a request object so each
-    `get_broker_client().call(<Model>(...))` stays literal in this file,
-    where `test_web_tier_rpcs_all_route_to_the_cache_queue` reads it."""
-    if _should_dispatch_to_broker():
-        from mimir.broker.client import BrokerCacheWriteSkipped, BrokerUnavailable
-
-        try:
-            return rpc().get("rows_deleted", 0)
-        except BrokerCacheWriteSkipped:
-            return 0
-        except BrokerUnavailable as exc:
-            logger.warning(failure_msg, *failure_args, exc)
-            return 0
-    from mimir.broker import _context
-
-    return via_writer(_context.get_active_writer()).result()
-
-
 def get_or_compute(
     session: Session,
     key: str,
@@ -550,72 +522,25 @@ def keys() -> list[str]:
         ]
 
 
-def purge_expired() -> int:
-    """Drop every expired row. Returns rows deleted. Cheap thanks to
-    `ix_cache_expires_at`.
-
-    Outside the broker, forwards to the broker daemon, which owns the
-    cache table's data lifecycle end-to-end (writes + purge). On
-    `BrokerUnavailable`, return 0 and log unless VACUUM skipped the write; the broker's own internal
-    periodic purge thread will catch up. Inside the broker the purge
-    goes through the active WriterThread.
-    """
-    from mimir.broker.client import get_broker_client
-    from mimir.broker.protocol import CachePurgeExpiredRequest
-
-    return _delete_routed(
-        lambda: get_broker_client().call(CachePurgeExpiredRequest()),
-        "broker purge_expired failed: %s",
-        via_writer=purge_expired_via_writer,
-    )
-
-
 def delete(key: str) -> int:
-    """Drop the cache row for one key, if present. Returns rows
-    deleted (0 or 1).
+    """Drop one key through the active writer, returning the committed count.
 
-    Outside the broker, forwards over RPC; `BrokerUnavailable` is
-    logged unless VACUUM skipped the write, and returns 0 (the cached value
-    still ages out via TTL). Inside
-    the broker the delete goes through the active WriterThread, the
-    sole writer.
+    Broker-only. Waiting for commit keeps this flow's subsequent reads or warming
+    behind its invalidation. Independent clients can still set a stale value.
     """
-    nskey = _ns(key)
-    from mimir.broker.client import get_broker_client
-    from mimir.broker.protocol import CacheDeleteRequest
+    from mimir.broker._context import get_active_writer
 
-    return _delete_routed(
-        lambda: get_broker_client().call(CacheDeleteRequest(key=nskey)),
-        "broker delete failed for %s: %s",
-        nskey,
-        via_writer=lambda writer: delete_via_writer(writer, nskey),
-    )
+    return delete_via_writer(get_active_writer(), _ns(key)).result()
 
 
 def delete_for_inbox(inbox_name: str) -> int:
-    """Drop every cache entry whose key references `inbox_name`.
+    """Drop entries referencing an inbox and return the committed row count.
 
-    Cache keys follow the convention `<helper>:<inbox_name>[:<rest>]`,
-    so an entry references an inbox if its key ends with `:{name}` or
-    contains `:{name}:`. Called by the admin CRUD layer after a
-    rename or delete so reads don't return rows pointing at a now-
-    stale (or vanished) name. Returns rows deleted.
-
-    Inbox names are slug-validated (alphanumeric + hyphen) so they
-    contain no LIKE-pattern metacharacters; the literal `%` and `_`
-    cases that would need escaping can't occur.
-
-    Outside the broker, forwards over RPC; `BrokerUnavailable` is
-    logged unless VACUUM skipped the write, and returns 0. Inside the broker
-    the delete goes through the
-    active WriterThread.
+    Broker-only. Keys follow `<helper>:<inbox_name>[:<rest>]`, so they
+    match at the end or between colons. Inbox names are slug-validated
+    (alphanumeric + hyphen), excluding LIKE metacharacters. Rename,
+    delete and first ingest wait here before warming or returning.
     """
-    from mimir.broker.client import get_broker_client
-    from mimir.broker.protocol import CacheDeleteForInboxRequest
+    from mimir.broker._context import get_active_writer
 
-    return _delete_routed(
-        lambda: get_broker_client().call(CacheDeleteForInboxRequest(name=inbox_name)),
-        "broker delete_for_inbox failed for %s: %s",
-        inbox_name,
-        via_writer=lambda writer: delete_for_inbox_via_writer(writer, inbox_name),
-    )
+    return delete_for_inbox_via_writer(get_active_writer(), inbox_name).result()

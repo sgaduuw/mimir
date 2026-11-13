@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- Retired the external `cache_delete`, `cache_delete_for_inbox` and `cache_purge_expired` broker operations and their deferred completion machinery. Old requests return `UnknownOp`; cache sets and ping remain supported. Invalidation within broker operations still waits for commit and returns actual deletion counts, and background expiry cleanup keeps its startup and 60-second schedule. Operator probes must use supported operations; rolling upgrades must also update task containers older than 3.51.0 that still send the trailing purge (#1180).
+
 ## [3.51.0] - 2026-11-13
 
 ### Changed

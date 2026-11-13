@@ -1,9 +1,9 @@
 """Every inbox, robots, replay, cache and mainline mutator writes
 through the broker's WriterThread and raises when none is active (#707,
 #750). The single-writer invariant means a process without a writer
-must not fall back to its own SessionLocal write. The suite runs with
-MIMIR_IS_BROKER set, so the cache mutators take their in-broker branch
-here, the one that used to fall back to the shared engine."""
+must not fall back to its own SessionLocal write. The suite normally runs
+with MIMIR_IS_BROKER set; cache invalidation also exercises non-broker
+settings explicitly, because those helpers have no external RPC path."""
 
 from datetime import UTC
 from pathlib import Path
@@ -38,7 +38,6 @@ MUTATORS = {
     "cache.set": lambda: cache.set("probe", "v", 60),
     "cache.delete": lambda: cache.delete("probe"),
     "cache.delete_for_inbox": lambda: cache.delete_for_inbox("alpha"),
-    "cache.purge_expired": cache.purge_expired,
 }
 
 
@@ -54,6 +53,27 @@ def test_mutator_without_a_writer_raises(seeded_db, monkeypatch, name):
     monkeypatch.setattr(_context, "_active_pool", None)
     monkeypatch.setattr(_context, "_active_writer", None)
 
+    with pytest.raises(RuntimeError, match="No active broker"):
+        MUTATORS[name]()
+
+
+@pytest.mark.parametrize("name", ["cache.delete", "cache.delete_for_inbox"])
+def test_cache_invalidation_without_writer_raises_in_nonbroker_process(
+    monkeypatch, name
+):
+    from mimir.broker.client import BrokerUnavailable
+    from mimir.config import settings
+
+    monkeypatch.setattr(settings, "mimir_is_broker", False)
+    monkeypatch.setattr(_context, "_active_pool", None)
+    monkeypatch.setattr(_context, "_active_writer", None)
+    monkeypatch.setattr(cache, "_broker_handler_active", lambda: False)
+
+    class UnavailableClient:
+        def call(self, request):
+            raise BrokerUnavailable("no broker")
+
+    monkeypatch.setattr("mimir.broker.client.get_broker_client", UnavailableClient)
     with pytest.raises(RuntimeError, match="No active broker"):
         MUTATORS[name]()
 
