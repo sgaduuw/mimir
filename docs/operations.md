@@ -68,6 +68,14 @@ If you run outside Compose, arrange equivalent recurring commands with the broke
 running. See the [scheduler settings](../deploy/README.md#scheduled-tasks) rather
 than running a second scheduler alongside the container service.
 
+Expired-cache cleanup does not depend on warming. The broker attempts it in
+the background when its writer starts, then waits 60 seconds after each
+attempt completes. Active VACUUM or a full writer queue defers that attempt;
+one admitted purge can wait for the writer without queuing repeated purges.
+Expired values remain unreadable while physical cleanup waits. Nonzero counts
+appear in the broker log as `broker purge: N expired rows deleted`;
+`warm-cache` no longer requests a purge or prints a purge count.
+
 ### Change the thread render cap
 
 `THREAD_VIEW_RENDER_CAP` sets messages per thread page, so it is part of the

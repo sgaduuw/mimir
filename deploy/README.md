@@ -115,6 +115,16 @@ during reply processing. Writer-queue saturation can instead block cache
 admission and appear as `cache` in the watchdog. Successful inbox deletions
 and purges return the actual deleted-row count.
 
+Scheduled expired-row cleanup runs inside the broker, independently of
+`warm-cache`. It attempts its first purge on a background thread after the
+writer starts, without delaying the accept loop, and waits 60 seconds after
+each completed attempt. It skips attempts during active VACUUM or when the
+writer queue is full. Only one scheduled purge can be outstanding; shutdown
+leaves an admitted purge to the writer's drain. Nonzero counts are logged as
+`broker purge: N expired rows deleted`. Cleanup failures are logged and the
+next interval retries. Expired values are filtered on reads even if physical
+cleanup is delayed. The explicit purge RPC remains available.
+
 Deferred reply attempts have a 100 ms budget covering their send lock and
 socket write. Contention before sending retries within the original
 deadline, allowing an ordinary reply on the same connection to finish.
