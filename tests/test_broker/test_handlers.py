@@ -57,7 +57,7 @@ def test_dispatch_cache_delete_removes_row(seeded_db):
     cache.set("test_dispatch_delete", "x", 60)
     assert cache.get("test_dispatch_delete") == "x"
 
-    reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey)))
+    reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey))).resolve()
     assert reply.ok is True
 
     assert cache.get("test_dispatch_delete") is None
@@ -68,7 +68,9 @@ def test_dispatch_cache_delete_for_inbox_reports_count(seeded_db):
     cache.set("daily_volume:alpha:30", "x2", ttl=60)
     cache.set("archive_stats:beta", "x3", ttl=60)
 
-    reply = dispatch(_line(CacheDeleteForInboxRequest(rpc_id=1, name="alpha")))
+    reply = dispatch(
+        _line(CacheDeleteForInboxRequest(rpc_id=1, name="alpha"))
+    ).resolve()
     assert reply.ok is True
     assert reply.result == {"rows_deleted": 2}
 
@@ -96,7 +98,7 @@ def test_dispatch_cache_purge_expired_reports_count(seeded_db):
         s.add(CacheEntry(key=_ns("alive_one"), value='"y"', expires_at=now + 3600))
         s.commit()
 
-    reply = dispatch(_line(CachePurgeExpiredRequest(rpc_id=1)))
+    reply = dispatch(_line(CachePurgeExpiredRequest(rpc_id=1))).resolve()
     assert reply.ok is True
     assert reply.result["rows_deleted"] >= 1
 

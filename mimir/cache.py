@@ -397,7 +397,7 @@ def _set_via_writer_for_nskey(
     return writer.submit(WriteOp(label=f"cache.set:{nskey}", fn=_fn), block=block)
 
 
-def _submit_stmt(writer: Any, label: str, stmt: Any) -> Any:
+def _submit_stmt(writer: Any, label: str, stmt: Any, *, block: bool = True) -> Any:
     """Submit one DELETE statement as a WriteOp. The future's result is
     the rowcount."""
     from mimir.broker.writes import WriteOp
@@ -405,10 +405,10 @@ def _submit_stmt(writer: Any, label: str, stmt: Any) -> Any:
     def _fn(conn: Any) -> int:
         return conn.execute(stmt).rowcount or 0
 
-    return writer.submit(WriteOp(label=label, fn=_fn))
+    return writer.submit(WriteOp(label=label, fn=_fn), block=block)
 
 
-def delete_via_writer(writer: Any, nskey: str) -> Any:
+def delete_via_writer(writer: Any, nskey: str, *, block: bool = True) -> Any:
     """Compose a WriteOp wrapping the single-key cache DELETE. The
     future's result is the rowcount.
 
@@ -419,10 +419,13 @@ def delete_via_writer(writer: Any, nskey: str) -> Any:
         writer,
         f"cache.delete:{nskey}",
         delete_stmt(CacheEntry).where(CacheEntry.key == nskey),
+        block=block,
     )
 
 
-def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
+def delete_for_inbox_via_writer(
+    writer: Any, inbox_name: str, *, block: bool = True
+) -> Any:
     """Compose a WriteOp wrapping the per-inbox cache DELETE. The
     future's result is the rowcount.
 
@@ -438,10 +441,11 @@ def delete_for_inbox_via_writer(writer: Any, inbox_name: str) -> Any:
                 CacheEntry.key.like(f"%:{inbox_name}:%"),
             )
         ),
+        block=block,
     )
 
 
-def purge_expired_via_writer(writer: Any) -> Any:
+def purge_expired_via_writer(writer: Any, *, block: bool = True) -> Any:
     """Compose a WriteOp wrapping the expired-row DELETE. The future's
     result is the rowcount.
 
@@ -452,6 +456,7 @@ def purge_expired_via_writer(writer: Any) -> Any:
         writer,
         "cache.purge_expired",
         delete_stmt(CacheEntry).where(CacheEntry.expires_at < _now()),
+        block=block,
     )
 
 
