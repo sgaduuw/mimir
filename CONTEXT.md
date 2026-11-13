@@ -728,9 +728,10 @@ observe background cleanup. During a rolling update, task containers older
 than 3.51.0 can still send the retired trailing purge; update those tasks too.
 Mimir 3.51.0 already stopped sending it.
 
-`cache.delete`, `cache.delete_for_inbox` and `cache.purge_expired` are broker-only
-helpers. Each requires the active WriterThread and waits for commit, returning
-the actual row count. A missing writer raises, including under non-broker
+`cache.delete` and `cache.delete_for_inbox` are broker-only helpers; expiry
+cleanup calls `purge_expired_via_writer` from the broker timer. Both helpers
+require the active WriterThread and wait for commit, returning the actual row
+count. A missing writer raises, including under non-broker
 settings; there is no RPC fallback, silent zero or local write. Inbox rename
 and deletion, first ingest and MAINTAINERS reload all invalidate inside their
 broker flow. That flow's deletion commits before its subsequent warming,
@@ -1350,7 +1351,7 @@ its callers).
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
-match and age out via `purge_expired`. Most keys name no release:
+match and age out via the broker's expiry cleanup. Most keys name no release:
 `patch_state`, the page-level `lifecycle_status_v3:...:{state_key}`,
 `merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
 pills, sitemaps and dashboards do not. So an older release reads a
