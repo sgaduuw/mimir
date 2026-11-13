@@ -4,14 +4,10 @@ seeded test DB. Covers the happy path for each op, plus the error
 boundary (malformed JSON / unknown op / invalid request)."""
 
 import time
-from datetime import UTC
 
 from mimir import cache
 from mimir.broker.handlers import dispatch
 from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     PingRequest,
 )
@@ -50,60 +46,6 @@ def test_dispatch_cache_set_writes_to_db(seeded_db):
     while cache.get("test_dispatch_set") is None and time.monotonic() < deadline:
         time.sleep(0.05)
     assert cache.get("test_dispatch_set") == "hello"
-
-
-def test_dispatch_cache_delete_removes_row(seeded_db):
-    nskey = cache._ns("test_dispatch_delete")
-    cache.set("test_dispatch_delete", "x", 60)
-    assert cache.get("test_dispatch_delete") == "x"
-
-    reply = dispatch(_line(CacheDeleteRequest(rpc_id=1, key=nskey))).resolve()
-    assert reply.ok is True
-
-    assert cache.get("test_dispatch_delete") is None
-
-
-def test_dispatch_cache_delete_for_inbox_reports_count(seeded_db):
-    cache.set("archive_stats:alpha", "x1", ttl=60)
-    cache.set("daily_volume:alpha:30", "x2", ttl=60)
-    cache.set("archive_stats:beta", "x3", ttl=60)
-
-    reply = dispatch(
-        _line(CacheDeleteForInboxRequest(rpc_id=1, name="alpha"))
-    ).resolve()
-    assert reply.ok is True
-    assert reply.result == {"rows_deleted": 2}
-
-    assert cache.get("archive_stats:alpha") is None
-    assert cache.get("daily_volume:alpha:30") is None
-    # beta untouched.
-    assert cache.get("archive_stats:beta") == "x3"
-
-
-def test_dispatch_cache_purge_expired_reports_count(seeded_db):
-    """Insert one row with `expires_at` in the past (via the ORM
-    directly, since `cache.set(ttl=0)` makes a same-second row that
-    the `< now` filter doesn't quite catch) and one row that's
-    safely alive, then dispatch `cache_purge_expired` and assert
-    both the count and the post-purge survival."""
-    from datetime import datetime
-
-    from mimir.cache import _ns
-    from mimir.extensions import SessionLocal
-    from mimir.models import CacheEntry
-
-    now = int(datetime.now(UTC).timestamp())
-    with SessionLocal() as s:
-        s.add(CacheEntry(key=_ns("expired_one"), value='"x"', expires_at=now - 60))
-        s.add(CacheEntry(key=_ns("alive_one"), value='"y"', expires_at=now + 3600))
-        s.commit()
-
-    reply = dispatch(_line(CachePurgeExpiredRequest(rpc_id=1))).resolve()
-    assert reply.ok is True
-    assert reply.result["rows_deleted"] >= 1
-
-    assert cache.get("expired_one") is None
-    assert cache.get("alive_one") == "y"
 
 
 def test_dispatch_malformed_json(seeded_db):

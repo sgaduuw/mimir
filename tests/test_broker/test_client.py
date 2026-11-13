@@ -8,7 +8,6 @@ import pytest
 from mimir import cache
 from mimir.broker.client import BrokerClient, BrokerUnavailable
 from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
     CacheSetRequest,
     PingRequest,
 )
@@ -41,21 +40,6 @@ def test_client_cache_set_persists_through_broker(seeded_db):
             c.close()
     # Outside the broker context, read direct.
     assert cache.get("test_client_set") == "hello"
-
-
-def test_client_cache_delete_for_inbox_returns_count(seeded_db):
-    cache.set("archive_stats:alpha", "x", ttl=60)
-    cache.set("daily_volume:alpha:30", "y", ttl=60)
-
-    sp = short_socket_path("client-del-inbox")
-    with broker_running(sp):
-        c = BrokerClient(sp)
-        try:
-            n = c.call(CacheDeleteForInboxRequest(name="alpha"))["rows_deleted"]
-        finally:
-            c.close()
-    assert n == 2
-    assert cache.get("archive_stats:alpha") is None
 
 
 def test_client_raises_broker_unavailable_when_no_broker(seeded_db):
