@@ -246,4 +246,11 @@ def handler_error_reply(rpc_id: int, op: str, exc: Exception) -> Reply:
     return Reply(rpc_id=rpc_id, ok=False, error="HandlerCrashed")
 
 
-__all__ = ["LONG_OPS", "WARM_OPS", "classify_op", "dispatch"]
+__all__ = [
+    "LONG_OPS",
+    "WARM_OPS",
+    "PendingCacheReply",
+    "classify_op",
+    "dispatch",
+    "handler_error_reply",
+]

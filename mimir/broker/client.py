@@ -273,10 +273,10 @@ class BrokerClient:
         try:
             reply = fut.result(timeout=timeout_value)
         except FuturesTimeoutError as exc:
-            # Caller's per-RPC timeout. Leave the pending entry in
-            # place; if the reply eventually arrives, demux drops it.
-            # If the socket dies, fail-all clears it.
-            #
+            # A reply can be abandoned while the connection stays open.
+            # Release its Future now; demux ignores any later reply for this ID.
+            with self._pending_lock:
+                self._pending.pop(rpc_id, None)
             # The timeout ends this caller's wait, not the job: the
             # broker keeps running it. Name the request so the
             # caller's one log line says what hung, in the same words

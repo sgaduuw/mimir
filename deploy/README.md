@@ -106,11 +106,24 @@ repeats it every `BROKER_STUCK_JOB_WARN_INTERVAL_SEC` (default 300) until the
 job ends. The caller's `rpc timed out` error names the request the same way,
 so the two lines can be matched.
 
-Cache invalidations and expired-row purges submit through the cache worker,
-then wait for commit on a separate completion worker. A pending deletion can
-therefore appear as `cache-completion` in the stuck-job log while cache writes
-and ping continue. Successful inbox deletions and purges return the actual
-deleted-row count.
+Cache invalidations and expired-row purges wait for commit on a separate
+completion worker. Their original five-second deadline produces a
+`writer busy` warning on expiry. The watchdog tracks active worker execution;
+completions queued behind another reply are outside that registry.
+A `cache-completion` stuck-job warning indicates an unexpected overrun
+during reply processing. Writer-queue saturation can instead block cache
+admission and appear as `cache` in the watchdog. Successful inbox deletions
+and purges return the actual deleted-row count.
+
+Deferred reply attempts have a 100 ms budget covering their send lock and
+socket write. Contention before sending retries within the original
+deadline, allowing an ordinary reply on the same connection to finish.
+RPC timing records include the completion wait and delivery attempts,
+with one terminal `delivery=sent|failed|abandoned` outcome. A failed
+transmission closes the connection to protect frame boundaries.
+Caller timeout cleanup does not cancel the invalidation. If cache work
+remains after the bounded shutdown joins, `incomplete cache reply drain`
+reports the surviving workers and pending counts.
 
 Before restarting a broker with a stuck job, dump every thread's Python stack
 to its log. The broker keeps running:

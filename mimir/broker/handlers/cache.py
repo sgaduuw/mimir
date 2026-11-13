@@ -1,7 +1,8 @@
 """Cache RPC admission and commit replies.
 
-The cache worker submits all mutations in order without waiting for the
-writer. Sets acknowledge admission; deletes and purges return a pending
+The cache worker submits mutations in order. Invalidations wait for admission
+only when the writer queue is full, so deletes cannot be lost or overtaken.
+Sets acknowledge admission; deletes and purges return a pending
 reply for the completion worker to resolve after commit, within five seconds.
 During VACUUM, reject new mutations before writer submission and count them
 for one maintenance summary. Internal broker invalidations still wait through
@@ -41,9 +42,12 @@ class PendingCacheReply:
 
     future: Future[int]
     rpc_id: int
+    op: str
     label: str
     include_count: bool = True
     deadline: float = field(default_factory=lambda: time.monotonic() + 5.0)
+    # Delivery retries reuse the same commit outcome and must not repeat errors.
+    resolved_reply: Reply | None = field(default=None, init=False)
 
     def busy(self, reason: str) -> Reply:
         logger.warning("%s: writer busy (%s)", self.label, reason)
@@ -131,13 +135,14 @@ def handle_cache_set(req: CacheSetRequest) -> Reply:
 def handle_cache_delete(req: CacheDeleteRequest) -> Reply | PendingCacheReply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
+    writer = get_active_writer()
     try:
-        future = cache.delete_via_writer(get_active_writer(), req.key, block=False)
+        future = cache.delete_via_writer(writer, req.key, block=False)
     except queue.Full:
-        logger.warning("cache_delete: writer queue full (key=%s)", req.key)
-        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+        # Preserve invalidations and their order with later sets under saturation.
+        future = cache.delete_via_writer(writer, req.key)
     return PendingCacheReply(
-        future, req.rpc_id, f"cache_delete (key={req.key})", include_count=False
+        future, req.rpc_id, req.op, f"cache_delete (key={req.key})", include_count=False
     )
 
 
@@ -146,15 +151,13 @@ def handle_cache_delete_for_inbox(
 ) -> Reply | PendingCacheReply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
+    writer = get_active_writer()
     try:
-        future = cache.delete_for_inbox_via_writer(
-            get_active_writer(), req.name, block=False
-        )
+        future = cache.delete_for_inbox_via_writer(writer, req.name, block=False)
     except queue.Full:
-        logger.warning("cache_delete_for_inbox: writer queue full (name=%s)", req.name)
-        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
+        future = cache.delete_for_inbox_via_writer(writer, req.name)
     return PendingCacheReply(
-        future, req.rpc_id, f"cache_delete_for_inbox (name={req.name})"
+        future, req.rpc_id, req.op, f"cache_delete_for_inbox (name={req.name})"
     )
 
 
@@ -163,12 +166,12 @@ def handle_cache_purge_expired(
 ) -> Reply | PendingCacheReply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
+    writer = get_active_writer()
     try:
-        future = cache.purge_expired_via_writer(get_active_writer(), block=False)
+        future = cache.purge_expired_via_writer(writer, block=False)
     except queue.Full:
-        logger.warning("cache_purge_expired: writer queue full")
-        return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
-    return PendingCacheReply(future, req.rpc_id, "cache_purge_expired")
+        future = cache.purge_expired_via_writer(writer)
+    return PendingCacheReply(future, req.rpc_id, req.op, "cache_purge_expired")
 
 
 def handle_ping(req: PingRequest) -> Reply:
