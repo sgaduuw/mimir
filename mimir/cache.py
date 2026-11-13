@@ -12,7 +12,7 @@ the dependency stays one-way (cache knows nothing about its callers).
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a code
 change that alters cached value shapes (a query rewrite, a renamed
 dataclass field) is bumped centrally, old rows simply never match
-and age out via `purge_expired`. Callers don't see the prefix.
+and age out via the broker's expiry cleanup. Callers don't see the prefix.
 """
 
 import dataclasses
@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Bump when cached value shapes change (query rewrites, dataclass
 # field renames, encoder changes). Old rows fall through to a miss
-# and get cleaned up by `purge_expired`. A change to a registered
+# and get cleaned up by the broker's expiry cleanup. A change to a registered
 # type's fields fails `test_a_cached_field_change_bumps_the_namespace`
 # until this is bumped: an older release reads the cache on rollback.
 # Plain container values and encoder changes still need a bump by hand.
