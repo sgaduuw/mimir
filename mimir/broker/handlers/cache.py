@@ -106,6 +106,12 @@ def _skip_during_vacuum() -> bool:
         return True
 
 
+def is_vacuum_active() -> bool:
+    """Let housekeeping defer without counting a skipped client mutation."""
+    with _vacuum_lock:
+        return bool(_active_vacuums)
+
+
 def handle_cache_set(req: CacheSetRequest) -> Reply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")

@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [3.51.0] - 2026-11-13
+
+### Changed
+
+- The broker now attempts expired-cache cleanup on startup in the background and every 60 seconds after the previous attempt completes, independently of cache warming. Cleanup defers while VACUUM is active or the writer queue is full, and keeps at most one admitted purge pending. `warm-cache` no longer requests or reports expired-row purges; nonzero cleanup counts appear in the broker log instead. Existing cache deletion and purge RPCs remain available (#1174).
+
 ## [3.50.3] - 2026-11-13
 
 ### Fixed

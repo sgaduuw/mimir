@@ -431,10 +431,7 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
             if req.op == "warm_global":
                 seen_global[0] += 1
                 return {"warmed": ["global"], "elapsed_ms": 1, "errors": []}
-            # warm-cache purges expired rows at the end; any other op
-            # is unexpected here.
-            assert req.op == "cache_purge_expired", req.op
-            return {}
+            raise AssertionError(f"unexpected warming RPC: {req.op}")
 
     monkeypatch.setattr(
         broker_client_mod,
@@ -452,6 +449,7 @@ def test_warm_cache_command_broker_mode_dispatches_via_rpc(
     assert seen_global[0] == 1
     # Summary line still emits.
     assert "warm-cache:" in result.output and "ms total" in result.output
+    assert "purged" not in result.output
 
 
 # ----- Pool migration (Phase 2) -------------------------------------------
