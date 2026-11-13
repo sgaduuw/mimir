@@ -747,6 +747,9 @@ subsequent reads or first-ingest warming.
 Completion waits use an absolute five-second deadline from submission,
 so queued waits do not each receive a fresh five seconds. A full completion
 queue returns "writer busy" after the invalidation has been admitted.
+That overflow response uses ordinary delivery on the cache worker because
+it has no completion retry slot, preserving the response through brief
+connection contention and applying backpressure under saturation.
 An already-submitted write can execute after a timeout or failed reply,
 as before. Deferred socket replies run on the completion worker, keeping
 socket I/O off the writer. Each delivery attempt has a 100 ms budget covering
@@ -759,7 +762,7 @@ reply; the admitted invalidation still executes.
 A duplicate socket wrapper has a separate positive Python timeout while
 preserving the shared nonblocking descriptor mode and the reader's timeout.
 A failed transmission shuts down the connection before another reply can
-append to its partial frame. A pre-send lock timeout leaves the current
+append to its partial frame, failing every in-flight RPC on that connection. A pre-send lock timeout leaves the current
 sender alone. Client RPC timeout cleanup removes its pending future without
 cancelling server work; the demultiplexer ignores late unmatched replies.
 

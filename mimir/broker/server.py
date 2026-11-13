@@ -525,6 +525,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         try:
                             self.completion_queue.put_nowait((reply, delivery))
                         except queue.Full:
+                            # This reply remains on the cache worker. Use its
+                            # ordinary delivery path so a brief lock wait cannot
+                            # discard the busy response without a retry slot.
+                            delivery.deferred = False
                             reply = reply.busy("completion queue full")
                         else:
                             handed_off = True
