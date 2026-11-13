@@ -25,9 +25,6 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     Reply,
     _BrokerRequest,
@@ -295,15 +292,7 @@ class BrokerClient:
         as `"<op>: <reply.error>"`; the admin CLI parses that format."""
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
-            if reply.error == "vacuum" and isinstance(
-                req,
-                (
-                    CacheSetRequest,
-                    CacheDeleteRequest,
-                    CacheDeleteForInboxRequest,
-                    CachePurgeExpiredRequest,
-                ),
-            ):
+            if reply.error == "vacuum" and isinstance(req, CacheSetRequest):
                 raise BrokerCacheWriteSkipped(f"{req.op}: {reply.error}")
             raise BrokerUnavailable(f"{req.op}: {reply.error}")
         return reply.result or {}

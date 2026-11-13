@@ -13,9 +13,6 @@ from mimir.broker.protocol import (
     BackfillCanonicalsRequest,
     BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     IngestInboxRequest,
     PingRequest,
@@ -51,25 +48,6 @@ def test_cache_set_rejects_negative_ttl():
         CacheSetRequest(rpc_id=1, key="x", value_json='"v"', ttl=-1)
 
 
-def test_cache_delete_round_trip():
-    req = CacheDeleteRequest(rpc_id=1, key="v2:thing:y")
-    parsed = CacheDeleteRequest.model_validate_json(req.model_dump_json())
-    assert parsed.key == req.key
-    assert parsed.op == "cache_delete"
-
-
-def test_cache_delete_for_inbox_round_trip():
-    req = CacheDeleteForInboxRequest(rpc_id=1, name="linux-fsdevel")
-    parsed = CacheDeleteForInboxRequest.model_validate_json(req.model_dump_json())
-    assert parsed.name == "linux-fsdevel"
-
-
-def test_cache_purge_expired_round_trip():
-    req = CachePurgeExpiredRequest(rpc_id=1)
-    parsed = CachePurgeExpiredRequest.model_validate_json(req.model_dump_json())
-    assert parsed.op == "cache_purge_expired"
-
-
 def test_ping_round_trip():
     req = PingRequest(rpc_id=1)
     parsed = PingRequest.model_validate_json(req.model_dump_json())
@@ -94,8 +72,8 @@ def test_reply_round_trip():
 
 def test_op_tag_is_load_bearing():
     """Op tag is the discriminator. Decoding a `cache_set`-shaped
-    body via `CacheDeleteRequest` must fail; otherwise the broker
-    could silently dispatch a set as a delete and lose data."""
+    body via `PingRequest` must fail; otherwise the broker
+    could silently dispatch a set as a ping and lose the write."""
     set_payload = json.dumps(
         {
             "op": "cache_set",
@@ -105,7 +83,7 @@ def test_op_tag_is_load_bearing():
         }
     )
     with pytest.raises(ValidationError):
-        CacheDeleteRequest.model_validate_json(set_payload)
+        PingRequest.model_validate_json(set_payload)
 
 
 def test_bootstrap_inboxes_round_trip():
@@ -293,3 +271,17 @@ def test_inbox_name_fields_reject_non_slug_names(build):
     for bad in ("LKML", "a b", "-x", "x-", "../etc", "%", "r", "all", "a" * 65):
         with pytest.raises(ValidationError):
             build(bad)
+
+
+@pytest.mark.parametrize(
+    "op", ["cache_delete", "cache_delete_for_inbox", "cache_purge_expired"]
+)
+def test_retired_cache_operations_are_unknown(seeded_db, op):
+    from mimir.broker.handlers import dispatch
+
+    reply = dispatch(
+        json.dumps(
+            {"rpc_id": 19, "op": op, "key": "v3:probe", "name": "alpha"}
+        ).encode()
+    )
+    assert reply == Reply(rpc_id=19, ok=False, error="UnknownOp")

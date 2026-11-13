@@ -75,6 +75,12 @@ one admitted purge can wait for the writer without queuing repeated purges.
 Expired values remain unreadable while physical cleanup waits. Nonzero counts
 appear in the broker log as `broker purge: N expired rows deleted`;
 `warm-cache` no longer requests a purge or prints a purge count.
+The `cache_delete`, `cache_delete_for_inbox` and `cache_purge_expired` RPCs are
+removed; use supported inbox/admin operations for invalidation and the broker's
+cleanup timer for expiry. Probes can submit `cache_set` with a short TTL and
+observe its row expire. Rolling updates must also replace task containers older
+than 3.51.0, which still send the retired trailing purge and receive `UnknownOp`.
+
 
 ### Change the thread render cap
 

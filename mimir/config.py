@@ -406,10 +406,9 @@ class Settings(BaseSettings):
     # Slow-RPC warning threshold for the write-broker (milliseconds).
     # When the broker takes longer than this to handle a single RPC,
     # it logs a WARNING with the leading bytes of the request and
-    # the elapsed time. Healthy RPCs commit in sub-ms; sustained
-    # warnings indicate writer-lock contention (e.g. an admin
-    # backfill running) or a slow operation
-    # (`cache_delete_for_inbox` on a huge table). Set to 0 or
+    # the elapsed time. Cache sets acknowledge writer admission;
+    # sustained warnings indicate queue contention, slow handler
+    # execution or reply delivery. Set to 0 or
     # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
     broker_slow_rpc_warn_ms: int = 100
 

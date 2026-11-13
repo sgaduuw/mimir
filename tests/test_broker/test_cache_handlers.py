@@ -2,45 +2,6 @@
 they dispatch through the active WriterThread."""
 
 
-def test_cache_handlers_do_not_call_write_transaction(seeded_db, broker_active):
-    """Phase 4 contract: the broker cache handlers dispatch via the
-    active WriterThread, not via write_transaction. write_transaction
-    was removed in Phase 6b; the behavioral assertions below pin
-    that all four handlers complete successfully via the writer path.
-    """
-    from mimir.broker.handlers.cache import (
-        handle_cache_delete,
-        handle_cache_delete_for_inbox,
-        handle_cache_purge_expired,
-        handle_cache_set,
-    )
-    from mimir.broker.protocol import (
-        CacheDeleteForInboxRequest,
-        CacheDeleteRequest,
-        CachePurgeExpiredRequest,
-        CacheSetRequest,
-    )
-
-    # Each handler must complete without tripping the guard.
-    r = handle_cache_set(
-        CacheSetRequest(rpc_id=1, key="v3:phase4-contract", value_json='"x"', ttl=60)
-    )
-    assert r.ok is True
-
-    r = handle_cache_delete(
-        CacheDeleteRequest(rpc_id=1, key="v3:phase4-contract")
-    ).resolve()
-    assert r.ok is True
-
-    r = handle_cache_delete_for_inbox(
-        CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
-    ).resolve()
-    assert r.ok is True
-
-    r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1)).resolve()
-    assert r.ok is True
-
-
 def test_cache_handlers_dispatch_under_long_op_load(
     seeded_db, tmp_path, monkeypatch, broker_active
 ):
@@ -185,80 +146,6 @@ def test_cache_handlers_dispatch_under_long_op_load(
         "batches; a >5 s tail suggests a long-op batch is hogging the "
         "writer (Phase 3c per-batch contract regression)."
     )
-
-
-def test_cache_handlers_swallow_timeout_error_during_writer_block(broker_active):
-    """2.15.1 hotfix contract: when the writer is blocked (e.g. by VACUUM)
-    and `.result(timeout=5)` raises `TimeoutError`, each cache handler
-    catches it and returns `Reply(ok=False, error="writer busy")` with a
-    WARNING log line instead of crashing loudly with a traceback.
-
-    Pre-hotfix behaviour: dispatch's outer exception handler caught the
-    TimeoutError and logged it as ERROR with full traceback per failure.
-    During a 127-second VACUUM cycle on the production deploy, that
-    produced ~30+ noisy traceback log entries before the queue drained.
-    The fix matches the pre-Phase-4 best-effort posture: the client
-    receives Reply(ok=False) and treats it as a transient cache miss
-    (cached value still ages out via TTL).
-    """
-    import logging
-    from concurrent.futures import Future
-    from unittest.mock import patch
-
-    from mimir.broker.handlers.cache import (
-        handle_cache_delete,
-        handle_cache_delete_for_inbox,
-        handle_cache_purge_expired,
-    )
-    from mimir.broker.protocol import (
-        CacheDeleteForInboxRequest,
-        CacheDeleteRequest,
-        CachePurgeExpiredRequest,
-    )
-
-    def _never_resolving(*args, **kwargs):
-        # Return a Future pre-set with TimeoutError so .result(timeout=5)
-        # raises immediately (rather than waiting 5s real time per call).
-        # The handler catches TimeoutError regardless of whether the source
-        # is the .result() wait timeout or the future's exception state.
-        f: Future = Future()
-        f.set_exception(TimeoutError())
-        return f
-
-    caplog_handler = logging.Handler()
-    captured: list[logging.LogRecord] = []
-    caplog_handler.emit = captured.append
-    cache_handler_logger = logging.getLogger("mimir.broker.handlers.cache")
-    cache_handler_logger.addHandler(caplog_handler)
-    cache_handler_logger.setLevel(logging.WARNING)
-
-    try:
-        with patch("mimir.cache.delete_via_writer", _never_resolving):
-            r = handle_cache_delete(
-                CacheDeleteRequest(rpc_id=1, key="v3:hotfix-test")
-            ).resolve()
-        assert r.ok is False
-        assert r.error == "writer busy"
-
-        with patch("mimir.cache.delete_for_inbox_via_writer", _never_resolving):
-            r = handle_cache_delete_for_inbox(
-                CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
-            ).resolve()
-        assert r.ok is False
-        assert r.error == "writer busy"
-
-        with patch("mimir.cache.purge_expired_via_writer", _never_resolving):
-            r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1)).resolve()
-        assert r.ok is False
-        assert r.error == "writer busy"
-
-        # All three handlers logged at WARNING (not ERROR), one line each.
-        assert len(captured) == 3
-        for record in captured:
-            assert record.levelno == logging.WARNING
-            assert "writer busy" in record.getMessage()
-    finally:
-        cache_handler_logger.removeHandler(caplog_handler)
 
 
 def test_cache_set_handler_replies_without_waiting_for_commit(broker_active):

@@ -1,12 +1,10 @@
-"""A deferred reply must not truncate a concurrent ordinary reply."""
+"""Concurrent ordinary replies must arrive as complete JSON frames."""
 
 import json
 import queue
 import socket
 import threading
 import time
-
-import pytest
 
 from mimir.broker.protocol import Reply
 from mimir.broker.server import (
@@ -17,8 +15,7 @@ from mimir.broker.server import (
 )
 
 
-@pytest.mark.parametrize("concurrent_deferred", [False, True])
-def test_deferred_lock_budget_does_not_abort_ordinary_reply(concurrent_deferred):
+def test_concurrent_ordinary_replies_do_not_interleave():
     server = object.__new__(_BrokerServer)
     sender, receiver = socket.socketpair()
     sender.settimeout(REPLY_TIMEOUT_SEC)
@@ -34,6 +31,7 @@ def test_deferred_lock_budget_does_not_abort_ordinary_reply(concurrent_deferred)
         target=server._deliver_reply, args=(normal, delivery)
     )
     received = bytearray()
+    second_thread = None
     try:
         normal_thread.start()
         deadline = time.monotonic() + 2
@@ -41,32 +39,39 @@ def test_deferred_lock_budget_does_not_abort_ordinary_reply(concurrent_deferred)
             time.sleep(0.001)
         assert conn.send_lock.locked()
         assert normal_thread.is_alive(), "ordinary reply must be transmitting"
-        deferred = _ReplyDelivery(
-            b'{"rpc_id":2,"op":"cache_purge_expired"}',
+        second_reply = Reply(rpc_id=2, ok=True)
+        second_bytes = second_reply.model_dump_json().encode() + b"\n"
+        second = _ReplyDelivery(
+            b'{"rpc_id":2,"op":"ping"}',
             conn,
             queue.Queue(),
             "cache",
             0,
             time.perf_counter(),
-            deferred=True,
         )
-        # A brief consumer scheduling pause is far below the ordinary 30 s budget.
-        if concurrent_deferred:
-            server._deliver_reply(Reply(rpc_id=2, ok=True), deferred)
-        else:
-            time.sleep(0.1)
-        while len(received) < len(normal_bytes):
+        second_thread = threading.Thread(
+            target=server._deliver_reply, args=(second_reply, second)
+        )
+        second_thread.start()
+        # The first frame exceeds the socket buffer and holds the send lock.
+        # The second worker must wait rather than insert bytes into that frame.
+        time.sleep(0.1)
+        assert normal_thread.is_alive()
+        assert second_thread.is_alive()
+        while len(received) < len(normal_bytes) + len(second_bytes):
             chunk = receiver.recv(65536)
             if not chunk:
                 break
             received.extend(chunk)
+        second_thread.join(2)
+        assert not second_thread.is_alive()
         normal_thread.join(2)
         assert not normal_thread.is_alive()
-        assert bytes(received[: len(normal_bytes)]) == normal_bytes, (
-            f"deferred lock timeout truncated ordinary frame: {len(received)} / {len(normal_bytes)} bytes"
-        )
-        assert json.loads(received.splitlines()[0])["rpc_id"] == 1
+        assert bytes(received) == normal_bytes + second_bytes
+        assert [json.loads(line)["rpc_id"] for line in received.splitlines()] == [1, 2]
     finally:
         sender.close()
         receiver.close()
         normal_thread.join(2)
+        if second_thread is not None:
+            second_thread.join(2)
