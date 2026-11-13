@@ -14,7 +14,6 @@ from datetime import UTC, date, datetime, timedelta
 
 import click
 
-from mimir import cache as cache_mod
 from mimir.config import settings
 from mimir.dashboard import (
     archive_stats,
@@ -617,6 +616,3 @@ def warm_cache_command(verbose: int, workers: int | None, tier: str) -> None:
         f"warm-cache: {len(inboxes)} inbox{'' if len(inboxes) == 1 else 'es'}, "
         f"{total_keys} keys, {total_ms:.0f} ms total"
     )
-    purged = cache_mod.purge_expired()
-    if purged:
-        click.echo(f"purged {purged} expired cache row{'' if purged == 1 else 's'}")
