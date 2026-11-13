@@ -836,6 +836,38 @@ joins the single-writer invariant. The periodic purge timer
 (it now submits `cache.purge_expired_via_writer(writer)` as a
 WriteOp), so that is no longer a residual.
 
+#1174 makes that timer the sole scheduled cleanup owner. Previously the
+warm CLI purged after every cycle, while the timer waited an hour after
+each broker start. Removing the CLI call alone would grow batches and
+let frequent restarts defer cleanup indefinitely. The existing background
+thread now attempts a purge as soon as the writer is started, then waits
+60 seconds after each attempt completes. Startup does not wait for it.
+The interval preserves the scheduler's nominal minute-scale cleanup;
+actual commits can be later when the writer is occupied.
+
+The interval choice retains that cadence rather than assuming hourly
+batches are cheap. On 2026-11-13 the live cache held about 95,000 rows;
+task logs showed nonzero purge batches up to 2,424 rows. An isolated
+95,000-row broker experiment on Python 3.15.1 free-threaded and SQLite
+3.53.1 measured dispersed 2,500-row DELETE/commit work at up to 461 ms,
+while a 30,000-row stress case reached 2.73 seconds. Cache-set admission
+and ping stayed below 9 ms with queue room in those trials. These are
+local synthetic, warm-filesystem observations using sampled payload
+sizes, not production latency bounds or full payload-tail coverage.
+They support retaining minute-scale cleanup without adding batching;
+production occupancy and backlog still need observation after rollout.
+
+Housekeeping skips active VACUUM without incrementing the skipped-client
+mutation count, and uses nonblocking writer admission. A full queue defers
+cleanup until the next interval. A purge admitted just before VACUUM can
+still wait behind maintenance, as can a previously admitted cache RPC.
+The admission check does not hold the maintenance lock over submission.
+Once admitted, one Future stays pending until completion or shutdown;
+there is no observer timeout that can enqueue duplicate purges. On stop,
+the timer leaves any admitted write to the writer's existing drain.
+Expiry is still filtered on reads, and the purge cutoff is fixed when
+submitted, so this scheduling change does not extend freshness.
+
 **Phase 6 scope, corrected 2026-06-14 against the actual code (the
 earlier "only the purge timer writes outside the WriterThread"
 framing was already stale):** several shared-engine write paths
@@ -2184,8 +2216,9 @@ Default behaviour:
 - `warm-cache` collapses per-key timings into a single summary
   line `warm-cache: N inboxes, K keys, T ms total`. Per-key
   timings still come back under `-v` for chasing slow queries.
-  `purged N expired cache rows` is unconditional because it's a
-  state change, not steady-state noise.
+  Expired-row cleanup is owned by the broker independently of warming
+  (#1174). Nonzero counts appear there as `broker purge: N expired rows
+  deleted`; the CLI summary no longer includes a purge line.
 
 This was driven by the log volume scaling with inbox count:
 `warm-cache` alone emitted ~8 lines per inbox per minute. With

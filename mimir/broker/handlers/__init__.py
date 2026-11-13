@@ -44,6 +44,7 @@ from mimir.broker.handlers.cache import (
     handle_cache_purge_expired,
     handle_cache_set,
     handle_ping,
+    is_vacuum_active,
 )
 from mimir.broker.handlers.longops import (
     handle_backfill_article_files,
@@ -253,4 +254,5 @@ __all__ = [
     "classify_op",
     "dispatch",
     "handler_error_reply",
+    "is_vacuum_active",
 ]

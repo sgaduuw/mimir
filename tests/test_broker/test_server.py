@@ -783,15 +783,15 @@ def test_purge_loop_submits_via_writer_thread(seeded_db, monkeypatch, caplog):
     from mimir import cache
     from mimir.broker.server import _purge_loop
 
-    # `_purge_loop` exits via `while not stop_event.wait(...)`. We
-    # short-circuit: first wait() returns False (loop body fires),
-    # second returns True (loop exits).
+    # Cleanup runs before its first interval wait, which stops this test.
     stop_event = MagicMock(spec=threading.Event)
-    stop_event.wait = MagicMock(side_effect=[False, True])
+    stop_event.is_set.return_value = False
+    stop_event.wait = MagicMock(return_value=True)
 
     seen_writer: list[object] = []
 
-    def _spy(writer):
+    def _spy(writer, *, block):
+        assert block is False
         seen_writer.append(writer)
         future = MagicMock()
         future.result.return_value = 7
