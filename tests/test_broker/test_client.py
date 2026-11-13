@@ -419,6 +419,8 @@ def test_caller_timeout_leaves_client_usable(seeded_db, monkeypatch):
             req = PingRequest()
             with pytest.raises(BrokerUnavailable):
                 c._rpc(req, timeout=0.1)
+            with c._pending_lock:
+                assert req.rpc_id not in c._pending
 
             # Wait for the dropped reply to land in the demux thread
             # and be silently discarded.

@@ -126,7 +126,10 @@ def test_overlapping_vacuums_keep_gate_closed_and_count_exactly(
     ]
     assert summaries == ["broker: skipped 81 cache writes during VACUUM"]
     for handler, req in MUTATIONS:
-        assert handler(req).ok
+        reply = handler(req)
+        if isinstance(reply, handlers.PendingCacheReply):
+            reply = reply.resolve()
+        assert reply.ok
     assert writer.submit.call_count == 4
     # A new maintenance window gets a fresh counter, including after failure.
     monkeypatch.setattr("mimir.maintenance.run_vacuum", _result)
