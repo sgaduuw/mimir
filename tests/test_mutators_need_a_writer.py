@@ -38,7 +38,6 @@ MUTATORS = {
     "cache.set": lambda: cache.set("probe", "v", 60),
     "cache.delete": lambda: cache.delete("probe"),
     "cache.delete_for_inbox": lambda: cache.delete_for_inbox("alpha"),
-    "cache.purge_expired": cache.purge_expired,
 }
 
 
@@ -58,9 +57,7 @@ def test_mutator_without_a_writer_raises(seeded_db, monkeypatch, name):
         MUTATORS[name]()
 
 
-@pytest.mark.parametrize(
-    "name", ["cache.delete", "cache.delete_for_inbox", "cache.purge_expired"]
-)
+@pytest.mark.parametrize("name", ["cache.delete", "cache.delete_for_inbox"])
 def test_cache_invalidation_without_writer_raises_in_nonbroker_process(
     monkeypatch, name
 ):

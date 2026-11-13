@@ -459,14 +459,15 @@ def _seconds_from_now(delta_seconds: int) -> int:
 
 
 def test_purge_expired_drops_expired_rows():
-    """`purge_expired` deletes every row whose `expires_at` is in the
+    """`purge_expired_via_writer` deletes every row whose `expires_at` is in the
     past, returns the count, and leaves live rows alone. Without
     this, the cache table grows monotonically as dated keys
     (`threads_for_day:<inbox>:<YYYY-MM-DD>`, `monthly_volume:...`)
     accumulate."""
     from sqlalchemy import delete as sql_delete
 
-    from mimir.cache import _ns, purge_expired
+    from mimir.broker._context import get_active_writer
+    from mimir.cache import _ns, purge_expired_via_writer
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -491,7 +492,7 @@ def test_purge_expired_drops_expired_rows():
         s.commit()
 
     try:
-        n = purge_expired()
+        n = purge_expired_via_writer(get_active_writer()).result()
         assert n >= 2, f"expected at least the two seeded expired rows, got {n}"
 
         with SessionLocal() as s:
@@ -520,7 +521,7 @@ def test_purge_expired_drops_expired_rows():
 
 
 def test_purge_expired_returns_zero_when_nothing_to_drop():
-    """No-rows-to-delete is a valid steady state; `purge_expired`
+    """No-rows-to-delete is a valid steady state; the purge
     returns 0 without raising. Build the meaningful case: at least
     one *live* row exists, none are expired; assert the call returns
     0 AND the live row survives. The older shape ("delete every row
@@ -529,7 +530,8 @@ def test_purge_expired_returns_zero_when_nothing_to_drop():
     from sqlalchemy import delete as sql_delete
     from sqlalchemy import select
 
-    from mimir.cache import _ns, purge_expired
+    from mimir.broker._context import get_active_writer
+    from mimir.cache import _ns, purge_expired_via_writer
     from mimir.extensions import SessionLocal
     from mimir.models import CacheEntry
 
@@ -546,7 +548,7 @@ def test_purge_expired_returns_zero_when_nothing_to_drop():
         s.commit()
 
     try:
-        assert purge_expired() == 0
+        assert purge_expired_via_writer(get_active_writer()).result() == 0
         # Live row survives.
         with SessionLocal() as s:
             survived = s.execute(

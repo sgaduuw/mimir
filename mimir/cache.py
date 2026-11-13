@@ -522,17 +522,6 @@ def keys() -> list[str]:
         ]
 
 
-def purge_expired() -> int:
-    """Drop expired rows through the active writer, returning the committed count.
-
-    Broker-only. Callers without an active writer raise rather than skip cleanup.
-    The background timer uses purge_expired_via_writer for nonblocking admission.
-    """
-    from mimir.broker._context import get_active_writer
-
-    return purge_expired_via_writer(get_active_writer()).result()
-
-
 def delete(key: str) -> int:
     """Drop one key through the active writer, returning the committed count.
 
