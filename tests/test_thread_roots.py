@@ -1139,7 +1139,7 @@ def test_broker_startup_backfills_thread_roots(client, tmp_path, monkeypatch):
     """
     from sqlalchemy import update
 
-    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.broker.startup import _backfill_thread_roots_if_needed
     from mimir.extensions import SessionLocal
     from mimir.models import ArticleList
 
@@ -1190,7 +1190,7 @@ def test_startup_backfill_reruns_when_the_sentinel_lies(client, tmp_path):
     """
     from sqlalchemy import update
 
-    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.broker.startup import _backfill_thread_roots_if_needed
     from mimir.models import ArticleList
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("sl1@x", None), ("sl2@x", "sl1@x")])
@@ -1245,7 +1245,7 @@ def test_startup_backfill_covers_every_inbox(client, tmp_path):
     skips the rest is indistinguishable from a correct one, so
     `for inbox in inboxes[:1]` passed the entire suite.
     """
-    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.broker.startup import _backfill_thread_roots_if_needed
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("mi1@x", None), ("mi2@x", "mi1@x")])
     _cross_post_all("alpha", "beta", only=list(seeded))
@@ -1281,7 +1281,7 @@ def test_startup_backfill_withholds_the_sentinel_when_the_pass_budget_blows(
     """
     import mimir.maintenance
     import mimir.thread_roots
-    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.broker.startup import _backfill_thread_roots_if_needed
 
     calls = []
     monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda **kw: calls.append(kw))
@@ -1317,7 +1317,7 @@ def test_startup_backfill_commits_per_inbox_and_withholds_on_failure(
     "interrupted runs resume" property `drive_passes` documents.
     """
     import mimir.thread_roots
-    from mimir.broker.server import _backfill_thread_roots_if_needed
+    from mimir.broker.startup import _backfill_thread_roots_if_needed
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("pc1@x", None), ("pc2@x", "pc1@x")])
     _cross_post_all("alpha", "beta", only=list(seeded))
@@ -1366,7 +1366,7 @@ def test_startup_verification_reports_a_mismatch(client, tmp_path, caplog):
 
     from sqlalchemy import update
 
-    from mimir.broker.server import _verify_thread_roots_async
+    from mimir.broker.startup import _verify_thread_roots_async
 
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("vm1@x", None), ("vm2@x", "vm1@x"), ("vm3@x", "vm2@x")]
@@ -1422,11 +1422,12 @@ def test_startup_verification_runs_even_when_the_backfill_is_skipped(
     column fires strictly later.
     """
     from mimir.broker import server as broker_server
+    from mimir.broker import startup
     from tests.test_broker.test_server import short_socket_path
 
     calls: list[bool] = []
     monkeypatch.setattr(
-        broker_server, "_verify_thread_roots_async", lambda: calls.append(True)
+        startup, "_verify_thread_roots_async", lambda: calls.append(True)
     )
 
     sp = short_socket_path("verify-always")
@@ -1854,7 +1855,7 @@ def test_verification_completion_line_counts_match_the_errors_it_logged(
     from sqlalchemy import update
 
     import mimir.thread_roots
-    from mimir.broker.server import _verify_thread_roots_async
+    from mimir.broker.startup import _verify_thread_roots_async
 
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("wm1@x", None), ("wm2@x", "wm1@x"), ("wm3@x", "wm2@x")]
@@ -1918,7 +1919,7 @@ def test_verification_failure_line_counts_only_inboxes_it_verified(
     import threading
 
     import mimir.thread_roots
-    from mimir.broker.server import _verify_thread_roots_async
+    from mimir.broker.startup import _verify_thread_roots_async
 
     seed_thread_shape(tmp_path, "alpha", [("xm1@x", None), ("xm2@x", "xm1@x")])
 
