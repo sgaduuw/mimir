@@ -445,7 +445,7 @@ def test_namespace_version_isolates_stale_rows():
 
 # --------------------------------------------------------------------------
 # Cache helpers previously covered only indirectly (or not at all):
-# `purge_expired` runs in the warm-cache cron and the test suite never
+# Expired-row cleanup runs in the broker background timer and the test suite never
 # exercised it; `get_or_compute`'s cache-hit branch was unreached because
 # every dashboard test passes `force=True`.
 # --------------------------------------------------------------------------

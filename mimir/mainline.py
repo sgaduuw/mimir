@@ -985,8 +985,8 @@ def load_maintainers(
     # the dynamic-allowlist (M:/R: address set, used by From-line +
     # DCO-trailer redaction) and the subsystems-rule snapshot (used
     # by `subsystems_for_article` on every message page). The cache
-    # table is shared across processes, so these deletes from the
-    # sidecar / broker reach the web container too.
+    # table is shared across processes, so these committed broker
+    # invalidations reach the web container too.
     from mimir import maintainer_allowlist, subsystems
 
     maintainer_allowlist.invalidate()

@@ -38,10 +38,6 @@ from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
 from mimir.broker.handlers.cache import (
-    PendingCacheReply,
-    handle_cache_delete,
-    handle_cache_delete_for_inbox,
-    handle_cache_purge_expired,
     handle_cache_set,
     handle_ping,
     is_vacuum_active,
@@ -83,9 +79,6 @@ from mimir.broker.protocol import (
     BackfillPatchSeriesRequest,
     BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     FailuresReplayRequest,
     InboxCreateRequest,
@@ -119,9 +112,6 @@ logger = logging.getLogger(__name__)
 # by N parallel workers). An op belongs to exactly one.
 _HANDLERS: list[tuple[type, Callable, str]] = [
     (CacheSetRequest, handle_cache_set, "cache"),
-    (CacheDeleteRequest, handle_cache_delete, "cache"),
-    (CacheDeleteForInboxRequest, handle_cache_delete_for_inbox, "cache"),
-    (CachePurgeExpiredRequest, handle_cache_purge_expired, "cache"),
     (PingRequest, handle_ping, "cache"),
     (BootstrapInboxesRequest, handle_bootstrap_inboxes, "long"),
     (IngestInboxRequest, handle_ingest_inbox, "long"),
@@ -192,9 +182,9 @@ def classify_op(line: bytes) -> str | None:
     return op if isinstance(op, str) else None
 
 
-def dispatch(line: bytes) -> Reply | PendingCacheReply:
+def dispatch(line: bytes) -> Reply:
     """Parse one JSONL request line, dispatch to the matching
-    handler, return a `Reply` or a pending cache commit. Never raises: any error becomes a
+    handler, return a `Reply`. Never raises: any error becomes a
     structured failure reply so the connection stays open for the
     next request.
 
@@ -239,7 +229,7 @@ def dispatch(line: bytes) -> Reply | PendingCacheReply:
 
 
 def handler_error_reply(rpc_id: int, op: str, exc: Exception) -> Reply:
-    """Keep dispatch and deferred commit failures on the same wire contract."""
+    """Map handler failures to the wire error contract."""
     if isinstance(exc, OperationalError):
         logger.warning("broker: SQLite error on %s: %s", op, exc)
         return Reply(rpc_id=rpc_id, ok=False, error="OperationalError")
@@ -250,7 +240,6 @@ def handler_error_reply(rpc_id: int, op: str, exc: Exception) -> Reply:
 __all__ = [
     "LONG_OPS",
     "WARM_OPS",
-    "PendingCacheReply",
     "classify_op",
     "dispatch",
     "handler_error_reply",
