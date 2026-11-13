@@ -106,6 +106,12 @@ repeats it every `BROKER_STUCK_JOB_WARN_INTERVAL_SEC` (default 300) until the
 job ends. The caller's `rpc timed out` error names the request the same way,
 so the two lines can be matched.
 
+Cache invalidations and expired-row purges submit through the cache worker,
+then wait for commit on a separate completion worker. A pending deletion can
+therefore appear as `cache-completion` in the stuck-job log while cache writes
+and ping continue. Successful inbox deletions and purges return the actual
+deleted-row count.
+
 Before restarting a broker with a stuck job, dump every thread's Python stack
 to its log. The broker keeps running:
 

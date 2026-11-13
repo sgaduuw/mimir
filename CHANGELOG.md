@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Cache deletion and expired-row purge RPCs no longer hold up page cache writes or health checks while the database writer is busy. Deletion replies still wait for commit and retain their row counts; full queues return `writer busy` without blocking cache admission (#1169).
+
 ## [3.50.2] - 2026-11-12
 
 ### Changed

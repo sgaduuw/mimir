@@ -72,7 +72,14 @@ from pathlib import Path
 
 from mimir import cache
 from mimir.broker import _context
-from mimir.broker.handlers import LONG_OPS, WARM_OPS, classify_op, dispatch
+from mimir.broker.handlers import (
+    LONG_OPS,
+    WARM_OPS,
+    classify_op,
+    dispatch,
+    handler_error_reply,
+)
+from mimir.broker.handlers.cache import PendingCacheReply
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import Reply
 from mimir.broker.watchdog import InFlightJobs
@@ -159,6 +166,17 @@ class ClientConnection:
     last_activity: float = field(default_factory=time.monotonic)
 
 
+@dataclass
+class _PendingDelivery:
+    reply: PendingCacheReply
+    line: bytes
+    conn: ClientConnection
+    queue: queue.Queue
+    worker_tag: str
+    queue_wait_ms: float
+    started: float
+
+
 # Linux exposes SO_PEERCRED (pid + uid + gid of the peer process) on
 # AF_UNIX sockets via getsockopt. macOS / BSDs have their own (and
 # different) peer-credential interfaces; we don't try to bridge them
@@ -175,16 +193,13 @@ _BROKER_EUID = os.geteuid()
 
 class _BrokerServer(socketserver.UnixStreamServer):
     """UNIX-socket server that hands every accepted connection off
-    to a dedicated reader thread and runs **three** classes of
-    worker thread draining three separate work queues:
+    to a dedicated reader thread. Three RPC worker classes drain
+    their own queues, and one completion worker delivers deferred cache replies:
 
-    - `cache_queue` for cache ops (sub-ms commits). Always-on
-      throughput; the only QUEUE the web tier's RPCs land on. Not the
-      only thing it waits on: since Phase 4 the cache handlers submit
-      to the WriterThread and await `.result()`, so a request
-      transitively waits on the writer FIFO, which long ops share. The
-      real guarantee is interleaving (a cache op lands between a long
-      op's per-batch WriteOps), which CONTEXT.md states correctly.
+    - `cache_queue` for cache admission and ping. Cache mutations submit
+      without blocking on the WriterThread. Sets acknowledge admission;
+      deletes and purges hand their commit wait to one completion worker,
+      preserving counts without holding up subsequent cache admissions.
       Pinned by `test_web_tier_rpcs_all_route_to_the_cache_queue`.
       `broker_cache_workers` workers (default 1, env
       `BROKER_CACHE_WORKERS`); single-worker default preserves
@@ -249,6 +264,12 @@ class _BrokerServer(socketserver.UnixStreamServer):
         self.warm_queue: queue.PriorityQueue[
             tuple[int, float, bytes, ClientConnection]
         ] = queue.PriorityQueue()
+        # Bound retained sockets and request metadata while the writer is held.
+        # Handoff uses put_nowait: saturation must not hold the cache worker.
+        self.completion_queue: queue.Queue[_PendingDelivery] = queue.Queue(
+            maxsize=max(1, settings.broker_writer_queue_depth)
+        )
+        self._completion_thread: threading.Thread | None = None
         self._reader_threads: list[threading.Thread] = []
         # Held around `_reader_threads` mutations so the per-reader
         # self-removal in `_reader_loop`'s finally block does not race
@@ -467,6 +488,7 @@ class _BrokerServer(socketserver.UnixStreamServer):
                     _priority, enqueued_at, line, conn = item
                 else:
                     line, conn, enqueued_at = item
+                handed_off = False
                 try:
                     self.in_flight.start(worker_tag, line)
                     queue_wait_ms = (time.perf_counter() - enqueued_at) * 1000.0
@@ -488,69 +510,136 @@ class _BrokerServer(socketserver.UnixStreamServer):
                         reply = dispatch(line)
                     finally:
                         cache._set_broker_handler_active(False)
-                    dispatch_ms = (time.perf_counter() - t0) * 1000.0
-                    total_ms = queue_wait_ms + dispatch_ms
-
-                    threshold_ms = settings.broker_slow_rpc_warn_ms
-                    if threshold_ms > 0 and total_ms >= threshold_ms:
-                        # Breakdown helps operators tell the
-                        # difference between front-of-queue contention
-                        # (high queue_wait_ms; many clients piling on)
-                        # and back-of-queue contention
-                        # (high dispatch_ms; SQLite writer lock held
-                        # by another in-broker worker's WriteOp).
-                        logger.warning(
-                            "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
-                            "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",
-                            worker_tag,
-                            total_ms,
-                            queue_wait_ms,
-                            dispatch_ms,
-                            q.qsize(),
-                            line.decode("utf-8", "replace"),
-                            reply.ok,
-                        )
-                    else:
-                        logger.debug(
-                            "broker rpc [%s]: %.80s -> ok=%s%s "
-                            "(%.1fms total = %.1fms queued + %.1fms dispatch)",
-                            worker_tag,
-                            line.decode("utf-8", "replace"),
-                            reply.ok,
-                            f" error={reply.error}" if not reply.ok else "",
-                            total_ms,
-                            queue_wait_ms,
-                            dispatch_ms,
-                        )
-
-                    payload = reply.model_dump_json().encode("utf-8") + b"\n"
-                    with conn.send_lock:
+                    if isinstance(reply, PendingCacheReply):
                         try:
-                            conn.sock.sendall(payload)
-                        # PEP 758 canonical tuple-of-exceptions form, see
-                        # `_reader_loop` above. Audit #482, not a bug.
-                        except OSError, ConnectionError:
-                            # A timed-out send may have written a partial frame.
-                            # End the connection rather than append another reply.
-                            try:
-                                conn.sock.shutdown(socket.SHUT_RDWR)
-                            except OSError:
-                                pass
-                            logger.debug(
-                                "broker [%s]: dropped reply on closed sock", worker_tag
+                            self.completion_queue.put_nowait(
+                                _PendingDelivery(
+                                    reply, line, conn, q, worker_tag, queue_wait_ms, t0
+                                )
                             )
+                        except queue.Full:
+                            reply = reply.busy("completion queue full")
+                        else:
+                            handed_off = True
+                            continue
+                    self._deliver_reply(
+                        reply, line, conn, q, worker_tag, queue_wait_ms, t0
+                    )
                 finally:
                     self.in_flight.finish()
-                    with conn.activity_lock:
-                        conn.pending -= 1
-                        conn.last_activity = time.monotonic()
-                    q.task_done()
+                    if not handed_off:
+                        self._finish_request(conn, q)
             except Exception:
                 logger.exception(
                     "broker [%s]: worker caught unhandled exception; "
                     "continuing to drain queue",
                     worker_tag,
                 )
+
+    def _deliver_reply(
+        self,
+        reply: Reply,
+        line: bytes,
+        conn: ClientConnection,
+        q: queue.Queue,
+        worker_tag: str,
+        queue_wait_ms: float,
+        t0: float,
+    ) -> None:
+        dispatch_ms = (time.perf_counter() - t0) * 1000.0
+        total_ms = queue_wait_ms + dispatch_ms
+
+        threshold_ms = settings.broker_slow_rpc_warn_ms
+        if threshold_ms > 0 and total_ms >= threshold_ms:
+            # Breakdown helps operators tell the
+            # difference between front-of-queue contention
+            # (high queue_wait_ms; many clients piling on)
+            # and back-of-queue contention
+            # (high dispatch_ms; SQLite writer lock held
+            # by another in-broker worker's WriteOp).
+            logger.warning(
+                "broker slow rpc [%s] (%.1fms total = %.1fms queued + "
+                "%.1fms dispatch, qsize=%d): %.80s -> ok=%s",
+                worker_tag,
+                total_ms,
+                queue_wait_ms,
+                dispatch_ms,
+                q.qsize(),
+                line.decode("utf-8", "replace"),
+                reply.ok,
+            )
+        else:
+            logger.debug(
+                "broker rpc [%s]: %.80s -> ok=%s%s "
+                "(%.1fms total = %.1fms queued + %.1fms dispatch)",
+                worker_tag,
+                line.decode("utf-8", "replace"),
+                reply.ok,
+                f" error={reply.error}" if not reply.ok else "",
+                total_ms,
+                queue_wait_ms,
+                dispatch_ms,
+            )
+
+        payload = reply.model_dump_json().encode("utf-8") + b"\n"
+        with conn.send_lock:
+            try:
+                conn.sock.sendall(payload)
+            # PEP 758 canonical tuple-of-exceptions form, see
+            # `_reader_loop` above. Audit #482, not a bug.
+            except OSError, ConnectionError:
+                # A timed-out send may have written a partial frame.
+                # End the connection rather than append another reply.
+                try:
+                    conn.sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                logger.debug("broker [%s]: dropped reply on closed sock", worker_tag)
+
+    @staticmethod
+    def _finish_request(conn: ClientConnection, q: queue.Queue) -> None:
+        with conn.activity_lock:
+            conn.pending -= 1
+            conn.last_activity = time.monotonic()
+        q.task_done()
+
+    def _completion_loop(self) -> None:
+        # Cache workers can hand off their final request after stop is set.
+        # Exit only after those producers stop and every admitted reply drains.
+        while (
+            not self.stop_event.is_set()
+            or any(t.is_alive() for t in self._cache_worker_threads)
+            or not self.completion_queue.empty()
+        ):
+            try:
+                job = self.completion_queue.get(timeout=SHUTDOWN_POLL_SEC)
+            except queue.Empty:
+                continue
+            try:
+                self.in_flight.start("cache-completion", job.line)
+                try:
+                    reply = job.reply.resolve()
+                except Exception as exc:
+                    reply = handler_error_reply(
+                        job.reply.rpc_id, classify_op(job.line), exc
+                    )
+                self._deliver_reply(
+                    reply,
+                    job.line,
+                    job.conn,
+                    job.queue,
+                    job.worker_tag,
+                    job.queue_wait_ms,
+                    job.started,
+                )
+            except Exception:
+                logger.exception(
+                    "broker: cache completion failed; continuing to drain queue"
+                )
+            finally:
+                self.in_flight.finish()
+                self._finish_request(job.conn, job.queue)
+                self.completion_queue.task_done()
 
     def start_workers(self) -> None:
         """Spawn worker threads for each queue. Call once after
@@ -586,7 +675,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
           pool size (`broker_read_pool_size`).
 
         Each worker still funnels its actual SQLite writes through
-        the single WriterThread underneath."""
+        the single WriterThread underneath. One completion worker waits
+        for cache deletions to commit, leaving cache admission free."""
         assert not self._cache_worker_threads, "workers already started"
         for queue_attr, count_setting, label_prefix, tracker in (
             (
@@ -619,6 +709,12 @@ class _BrokerServer(socketserver.UnixStreamServer):
                 )
                 t.start()
                 tracker.append(t)
+        self._completion_thread = threading.Thread(
+            target=self._completion_loop,
+            daemon=True,
+            name="broker-cache-completion",
+        )
+        self._completion_thread.start()
         self._watchdog_thread = threading.Thread(
             target=self.in_flight.run,
             args=(self.stop_event, settings.broker_stuck_job_warn_interval_sec),
@@ -1544,6 +1640,8 @@ def serve(socket_path: Path) -> None:
             *server._warm_worker_threads,
         ):
             t.join(timeout=5.0)
+        if server._completion_thread is not None:
+            server._completion_thread.join(timeout=5.0)
         purge_thread.join(timeout=5.0)
         if server._watchdog_thread is not None:
             server._watchdog_thread.join(timeout=5.0)
