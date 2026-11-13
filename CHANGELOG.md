@@ -11,9 +11,13 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
-### Fixed
+### Changed
 
-- Cache deletion and expired-row purge RPCs no longer hold up page cache writes or health checks while the database writer is busy and its queue has room. Deletion replies still wait for commit and retain their row counts. Saturated invalidations wait for admission so deletes are not lost; slow clients cannot monopolize deferred reply delivery, and an incomplete shutdown drain is logged (#1169).
+- Page cache writes from the web tier are one-way: the web process sends the write to the broker and carries on without waiting for any reply. The broker still logs `cache_set dropped: writer queue full` and `cache_set failed` when a write does not land. Cache invalidations already ran inside the broker, so the cache delete and purge RPCs are removed, together with the deferred-reply worker added for them in #1169 (never released); health checks no longer share a queue with anything that waits on a commit. Deploy the web, scheduler and broker containers together, or the web first: an older web process waits out its five-second timeout on every cache write sent to a newer broker.
+
+### Removed
+
+- `warm-cache` no longer purges expired cache rows at the end of each run or prints `purged N expired cache rows`. The broker's own hourly purge covers it; expired rows are never served, so the only difference is that they are deleted up to an hour later.
 
 ## [3.50.2] - 2026-11-12
 

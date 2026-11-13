@@ -24,7 +24,11 @@ from mimir.broker.protocol import (
 from mimir.cli.maintenance import analyze_command, vacuum_command
 from mimir.config import settings
 from tests.conftest import linus_tree as _linus_tree
-from tests.test_broker._helpers import broker_running, short_socket_path
+from tests.test_broker._helpers import (
+    broker_running,
+    flush_one_way,
+    short_socket_path,
+)
 
 # ----- classify_op --------------------------------------------------------
 
@@ -290,11 +294,12 @@ def test_cache_op_completes_while_maintenance_op_runs(seeded_db, tmp_path, monke
             time.sleep(0.05)
             # Cache op on a parallel client must succeed without
             # waiting for the long op to finish.
-            c_cache.call(
+            c_cache.send(
                 CacheSetRequest(
                     key=cache._ns("interleave-key"), value_json='"v"', ttl=60
                 )
             )
+            flush_one_way(c_cache)
             t.join(timeout=10)
             assert done.is_set(), "long op didn't complete in time"
         finally:

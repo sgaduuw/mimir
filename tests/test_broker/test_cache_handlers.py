@@ -1,44 +1,37 @@
 """Tests for the broker cache handlers (mimir.broker.handlers.cache):
-they dispatch through the active WriterThread."""
+the one-way cache_set submits to the active WriterThread and returns
+no reply."""
 
 
-def test_cache_handlers_do_not_call_write_transaction(seeded_db, broker_active):
-    """Phase 4 contract: the broker cache handlers dispatch via the
-    active WriterThread, not via write_transaction. write_transaction
-    was removed in Phase 6b; the behavioral assertions below pin
-    that all four handlers complete successfully via the writer path.
-    """
-    from mimir.broker.handlers.cache import (
-        handle_cache_delete,
-        handle_cache_delete_for_inbox,
-        handle_cache_purge_expired,
-        handle_cache_set,
+def _wait_for_row(key, timeout=5.0):
+    """Poll until the writer has committed `key`; the one-way handler
+    returns before the commit, so the test has to wait for it."""
+    import time
+
+    from mimir.extensions import SessionLocal
+    from mimir.models import CacheEntry
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with SessionLocal() as session:
+            if session.get(CacheEntry, key) is not None:
+                return
+        time.sleep(0.05)
+    raise AssertionError(f"queued cache write for {key} never landed")
+
+
+def test_cache_set_handler_commits_through_the_writer(seeded_db, broker_active):
+    """The one-way handler returns no reply, and the write still lands
+    through the active WriterThread."""
+    from mimir.broker.handlers.cache import handle_cache_set
+    from mimir.broker.protocol import CacheSetRequest
+
+    key = "v3:one-way-contract"
+    reply = handle_cache_set(
+        CacheSetRequest(rpc_id=1, key=key, value_json='"x"', ttl=60)
     )
-    from mimir.broker.protocol import (
-        CacheDeleteForInboxRequest,
-        CacheDeleteRequest,
-        CachePurgeExpiredRequest,
-        CacheSetRequest,
-    )
-
-    # Each handler must complete without tripping the guard.
-    r = handle_cache_set(
-        CacheSetRequest(rpc_id=1, key="v3:phase4-contract", value_json='"x"', ttl=60)
-    )
-    assert r.ok is True
-
-    r = handle_cache_delete(
-        CacheDeleteRequest(rpc_id=1, key="v3:phase4-contract")
-    ).resolve()
-    assert r.ok is True
-
-    r = handle_cache_delete_for_inbox(
-        CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
-    ).resolve()
-    assert r.ok is True
-
-    r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1)).resolve()
-    assert r.ok is True
+    assert reply is None
+    _wait_for_row(key)
 
 
 def test_cache_handlers_dispatch_under_long_op_load(
@@ -133,8 +126,7 @@ def test_cache_handlers_dispatch_under_long_op_load(
         )
         t0 = time.perf_counter()
         try:
-            r = handle_cache_set(req)
-            assert r.ok is True
+            assert handle_cache_set(req) is None
         except Exception as exc:
             handler_errors.append(exc)
         handler_durations.append(time.perf_counter() - t0)
@@ -156,9 +148,9 @@ def test_cache_handlers_dispatch_under_long_op_load(
     backfill_thread.start()
 
     # Fire 50 cache_set calls via the broker handler entry point. Each
-    # call dispatches through the active WriterThread (set up by the
-    # broker_active fixture) and awaits commit, the same path the
-    # cache worker thread would execute in production.
+    # call submits to the active WriterThread (set up by the
+    # broker_active fixture), the same path the cache worker thread
+    # executes in production.
     with ThreadPoolExecutor(max_workers=8) as pool:
         for i in range(50):
             pool.submit(_cache_handler_call, i)
@@ -187,84 +179,10 @@ def test_cache_handlers_dispatch_under_long_op_load(
     )
 
 
-def test_cache_handlers_swallow_timeout_error_during_writer_block(broker_active):
-    """2.15.1 hotfix contract: when the writer is blocked (e.g. by VACUUM)
-    and `.result(timeout=5)` raises `TimeoutError`, each cache handler
-    catches it and returns `Reply(ok=False, error="writer busy")` with a
-    WARNING log line instead of crashing loudly with a traceback.
-
-    Pre-hotfix behaviour: dispatch's outer exception handler caught the
-    TimeoutError and logged it as ERROR with full traceback per failure.
-    During a 127-second VACUUM cycle on the production deploy, that
-    produced ~30+ noisy traceback log entries before the queue drained.
-    The fix matches the pre-Phase-4 best-effort posture: the client
-    receives Reply(ok=False) and treats it as a transient cache miss
-    (cached value still ages out via TTL).
-    """
-    import logging
-    from concurrent.futures import Future
-    from unittest.mock import patch
-
-    from mimir.broker.handlers.cache import (
-        handle_cache_delete,
-        handle_cache_delete_for_inbox,
-        handle_cache_purge_expired,
-    )
-    from mimir.broker.protocol import (
-        CacheDeleteForInboxRequest,
-        CacheDeleteRequest,
-        CachePurgeExpiredRequest,
-    )
-
-    def _never_resolving(*args, **kwargs):
-        # Return a Future pre-set with TimeoutError so .result(timeout=5)
-        # raises immediately (rather than waiting 5s real time per call).
-        # The handler catches TimeoutError regardless of whether the source
-        # is the .result() wait timeout or the future's exception state.
-        f: Future = Future()
-        f.set_exception(TimeoutError())
-        return f
-
-    caplog_handler = logging.Handler()
-    captured: list[logging.LogRecord] = []
-    caplog_handler.emit = captured.append
-    cache_handler_logger = logging.getLogger("mimir.broker.handlers.cache")
-    cache_handler_logger.addHandler(caplog_handler)
-    cache_handler_logger.setLevel(logging.WARNING)
-
-    try:
-        with patch("mimir.cache.delete_via_writer", _never_resolving):
-            r = handle_cache_delete(
-                CacheDeleteRequest(rpc_id=1, key="v3:hotfix-test")
-            ).resolve()
-        assert r.ok is False
-        assert r.error == "writer busy"
-
-        with patch("mimir.cache.delete_for_inbox_via_writer", _never_resolving):
-            r = handle_cache_delete_for_inbox(
-                CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
-            ).resolve()
-        assert r.ok is False
-        assert r.error == "writer busy"
-
-        with patch("mimir.cache.purge_expired_via_writer", _never_resolving):
-            r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1)).resolve()
-        assert r.ok is False
-        assert r.error == "writer busy"
-
-        # All three handlers logged at WARNING (not ERROR), one line each.
-        assert len(captured) == 3
-        for record in captured:
-            assert record.levelno == logging.WARNING
-            assert "writer busy" in record.getMessage()
-    finally:
-        cache_handler_logger.removeHandler(caplog_handler)
-
-
-def test_cache_set_handler_replies_without_waiting_for_commit(broker_active):
+def test_cache_set_handler_returns_without_waiting_for_commit(broker_active):
     """#1157: a held writer (ANALYZE, a long WriteOp) must not stall
-    the viewer. handle_cache_set replies once the write is queued, and
-    the value still lands when the writer frees."""
+    the cache worker. handle_cache_set returns once the write is
+    queued, and the value still lands when the writer frees."""
     import threading
     import time
 
@@ -272,8 +190,6 @@ def test_cache_set_handler_replies_without_waiting_for_commit(broker_active):
     from mimir.broker.handlers.cache import handle_cache_set
     from mimir.broker.protocol import CacheSetRequest
     from mimir.broker.writes import WriteOp
-    from mimir.extensions import SessionLocal
-    from mimir.models import CacheEntry
 
     writer = _context.get_active_writer()
     release = threading.Event()
@@ -291,21 +207,14 @@ def test_cache_set_handler_replies_without_waiting_for_commit(broker_active):
             CacheSetRequest(rpc_id=1, key=key, value_json='"x"', ttl=60)
         )
         elapsed = time.monotonic() - start
-        assert reply.ok is True
-        assert elapsed < 1.0, f"reply waited {elapsed:.1f}s on a held writer"
+        assert reply is None
+        assert elapsed < 1.0, f"handler waited {elapsed:.1f}s on a held writer"
     finally:
         release.set()
         blocked_future.result(timeout=10)
 
     # The queued write commits once the writer is free.
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        with SessionLocal() as session:
-            if session.get(CacheEntry, key) is not None:
-                break
-        time.sleep(0.05)
-    else:
-        raise AssertionError("queued cache write never landed")
+    _wait_for_row(key)
 
 
 def _saturate(writer):
@@ -341,8 +250,8 @@ def _saturate(writer):
 
 def test_cache_set_handler_drops_write_when_queue_full(broker_active, caplog):
     """#1157: a full writer queue must not block the cache worker. The
-    write is dropped, the reply is ok=False, and the drop is logged with
-    the key so saturation shows up in prod logs."""
+    write is dropped and the drop is logged with the key, the one place
+    saturation shows up now that nobody receives a reply."""
     import logging
     import time
 
@@ -359,8 +268,7 @@ def test_cache_set_handler_drops_write_when_queue_full(broker_active, caplog):
                 CacheSetRequest(rpc_id=1, key=key, value_json='"x"', ttl=60)
             )
         assert time.monotonic() - start < 1.0
-        assert reply.ok is False
-        assert reply.error == "writer busy"
+        assert reply is None
         assert f"cache_set dropped: writer queue full (key={key})" in caplog.text
     finally:
         release.set()
@@ -412,8 +320,7 @@ def test_cache_set_handler_does_not_wait_behind_blocked_producer(broker_active):
             "handle_cache_set still blocked after 2 s behind a producer "
             "parked on the full writer queue"
         )
-        assert result["reply"].ok is False
-        assert result["reply"].error == "writer busy"
+        assert result["reply"] is None
     finally:
         release.set()
         if producer is not None:
@@ -449,7 +356,7 @@ def test_cache_set_handler_logs_commit_failure(broker_active, caplog):
             reply = handle_cache_set(
                 CacheSetRequest(rpc_id=1, key=key, value_json='"x"', ttl=60)
             )
-        assert reply.ok is True
+        assert reply is None
         deadline = time.monotonic() + 5
         # The done callback runs on the writer thread just after the
         # future resolves, so poll the log, not the future.

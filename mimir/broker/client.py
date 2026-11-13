@@ -25,10 +25,6 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
-    CacheSetRequest,
     Reply,
     _BrokerRequest,
     describe_request,
@@ -44,10 +40,6 @@ class BrokerUnavailable(Exception):
     or client.close()). Callers in `mimir.cache` catch this and
     log+drop, matching the best-effort `OperationalError`
     semantics."""
-
-
-class BrokerCacheWriteSkipped(BrokerUnavailable):
-    """Expected best-effort cache rejection during broker maintenance."""
 
 
 class BrokerClient:
@@ -249,24 +241,16 @@ class BrokerClient:
         long-op CLI wrappers raise ClickException)."""
         rpc_id = self._allocate_rpc_id()
         request_model.rpc_id = rpc_id
-        request_bytes = request_model.model_dump_json().encode("utf-8") + b"\n"
 
         fut: Future = Future()
         with self._pending_lock:
             self._pending[rpc_id] = fut
 
         try:
-            self._ensure_alive()
-            sock = self._sock
-            if sock is None:
-                raise BrokerUnavailable("socket closed during send")
-            with self._send_lock:
-                sock.sendall(request_bytes)
-        except (OSError, BrokerUnavailable) as exc:
+            self._send(request_model)
+        except BrokerUnavailable:
             with self._pending_lock:
                 self._pending.pop(rpc_id, None)
-            if not isinstance(exc, BrokerUnavailable):
-                raise BrokerUnavailable(f"send failed: {exc}") from exc
             raise
 
         timeout_value = timeout if timeout is not None else request_model.timeout
@@ -287,26 +271,43 @@ class BrokerClient:
             ) from exc
         return reply
 
+    def _send(self, request_model: _BrokerRequest) -> None:
+        """Write one request frame. Raises BrokerUnavailable when the
+        socket cannot be opened or the write fails."""
+        request_bytes = request_model.model_dump_json().encode("utf-8") + b"\n"
+        try:
+            self._ensure_alive()
+            sock = self._sock
+            if sock is None:
+                raise BrokerUnavailable("socket closed during send")
+            with self._send_lock:
+                sock.sendall(request_bytes)
+        except OSError as exc:
+            raise BrokerUnavailable(f"send failed: {exc}") from exc
+
     def call(self, req: _BrokerRequest, timeout: float | None = None) -> dict:
         """Send one request and return its reply's `result` payload
         (`{}` when the op returns none). The request model is the op's
         whole definition: its fields, and its `timeout` unless the
         caller overrides it. A failed reply raises `BrokerUnavailable`
         as `"<op>: <reply.error>"`; the admin CLI parses that format."""
+        if req.one_way:
+            raise ValueError(f"{req.op} is one-way; use send()")
         reply = self._rpc(req, timeout=timeout)
         if not reply.ok:
-            if reply.error == "vacuum" and isinstance(
-                req,
-                (
-                    CacheSetRequest,
-                    CacheDeleteRequest,
-                    CacheDeleteForInboxRequest,
-                    CachePurgeExpiredRequest,
-                ),
-            ):
-                raise BrokerCacheWriteSkipped(f"{req.op}: {reply.error}")
             raise BrokerUnavailable(f"{req.op}: {reply.error}")
         return reply.result or {}
+
+    def send(self, req: _BrokerRequest) -> None:
+        """Send a one-way request and return once it is written. The
+        broker sends no reply, so this learns nothing about whether the
+        work succeeded; the broker logs that. The id is still allocated
+        so the broker's log lines can name the request. Raises
+        BrokerUnavailable only when the frame cannot be written."""
+        if not req.one_way:
+            raise ValueError(f"{req.op} expects a reply; use call()")
+        req.rpc_id = self._allocate_rpc_id()
+        self._send(req)
 
     def close(self) -> None:
         """Tests and CLI tools call this to release the socket; the

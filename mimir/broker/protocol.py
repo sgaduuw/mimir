@@ -1,6 +1,7 @@
 """Wire message shapes for the write-broker RPC.
 
-JSONL over UNIX socket: one request per line, one reply per line.
+JSONL over UNIX socket: one request per line, and one reply per line
+for every op except the one-way `cache_set`.
 Each `Request` model and the `Reply` model encode via
 `model_dump_json()` and decode via `model_validate_json()`. The
 top-level discriminator is the `op` field, dispatched at the broker
@@ -11,15 +12,15 @@ type registry). The `value_json` field on `CacheSetRequest` carries
 the already-encoded JSON string; the broker stores it verbatim and
 the encoding side imports never reach the broker process.
 
-Op kinds: **cache** ops (sub-ms commits; `cache_set`, `cache_delete`,
-`cache_delete_for_inbox`, `cache_purge_expired`, `ping`) route to
-the broker's cache worker. **Long** ops (commit batches that run
-seconds to minutes; `bootstrap_inboxes`, `ingest_epoch`,
-`backfill_*`, `update_mainline`, `analyze`, `vacuum`) route to the
-broker's long worker. The two workers compete
-for the SQLite writer lock at the SQLite level, so cache writes only
-wait for the long worker's current commit batch, not the whole long
-op. See `handlers.LONG_OPS` for the routing set.
+Op kinds: **cache** ops (`cache_set`, `ping`) route to the broker's
+cache worker. `cache_set` is one-way: the broker never replies to it,
+and the web tier never waits (see `CacheSetRequest`). **Long** ops
+(commit batches that run seconds to minutes; `bootstrap_inboxes`,
+`ingest_inbox`, `backfill_*`, `update_mainline`, `analyze`,
+`vacuum`) route to the broker's long worker. Every write from every
+queue funnels through the one WriterThread, so cache writes only wait
+for the long worker's current commit batch, not the whole long op.
+See `handlers.LONG_OPS` for the routing set.
 """
 
 from collections.abc import Mapping
@@ -70,6 +71,11 @@ class _BrokerRequest(BaseModel):
     # on the same host on a UNIX socket, so 5 s is generous for a
     # cache op; the long ops override it below.
     timeout: ClassVar[float] = 5.0
+    # One-way ops get no reply from the broker, not even an error
+    # reply, and go through `BrokerClient.send` rather than `call`.
+    # A ClassVar, so the op's model alone decides it on both sides of
+    # the socket.
+    one_way: ClassVar[bool] = False
 
 
 # The fields that say WHICH piece of work a request is, in the order
@@ -115,34 +121,20 @@ def describe_request(fields: Mapping[str, Any]) -> str:
 
 
 class CacheSetRequest(_BrokerRequest):
+    """One-way: the broker sends no reply, and `BrokerClient.send`
+    waits for none. A cache write is best-effort and the page has
+    already rendered, so there is nothing for the web tier to wait for;
+    waiting is what made every viewer pay for a held writer. The broker
+    logs a dropped or failed write instead of reporting it."""
+
     op: Literal["cache_set"] = "cache_set"
+    one_way: ClassVar[bool] = True
     key: str = Field(min_length=1, max_length=512)
     # Non-empty: an empty string would round-trip as JSON `null` and
     # collapse later cache.get calls into `None`-on-hit, which is
     # indistinguishable from a miss.
     value_json: str = Field(min_length=1)
     ttl: int = Field(ge=0)
-
-
-class CacheDeleteRequest(_BrokerRequest):
-    op: Literal["cache_delete"] = "cache_delete"
-    key: str = Field(min_length=1, max_length=512)
-
-
-class CacheDeleteForInboxRequest(_BrokerRequest):
-    op: Literal["cache_delete_for_inbox"] = "cache_delete_for_inbox"
-    # `cache.delete_for_inbox_via_writer` translates this name into a
-    # `LIKE %name%` clause. The CLI write paths slug-validate via
-    # `mimir.inboxes.validate_name` before the call ever reaches
-    # cache, so LIKE-pattern metacharacters can't appear in
-    # practice. Re-enforcing it at the wire boundary keeps a
-    # buggy or hostile peer from passing `_:foo` (or any other
-    # pattern) and matching unrelated rows.
-    name: InboxName
-
-
-class CachePurgeExpiredRequest(_BrokerRequest):
-    op: Literal["cache_purge_expired"] = "cache_purge_expired"
 
 
 class PingRequest(_BrokerRequest):
@@ -641,9 +633,6 @@ class WarmGlobalRequest(_BrokerRequest):
 # handlers module turns into `Reply(ok=False, error=...)`.
 Request = (
     CacheSetRequest
-    | CacheDeleteRequest
-    | CacheDeleteForInboxRequest
-    | CachePurgeExpiredRequest
     | PingRequest
     | BootstrapInboxesRequest
     | IngestInboxRequest
@@ -682,8 +671,6 @@ class Reply(BaseModel):
     # "OperationalError"). Absent on success.
     error: str | None = None
     # Free-form result payload for ops that return a value:
-    #   - `cache_delete`, `cache_delete_for_inbox`,
-    #     `cache_purge_expired`: `{"rows_deleted": int}`
     #   - `bootstrap_inboxes`: `{"inboxes": 5}`
     #   - `ingest_inbox` (Phase 2.1): `{"results": [<IngestResult>, ...]}`
     #   - `backfill_*` (Phase 2.2):

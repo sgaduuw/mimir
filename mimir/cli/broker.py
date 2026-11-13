@@ -31,10 +31,10 @@ from mimir.cli._common import _configure_logging
 def broker_command(socket_path: Path, verbose: int) -> None:
     """Run the write-broker daemon. Blocks until terminated.
 
-    Owns the sole writer connection to the cache table; clients (web
-    tier, scheduler-tier CLI commands) submit `cache.set` / `delete`
-    / `delete_for_inbox` / `purge_expired` over the socket. The
-    broker also runs a periodic purge thread internally.
+    Owns the sole SQLite writer connection; clients (web tier,
+    scheduler-tier CLI commands) send requests over the socket, the
+    web tier's `cache.set` one-way. The broker also runs a periodic
+    purge of expired cache rows internally.
 
     Log floor is INFO regardless of `-v` so the daemon's startup,
     shutdown, and periodic-purge lines are always visible; without

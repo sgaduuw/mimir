@@ -13,9 +13,6 @@ from mimir.broker.protocol import (
     BackfillCanonicalsRequest,
     BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     IngestInboxRequest,
     PingRequest,
@@ -51,25 +48,6 @@ def test_cache_set_rejects_negative_ttl():
         CacheSetRequest(rpc_id=1, key="x", value_json='"v"', ttl=-1)
 
 
-def test_cache_delete_round_trip():
-    req = CacheDeleteRequest(rpc_id=1, key="v2:thing:y")
-    parsed = CacheDeleteRequest.model_validate_json(req.model_dump_json())
-    assert parsed.key == req.key
-    assert parsed.op == "cache_delete"
-
-
-def test_cache_delete_for_inbox_round_trip():
-    req = CacheDeleteForInboxRequest(rpc_id=1, name="linux-fsdevel")
-    parsed = CacheDeleteForInboxRequest.model_validate_json(req.model_dump_json())
-    assert parsed.name == "linux-fsdevel"
-
-
-def test_cache_purge_expired_round_trip():
-    req = CachePurgeExpiredRequest(rpc_id=1)
-    parsed = CachePurgeExpiredRequest.model_validate_json(req.model_dump_json())
-    assert parsed.op == "cache_purge_expired"
-
-
 def test_ping_round_trip():
     req = PingRequest(rpc_id=1)
     parsed = PingRequest.model_validate_json(req.model_dump_json())
@@ -87,15 +65,15 @@ def test_reply_round_trip():
     assert parsed2.ok is False
     assert parsed2.error == "MalformedJSON"
 
-    r3 = Reply(rpc_id=1, ok=True, result={"rows_deleted": 42})
+    r3 = Reply(rpc_id=1, ok=True, result={"inboxes": 42})
     parsed3 = Reply.model_validate_json(r3.model_dump_json())
-    assert parsed3.result == {"rows_deleted": 42}
+    assert parsed3.result == {"inboxes": 42}
 
 
 def test_op_tag_is_load_bearing():
     """Op tag is the discriminator. Decoding a `cache_set`-shaped
-    body via `CacheDeleteRequest` must fail; otherwise the broker
-    could silently dispatch a set as a delete and lose data."""
+    body via `PingRequest` must fail; otherwise the broker could
+    silently dispatch one op as another."""
     set_payload = json.dumps(
         {
             "op": "cache_set",
@@ -105,7 +83,7 @@ def test_op_tag_is_load_bearing():
         }
     )
     with pytest.raises(ValidationError):
-        CacheDeleteRequest.model_validate_json(set_payload)
+        PingRequest.model_validate_json(set_payload)
 
 
 def test_bootstrap_inboxes_round_trip():

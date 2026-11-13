@@ -3,7 +3,7 @@ write-broker. Three-file family layout (cache + longops + warm)
 so each handler concern stays in its own module as Phase 2.x adds
 more ops:
 
-- `cache.py`: sub-ms cache ops + ping → route to the cache worker.
+- `cache.py`: the one-way `cache_set` + ping → route to the cache worker.
 - `longops.py`: ingest, backfills, mainline, analyze, vacuum,
   bootstrap_inboxes → route to the long worker.
 - `warm.py`: per-inbox + global cache warming → route to the warm
@@ -37,14 +37,7 @@ from collections.abc import Callable
 from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
-from mimir.broker.handlers.cache import (
-    PendingCacheReply,
-    handle_cache_delete,
-    handle_cache_delete_for_inbox,
-    handle_cache_purge_expired,
-    handle_cache_set,
-    handle_ping,
-)
+from mimir.broker.handlers.cache import handle_cache_set, handle_ping
 from mimir.broker.handlers.longops import (
     handle_backfill_article_files,
     handle_backfill_article_trailers,
@@ -82,9 +75,6 @@ from mimir.broker.protocol import (
     BackfillPatchSeriesRequest,
     BackfillThreadRootsRequest,
     BootstrapInboxesRequest,
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     FailuresReplayRequest,
     InboxCreateRequest,
@@ -113,14 +103,11 @@ logger = logging.getLogger(__name__)
 # the model's `op` default, so it is spelled once, in protocol.py;
 # the routing sets and the dispatch lookup below are derived, which
 # is what keeps them from drifting apart. The queue is "cache"
-# (sub-ms commits, the only queue the web tier waits on), "long"
+# (the web tier's one-way cache writes, and ping), "long"
 # (minutes-long ops on one worker) or "warm" (cache warming, drained
 # by N parallel workers). An op belongs to exactly one.
 _HANDLERS: list[tuple[type, Callable, str]] = [
     (CacheSetRequest, handle_cache_set, "cache"),
-    (CacheDeleteRequest, handle_cache_delete, "cache"),
-    (CacheDeleteForInboxRequest, handle_cache_delete_for_inbox, "cache"),
-    (CachePurgeExpiredRequest, handle_cache_purge_expired, "cache"),
     (PingRequest, handle_ping, "cache"),
     (BootstrapInboxesRequest, handle_bootstrap_inboxes, "long"),
     (IngestInboxRequest, handle_ingest_inbox, "long"),
@@ -191,11 +178,12 @@ def classify_op(line: bytes) -> str | None:
     return op if isinstance(op, str) else None
 
 
-def dispatch(line: bytes) -> Reply | PendingCacheReply:
+def dispatch(line: bytes) -> Reply | None:
     """Parse one JSONL request line, dispatch to the matching
-    handler, return a `Reply` or a pending cache commit. Never raises: any error becomes a
-    structured failure reply so the connection stays open for the
-    next request.
+    handler, return its `Reply`, or `None` for a one-way op, which
+    gets no reply at all, not even an error reply (its failures are
+    logged). Never raises: any error becomes a structured failure
+    reply so the connection stays open for the next request.
 
     For error replies produced before a valid request is parsed
     (MalformedJSON, UnknownOp, InvalidRequest) the rpc_id cannot
@@ -225,20 +213,25 @@ def dispatch(line: bytes) -> Reply | PendingCacheReply:
     # still requires the key, so a request without it never runs.
     if "rpc_id" not in raw:
         logger.warning("broker: %s without rpc_id", op)
+        if model.one_way:
+            return None
         return Reply(rpc_id=0, ok=False, error="InvalidRequest")
     try:
         req = model.model_validate(raw)
     except ValidationError as exc:
         logger.warning("broker: invalid %s: %s", op, exc)
+        if model.one_way:
+            return None
         return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="InvalidRequest")
     try:
-        return handler(req)
+        reply = handler(req)
     except Exception as exc:
-        return handler_error_reply(req.rpc_id, op, exc)
+        reply = handler_error_reply(req.rpc_id, op, exc)
+    return None if model.one_way else reply
 
 
 def handler_error_reply(rpc_id: int, op: str, exc: Exception) -> Reply:
-    """Keep dispatch and deferred commit failures on the same wire contract."""
+    """Log a handler failure and build its wire reply."""
     if isinstance(exc, OperationalError):
         logger.warning("broker: SQLite error on %s: %s", op, exc)
         return Reply(rpc_id=rpc_id, ok=False, error="OperationalError")
@@ -249,7 +242,6 @@ def handler_error_reply(rpc_id: int, op: str, exc: Exception) -> Reply:
 __all__ = [
     "LONG_OPS",
     "WARM_OPS",
-    "PendingCacheReply",
     "classify_op",
     "dispatch",
     "handler_error_reply",

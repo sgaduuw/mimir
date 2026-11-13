@@ -7,12 +7,12 @@ import pytest
 
 from mimir import cache
 from mimir.broker.client import BrokerClient, BrokerUnavailable
-from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
-    CacheSetRequest,
-    PingRequest,
+from mimir.broker.protocol import CacheSetRequest, PingRequest
+from tests.test_broker._helpers import (
+    broker_running,
+    flush_one_way,
+    short_socket_path,
 )
-from tests.test_broker._helpers import broker_running, short_socket_path
 
 
 def test_client_ping_returns_true(seeded_db):
@@ -30,32 +30,66 @@ def test_client_cache_set_persists_through_broker(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(
+            c.send(
                 CacheSetRequest(
                     key=cache._ns("test_client_set"),
                     value_json='"hello"',
                     ttl=60,
                 )
             )
+            flush_one_way(c)
         finally:
             c.close()
     # Outside the broker context, read direct.
     assert cache.get("test_client_set") == "hello"
 
 
-def test_client_cache_delete_for_inbox_returns_count(seeded_db):
-    cache.set("archive_stats:alpha", "x", ttl=60)
-    cache.set("daily_volume:alpha:30", "y", ttl=60)
+def test_one_way_send_registers_nothing_and_gets_no_reply(seeded_db):
+    """The broker writes nothing back for a cache_set. Read the raw
+    socket: the first frame after a set and a ping must be the ping's
+    reply, and the client must hold no pending future for the set."""
+    import json
+    import socket
 
-    sp = short_socket_path("client-del-inbox")
+    sp = short_socket_path("client-one-way")
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            n = c.call(CacheDeleteForInboxRequest(name="alpha"))["rows_deleted"]
+            c.send(CacheSetRequest(key=cache._ns("one-way"), value_json='"v"', ttl=60))
+            with c._pending_lock:
+                assert c._pending == {}
         finally:
             c.close()
-    assert n == 2
-    assert cache.get("archive_stats:alpha") is None
+
+        raw = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        raw.settimeout(5)
+        try:
+            raw.connect(str(sp))
+            raw.sendall(
+                CacheSetRequest(
+                    rpc_id=1, key=cache._ns("one-way-raw"), value_json='"v"', ttl=60
+                )
+                .model_dump_json()
+                .encode()
+                + b"\n"
+                + PingRequest(rpc_id=2).model_dump_json().encode()
+                + b"\n"
+            )
+            first = raw.makefile("rb").readline()
+        finally:
+            raw.close()
+    assert json.loads(first)["rpc_id"] == 2
+
+
+def test_call_and_send_refuse_the_other_shape(seeded_db):
+    """One-way ops go through send(), reply ops through call(): a
+    call() on a one-way op would wait out its timeout for a reply
+    that never comes."""
+    c = BrokerClient(short_socket_path("client-shape"))
+    with pytest.raises(ValueError, match="one-way"):
+        c.call(CacheSetRequest(key="x", value_json='"v"', ttl=60))
+    with pytest.raises(ValueError, match="expects a reply"):
+        c.send(PingRequest())
 
 
 def test_client_raises_broker_unavailable_when_no_broker(seeded_db):
@@ -66,7 +100,7 @@ def test_client_raises_broker_unavailable_when_no_broker(seeded_db):
     sp = short_socket_path("nobroker")
     c = BrokerClient(sp)
     with pytest.raises(BrokerUnavailable):
-        c.call(CacheSetRequest(key="x", value_json='"v"', ttl=60))
+        c.send(CacheSetRequest(key="x", value_json='"v"', ttl=60))
 
 
 def test_client_reconnects_lazily_after_broker_restart(seeded_db):
@@ -168,7 +202,7 @@ def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
             def _worker(tid: int) -> None:
                 for i in range(rpcs_per_thread):
                     key = _ns(f"concurrent:{tid}:{i}")
-                    c.call(
+                    c.send(
                         CacheSetRequest(key=key, value_json=f'"v-{tid}-{i}"', ttl=60)
                     )
 
@@ -176,6 +210,7 @@ def test_client_concurrent_rpcs_from_one_singleton(seeded_db):
                 futures = [ex.submit(_worker, t) for t in range(n_threads)]
                 for f in as_completed(futures):
                     f.result()  # re-raise any worker exception
+            flush_one_way(c)
         finally:
             c.close()
 
@@ -201,8 +236,8 @@ def test_client_cache_set_handles_payload_larger_than_socket_buffer(seeded_db):
     `socket.sendall`, which loops on partial sends.
 
     Pin: round-trip a >1 MB value through cache_set and assert it
-    lands intact. Without the fix this fails with
-    `BrokerUnavailable: cache_set: MalformedJSON`.
+    lands intact. Without the fix the broker logs MalformedJSON and the
+    value never lands.
     """
     from mimir import cache
     from mimir.broker.client import BrokerClient
@@ -214,13 +249,14 @@ def test_client_cache_set_handles_payload_larger_than_socket_buffer(seeded_db):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(
+            c.send(
                 CacheSetRequest(
                     key=cache._ns("large-payload-test"),
                     value_json=f'"{big}"',
                     ttl=60,
                 )
             )
+            flush_one_way(c)
         finally:
             c.close()
     # Round-trip: cache.get decodes the JSON. The stored value is
