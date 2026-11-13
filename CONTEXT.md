@@ -726,12 +726,51 @@ shim that obtains the active WriterThread via
 `mimir/cache.py` paralleling the `_direct_*` family:
 `_set_via_writer_for_nskey`, `delete_via_writer`,
 `delete_for_inbox_via_writer`, `purge_expired_via_writer`), and
-awaits `.result()` for the rowcount the reply needs. (#1157: all but
-`handle_cache_set`. That one replies once the write is queued, never
-after the commit, so a held writer cannot stall a viewer. It submits
+awaits `.result()` for the rowcount the reply needs. #1157 changed
+`handle_cache_set` to reply once the write is queued. It submits
 with `block=False`; on a full writer queue it drops the write, logs
 `cache_set dropped: writer queue full (key=...)` and replies
-`ok=False` "writer busy".)
+`ok=False` "writer busy".
+
+#1169 moves the delete and purge waits to a separate completion worker.
+The cache worker first tries nonblocking writer admission. When the writer
+queue is full, invalidations wait for admission on that same worker,
+preserving eventual deletion and submission order with later sets.
+This backpressure applies under saturation; an occupied writer with
+room in its queue leaves cache admission responsive. The admitted future
+moves to a completion queue bounded by `BROKER_WRITER_QUEUE_DEPTH`
+(at least one slot). Successful delete replies acknowledge commit, and
+inbox deletion and purge retain their exact row counts. Library
+invalidations inside the broker continue waiting for completion before
+subsequent reads or first-ingest warming.
+
+Completion waits use an absolute five-second deadline from submission,
+so queued waits do not each receive a fresh five seconds. A full completion
+queue returns "writer busy" after the invalidation has been admitted.
+That overflow response uses ordinary delivery on the cache worker because
+it has no completion retry slot, preserving the response through brief
+connection contention and applying backpressure under saturation.
+An already-submitted write can execute after a timeout or failed reply,
+as before. Deferred socket replies run on the completion worker, keeping
+socket I/O off the writer. Each delivery attempt has a 100 ms budget covering
+the send lock and socket transmission. Before any bytes are sent, contention
+can return the delivery to the bounded completion queue until its original
+deadline. Other connections can then progress while an ordinary reply keeps
+its delivery budget. An exhausted deadline or retry queue can abandon that
+reply; the admitted invalidation still executes.
+
+A duplicate socket wrapper has a separate positive Python timeout while
+preserving the shared nonblocking descriptor mode and the reader's timeout.
+A failed transmission shuts down the connection before another reply can
+append to its partial frame, failing every in-flight RPC on that
+connection. A pre-send lock timeout leaves the current sender alone.
+Client RPC timeout cleanup removes its pending future without cancelling
+server work; the demultiplexer ignores late unmatched replies.
+
+Shutdown attempts to drain admitted completion work after cache submitters
+finish. If its bounded join leaves cache workers, completions or pending
+accounting, the broker warns with those counts and suppresses the
+clean-shutdown message.
 
 Reply shapes preserved exactly: `handle_cache_set` and
 `handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);
