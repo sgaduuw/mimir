@@ -57,7 +57,6 @@ def broker_running(socket_path: Path):
         thread.join(timeout=5)
         for worker in server._cache_worker_threads:
             worker.join(timeout=5)
-        server._completion_thread.join(timeout=5)
         server.writer.stop(timeout=10.0)
         server.read_pool.close()
         sp = Path(socket_path)
@@ -69,3 +68,14 @@ def broker_running(socket_path: Path):
             _context.set_active(saved_pool, saved_writer)
         else:
             _context.clear_active()
+
+
+def flush_one_way(client) -> None:
+    """Return once every one-way request this client sent earlier has
+    been handed to the writer. A ping rides the same connection and the
+    same single cache worker (FIFO), so its reply means the sends ahead
+    of it were dispatched; the writer then commits them in order, and
+    `broker_running`'s teardown drains the writer before returning."""
+    from mimir.broker.protocol import PingRequest
+
+    client.call(PingRequest())

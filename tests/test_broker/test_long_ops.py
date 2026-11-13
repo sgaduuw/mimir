@@ -24,22 +24,19 @@ from mimir.broker.protocol import (
     IngestInboxRequest,
     PingRequest,
 )
-from tests.test_broker._helpers import broker_running, short_socket_path
+from tests.test_broker._helpers import (
+    broker_running,
+    flush_one_way,
+    short_socket_path,
+)
 
 # ----- classify_op --------------------------------------------------------
 
 
 def test_classify_op_recognises_cache_ops():
-    """`cache_set`, `cache_delete`, `cache_delete_for_inbox`,
-    `cache_purge_expired`, and `ping` are all cache ops; they must
-    NOT show up in `LONG_OPS`."""
-    for op in (
-        "cache_set",
-        "cache_delete",
-        "cache_delete_for_inbox",
-        "cache_purge_expired",
-        "ping",
-    ):
+    """`cache_set` and `ping` are cache ops; they must NOT show up in
+    `LONG_OPS`."""
+    for op in ("cache_set", "ping"):
         assert op not in handlers.LONG_OPS
 
 
@@ -324,13 +321,16 @@ def test_long_worker_does_not_block_cache_worker(seeded_db, monkeypatch):
                 # the cache worker, this would wait the full
                 # 0.5s. With two workers, it returns immediately.
                 t0 = time.perf_counter()
-                cache_client.call(
+                cache_client.send(
                     CacheSetRequest(
                         key=cache._ns("two-workers-test"),
                         value_json='"v"',
                         ttl=60,
                     )
                 )
+                # The set is one-way; the ping behind it on the same
+                # cache worker is what measures that worker's latency.
+                flush_one_way(cache_client)
                 cache_elapsed_ms = (time.perf_counter() - t0) * 1000.0
                 # Generous bound: typical cache_set is single-
                 # digit ms. Anything well under the 500ms long-op

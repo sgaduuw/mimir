@@ -11,7 +11,11 @@ from pathlib import Path
 
 from mimir.broker.protocol import CacheSetRequest, PingRequest
 from mimir.broker.server import build_server
-from tests.test_broker._helpers import broker_running, short_socket_path
+from tests.test_broker._helpers import (
+    broker_running,
+    flush_one_way,
+    short_socket_path,
+)
 
 
 def _send_line(sp: Path, line: bytes) -> bytes:
@@ -123,11 +127,12 @@ def test_server_warns_on_slow_rpc(seeded_db, caplog, monkeypatch):
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(
+            c.send(
                 CacheSetRequest(
                     key=cache._ns("slow-warn-test"), value_json='"x"', ttl=60
                 )
             )
+            flush_one_way(c)
         finally:
             c.close()
 
@@ -174,13 +179,14 @@ def test_server_does_not_warn_when_threshold_disabled(seeded_db, caplog, monkeyp
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(
+            c.send(
                 CacheSetRequest(
                     key=cache._ns("slow-disabled-test"),
                     value_json='"x"',
                     ttl=60,
                 )
             )
+            flush_one_way(c)
         finally:
             c.close()
 
@@ -226,20 +232,22 @@ def test_server_serves_two_clients_concurrently(seeded_db):
             # would block past the 5s client timeout because the
             # broker isn't reading from b's socket.
             for i in range(20):
-                a.call(
+                a.send(
                     CacheSetRequest(
                         key=cache._ns(f"two-clients:a:{i}"),
                         value_json=f'"a-{i}"',
                         ttl=60,
                     )
                 )
-                b.call(
+                b.send(
                     CacheSetRequest(
                         key=cache._ns(f"two-clients:b:{i}"),
                         value_json=f'"b-{i}"',
                         ttl=60,
                     )
                 )
+            flush_one_way(a)
+            flush_one_way(b)
         finally:
             a.close()
             b.close()
@@ -271,13 +279,14 @@ def test_server_serves_many_clients_concurrently(seeded_db):
             def _worker(cid: int) -> None:
                 c = clients[cid]
                 for i in range(rpcs_per_client):
-                    c.call(
+                    c.send(
                         CacheSetRequest(
                             key=cache._ns(f"many:{cid}:{i}"),
                             value_json=f'"{cid}-{i}"',
                             ttl=60,
                         )
                     )
+                flush_one_way(c)
 
             with ThreadPoolExecutor(max_workers=n_clients) as ex:
                 futures = [ex.submit(_worker, c) for c in range(n_clients)]
@@ -363,13 +372,14 @@ def test_server_slow_rpc_warning_includes_queue_wait(seeded_db, caplog, monkeypa
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(
+            c.send(
                 CacheSetRequest(
                     key=cache._ns("slow-breakdown-test"),
                     value_json='"x"',
                     ttl=60,
                 )
             )
+            flush_one_way(c)
         finally:
             c.close()
 
@@ -1449,10 +1459,12 @@ def test_backfill_still_succeeds_when_the_remaining_count_cannot_be_taken(
 
 
 def test_web_tier_rpcs_all_route_to_the_cache_queue():
-    """`_BrokerServer`'s docstring calls `cache_queue` "the only thing
-    the web tier waits on", and that is the whole justification for the
-    queue split: long ops can hold the long queue for minutes because
-    nothing on a request path is behind them.
+    """`cache_queue` is where the web tier's requests land, and that is
+    the whole justification for the queue split: long ops can hold the
+    long queue for minutes because nothing a request path sends sits
+    behind them. The web tier no longer waits on its one-way cache
+    writes, but a set queued behind a long op would still land minutes
+    late and pile up in broker memory meanwhile.
 
     The op names are DERIVED from `mimir/cache.py` rather than listed
     here, because the two halves of this claim live in different files
@@ -1470,11 +1482,11 @@ def test_web_tier_rpcs_all_route_to_the_cache_queue():
     op_of = {model.__name__: op for op, (model, _handler) in _DISPATCH.items()}
     ops = set()
     for node in ast.walk(ast.parse(src)):
-        # `get_broker_client().call(<Model>(...))`
+        # `get_broker_client().call(<Model>(...))` or `.send(...)`
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "call"
+            and node.func.attr in ("call", "send")
             and isinstance(node.func.value, ast.Call)
             and isinstance(node.func.value.func, ast.Name)
             and node.func.value.func.id == "get_broker_client"

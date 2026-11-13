@@ -60,8 +60,8 @@ def test_sixteen_concurrent_pings_all_complete(seeded_db, monkeypatch):
 
 
 def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
-    """Mix cache_set, ping across threads. Every reply demuxes to
-    the correct caller. Verifies all 8 cache writes landed."""
+    """Mix one-way cache_set and ping across threads. Every ping reply
+    demuxes to its caller. Verifies all 8 cache writes landed."""
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "broker_cache_workers", 4)
@@ -72,7 +72,7 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
         try:
 
             def do_set(i: int) -> None:
-                c.call(
+                c.send(
                     CacheSetRequest(
                         key=cache_mod._ns(f"key_{i}"),
                         value_json=f'"v_{i}"',
@@ -98,10 +98,16 @@ def test_mixed_op_types_concurrent(seeded_db, monkeypatch):
             # All 8 pings should have returned True.
             assert len(ping_slots) == 8
             assert all(r == {} for r in ping_slots), ping_slots
+            # One-way sets commit after they are sent, and with four
+            # cache workers a ping is no ordering fence, so poll.
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and any(
+                cache_mod.get(f"key_{i}") is None for i in range(8)
+            ):
+                time.sleep(0.05)
         finally:
             c.close()
 
-    # Verify all eight cache writes landed (post-broker; read direct).
     for i in range(8):
         assert cache_mod.get(f"key_{i}") == f"v_{i}"
 

@@ -106,20 +106,13 @@ repeats it every `BROKER_STUCK_JOB_WARN_INTERVAL_SEC` (default 300) until the
 job ends. The caller's `rpc timed out` error names the request the same way,
 so the two lines can be matched.
 
-Cache invalidations and expired-row purges wait for commit on a separate
-completion worker. Their original five-second deadline produces a
-`writer busy` warning on expiry. The watchdog tracks active worker execution;
-completions queued behind another reply are outside that registry.
-A `cache-completion` stuck-job warning indicates an unexpected overrun
-during reply processing. Writer-queue saturation can instead block cache
-admission and appear as `cache` in the watchdog. Successful inbox deletions
-and purges return the actual deleted-row count.
-
-Deferred reply attempts have a 100 ms budget covering their send lock and
-socket write. Contention before sending retries within the original
-deadline, allowing an ordinary reply on the same connection to finish.
-RPC timing records include the completion wait and delivery attempts,
-with one terminal `delivery=sent|failed|abandoned` outcome. A failed
+The web tier's cache writes are one-way: the broker never replies to them,
+so their outcome is only in the broker log. A full writer queue drops the
+write with `cache_set dropped: writer queue full (key=...)`, and a failed
+commit logs `cache_set failed (key=...)`; either way the next request for
+that page recomputes it. Cache invalidations run inside the broker and wait
+for their own commit. RPC timing records end with one
+`delivery=sent|failed|none` outcome, `none` for the one-way writes. A failed
 transmission closes the connection to protect frame boundaries. That fails
 all RPCs in flight on that connection, including long operations, and can
 occur when a paused client leaves its kernel socket buffer full.

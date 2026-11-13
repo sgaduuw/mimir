@@ -772,6 +772,16 @@ finish. If its bounded join leaves cache workers, completions or pending
 accounting, the broker warns with those counts and suppresses the
 clean-shutdown message.
 
+**One-way cache writes (unreleased) supersede the #1157 and #1169
+paragraphs above.** `cache_set` is a one-way op
+(`_BrokerRequest.one_way`): the web tier sends it with
+`BrokerClient.send`, the broker queues it on the writer without
+blocking and sends no reply, not even an error. Every invalidation
+caller runs inside the broker, so the delete and purge RPCs, the
+completion worker and the deferred-reply delivery are gone;
+`cache.delete` and `cache.delete_for_inbox` submit to the writer and
+wait for their own commit. The section below is history.
+
 Reply shapes preserved exactly: `handle_cache_set` and
 `handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);
 `handle_cache_delete_for_inbox` and `handle_cache_purge_expired`

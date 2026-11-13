@@ -38,7 +38,6 @@ MUTATORS = {
     "cache.set": lambda: cache.set("probe", "v", 60),
     "cache.delete": lambda: cache.delete("probe"),
     "cache.delete_for_inbox": lambda: cache.delete_for_inbox("alpha"),
-    "cache.purge_expired": cache.purge_expired,
 }
 
 

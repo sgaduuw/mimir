@@ -1,4 +1,4 @@
-"""VACUUM rejects best-effort cache RPCs without occupying the writer."""
+"""VACUUM skips the one-way cache writes without occupying the writer."""
 
 import threading
 import time
@@ -9,21 +9,10 @@ import pytest
 
 from mimir.broker.handlers import cache as handlers
 from mimir.broker.handlers.maintenance import handle_vacuum
-from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
-    CacheSetRequest,
-    VacuumRequest,
-)
+from mimir.broker.protocol import CacheSetRequest, VacuumRequest
 from mimir.maintenance import VacuumResult
 
-MUTATIONS = [
-    (handlers.handle_cache_set, CacheSetRequest(key="test", value_json='"x"', ttl=60)),
-    (handlers.handle_cache_delete, CacheDeleteRequest(key="test")),
-    (handlers.handle_cache_delete_for_inbox, CacheDeleteForInboxRequest(name="alpha")),
-    (handlers.handle_cache_purge_expired, CachePurgeExpiredRequest()),
-]
+SET = CacheSetRequest(key="test", value_json='"x"', ttl=60)
 
 
 def _result():
@@ -32,8 +21,7 @@ def _result():
     )
 
 
-@pytest.mark.parametrize("handler,req", MUTATIONS)
-def test_cache_mutations_fail_fast_during_vacuum(monkeypatch, handler, req):
+def test_cache_set_is_skipped_fast_during_vacuum(monkeypatch):
     entered, release = threading.Event(), threading.Event()
 
     def vacuum():
@@ -50,9 +38,9 @@ def test_cache_mutations_fail_fast_during_vacuum(monkeypatch, handler, req):
         try:
             assert entered.wait(5), "VACUUM never started"
             start = time.monotonic()
-            reply = handler(req.model_copy(update={"rpc_id": 17}))
+            reply = handlers.handle_cache_set(SET)
             elapsed = time.monotonic() - start
-            assert (reply.ok, reply.error, reply.rpc_id) == (False, "vacuum", 17)
+            assert reply is None
             assert elapsed < 0.5
             writer.submit.assert_not_called()
         finally:
@@ -96,12 +84,9 @@ def test_overlapping_vacuums_keep_gate_closed_and_count_exactly(
             assert entered[1].wait(3), "both VACUUM handlers must overlap"
             with ThreadPoolExecutor(max_workers=8) as clients:
                 replies = list(
-                    clients.map(
-                        lambda _: handlers.handle_cache_set(MUTATIONS[0][1]), range(80)
-                    )
+                    clients.map(lambda _: handlers.handle_cache_set(SET), range(80))
                 )
             assert len(replies) == 80
-            assert all(not r.ok and r.error == "vacuum" for r in replies)
             release[0].set()
             if first_fails:
                 with pytest.raises(RuntimeError, match="vacuum failed"):
@@ -109,7 +94,7 @@ def test_overlapping_vacuums_keep_gate_closed_and_count_exactly(
             else:
                 assert first.result(timeout=3).ok
             assert not second.done(), "the second VACUUM must still be running"
-            assert handlers.handle_cache_set(MUTATIONS[0][1]).error == "vacuum"
+            handlers.handle_cache_set(SET)
             writer.submit.assert_not_called()
             assert not any(
                 r.getMessage().startswith("broker: skipped ") for r in caplog.records
@@ -125,12 +110,8 @@ def test_overlapping_vacuums_keep_gate_closed_and_count_exactly(
         if r.getMessage().startswith("broker: skipped ")
     ]
     assert summaries == ["broker: skipped 81 cache writes during VACUUM"]
-    for handler, req in MUTATIONS:
-        reply = handler(req)
-        if isinstance(reply, handlers.PendingCacheReply):
-            reply = reply.resolve()
-        assert reply.ok
-    assert writer.submit.call_count == 4
+    handlers.handle_cache_set(SET)
+    assert writer.submit.call_count == 1
     # A new maintenance window gets a fresh counter, including after failure.
     monkeypatch.setattr("mimir.maintenance.run_vacuum", _result)
     handle_vacuum(VacuumRequest())
@@ -141,76 +122,22 @@ def test_overlapping_vacuums_keep_gate_closed_and_count_exactly(
 
 
 def test_failed_vacuum_reopens_cache_admission(monkeypatch):
-    def vacuum():
-        assert handlers.handle_cache_set(MUTATIONS[0][1]).error == "vacuum"
-        raise RuntimeError("vacuum failed")
-
-    monkeypatch.setattr("mimir.maintenance.run_vacuum", vacuum)
-    with pytest.raises(RuntimeError, match="vacuum failed"):
-        handle_vacuum(VacuumRequest())
     writer = Mock()
     done = Future()
     done.set_result(None)
     writer.submit.return_value = done
     monkeypatch.setattr(handlers, "get_active_writer", lambda: writer)
-    assert handlers.handle_cache_set(MUTATIONS[0][1]).ok
+
+    def vacuum():
+        handlers.handle_cache_set(SET)
+        writer.submit.assert_not_called()
+        raise RuntimeError("vacuum failed")
+
+    monkeypatch.setattr("mimir.maintenance.run_vacuum", vacuum)
+    with pytest.raises(RuntimeError, match="vacuum failed"):
+        handle_vacuum(VacuumRequest())
+    handlers.handle_cache_set(SET)
     writer.submit.assert_called_once()
-
-
-@pytest.mark.parametrize("handler,req", MUTATIONS)
-@pytest.mark.parametrize("error", ["vacuum", "writer busy"])
-def test_cache_callers_quiet_only_expected_vacuum_rejections(
-    monkeypatch, caplog, handler, req, error
-):
-    from pathlib import Path
-
-    from mimir import cache
-    from mimir.broker.client import BrokerClient
-    from mimir.broker.protocol import Reply
-
-    client = BrokerClient(Path("/unused"))
-    monkeypatch.setattr(
-        client, "_rpc", lambda req, timeout=None: Reply(rpc_id=1, ok=False, error=error)
-    )
-    monkeypatch.setattr("mimir.broker.client.get_broker_client", lambda: client)
-    monkeypatch.setattr(cache, "_should_dispatch_to_broker", lambda: True)
-    calls = {
-        "cache_set": lambda: cache.set("test", "x", ttl=60),
-        "cache_delete": lambda: cache.delete("test"),
-        "cache_delete_for_inbox": lambda: cache.delete_for_inbox("alpha"),
-        "cache_purge_expired": cache.purge_expired,
-    }
-    calls[req.op]()
-    warnings = [r for r in caplog.records if r.name == "mimir.cache"]
-    assert len(warnings) == (0 if error == "vacuum" else 1)
-    if warnings:
-        assert error in warnings[0].getMessage()
-
-
-@pytest.mark.parametrize("req", [pair[1] for pair in MUTATIONS])
-def test_client_keeps_cache_skip_exception_contract(monkeypatch, req):
-    from pathlib import Path
-
-    from mimir.broker.client import (
-        BrokerCacheWriteSkipped,
-        BrokerClient,
-        BrokerUnavailable,
-    )
-    from mimir.broker.protocol import PingRequest, Reply
-
-    client = BrokerClient(Path("/unused"))
-    monkeypatch.setattr(
-        client,
-        "_rpc",
-        lambda req, timeout=None: Reply(rpc_id=1, ok=False, error="vacuum"),
-    )
-    with pytest.raises(BrokerCacheWriteSkipped) as exc:
-        client.call(req)
-    assert isinstance(exc.value, BrokerUnavailable)
-    assert str(exc.value) == f"{req.op}: vacuum"
-    with pytest.raises(BrokerUnavailable) as exc:
-        client.call(PingRequest())
-    assert type(exc.value) is BrokerUnavailable
 
 
 def test_skip_summary_reaches_configured_broker_logging_sink():
@@ -228,8 +155,7 @@ import mimir.maintenance
 
 def vacuum():
     for i in range(3):
-        reply = handle_cache_set(CacheSetRequest(key="test", value_json='"x"', ttl=60))
-        assert reply.error == "vacuum"
+        assert handle_cache_set(CacheSetRequest(key="test", value_json='"x"', ttl=60)) is None
     return VacuumResult(elapsed_ms=1, db_size_before=1, db_size_after=1, reclaimed=0)
 
 _configure_logging(1)

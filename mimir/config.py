@@ -408,8 +408,8 @@ class Settings(BaseSettings):
     # it logs a WARNING with the leading bytes of the request and
     # the elapsed time. Healthy RPCs commit in sub-ms; sustained
     # warnings indicate writer-lock contention (e.g. an admin
-    # backfill running) or a slow operation
-    # (`cache_delete_for_inbox` on a huge table). Set to 0 or
+    # backfill running) or a slow operation (a per-inbox cache
+    # invalidation on a huge table). Set to 0 or
     # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
     broker_slow_rpc_warn_ms: int = 100
 

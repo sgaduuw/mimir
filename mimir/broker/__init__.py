@@ -16,7 +16,8 @@ package, not the submodules:
 The submodules split by concern:
 
 - `protocol`: wire message shapes (pydantic). JSONL over UNIX
-  socket; one request per line, one reply per line.
+  socket; one request per line, one reply per line except for the
+  one-way `cache_set`.
 - `server`: daemon lifecycle. `socketserver.UnixStreamServer`
   subclass, accept loop, signal handler for clean shutdown.
 - `handlers`: RPC dispatch + per-op handlers. Reads run on a
