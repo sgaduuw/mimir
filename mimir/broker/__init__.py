@@ -19,6 +19,7 @@ The submodules split by concern:
   socket; one request per line, one reply per line.
 - `server`: daemon lifecycle. `socketserver.UnixStreamServer`
   subclass, accept loop, signal handler for clean shutdown.
+- `startup`: pre-serve database preparation and background verification.
 - `handlers`: RPC dispatch + per-op handlers. Reads run on a
   `ReadSessionPool` session; writes dispatch through the active
   `WriterThread` (two-pool restructure, complete as of Phase 6).
