@@ -762,9 +762,10 @@ reply; the admitted invalidation still executes.
 A duplicate socket wrapper has a separate positive Python timeout while
 preserving the shared nonblocking descriptor mode and the reader's timeout.
 A failed transmission shuts down the connection before another reply can
-append to its partial frame, failing every in-flight RPC on that connection. A pre-send lock timeout leaves the current
-sender alone. Client RPC timeout cleanup removes its pending future without
-cancelling server work; the demultiplexer ignores late unmatched replies.
+append to its partial frame, failing every in-flight RPC on that
+connection. A pre-send lock timeout leaves the current sender alone.
+Client RPC timeout cleanup removes its pending future without cancelling
+server work; the demultiplexer ignores late unmatched replies.
 
 Shutdown attempts to drain admitted completion work after cache submitters
 finish. If its bounded join leaves cache workers, completions or pending
