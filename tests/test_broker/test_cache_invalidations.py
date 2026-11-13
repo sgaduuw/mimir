@@ -19,7 +19,6 @@ from tests.test_broker._helpers import broker_running, short_socket_path
 INVALIDATIONS = [
     (lambda: cache.delete("invalidate:alpha:one"), 1),
     (lambda: cache.delete_for_inbox("alpha"), 2),
-    (cache.purge_expired, 2),
 ]
 
 

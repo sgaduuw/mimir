@@ -16,7 +16,8 @@ the broker's cache worker. **Long** ops (commit batches that run
 seconds to minutes; `bootstrap_inboxes`, `ingest_epoch`,
 `backfill_*`, `update_mainline`, `analyze`, `vacuum`) route to the
 broker's long worker. All workers submit writes to the single
-WriterThread; cache sets acknowledge admission without waiting for commit. See `handlers.LONG_OPS` for the routing set.
+WriterThread; cache sets acknowledge admission without waiting for
+commit. See `handlers.LONG_OPS` for the routing set.
 """
 
 from collections.abc import Mapping
