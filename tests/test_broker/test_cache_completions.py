@@ -179,7 +179,10 @@ def test_completion_capacity_uses_writer_setting(seeded_db, monkeypatch, depth):
         assert server.completion_queue.maxsize == max(1, depth)
 
 
-def test_completion_queue_overflow_is_bounded_and_honest(seeded_db, monkeypatch):
+@pytest.mark.parametrize("contended", [False, True])
+def test_completion_queue_overflow_is_bounded_and_honest(
+    seeded_db, monkeypatch, contended
+):
     import time
 
     from mimir.broker.handlers import PendingCacheReply
@@ -198,6 +201,15 @@ def test_completion_queue_overflow_is_bounded_and_honest(seeded_db, monkeypatch)
 
     monkeypatch.setattr(PendingCacheReply, "resolve", resolving)
     with broker_running(short_socket_path("full-completion")) as server:
+        busy_delivery = threading.Event()
+        original_deliver = server._deliver_reply
+
+        def delivering(reply, delivery):
+            if reply.rpc_id == 3:
+                busy_delivery.set()
+            return original_deliver(reply, delivery)
+
+        monkeypatch.setattr(server, "_deliver_reply", delivering)
         keys = [f"v3:completion:{i}" for i in range(3)]
         for key in keys:
             cache._set_via_writer_for_nskey(server.writer, key, '"old"', 60).result(5)
@@ -237,9 +249,21 @@ def test_completion_queue_overflow_is_bounded_and_honest(seeded_db, monkeypatch)
                     {"rpc_id": 3, "op": "cache_delete", "key": keys[2]},
                     {"rpc_id": 4, "op": "ping"},
                 ]
-                client.sendall(
-                    b"".join(json.dumps(req).encode() + b"\n" for req in requests)
-                )
+                with server.completion_queue.mutex:
+                    conn = server.completion_queue.queue[0][1].conn
+                if contended:
+                    conn.send_lock.acquire()
+                try:
+                    client.sendall(
+                        b"".join(json.dumps(req).encode() + b"\n" for req in requests)
+                    )
+                    if contended:
+                        assert busy_delivery.wait(2)
+                        # Exceed the deferred budget while the ordinary reply can wait.
+                        time.sleep(0.25)
+                finally:
+                    if contended:
+                        conn.send_lock.release()
                 with client.makefile("rb") as reader:
                     rejected = json.loads(reader.readline())
                     assert rejected["rpc_id"] == 3
