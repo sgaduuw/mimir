@@ -106,14 +106,10 @@ repeats it every `BROKER_STUCK_JOB_WARN_INTERVAL_SEC` (default 300) until the
 job ends. The caller's `rpc timed out` error names the request the same way,
 so the two lines can be matched.
 
-Cache invalidations and expired-row purges wait for commit on a separate
-completion worker. Their original five-second deadline produces a
-`writer busy` warning on expiry. The watchdog tracks active worker execution;
-completions queued behind another reply are outside that registry.
-A `cache-completion` stuck-job warning indicates an unexpected overrun
-during reply processing. Writer-queue saturation can instead block cache
-admission and appear as `cache` in the watchdog. Successful inbox deletions
-and purges return the actual deleted-row count.
+Cache sets acknowledge writer admission without waiting for commit. A full
+writer queue returns `writer busy`; active VACUUM returns `vacuum`. Internal
+invalidation runs on the active writer and waits for commit before its broker
+flow warms or returns. There is no separate cache completion worker.
 
 Scheduled expired-row cleanup runs inside the broker, independently of
 `warm-cache`. It attempts its first purge on a background thread after the
@@ -123,24 +119,23 @@ writer queue is full. Only one scheduled purge can be outstanding; shutdown
 leaves an admitted purge to the writer's drain. Nonzero counts are logged as
 `broker purge: N expired rows deleted`. Cleanup failures are logged and the
 next interval retries. Expired values are filtered on reads even if physical
-cleanup is delayed. The explicit purge RPC remains available.
+cleanup is delayed.
 
-Deferred reply attempts have a 100 ms budget covering their send lock and
-socket write. Contention before sending retries within the original
-deadline, allowing an ordinary reply on the same connection to finish.
-RPC timing records include the completion wait and delivery attempts,
-with one terminal `delivery=sent|failed|abandoned` outcome. A failed
-transmission closes the connection to protect frame boundaries. That fails
-all RPCs in flight on that connection, including long operations, and can
-occur when a paused client leaves its kernel socket buffer full.
-If the completion queue is full, the cache worker sends the busy response
-through ordinary reply delivery; this can apply backpressure during saturation.
+The `cache_delete`, `cache_delete_for_inbox` and `cache_purge_expired` RPCs
+are removed and return `UnknownOp`. Operator probes should use `cache_set`
+with a short TTL and observe background cleanup. During a rolling update,
+task containers older than 3.51.0 may still send the trailing purge operation;
+update those containers along with the broker. Tasks running 3.51.0 or later
+already leave cleanup to the broker.
 
-Caller timeout cleanup does not cancel the invalidation. If cache work
-remains after the bounded shutdown joins, `incomplete cache reply drain`
-reports the surviving workers and pending counts. Its `cache_pending` count
-includes requests still queued for dispatch when SIGTERM stopped the cache
-workers, so an ordinary busy shutdown can produce this warning.
+Ordinary replies serialize complete frames under the connection's send lock,
+with a 30-second socket-send timeout. RPC timing records include dispatch and
+delivery, with a terminal `delivery=sent|failed` outcome. A failed transmission
+closes the connection to protect frame boundaries and fails all its in-flight
+RPCs. Caller timeout cleanup does not cancel server work. If cache work remains
+after the bounded shutdown joins, `incomplete cache reply drain` reports surviving
+cache workers and pending requests. Its `cache_pending` count includes requests
+still queued for dispatch when SIGTERM stopped the cache workers.
 
 Before restarting a broker with a stuck job, dump every thread's Python stack
 to its log. The broker keeps running:

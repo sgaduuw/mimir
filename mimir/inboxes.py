@@ -340,8 +340,8 @@ def update_inbox(
     result, renamed_from = submit_write(f"inbox:update:{name}", _fn, timeout=30)
     # Drop cached entries that referenced the old name. Cache values
     # don't depend on mirror_path / upstream_url, so non-rename
-    # updates don't need invalidation. This stays OUTSIDE the closure
-    # because cache.delete_for_inbox is not a DB op (Decision 10).
+    # updates don't need invalidation. Stay outside the writer closure:
+    # invalidation submits another WriteOp and waits for its commit.
     if renamed_from is not None:
         cache.delete_for_inbox(renamed_from)
     return result
@@ -444,7 +444,8 @@ def delete_inbox(
     report.ingest_state_deleted = is_count
     report.orphan_articles_deleted = orphan_count
 
-    # cache.delete_for_inbox stays OUTSIDE the closure (Decision 10).
+    # Invalidation submits another WriteOp and waits, so it must run outside
+    # the writer closure to avoid waiting on that same writer thread.
     cache.delete_for_inbox(name)
 
     if remove_inbox_data:

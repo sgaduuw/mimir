@@ -10,9 +10,6 @@ import pytest
 from mimir.broker.handlers import cache as handlers
 from mimir.broker.handlers.maintenance import handle_vacuum
 from mimir.broker.protocol import (
-    CacheDeleteForInboxRequest,
-    CacheDeleteRequest,
-    CachePurgeExpiredRequest,
     CacheSetRequest,
     VacuumRequest,
 )
@@ -20,9 +17,6 @@ from mimir.maintenance import VacuumResult
 
 MUTATIONS = [
     (handlers.handle_cache_set, CacheSetRequest(key="test", value_json='"x"', ttl=60)),
-    (handlers.handle_cache_delete, CacheDeleteRequest(key="test")),
-    (handlers.handle_cache_delete_for_inbox, CacheDeleteForInboxRequest(name="alpha")),
-    (handlers.handle_cache_purge_expired, CachePurgeExpiredRequest()),
 ]
 
 
@@ -127,10 +121,8 @@ def test_overlapping_vacuums_keep_gate_closed_and_count_exactly(
     assert summaries == ["broker: skipped 81 cache writes during VACUUM"]
     for handler, req in MUTATIONS:
         reply = handler(req)
-        if isinstance(reply, handlers.PendingCacheReply):
-            reply = reply.resolve()
         assert reply.ok
-    assert writer.submit.call_count == 4
+    assert writer.submit.call_count == 1
     # A new maintenance window gets a fresh counter, including after failure.
     monkeypatch.setattr("mimir.maintenance.run_vacuum", _result)
     handle_vacuum(VacuumRequest())
@@ -176,9 +168,6 @@ def test_cache_callers_quiet_only_expected_vacuum_rejections(
     monkeypatch.setattr(cache, "_should_dispatch_to_broker", lambda: True)
     calls = {
         "cache_set": lambda: cache.set("test", "x", ttl=60),
-        "cache_delete": lambda: cache.delete("test"),
-        "cache_delete_for_inbox": lambda: cache.delete_for_inbox("alpha"),
-        "cache_purge_expired": cache.purge_expired,
     }
     calls[req.op]()
     warnings = [r for r in caplog.records if r.name == "mimir.cache"]

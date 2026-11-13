@@ -304,7 +304,9 @@ def test_index_uses_retained_volume_until_the_warmer_refreshes_it(
     assert sum(n for _, n in early.days) == 2
 
     now += DAILY_VOLUME_CACHE_TTL_SEC + warm_window + 1
-    cache.purge_expired()
+    from mimir.broker._context import get_active_writer
+
+    cache.purge_expired_via_writer(get_active_writer()).result()
 
     statements = []
 

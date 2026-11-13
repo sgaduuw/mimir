@@ -2381,3 +2381,29 @@ def test_a_bad_mailmap_line_does_not_stop_the_linus_walk(
     assert result.trees["linus"].ok, result.trees["linus"].error
     assert result.maintainers_ran and result.subsystems_loaded == 1
     assert walked == ["linus"]
+
+
+def test_maintainers_reload_commits_both_cache_invalidations(
+    seeded_db, tmp_path, monkeypatch
+):
+    from mimir import cache, maintainer_allowlist, subsystems
+    from mimir.config import settings
+    from mimir.mainline import load_maintainers
+
+    path = tmp_path / "maintainers.git"
+    repo = _bare_repo(path)
+    _commit_maintainers(
+        repo, b"A\nM:\tNew <new@example.org>\nF:\tfs/a/\n", ts=1700000000
+    )
+    repo.close()
+    keys = (maintainer_allowlist._CACHE_KEY, subsystems._RULES_CACHE_KEY)
+    for key in keys:
+        cache.set(key, "stale", 3600)
+        assert cache.get(key) == "stale"
+
+    # Invalidation requires the writer, not a process-routing setting or RPC.
+    monkeypatch.setattr(settings, "mimir_is_broker", False)
+    ran, loaded, _ = load_maintainers(path, tree_name="linus")
+    assert ran and loaded == 1
+    assert [cache.get(key) for key in keys] == [None, None]
+    assert maintainer_allowlist._compute_addresses() == ["new@example.org"]

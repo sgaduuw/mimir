@@ -436,9 +436,8 @@ it as a multi-minute request hang. Tunable via
 `SQLITE_BUSY_TIMEOUT_MS` so an operator can lengthen it without code
 changes if the scheduler grows heavier writers.
 
-The broker knows when VACUUM is running, so new cache mutation RPCs
-are rejected immediately with `error="vacuum"`, before writer submission,
-rather than each occupying the cache worker for its five-second wait.
+The broker knows when VACUUM is running, so new `cache_set` RPCs
+are rejected immediately with `error="vacuum"`, before writer submission.
 The web tier treats that specific rejection as an expected skipped write;
 other broker failures still log warnings. A lock-protected active count
 keeps admission closed across overlapping VACUUM handlers, and the final
@@ -714,71 +713,45 @@ Explicitly out of Phase 3c scope: `cache.set` from the web tier
 removal of `write_transaction()` and the BEGIN IMMEDIATE event
 listener (Phase 6).
 
-**2.15.0: Phase 4 of the two-pool restructure landed.** The four
-broker cache RPC handlers (`handle_cache_set`,
-`handle_cache_delete`, `handle_cache_delete_for_inbox`,
-`handle_cache_purge_expired`) migrate: each no longer runs
-`cache._direct_*(...)` inline on the cache worker thread wrapped
-in `write_transaction("broker:cache_*")`. Each becomes a thin
-shim that obtains the active WriterThread via
-`_context.get_active_writer()`, dispatches via the corresponding
-`cache.<op>_via_writer` helper (four new helpers in
-`mimir/cache.py` paralleling the `_direct_*` family:
-`_set_via_writer_for_nskey`, `delete_via_writer`,
-`delete_for_inbox_via_writer`, `purge_expired_via_writer`), and
-awaits `.result()` for the rowcount the reply needs. #1157 changed
-`handle_cache_set` to reply once the write is queued. It submits
-with `block=False`; on a full writer queue it drops the write, logs
+**Cache writes and invalidation after #1180.** Web-tier `cache_set` and
+`ping` are the only cache RPCs. Sets submit with `block=False` and acknowledge
+admission, not commit. A full writer queue logs
 `cache_set dropped: writer queue full (key=...)` and replies
-`ok=False` "writer busy".
+`ok=False` with `error="writer busy"`. Commit failures are logged by the
+future's callback. VACUUM admission state still rejects new sets immediately.
 
-#1169 moves the delete and purge waits to a separate completion worker.
-The cache worker first tries nonblocking writer admission. When the writer
-queue is full, invalidations wait for admission on that same worker,
-preserving eventual deletion and submission order with later sets.
-This backpressure applies under saturation; an occupied writer with
-room in its queue leaves cache admission responsive. The admitted future
-moves to a completion queue bounded by `BROKER_WRITER_QUEUE_DEPTH`
-(at least one slot). Successful delete replies acknowledge commit, and
-inbox deletion and purge retain their exact row counts. Library
-invalidations inside the broker continue waiting for completion before
-subsequent reads or first-ingest warming.
+The external `cache_delete`, `cache_delete_for_inbox` and
+`cache_purge_expired` operations are retired; old requests receive `UnknownOp`.
+Their pending replies, completion queue, completion worker and delivery retries
+are removed. Update operator probes to use `cache_set` with a short TTL and
+observe background cleanup. During a rolling update, task containers older
+than 3.51.0 can still send the retired trailing purge; update those tasks too.
+Mimir 3.51.0 already stopped sending it.
 
-Completion waits use an absolute five-second deadline from submission,
-so queued waits do not each receive a fresh five seconds. A full completion
-queue returns "writer busy" after the invalidation has been admitted.
-That overflow response uses ordinary delivery on the cache worker because
-it has no completion retry slot, preserving the response through brief
-connection contention and applying backpressure under saturation.
-An already-submitted write can execute after a timeout or failed reply,
-as before. Deferred socket replies run on the completion worker, keeping
-socket I/O off the writer. Each delivery attempt has a 100 ms budget covering
-the send lock and socket transmission. Before any bytes are sent, contention
-can return the delivery to the bounded completion queue until its original
-deadline. Other connections can then progress while an ordinary reply keeps
-its delivery budget. An exhausted deadline or retry queue can abandon that
-reply; the admitted invalidation still executes.
+`cache.delete` and `cache.delete_for_inbox` are broker-only helpers; expiry
+cleanup calls `purge_expired_via_writer` from the broker timer. Both helpers
+require the active WriterThread and wait for commit, returning the actual row
+count. A missing writer raises, including under non-broker
+settings; there is no RPC fallback, silent zero or local write. Inbox rename
+and deletion, first ingest and MAINTAINERS reload all invalidate inside their
+broker flow. That flow's deletion commits before its subsequent warming,
+reads or return. An independent client can still compute a stale value before
+invalidation and set it afterward; that existing cache-aside race is outside
+this ordering guarantee.
 
-A duplicate socket wrapper has a separate positive Python timeout while
-preserving the shared nonblocking descriptor mode and the reader's timeout.
-A failed transmission shuts down the connection before another reply can
-append to its partial frame, failing every in-flight RPC on that
-connection. A pre-send lock timeout leaves the current sender alone.
-Client RPC timeout cleanup removes its pending future without cancelling
-server work; the demultiplexer ignores late unmatched replies.
+All ordinary replies keep their per-connection send lock, framing and socket
+send timeout. A failed transmission shuts down the connection before another
+reply can append to its partial frame, failing every in-flight RPC on that
+connection. Client timeout cleanup removes its pending future without cancelling
+server work; the demultiplexer ignores late unmatched replies. Queued or running
+requests prevent idle-reader expiry. Shutdown bounds worker joins and reports
+surviving cache workers and unfinished cache requests rather than claiming a
+clean drain.
 
-Shutdown attempts to drain admitted completion work after cache submitters
-finish. If its bounded join leaves cache workers, completions or pending
-accounting, the broker warns with those counts and suppresses the
-clean-shutdown message.
-
-Reply shapes preserved exactly: `handle_cache_set` and
-`handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);
-`handle_cache_delete_for_inbox` and `handle_cache_purge_expired`
-return `Reply(ok=True, rows_deleted=n)`. No RPC contract change.
-(#706 later moved that count into `result={"rows_deleted": n}`, so
-every op's payload sits in `result` and `BrokerClient.call` returns
-it.)
+Expired-row cleanup remains the broker's background timer from #1174: startup
+attempt, then 60 seconds after each completed attempt, nonblocking admission,
+VACUUM deferral and at most one admitted purge. It uses
+`purge_expired_via_writer` directly so an occupied writer does not delay serving.
 
 The architectural payoff: after Phase 4 every SQLite write inside
 the broker funnels through one WriterThread, regardless of which
@@ -824,11 +797,23 @@ WriterThread and awaits `.result()`. Phase 5 shipped with a
 writer is active and the mutators let it propagate, so a process
 without a writer cannot write on its own (the single-writer
 invariant). The one no-writer write left is `bootstrap_inboxes`, and
-only at broker startup: `build_server` runs it through
-`_bootstrap_inboxes_if_needed` before the WriterThread is started and
+only at broker startup: `build_server` calls
+`startup.prepare_database`, which runs `_bootstrap_inboxes_if_needed`
+before the WriterThread is started and
 registered, so there is no writer to dispatch to. Its steady-state RPC
 (`handle_bootstrap_inboxes`) does use the writer. Phase 6a moved only
 that RPC onto the writer, not the startup call.
+
+#1173 keeps database preparation in `mimir/broker/startup.py`: schema
+migration, inbox bootstrap, post-migrate ANALYZE, thread-root fill and the
+background verifier. `prepare_database` owns their order and is called by
+`build_server` before its listening/readiness announcement. The verifier is
+still launched on every successful start without joining it. Engine and
+session factories remain function-local lookups, so preparation uses the
+same engine Alembic migrates. Existing sentinel rules, failure handling and
+log names are unchanged. `server.py` retains binding, worker setup, process
+signals, writer/context registration, periodic cleanup and shutdown. This
+separates responsibilities without changing the lifecycle or adding a framework.
 
 The architectural payoff: after Phase 5 the admin write surface
 joins the single-writer invariant. The periodic purge timer
@@ -1366,7 +1351,7 @@ its callers).
 Every key is silently prefixed with `v{NAMESPACE_VERSION}:` so a
 code change that alters cached value shapes (a query rewrite, a
 renamed dataclass field) is bumped centrally, old rows simply never
-match and age out via `purge_expired`. Most keys name no release:
+match and age out via the broker's expiry cleanup. Most keys name no release:
 `patch_state`, the page-level `lifecycle_status_v3:...:{state_key}`,
 `merge_window` and `linus_pulls` carry `mimir.__version__`, but listing
 pills, sitemaps and dashboards do not. So an older release reads a

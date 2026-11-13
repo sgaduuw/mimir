@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-11-14
+
+### Removed
+
+- Retired the external `cache_delete`, `cache_delete_for_inbox` and `cache_purge_expired` broker operations and their deferred completion machinery. Old requests return `UnknownOp`; cache sets and ping remain supported. Invalidation within broker operations still waits for commit and returns actual deletion counts, and background expiry cleanup keeps its startup and 60-second schedule. Operator probes must use supported operations; rolling upgrades must also update task containers older than 3.51.0 that still send the trailing purge (#1180).
+
 ## [3.51.0] - 2026-11-13
 
 ### Changed
@@ -6797,7 +6803,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v3.50.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.0.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

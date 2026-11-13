@@ -9,6 +9,7 @@ import socket
 import time
 from pathlib import Path
 
+from mimir.broker import startup
 from mimir.broker.protocol import CacheSetRequest, PingRequest
 from mimir.broker.server import build_server
 from tests.test_broker._helpers import broker_running, short_socket_path
@@ -915,13 +916,13 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
     starts the writer or calls set_active() before the startup writers
     finish, which would silently route a startup write through a
     not-yet-warmed WriterThread."""
-    from mimir.broker import _context, server
+    from mimir.broker import _context
 
     # Guarantee no stale active context from a previous test.
     _context.clear_active()
     observed: dict[str, object] = {}
 
-    real_analyze = server._post_migrate_analyze_if_needed
+    real_analyze = startup._post_migrate_analyze_if_needed
 
     def _spy(sp, schema_changed=False):
         # Record whether a writer is active at the moment build_server
@@ -933,7 +934,7 @@ def test_startup_writers_run_without_active_writer(seeded_db, monkeypatch):
             observed["writer_active"] = False
         return real_analyze(sp, schema_changed)
 
-    monkeypatch.setattr(server, "_post_migrate_analyze_if_needed", _spy)
+    monkeypatch.setattr(startup, "_post_migrate_analyze_if_needed", _spy)
 
     # Use a short path under /tmp so we stay within AF_UNIX 104-byte
     # limit on macOS (tmp_path lives under /private/var/folders/...).
@@ -976,7 +977,6 @@ def test_post_migrate_analyze_reruns_when_the_schema_revision_moves(
     restart.
     """
     import mimir.maintenance
-    from mimir.broker import server
 
     calls: list[str] = []
 
@@ -998,11 +998,11 @@ def test_post_migrate_analyze_reruns_when_the_schema_revision_moves(
     sentinel.touch()
 
     # Ordinary restart: sentinel present, schema unchanged. Must skip.
-    server._post_migrate_analyze_if_needed(sock_dir / "broker.sock", False)
+    startup._post_migrate_analyze_if_needed(sock_dir / "broker.sock", False)
     assert calls == [], "ANALYZE ran on a plain restart with nothing to re-sample"
 
     # A migration moved the revision. Must run, sentinel notwithstanding.
-    server._post_migrate_analyze_if_needed(sock_dir / "broker.sock", True)
+    startup._post_migrate_analyze_if_needed(sock_dir / "broker.sock", True)
     assert calls == ["ran"], (
         "ANALYZE was skipped after a schema migration; a table rebuild drops "
         "that table's sqlite_stat1 rows and nothing else puts them back"
@@ -1026,7 +1026,6 @@ def test_migrate_reports_whether_the_revision_actually_moved(tmp_path, monkeypat
     from sqlalchemy import create_engine
 
     import mimir.extensions
-    from mimir.broker import server
     from mimir.config import settings
 
     db = tmp_path / "revmove.db"
@@ -1046,15 +1045,15 @@ def test_migrate_reports_whether_the_revision_actually_moved(tmp_path, monkeypat
 
     # Fresh database: no `alembic_version` at all, so the revision moves
     # from None to head.
-    assert server._schema_revision() is None
-    assert server._migrate_if_needed(sock_dir / "broker.sock") is True, (
+    assert startup._schema_revision() is None
+    assert startup._migrate_if_needed(sock_dir / "broker.sock") is True, (
         "a first migration onto an empty database must report the revision "
         "as having moved, or the post-migrate ANALYZE never runs"
     )
-    assert server._schema_revision() is not None
+    assert startup._schema_revision() is not None
 
     # Idempotent re-check on an already-current database: nothing moved.
-    assert server._migrate_if_needed(sock_dir / "broker.sock") is False, (
+    assert startup._migrate_if_needed(sock_dir / "broker.sock") is False, (
         "an ordinary restart reported a schema change, which would re-run "
         "ANALYZE on every boot"
     )
@@ -1088,7 +1087,6 @@ def test_schema_revision_reads_the_engine_alembic_migrates_not_the_url(
     from sqlalchemy import create_engine
 
     import mimir.extensions
-    from mimir.broker import server
     from mimir.config import settings
 
     migrated = tmp_path / "migrated.db"
@@ -1106,7 +1104,7 @@ def test_schema_revision_reads_the_engine_alembic_migrates_not_the_url(
         mimir.extensions, "engine", create_engine(f"sqlite:///{migrated}")
     )
 
-    assert server._schema_revision() == "rev-on-the-engine", (
+    assert startup._schema_revision() == "rev-on-the-engine", (
         "_schema_revision read the database named by settings.database_url "
         "rather than the one mimir.extensions.engine (and therefore alembic) "
         "is bound to"
@@ -1127,7 +1125,6 @@ def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
     planner's stats are most stale.
     """
     import mimir.maintenance
-    from mimir.broker import server
 
     calls: list[str] = []
 
@@ -1142,14 +1139,13 @@ def test_post_backfill_analyze_runs_even_when_the_backfill_blows_up(
         raise RuntimeError("simulated session-level failure mid-backfill")
 
     monkeypatch.setattr(mimir.maintenance, "run_analyze", _fake_analyze)
-    monkeypatch.setattr(server, "SessionLocal", _explode, raising=False)
     monkeypatch.setattr("mimir.extensions.SessionLocal", _explode)
 
     sock_dir = tmp_path / "boom"
     sock_dir.mkdir()
     # No sentinel, so the backfill actually runs rather than short-
     # circuiting, and then dies inside the session.
-    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+    startup._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
     assert calls == ["ran"], (
         "the backfill failed at session level and skipped the ANALYZE; a "
@@ -1177,7 +1173,6 @@ def test_incomplete_backfill_never_claims_complete(
 
     import mimir.maintenance
     import mimir.thread_roots
-    from mimir.broker import server
 
     monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
 
@@ -1190,7 +1185,7 @@ def test_incomplete_backfill_never_claims_complete(
     sock_dir.mkdir()
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
-    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+    startup._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
     records = [r.getMessage() for r in caplog.records]
     joined = "\n".join(records)
@@ -1226,7 +1221,6 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
     import logging
 
     import mimir.maintenance
-    from mimir.broker import server
 
     monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
 
@@ -1240,13 +1234,13 @@ def test_backfill_completion_line_reports_rows_still_unrooted(
         calls.append(1)
         return 0
 
-    monkeypatch.setattr(server, "_count_unrooted_rows", _counted)
+    monkeypatch.setattr(startup, "_count_unrooted_rows", _counted)
 
     sock_dir = tmp_path / "done"
     sock_dir.mkdir()
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
-    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+    startup._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
     records = [r.getMessage() for r in caplog.records]
     done = [r for r in records if "backfill complete" in r]
@@ -1271,11 +1265,9 @@ def test_verification_states_a_zero_rather_than_going_quiet(seeded_db, caplog):
     """
     import logging
 
-    from mimir.broker import server
-
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
-    server._verify_thread_roots_async().join(timeout=60)
+    startup._verify_thread_roots_async().join(timeout=60)
 
     records = [r.getMessage() for r in caplog.records]
     done = [r for r in records if "verification complete" in r]
@@ -1308,7 +1300,6 @@ def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch, c
     import logging
 
     import mimir.thread_roots
-    from mimir.broker import server
 
     def _explode(*_a, **_kw):
         raise RuntimeError("simulated mid-sweep failure")
@@ -1316,7 +1307,7 @@ def test_verification_stays_silent_when_it_dies_midway(seeded_db, monkeypatch, c
     monkeypatch.setattr(mimir.thread_roots, "find_incoherent_roots", _explode)
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
-    server._verify_thread_roots_async().join(timeout=60)
+    startup._verify_thread_roots_async().join(timeout=60)
 
     records = [r.getMessage() for r in caplog.records]
     assert not [r for r in records if "verification complete" in r], (
@@ -1386,18 +1377,17 @@ def test_backfill_that_leaves_rows_unrooted_is_not_called_complete(
     import logging
 
     import mimir.maintenance
-    from mimir.broker import server
 
     monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
     # A clean run by every other signal: nothing raised, no pass budget
     # hit. Only the count says otherwise.
-    monkeypatch.setattr(server, "_count_unrooted_rows", lambda: 5)
+    monkeypatch.setattr(startup, "_count_unrooted_rows", lambda: 5)
 
     sock_dir = tmp_path / "dirty"
     sock_dir.mkdir()
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
-    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+    startup._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "backfill complete" not in joined, (
@@ -1427,16 +1417,15 @@ def test_backfill_still_succeeds_when_the_remaining_count_cannot_be_taken(
     import logging
 
     import mimir.maintenance
-    from mimir.broker import server
 
     monkeypatch.setattr(mimir.maintenance, "run_analyze", lambda: None)
-    monkeypatch.setattr(server, "_count_unrooted_rows", lambda: None)
+    monkeypatch.setattr(startup, "_count_unrooted_rows", lambda: None)
 
     sock_dir = tmp_path / "unknown"
     sock_dir.mkdir()
     caplog.set_level(logging.INFO, logger="mimir.broker.server")
 
-    server._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
+    startup._backfill_thread_roots_if_needed(sock_dir / "broker.sock")
 
     joined = "\n".join(r.getMessage() for r in caplog.records)
     assert "backfill complete" in joined and "remaining=unknown" in joined, (
@@ -1511,7 +1500,7 @@ def test_schema_revision_reads_the_engine_alembic_migrates(monkeypatch):
     would find no `alembic_version` there and return None. Second: the
     other half of the pair, that `alembic/env.py`'s online path really
     does run on that same engine object."""
-    from mimir.broker.server import _schema_revision
+    from mimir.broker.startup import _schema_revision
     from mimir.config import settings
 
     before = _schema_revision()
