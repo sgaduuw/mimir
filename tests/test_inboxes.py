@@ -312,7 +312,7 @@ def test_delete_inbox_unknown_raises(seeded_db):
         delete_inbox("nonexistent")
 
 
-def test_delete_inbox_invalidates_cache(seeded_db):
+def test_delete_inbox_invalidates_cache(seeded_db, monkeypatch):
     """Cache rows for the deleted inbox must not survive."""
     from mimir import cache
     from mimir.inboxes import delete_inbox
@@ -321,6 +321,10 @@ def test_delete_inbox_invalidates_cache(seeded_db):
     cache.set("daily_volume:alpha:30", {"sentinel": True}, ttl=3600)
     cache.set("archive_stats:beta", {"sentinel": True}, ttl=3600)
 
+    from mimir.config import settings
+
+    assert cache.get("archive_stats:alpha") == {"sentinel": True}
+    monkeypatch.setattr(settings, "mimir_is_broker", False)
     delete_inbox("alpha", keep_orphan_articles=True)
 
     keys = set(cache.keys())
@@ -329,7 +333,7 @@ def test_delete_inbox_invalidates_cache(seeded_db):
     assert "archive_stats:beta" in keys
 
 
-def test_update_inbox_rename_invalidates_cache(seeded_db):
+def test_update_inbox_rename_invalidates_cache(seeded_db, monkeypatch):
     """Renaming alpha → alpha2 should drop the alpha-named cache
     rows; the new name's reads will repopulate fresh."""
     from mimir import cache
@@ -338,6 +342,10 @@ def test_update_inbox_rename_invalidates_cache(seeded_db):
     cache.set("archive_stats:alpha", {"sentinel": True}, ttl=3600)
     cache.set("daily_volume:alpha:30", {"sentinel": True}, ttl=3600)
 
+    from mimir.config import settings
+
+    assert cache.get("archive_stats:alpha") == {"sentinel": True}
+    monkeypatch.setattr(settings, "mimir_is_broker", False)
     update_inbox("alpha", new_name="alpha2")
 
     keys = set(cache.keys())

@@ -1,9 +1,10 @@
 """Hardening pins for the broker daemon: socket-file mode at bind
 time (not just after the trailing chmod), per-connection line-length
 cap, idle-timeout, peer-credential check on Linux, and the wire-
-boundary slug validator on `cache_delete_for_inbox`. Each test pins
+boundary slug validator on `inbox_delete`. Each test pins
 one defense; together they cover the Phase A hardening commit."""
 
+import json
 import logging
 import os
 import socket
@@ -13,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from mimir.broker import server as broker_server
-from mimir.broker.protocol import CacheDeleteForInboxRequest, PingRequest
+from mimir.broker.protocol import InboxDeleteRequest, PingRequest
 from mimir.broker.server import build_server
 from tests.test_broker._helpers import broker_running, short_socket_path
 
@@ -214,7 +215,7 @@ def test_check_peer_uid_skips_when_so_peercred_absent(monkeypatch):
         s.close()
 
 
-def test_cache_delete_for_inbox_rejects_like_metacharacters():
+def test_inbox_delete_rejects_like_metacharacters():
     """Slug regex on the wire boundary refuses names containing LIKE
     metacharacters (`%`, `_`) and anything outside the
     `[a-z0-9-]` shape. The CLI write paths already slug-validate
@@ -223,16 +224,16 @@ def test_cache_delete_for_inbox_rejects_like_metacharacters():
     bad = ["%lkml%", "lkml_", "_lkml", "LKML", "lkml.dev", "-lkml", "lkml-"]
     for name in bad:
         with pytest.raises(ValidationError):
-            CacheDeleteForInboxRequest(rpc_id=1, name=name)
+            InboxDeleteRequest(rpc_id=1, name=name)
 
 
-def test_cache_delete_for_inbox_accepts_real_slugs():
+def test_inbox_delete_accepts_real_slugs():
     """Sanity check: every shape that `mimir.inboxes.validate_name`
     accepts must round-trip through the broker validator. Keeps the
     two regexes drift-aware."""
     good = ["lkml", "linux-fsdevel", "x86", "a", "a1", "a-b-c", "linux-arm-kernel"]
     for name in good:
-        req = CacheDeleteForInboxRequest(rpc_id=1, name=name)
+        req = InboxDeleteRequest(rpc_id=1, name=name)
         assert req.name == name
 
 
@@ -277,3 +278,68 @@ def test_stalled_reply_releases_worker_for_other_clients(seeded_db, monkeypatch)
                 slow.close()
                 client.close()
                 server.cache_queue.join()
+
+
+def test_serve_warns_when_cache_worker_drain_is_incomplete(
+    seeded_db, monkeypatch, caplog
+):
+    import logging
+    from types import SimpleNamespace
+
+    from mimir.broker import _context
+    from mimir.broker import server as server_module
+
+    saved_pool, saved_writer = _context._active_pool, _context._active_writer
+    server = server_module.build_server(short_socket_path("incomplete-drain"))
+    server.stop_event.set()
+    for worker in server._cache_worker_threads:
+        worker.join(2)
+        assert not worker.is_alive()
+    # An ordinary cache worker can remain blocked sending a reply after shutdown.
+    server._cache_worker_threads = [
+        SimpleNamespace(join=lambda timeout: None, is_alive=lambda: True)
+    ]
+    server.cache_queue.put(object())
+    monkeypatch.setattr(server_module, "build_server", lambda path: server)
+    monkeypatch.setattr(server_module, "_register_stack_dump_signal", lambda: None)
+    monkeypatch.setattr(server_module.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(server, "serve_forever", lambda **kwargs: None)
+    try:
+        with caplog.at_level(logging.INFO, logger="mimir.broker.server"):
+            server_module.serve(short_socket_path("incomplete-drain"))
+    finally:
+        _context.set_active(saved_pool, saved_writer)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("incomplete cache reply drain" in message for message in messages)
+    assert "broker: shut down cleanly" not in messages
+
+
+def test_pending_request_outlives_idle_timeout(seeded_db, monkeypatch):
+    from threading import Event
+
+    entered, release = Event(), Event()
+    original = broker_server.dispatch
+
+    def held_dispatch(line):
+        entered.set()
+        assert release.wait(5)
+        return original(line)
+
+    monkeypatch.setattr(broker_server, "IDLE_TIMEOUT_SEC", 0.1)
+    monkeypatch.setattr(broker_server, "dispatch", held_dispatch)
+    with broker_running(short_socket_path("pending-idle")) as server:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(2)
+            client.connect(server.server_address)
+            client.sendall(b'{"rpc_id":1,"op":"ping"}\n{"rpc_id":2,"op":"ping"}\n')
+            try:
+                assert entered.wait(2)
+                # One executing request and one queued request are both pending.
+                time.sleep(0.4)
+                assert server.cache_queue.unfinished_tasks == 2
+            finally:
+                release.set()
+            with client.makefile("rb") as reader:
+                replies = [json.loads(reader.readline()) for _ in range(2)]
+            assert [(r["rpc_id"], r["ok"]) for r in replies] == [(1, True), (2, True)]
+        server.cache_queue.join()

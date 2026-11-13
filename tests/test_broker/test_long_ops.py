@@ -30,14 +30,10 @@ from tests.test_broker._helpers import broker_running, short_socket_path
 
 
 def test_classify_op_recognises_cache_ops():
-    """`cache_set`, `cache_delete`, `cache_delete_for_inbox`,
-    `cache_purge_expired`, and `ping` are all cache ops; they must
+    """`cache_set` and `ping` are cache ops; they must
     NOT show up in `LONG_OPS`."""
     for op in (
         "cache_set",
-        "cache_delete",
-        "cache_delete_for_inbox",
-        "cache_purge_expired",
         "ping",
     ):
         assert op not in handlers.LONG_OPS
