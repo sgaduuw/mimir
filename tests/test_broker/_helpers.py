@@ -55,6 +55,9 @@ def broker_running(socket_path: Path):
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        for worker in server._cache_worker_threads:
+            worker.join(timeout=5)
+        server._completion_thread.join(timeout=5)
         server.writer.stop(timeout=10.0)
         server.read_pool.close()
         sp = Path(socket_path)

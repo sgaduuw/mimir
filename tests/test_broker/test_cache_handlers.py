@@ -27,15 +27,17 @@ def test_cache_handlers_do_not_call_write_transaction(seeded_db, broker_active):
     )
     assert r.ok is True
 
-    r = handle_cache_delete(CacheDeleteRequest(rpc_id=1, key="v3:phase4-contract"))
+    r = handle_cache_delete(
+        CacheDeleteRequest(rpc_id=1, key="v3:phase4-contract")
+    ).resolve()
     assert r.ok is True
 
     r = handle_cache_delete_for_inbox(
         CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
-    )
+    ).resolve()
     assert r.ok is True
 
-    r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1))
+    r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1)).resolve()
     assert r.ok is True
 
 
@@ -232,19 +234,21 @@ def test_cache_handlers_swallow_timeout_error_during_writer_block(broker_active)
 
     try:
         with patch("mimir.cache.delete_via_writer", _never_resolving):
-            r = handle_cache_delete(CacheDeleteRequest(rpc_id=1, key="v3:hotfix-test"))
+            r = handle_cache_delete(
+                CacheDeleteRequest(rpc_id=1, key="v3:hotfix-test")
+            ).resolve()
         assert r.ok is False
         assert r.error == "writer busy"
 
         with patch("mimir.cache.delete_for_inbox_via_writer", _never_resolving):
             r = handle_cache_delete_for_inbox(
                 CacheDeleteForInboxRequest(rpc_id=1, name="alpha")
-            )
+            ).resolve()
         assert r.ok is False
         assert r.error == "writer busy"
 
         with patch("mimir.cache.purge_expired_via_writer", _never_resolving):
-            r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1))
+            r = handle_cache_purge_expired(CachePurgeExpiredRequest(rpc_id=1)).resolve()
         assert r.ok is False
         assert r.error == "writer busy"
 

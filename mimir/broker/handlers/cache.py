@@ -1,45 +1,19 @@
-"""Cache-op handlers. Each is a sub-ms operation: dispatch a
-WriteOp through the active WriterThread and reply. The delete and
-purge handlers await `.result()` before replying; `handle_cache_set`
-replies once the write is queued (#1157).
+"""Cache RPC admission and commit replies.
 
-Phase 4 of the broker two-pool restructure
-(`_claude/specs/2026-05-29-broker-two-pool-design.md`): the
-handlers do not write inline on the cache worker thread.
-Instead, they submit single-statement WriteOps
-through `_context.get_active_writer()` (all but set await `.result()`).
-The cache worker thread keeps running (it dequeues from
-`cache_queue` and dispatches) but the actual SQLite write
-lands on the WriterThread, serialised with long-op WriteOps.
-After Phase 4 every SQLite write inside the broker funnels
-through one WriterThread.
-
-`ping` lives here too: it doesn't touch the DB at all (just a
-liveness probe used by the compose healthcheck) but classifies
-as a cache-family op for routing purposes since it's expected
-to be sub-ms.
-
-Best-effort posture (2.15.1 hotfix): each handler catches
-`TimeoutError` from `.result(timeout=5)` and returns
-`Reply(ok=False, error="writer busy")` with a WARNING log line.
-`handle_cache_set` is the exception (#1157): it replies once the
-write is queued and never waits on the commit; a full writer queue
-drops the write with a "cache_set dropped" WARNING.
-The web tier's `cache.set` is already best-effort by contract
-(it logs + swallows non-OK replies; the cached value still ages
-out via TTL). Without this catch, a long writer-lock hold
-(VACUUM in particular, ~minutes per cycle) trips
-`TimeoutError` per cache RPC and `dispatch`'s outer exception
-handler logs each one as an ERROR with full traceback, which
-is noisy. During VACUUM, reject new cache mutations before writer submission
-and count them for one maintenance summary. A delete or purge
-admitted before the VACUUM gate closes can still hit the ordinary
-timeout; a cache.set admitted then just waits in the writer queue.
+The cache worker submits all mutations in order without waiting for the
+writer. Sets acknowledge admission; deletes and purges return a pending
+reply for the completion worker to resolve after commit, within five seconds.
+During VACUUM, reject new mutations before writer submission and count them
+for one maintenance summary. Internal broker invalidations still wait through
+cache._delete_routed before warming or returning to their caller.
 """
 
 import logging
 import queue
 import threading
+import time
+from concurrent.futures import Future
+from dataclasses import dataclass, field
 
 from mimir import cache
 from mimir.broker._context import get_active_writer
@@ -59,6 +33,44 @@ logger = logging.getLogger(__name__)
 _vacuum_lock = threading.Lock()
 _active_vacuums = 0
 _skipped_writes = 0
+
+
+@dataclass
+class PendingCacheReply:
+    """An admitted DELETE, with its original commit deadline and wire shape."""
+
+    future: Future[int]
+    rpc_id: int
+    label: str
+    include_count: bool = True
+    deadline: float = field(default_factory=lambda: time.monotonic() + 5.0)
+
+    def busy(self, reason: str) -> Reply:
+        logger.warning("%s: writer busy (%s)", self.label, reason)
+
+        # Admission cannot be undone. If this RPC no longer observes the
+        # commit, preserve failures in logs without socket I/O on the writer.
+        def log_failure(future):
+            if (exc := future.exception()) is not None and not isinstance(
+                exc, TimeoutError
+            ):
+                logger.warning("%s failed after reply: %s", self.label, exc)
+
+        self.future.add_done_callback(log_failure)
+        return Reply(rpc_id=self.rpc_id, ok=False, error="writer busy")
+
+    def resolve(self) -> Reply:
+        try:
+            count = self.future.result(
+                timeout=max(0.0, self.deadline - time.monotonic())
+            )
+        except TimeoutError:
+            return self.busy("commit timeout")
+        return Reply(
+            rpc_id=self.rpc_id,
+            ok=True,
+            result={"rows_deleted": count} if self.include_count else None,
+        )
 
 
 def begin_vacuum() -> None:
@@ -116,44 +128,47 @@ def handle_cache_set(req: CacheSetRequest) -> Reply:
     return Reply(rpc_id=req.rpc_id, ok=True)
 
 
-def handle_cache_delete(req: CacheDeleteRequest) -> Reply:
+def handle_cache_delete(req: CacheDeleteRequest) -> Reply | PendingCacheReply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
-    writer = get_active_writer()
-    # req.key is pre-namespaced. We discard the rowcount; reply shape
-    # matches the pre-Phase-4 Reply(ok=True) exactly.
     try:
-        cache.delete_via_writer(writer, req.key).result(timeout=5)
-    except TimeoutError:
-        logger.warning("cache_delete timeout: writer busy (key=%s)", req.key)
+        future = cache.delete_via_writer(get_active_writer(), req.key, block=False)
+    except queue.Full:
+        logger.warning("cache_delete: writer queue full (key=%s)", req.key)
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
-    return Reply(rpc_id=req.rpc_id, ok=True)
+    return PendingCacheReply(
+        future, req.rpc_id, f"cache_delete (key={req.key})", include_count=False
+    )
 
 
-def handle_cache_delete_for_inbox(req: CacheDeleteForInboxRequest) -> Reply:
+def handle_cache_delete_for_inbox(
+    req: CacheDeleteForInboxRequest,
+) -> Reply | PendingCacheReply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
-    writer = get_active_writer()
     try:
-        n = cache.delete_for_inbox_via_writer(writer, req.name).result(timeout=5)
-    except TimeoutError:
-        logger.warning(
-            "cache_delete_for_inbox timeout: writer busy (name=%s)", req.name
+        future = cache.delete_for_inbox_via_writer(
+            get_active_writer(), req.name, block=False
         )
+    except queue.Full:
+        logger.warning("cache_delete_for_inbox: writer queue full (name=%s)", req.name)
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"rows_deleted": n})
+    return PendingCacheReply(
+        future, req.rpc_id, f"cache_delete_for_inbox (name={req.name})"
+    )
 
 
-def handle_cache_purge_expired(req: CachePurgeExpiredRequest) -> Reply:
+def handle_cache_purge_expired(
+    req: CachePurgeExpiredRequest,
+) -> Reply | PendingCacheReply:
     if _skip_during_vacuum():
         return Reply(rpc_id=req.rpc_id, ok=False, error="vacuum")
-    writer = get_active_writer()
     try:
-        n = cache.purge_expired_via_writer(writer).result(timeout=5)
-    except TimeoutError:
-        logger.warning("cache_purge_expired timeout: writer busy")
+        future = cache.purge_expired_via_writer(get_active_writer(), block=False)
+    except queue.Full:
+        logger.warning("cache_purge_expired: writer queue full")
         return Reply(rpc_id=req.rpc_id, ok=False, error="writer busy")
-    return Reply(rpc_id=req.rpc_id, ok=True, result={"rows_deleted": n})
+    return PendingCacheReply(future, req.rpc_id, "cache_purge_expired")
 
 
 def handle_ping(req: PingRequest) -> Reply:

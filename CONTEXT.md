@@ -726,12 +726,27 @@ shim that obtains the active WriterThread via
 `mimir/cache.py` paralleling the `_direct_*` family:
 `_set_via_writer_for_nskey`, `delete_via_writer`,
 `delete_for_inbox_via_writer`, `purge_expired_via_writer`), and
-awaits `.result()` for the rowcount the reply needs. (#1157: all but
-`handle_cache_set`. That one replies once the write is queued, never
-after the commit, so a held writer cannot stall a viewer. It submits
+awaits `.result()` for the rowcount the reply needs. #1157 changed
+`handle_cache_set` to reply once the write is queued. It submits
 with `block=False`; on a full writer queue it drops the write, logs
 `cache_set dropped: writer queue full (key=...)` and replies
-`ok=False` "writer busy".)
+`ok=False` "writer busy".
+
+#1169 moves the delete and purge waits to a separate completion worker.
+The cache worker submits each write without blocking and hands its future
+to a completion queue bounded by `BROKER_WRITER_QUEUE_DEPTH` (at least one
+slot), preserving the default cache submission order. Successful delete replies still acknowledge commit, and inbox
+deletion and purge retain their exact row counts. Library invalidations
+inside the broker continue waiting for completion before subsequent
+reads or first-ingest warming.
+
+Completion waits use an absolute five-second deadline from submission,
+so queued waits do not each receive a fresh five seconds. Saturated
+writer or completion admission returns "writer busy" promptly. An
+already-submitted write can still execute after a timeout or failed
+reply, as before. Deferred socket replies run on the completion worker, keeping
+socket I/O off the writer. Shutdown drains admitted completion work
+after the cache submitters finish.
 
 Reply shapes preserved exactly: `handle_cache_set` and
 `handle_cache_delete` return `Reply(ok=True)` (no `rows_deleted`);

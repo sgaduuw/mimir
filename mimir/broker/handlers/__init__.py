@@ -38,6 +38,7 @@ from pydantic import ValidationError
 from sqlalchemy.exc import OperationalError
 
 from mimir.broker.handlers.cache import (
+    PendingCacheReply,
     handle_cache_delete,
     handle_cache_delete_for_inbox,
     handle_cache_purge_expired,
@@ -190,9 +191,9 @@ def classify_op(line: bytes) -> str | None:
     return op if isinstance(op, str) else None
 
 
-def dispatch(line: bytes) -> Reply:
+def dispatch(line: bytes) -> Reply | PendingCacheReply:
     """Parse one JSONL request line, dispatch to the matching
-    handler, return a `Reply`. Never raises: any error becomes a
+    handler, return a `Reply` or a pending cache commit. Never raises: any error becomes a
     structured failure reply so the connection stays open for the
     next request.
 
@@ -232,12 +233,17 @@ def dispatch(line: bytes) -> Reply:
         return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="InvalidRequest")
     try:
         return handler(req)
-    except OperationalError as exc:
-        logger.warning("broker: SQLite error on %s: %s", op, exc)
-        return Reply(rpc_id=req.rpc_id, ok=False, error="OperationalError")
     except Exception as exc:
-        logger.exception("broker: handler crashed on %s: %s", op, exc)
-        return Reply(rpc_id=req.rpc_id, ok=False, error="HandlerCrashed")
+        return handler_error_reply(req.rpc_id, op, exc)
+
+
+def handler_error_reply(rpc_id: int, op: str, exc: Exception) -> Reply:
+    """Keep dispatch and deferred commit failures on the same wire contract."""
+    if isinstance(exc, OperationalError):
+        logger.warning("broker: SQLite error on %s: %s", op, exc)
+        return Reply(rpc_id=rpc_id, ok=False, error="OperationalError")
+    logger.exception("broker: handler crashed on %s: %s", op, exc)
+    return Reply(rpc_id=rpc_id, ok=False, error="HandlerCrashed")
 
 
 __all__ = ["LONG_OPS", "WARM_OPS", "classify_op", "dispatch"]
