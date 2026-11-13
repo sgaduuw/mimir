@@ -131,9 +131,9 @@ def _writer_submit_recorder():
     submits = []
     original_submit = writer.submit
 
-    def _recording_submit(op):
+    def _recording_submit(op, *, block=True):
         submits.append(op)
-        return original_submit(op)
+        return original_submit(op, block=block)
 
     writer.submit = _recording_submit
     return writer, submits
