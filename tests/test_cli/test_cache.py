@@ -670,9 +670,8 @@ def test_build_slow_global_targets_includes_aggregator(seeded_db):
 # `mimir.broker.client.get_broker_client` (the in-function import in
 # `warm_cache_command` reads through the module attribute, so the
 # patch lands). The FakeClient stubs `warm_inbox` / `warm_global` to
-# record the targets passed by the CLI; `_FakeBrokerClient` stubs
-# `cache_purge_expired` because `cache.purge_expired()` (called at the end of
-# `warm_cache_command`) also routes through `get_broker_client()`.
+# record the targets passed by the CLI. A purge RPC is unexpected:
+# expired-row cleanup belongs to the broker independently of warming.
 
 
 class _FakeBrokerClient:
@@ -681,9 +680,6 @@ class _FakeBrokerClient:
 
     def call(self, req, timeout=None):
         return getattr(self, req.op)(**req.model_dump(exclude={"rpc_id", "op"}))
-
-    def cache_purge_expired(self):
-        return {}
 
 
 def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(

@@ -78,6 +78,7 @@ from mimir.broker.handlers import (
     classify_op,
     dispatch,
     handler_error_reply,
+    is_vacuum_active,
 )
 from mimir.broker.pools import ReadSessionPool
 from mimir.broker.protocol import Reply
@@ -88,7 +89,7 @@ from mimir.config import settings
 logger = logging.getLogger(__name__)
 
 
-PURGE_INTERVAL_SEC = 3600  # 1 hour; matches today's warm-cache-driven cadence
+PURGE_INTERVAL_SEC = 60  # Preserve minute-scale cleanup without a warming client.
 
 # How often the worker / reader threads check `stop_event` while idle.
 # Bounds the shutdown latency from SIGTERM to clean exit.
@@ -1467,18 +1468,31 @@ def _purge_loop(stop_event: threading.Event, writer: WriterThread) -> None:
     push this thread's DEFERRED `BEGIN` into a `SQLITE_BUSY_SNAPSHOT`
     that silently skips a purge tick (audit #475).
 
-    Backs off via `stop_event.wait` so shutdown is responsive."""
-    while not stop_event.wait(PURGE_INTERVAL_SEC):
+    Runs immediately on its background thread, then waits between attempts.
+    An admitted purge stays the only pending attempt until it completes or
+    shutdown leaves it to the writer's drain. Housekeeping never waits for
+    queue admission or competes with an already active VACUUM.
+    """
+    while not stop_event.is_set():
         try:
-            future = cache.purge_expired_via_writer(writer)
-            n = future.result(timeout=30)
-            if n:
-                logger.info("broker purge: %d expired rows deleted", n)
+            if not is_vacuum_active():
+                future = cache.purge_expired_via_writer(writer, block=False)
+                while not future.done():
+                    if stop_event.wait(SHUTDOWN_POLL_SEC):
+                        return
+                n = future.result()
+                if n:
+                    logger.info("broker purge: %d expired rows deleted", n)
+        except queue.Full:
+            # Cleanup is retryable; do not park a producer on writer shutdown.
+            logger.debug("broker purge: writer queue full, deferring cleanup")
         except Exception:
             # Periodic task; log + continue. A DB error here would
             # crash the thread otherwise and leave the broker
             # write-only until restart.
             logger.exception("broker purge: tick failed, continuing")
+        if stop_event.wait(PURGE_INTERVAL_SEC):
+            return
 
 
 def build_server(socket_path: Path) -> _BrokerServer:
