@@ -203,9 +203,8 @@ def test_dispatch_warm_inbox_targets_narrows_set(seeded_db):
 def test_dispatch_warm_inbox_emits_slow_breakdown_log(seeded_db, monkeypatch, caplog):
     """Per-target timings ride along on every reply, and when the
     handler's elapsed time crosses `broker_slow_rpc_warn_ms` a
-    breakdown WARNING fires so an operator chasing a `broker slow
-    rpc warm_inbox` line in journalctl can see which helpers ate
-    the budget without a separate `-v` repro.
+    breakdown INFO identifies which helpers ate the budget without
+    a separate `-v` repro or a duplicate generic slow-RPC warning.
     """
 
     def slow(_s):
@@ -231,7 +230,7 @@ def test_dispatch_warm_inbox_emits_slow_breakdown_log(seeded_db, monkeypatch, ca
     # tiny seeded corpus).
     monkeypatch.setattr(settings, "broker_slow_rpc_warn_ms", 10)
 
-    caplog.set_level("WARNING", logger="mimir.broker.handlers.warm")
+    caplog.set_level("INFO", logger="mimir.broker.handlers.warm")
     reply = dispatch(_line(WarmInboxRequest(rpc_id=1, inbox_name="alpha")))
     assert reply.ok is True
 
