@@ -167,8 +167,8 @@ status, and confirms both derived-cache invalidations committed. Unchanged
 loads do not emit the completion line.
 
 Here `--force` bypasses the interval and `--skip-commits` disables commit
-walking. Ordinary cadence-skipped trees print their last-walk age and configured
-interval, including at default verbosity. The additive `subsystem_lists`
+walking. With `-v`, cadence-skipped trees log their last-walk age and
+configured interval at INFO. The additive `subsystem_lists`
 migration leaves contacts empty; an unchanged blob does not populate them
 until this forced reload. List contacts do not join the personal-address
 display allowlist.
