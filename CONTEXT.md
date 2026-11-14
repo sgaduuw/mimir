@@ -2208,11 +2208,10 @@ Default behaviour:
 
 This was driven by the log volume scaling with inbox count:
 `warm-cache` alone emitted ~8 lines per inbox per minute. With
-5+ inboxes the journal becomes hard to scan. For `update` and `warm-cache`,
-the goal is terse idle ticks. `update-mainline`
-always reports cadence-skipped trees with their last-walk age and configured
-interval, so manual runs explain why no work ran (#1186). The scheduler uses
-the same output.
+5+ inboxes the journal becomes hard to scan. Goal: idle ticks
+silent, anything in the log signals a real event. `update-mainline -v` logs
+cadence-skipped trees at INFO with their last-walk age and configured
+interval, so a manual run can explain why no work ran (#1186).
 
 For ad-hoc inspection without restarting the sidecar:
 

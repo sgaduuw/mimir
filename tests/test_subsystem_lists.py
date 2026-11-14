@@ -230,8 +230,8 @@ def test_population_cli_uses_a_separate_broker_and_bypasses_cadence_without_walk
                     "2 subsystems (forced=True); maintainer caches invalidated"
                 )
                 # Ordinary runs respect cadence; force alone bypasses it.
-                outcome = run()
-                assert outcome.stdout.startswith("update-mainline: linus skipped (")
+                outcome = run("-v")
+                assert "INFO update-mainline: linus skipped (" in outcome.stderr
                 with sqlite3.connect(db) as conn:
                     assert (
                         conn.execute("SELECT count(*) FROM subsystem_lists").fetchone()[
