@@ -233,13 +233,18 @@ def test_update_mainline_via_broker_force_reloads(seeded_db, tmp_path, monkeypat
     the second call reloads even though HEAD hasn't moved."""
     repo_path = tmp_path / "linux.git"
     _build_minimal_tree_with_maintainers(repo_path)
-    monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
+    trees = _linus_tree(repo_path)
+    trees["linus"].walk_every_seconds = 1500
+    monkeypatch.setattr(settings, "trees", trees)
 
     sp = short_socket_path("update-mainline-force")
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
             c.call(UpdateMainlineRequest(skip_fetch=True, skip_commits=True))
+            skipped = c.call(UpdateMainlineRequest(skip_fetch=True, skip_commits=True))
+            assert skipped["trees"]["linus"]["skipped"] is True
+            assert skipped["maintainers_ran"] is False
             second = c.call(
                 UpdateMainlineRequest(skip_fetch=True, skip_commits=True, force=True)
             )
@@ -248,6 +253,10 @@ def test_update_mainline_via_broker_force_reloads(seeded_db, tmp_path, monkeypat
 
     assert second["maintainers_ran"] is True
     assert second["subsystems_loaded"] == 1
+    assert second["commits_ran"] is False
+    assert second["trees"]["linus"]["skipped"] is False
+    assert 0 <= skipped["trees"]["linus"]["last_walked_seconds_ago"] < 1500
+    assert skipped["trees"]["linus"]["walk_interval_seconds"] == 1500
 
 
 # ----- interleaved long + cache (regression for two-worker design) --------
