@@ -993,6 +993,14 @@ def load_maintainers(
 
     maintainer_allowlist.invalidate()
     subsystems.invalidate_rules_snapshot()
+    logger.info(
+        "mainline: MAINTAINERS reloaded from %s@%s: %d subsystems "
+        "(forced=%s); maintainer caches invalidated",
+        tree_name,
+        head_sha[:12],
+        loaded,
+        force,
+    )
 
     return True, loaded, head_sha
 

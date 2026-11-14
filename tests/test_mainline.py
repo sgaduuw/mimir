@@ -2471,3 +2471,89 @@ def test_explicit_run_bypasses_every_tree_cadence(
     )
     assert all(tr.ok and not tr.skipped for tr in result.trees.values())
     assert not result.maintainers_ran
+
+
+@pytest.mark.parametrize("force", [False, True])
+def test_maintainers_reload_logs_completion_after_invalidations(
+    seeded_db, tmp_path, caplog, force
+):
+    from mimir import cache, maintainer_allowlist, subsystems
+    from mimir.mainline import load_maintainers
+
+    path = tmp_path / "maintainers.git"
+    with _bare_repo(path) as repo:
+        head = _commit_maintainers(repo, b"A\nF:\tfs/a/\n", ts=1700000000)
+    assert load_maintainers(path, tree_name="test-tree")[0]
+    if not force:
+        with Repo(str(path)) as repo:
+            head = _commit_maintainers(
+                repo, b"A\nF:\tfs/a/\n\nB\nF:\tfs/b/\n", parent=head, ts=1700000001
+            )
+    expected_count = 1 if force else 2
+    keys = (maintainer_allowlist._CACHE_KEY, subsystems._RULES_CACHE_KEY)
+    for key in keys:
+        cache.set(key, "stale", 3600)
+        assert cache.get(key) == "stale"
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="mimir.mainline"):
+        assert load_maintainers(path, tree_name="test-tree", force=force) == (
+            True,
+            expected_count,
+            head.decode("ascii"),
+        )
+    assert [cache.get(key) for key in keys] == [None, None]
+    assert [
+        (record.name, record.levelname, record.getMessage())
+        for record in caplog.records
+    ] == [
+        (
+            "mimir.mainline",
+            "INFO",
+            f"mainline: MAINTAINERS reloaded from test-tree@{head.decode('ascii')[:12]}: "
+            f"{expected_count} subsystems (forced={force}); maintainer caches invalidated",
+        )
+    ]
+
+    caplog.clear()
+    with caplog.at_level("INFO", logger="mimir.mainline"):
+        assert load_maintainers(path, tree_name="test-tree") == (
+            False,
+            0,
+            head.decode("ascii"),
+        )
+    assert not caplog.records
+
+
+@pytest.mark.parametrize("failed_cache", ["allowlist", "rules"])
+def test_maintainers_invalidation_failure_does_not_log_completion(
+    seeded_db, tmp_path, monkeypatch, caplog, failed_cache
+):
+    from mimir import cache, maintainer_allowlist, subsystems
+    from mimir.mainline import load_maintainers
+
+    path = tmp_path / "maintainers.git"
+    with _bare_repo(path) as repo:
+        _commit_maintainers(repo, b"A\nF:\tfs/a/\n", ts=1700000000)
+    keys = (maintainer_allowlist._CACHE_KEY, subsystems._RULES_CACHE_KEY)
+    for key in keys:
+        cache.set(key, "stale", 3600)
+    failed_key = keys[0 if failed_cache == "allowlist" else 1]
+    original_delete = cache.delete
+    attempted = []
+
+    def delete(key):
+        attempted.append(key)
+        if key == failed_key:
+            raise RuntimeError("invalidation failed")
+        return original_delete(key)
+
+    monkeypatch.setattr(cache, "delete", delete)
+    with caplog.at_level("INFO", logger="mimir.mainline"):
+        with pytest.raises(RuntimeError, match="invalidation failed"):
+            load_maintainers(path)
+    assert attempted == (list(keys[:1]) if failed_cache == "allowlist" else list(keys))
+    if failed_cache == "rules":
+        assert cache.get(keys[0]) is None
+        assert cache.get(keys[1]) == "stale"
+    assert not caplog.records

@@ -161,6 +161,11 @@ including its normalized `L:` list contacts:
 uv run mimir update-mainline --skip-fetch --skip-commits --force
 ```
 
+Search broker logs for `mainline: MAINTAINERS reloaded from`. This INFO line
+under `mimir.mainline` includes the tree, short HEAD, subsystem count and forced
+status, and confirms both derived-cache invalidations committed. Unchanged
+loads do not emit the completion line.
+
 Here `--force` bypasses the interval and `--skip-commits` disables commit
 walking. Ordinary cadence-skipped trees print their last-walk age and configured
 interval, including at default verbosity. The additive `subsystem_lists`
