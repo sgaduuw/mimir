@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- MAINTAINERS-only `update-mainline --skip-commits` runs no longer restart any tree's commit-walk interval, including forced reloads. Successful commit walks still advance their timestamp even when no new commits are found (#1192).
+
 ## [4.0.1] - 2026-11-14
 
 ### Fixed

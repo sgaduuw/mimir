@@ -1043,10 +1043,9 @@ def update_mainline(
     `walk_every_seconds` since the last *successful* walk. Failed walks
     do not advance the cursor; the next tick retries. Both `force` and `rewalk`
     bypass cadence; only `rewalk` resets the commit-walker starting point.
-    Any combination
-    of skip_maintainers / skip_commits is treated as a successful tick
-    if `_ensure_tree` succeeds and neither the MAINTAINERS nor commit
-    phases raised an exception.
+    Only a completed commit phase advances `last_walked_at`, including
+    a walk with no new commits. A MAINTAINERS-only (`skip_commits=True`)
+    invocation leaves every tree's commit cadence unchanged.
     """
     from datetime import datetime
 
@@ -1148,20 +1147,11 @@ def update_mainline(
                 result.rows_inserted += walk.rows_inserted
                 result.commits_ran = True
 
-            # Advance the cadence cursor on any successful tick,
-            # regardless of which phases ran. Only failed walks (those
-            # that raised above) leave the cursor untouched so the next
-            # tick retries.
-            #
-            # The cadence write goes through the single WriterThread.
-            # The UPSERT touches ONLY `last_walked_at`, so it never
-            # clobbers `last_commit_sha` / `commits_walked_to_sha`
-            # written by the maintainers-replace / cursor WriteOps.
-            from mimir.broker import _context
-
-            _submit_last_walked_at(_context.get_active_writer(), slug, now).result(
-                timeout=60
-            )
+                # Cadence spaces commit walks, not MAINTAINERS reloads.
+                # Empty successful walks advance it; failed walks retry.
+                # This UPSERT changes only last_walked_at, preserving both
+                # the MAINTAINERS and commit-walker content cursors.
+                _submit_last_walked_at(active_writer, slug, now).result(timeout=60)
         except Exception as exc:
             logger.warning("update_mainline: tree %s failed: %r", slug, exc)
             tr.ok = False
