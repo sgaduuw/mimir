@@ -11,6 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [4.0.1] - 2026-11-14
+
+### Fixed
+
+- Routine slow cache warming now emits one handler timing line at INFO instead of duplicate WARNING lines. Target failures still warn, including fast failures; slow failed warm replies, failed delivery and non-warm RPC warnings remain visible (#1187).
+- Successful MAINTAINERS reloads now log their tree, HEAD, subsystem count and forced status at INFO in the broker after both derived-cache invalidations commit. Unchanged loads stay silent (#1188).
+- `update-mainline --force` now bypasses every tree's walk interval as well as the unchanged MAINTAINERS check, without rewinding commit cursors and while honoring phase skip flags. With `-v`, ordinary runs log cadence-skipped trees at INFO with their last-walk age and interval (#1186).
+
 ## [4.0.0] - 2026-11-14
 
 ### Removed
@@ -6803,7 +6811,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.0.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.0.1...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

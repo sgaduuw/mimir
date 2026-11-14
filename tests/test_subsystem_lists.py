@@ -161,7 +161,7 @@ def test_population_cli_uses_a_separate_broker_and_bypasses_cadence_without_walk
     result = _alembic(db, "head")
     assert result.returncode == 0, result.stderr
     tree = tmp_path / "linux.git"
-    _build_mainline_repo(tree, SOURCE)
+    head = _build_mainline_repo(tree, SOURCE)
     blob_sha = Blob.from_string(SOURCE).id.decode()
     with sqlite3.connect(db) as conn:
         conn.execute(
@@ -225,8 +225,13 @@ def test_population_cli_uses_a_separate_broker_and_bypasses_cadence_without_walk
                     assert result.returncode == 0, result.stdout + result.stderr
                     return result
 
-                # --force alone retains its existing cadence behavior.
-                run("--force")
+                completion = (
+                    f"mainline: MAINTAINERS reloaded from linus@{head.decode('ascii')[:12]}: "
+                    "2 subsystems (forced=True); maintainer caches invalidated"
+                )
+                # Ordinary runs respect cadence; force alone bypasses it.
+                outcome = run("-v")
+                assert "INFO update-mainline: linus skipped (" in outcome.stderr
                 with sqlite3.connect(db) as conn:
                     assert (
                         conn.execute("SELECT count(*) FROM subsystem_lists").fetchone()[
@@ -235,8 +240,14 @@ def test_population_cli_uses_a_separate_broker_and_bypasses_cadence_without_walk
                         == 0
                     )
                 for generation in (1, 2):
-                    outcome = run("--force", "--rewalk")
+                    outcome = run("--force")
                     assert "loaded 2 subsystems" in outcome.stdout
+                    messages = [
+                        line.split(" INFO ", 1)[1]
+                        for line in (tmp_path / "broker.log").read_text().splitlines()
+                        if "MAINTAINERS reloaded" in line
+                    ]
+                    assert messages == [completion] * generation
                     with sqlite3.connect(db) as conn:
                         assert (
                             conn.execute(

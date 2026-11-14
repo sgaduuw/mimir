@@ -360,10 +360,11 @@ projection when the blob changes or a reload is forced:
   composite writer operation. No web consumer uses the list table yet (#1068).
 
 The additive list migration does not reparse an unchanged blob. Populate via
-`update-mainline --skip-fetch --skip-commits --force --rewalk`: force bypasses
-the blob gate, rewalk bypasses the cadence gate, and skip-commits prevents a
-history replay. A second forced run preserves the mapping and advances the
-rules generation again. During mixed old/new writer operation an old replace
+`update-mainline --skip-fetch --skip-commits --force`: force bypasses
+the blob and per-tree cadence gates, and skip-commits disables commit walking.
+Force applies to every configured tree but does not rewind commit cursors.
+A second forced run preserves the mapping and advances the rules generation
+again. During mixed old/new writer operation an old replace
 deletes list rows through cascade, so verify the source/store mapping after
 the final new writer and again after rollback/re-upgrade. The new table stays
 in place for application rollback. The separate startup migration/ANALYZE
@@ -505,6 +506,16 @@ snapshot upgrades can still trip `SQLITE_BUSY_SNAPSHOT` when a
 long worker reads-then-writes while another worker commits between
 the two operations. The listener stays as protection against that
 class of bug.
+
+Routine warm timing is bulk-work telemetry, not a warning signal. When
+`BROKER_SLOW_RPC_WARN_MS` is positive, warm handlers emit their own
+`broker warm slow` timing breakdown at INFO above that threshold. Successful,
+delivered warm RPCs omit the duplicate generic `broker slow rpc` WARNING;
+queue-wait and dispatch details remain available at DEBUG. Per-target
+failures warn even when fast, and slow failed RPCs or failed reply delivery
+retain the generic warning. Non-warm RPC warnings are unchanged. A zero or
+negative threshold disables timing INFO lines for all three warm operations
+(#1187).
 
 The journey here (in case any of this needs revisiting):
 v1.32.0 introduced an opt-in broker for cache writes only; v1.33.0
@@ -2208,7 +2219,9 @@ Default behaviour:
 This was driven by the log volume scaling with inbox count:
 `warm-cache` alone emitted ~8 lines per inbox per minute. With
 5+ inboxes the journal becomes hard to scan. Goal: idle ticks
-silent, anything in the log signals a real event.
+silent, anything in the log signals a real event. `update-mainline -v` logs
+cadence-skipped trees at INFO with their last-walk age and configured
+interval, so a manual run can explain why no work ran (#1186).
 
 For ad-hoc inspection without restarting the sidecar:
 
