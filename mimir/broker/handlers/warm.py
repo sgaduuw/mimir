@@ -179,18 +179,18 @@ def _run_targets(
 
 
 def _log_slow_breakdown(op: str, tag: str, elapsed_ms: int, per_target) -> None:
-    """Emit a WARNING listing the top-5 slowest targets when the
+    """Emit an INFO listing the top-5 slowest targets when the
     handler's own elapsed time crosses `broker_slow_rpc_warn_ms`.
-    Pairs with the server's existing `broker slow rpc` line: the
-    server tells you *that* the RPC was slow, this tells you
-    *which targets ate the budget*.
+    Routine bulk work can be slow without indicating contention.
+    The server omits its generic slow-RPC warning for successful
+    warm replies; target failures still warn independently of timing.
     """
     threshold = settings.broker_slow_rpc_warn_ms
     if threshold <= 0 or elapsed_ms < threshold:
         return
     top = per_target[:5]
     breakdown = ", ".join(f"{label}={ms}ms" for label, ms in top)
-    logger.warning(
+    logger.info(
         "broker warm slow [%s] %s: %dms total; top: %s",
         op,
         tag,
@@ -321,8 +321,9 @@ def handle_warm_subsystem(req: WarmSubsystemRequest) -> Reply:
             errors.append(f"{inbox.name}/{sub.name}: {exc!r}")
 
     elapsed_ms = int((time.perf_counter() - t0) * 1000)
-    if elapsed_ms >= settings.broker_slow_rpc_warn_ms:
-        logger.warning(
+    threshold = settings.broker_slow_rpc_warn_ms
+    if threshold > 0 and elapsed_ms >= threshold:
+        logger.info(
             "broker warm slow [warm_subsystem] %s/%s: %dms total; warmed=%d errors=%d",
             req.inbox_name,
             sub_name_for_log,
