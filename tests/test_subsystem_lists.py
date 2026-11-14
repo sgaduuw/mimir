@@ -225,8 +225,9 @@ def test_population_cli_uses_a_separate_broker_and_bypasses_cadence_without_walk
                     assert result.returncode == 0, result.stdout + result.stderr
                     return result
 
-                # --force alone retains its existing cadence behavior.
-                run("--force")
+                # Ordinary runs respect cadence; force alone bypasses it.
+                outcome = run()
+                assert outcome.stdout.startswith("update-mainline: linus skipped (")
                 with sqlite3.connect(db) as conn:
                     assert (
                         conn.execute("SELECT count(*) FROM subsystem_lists").fetchone()[
@@ -235,7 +236,7 @@ def test_population_cli_uses_a_separate_broker_and_bypasses_cadence_without_walk
                         == 0
                     )
                 for generation in (1, 2):
-                    outcome = run("--force", "--rewalk")
+                    outcome = run("--force")
                     assert "loaded 2 subsystems" in outcome.stdout
                     with sqlite3.connect(db) as conn:
                         assert (

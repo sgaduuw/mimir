@@ -11,12 +11,13 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 from dulwich.objects import Commit, Tree
 from dulwich.repo import Repo
+from freezegun import freeze_time
 from sqlalchemy import create_engine, func, select, text
 
 from mimir.broker.writes import WriteOp
@@ -820,7 +821,9 @@ def test_walk_commits_full_rewalk_is_idempotent_via_on_conflict(
     assert row_count == 1
 
 
-def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path):
+@freeze_time("2026-11-14 10:00:00")
+@pytest.mark.parametrize("age", [312, -5])
+def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path, age):
     """A tree whose last_walked_at is recent enough is skipped."""
     from datetime import datetime
 
@@ -841,11 +844,11 @@ def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path
             ),
         },
     )
-    # last_walked_at = now -> skipped on next call
+    # A future timestamp can occur after clock adjustment; display zero age.
     with seeded_db() as s:
         state = MainlineState(
             tree_name="fake",
-            last_walked_at=datetime.now(UTC),
+            last_walked_at=datetime.now(UTC) - timedelta(seconds=age),
         )
         s.add(state)
         s.commit()
@@ -859,12 +862,18 @@ def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path
 
     monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
 
-    result = update_mainline(skip_maintainers=True, skip_commits=False)
+    monkeypatch.setattr(
+        "mimir.mainline.load_maintainers",
+        lambda *a, **kw: pytest.fail("a skipped tree must not load MAINTAINERS"),
+    )
+    result = update_mainline(skip_maintainers=False, skip_commits=False)
     assert called["ensure"] is False, (
         "ensure_tree should not be called for not-due tree"
     )
     assert "fake" in result.trees
     assert result.trees["fake"].skipped is True
+    assert result.trees["fake"].last_walked_seconds_ago == max(0, age)
+    assert result.trees["fake"].walk_interval_seconds == 3600
 
 
 def test_update_mainline_per_tree_failure_isolated(
@@ -2407,3 +2416,58 @@ def test_maintainers_reload_commits_both_cache_invalidations(
     assert ran and loaded == 1
     assert [cache.get(key) for key in keys] == [None, None]
     assert maintainer_allowlist._compute_addresses() == ["new@example.org"]
+
+
+@pytest.mark.parametrize("mode", ["force", "rewalk"])
+@pytest.mark.parametrize("skip_commits", [False, True])
+def test_explicit_run_bypasses_every_tree_cadence(
+    seeded_db, monkeypatch, tmp_path, writer, mode, skip_commits
+):
+    from mimir.broker import _context
+    from mimir.broker.pools import ReadSessionPool
+    from mimir.config import TreeConfig
+    from mimir.mainline import WalkResult, update_mainline
+
+    trees = {
+        slug: TreeConfig(url="https://example.com/tree.git", path=tmp_path / slug)
+        for slug in ("linus", "next")
+    }
+    monkeypatch.setattr(settings, "trees", trees)
+    with seeded_db() as session:
+        for slug in trees:
+            session.add(MainlineState(tree_name=slug, last_walked_at=datetime.now(UTC)))
+        session.commit()
+        assert all(session.get(MainlineState, slug).last_walked_at for slug in trees)
+
+    ensured = []
+    walked = []
+    monkeypatch.setattr(
+        "mimir.mainline._ensure_tree",
+        lambda tree, **kw: ensured.append(tree.path.name) or tree.path,
+    )
+    monkeypatch.setattr(
+        "mimir.mainline.load_maintainers",
+        lambda *a, **kw: pytest.fail("skip-maintainers must remain effective"),
+    )
+    monkeypatch.setattr(
+        "mimir.mainline.walk_commits",
+        lambda *a, **kw: walked.append((kw["tree_name"], kw["rewalk"])) or WalkResult(),
+    )
+    pool = ReadSessionPool.from_settings()
+    try:
+        _context.set_active(pool, writer)
+        result = update_mainline(
+            skip_maintainers=True, skip_commits=skip_commits, **{mode: True}
+        )
+    finally:
+        _context.clear_active()
+        pool.close()
+
+    assert ensured == ["linus", "next"]
+    assert walked == (
+        []
+        if skip_commits
+        else [("linus", mode == "rewalk"), ("next", mode == "rewalk")]
+    )
+    assert all(tr.ok and not tr.skipped for tr in result.trees.values())
+    assert not result.maintainers_ran
