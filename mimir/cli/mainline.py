@@ -147,11 +147,9 @@ def _echo_update_mainline_outcome(payload: dict) -> None:
             err = tree_result.get("error") or "unknown error"
             click.echo(f"update-mainline: tree {slug} failed: {err}", err=True)
         elif tree_result.get("skipped"):
-            age = tree_result.get("last_walked_seconds_ago")
-            interval = tree_result.get("walk_interval_seconds")
-            detail = (
-                f" (walked {age}s ago, interval {interval}s)"
-                if age is not None and interval is not None
-                else " (walk interval not elapsed)"
+            logger.info(
+                "update-mainline: %s skipped (walked %ss ago, interval %ss)",
+                slug,
+                tree_result.get("last_walked_seconds_ago"),
+                tree_result.get("walk_interval_seconds"),
             )
-            logger.info("update-mainline: %s skipped%s", slug, detail)
