@@ -8,9 +8,13 @@ broker's single-writer process; this command turns CLI flags
 into RPC arguments and echoes the structured result.
 """
 
+import logging
+
 import click
 
 from mimir.cli._common import _configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 @click.command("update-mainline")
@@ -32,7 +36,8 @@ from mimir.cli._common import _configure_logging
 @click.option(
     "--force",
     is_flag=True,
-    help="Re-parse MAINTAINERS and replace subsystems even if the file is unchanged.",
+    help="Re-parse MAINTAINERS and replace subsystems even if the file is unchanged. "
+    "Bypass the walk interval for every tree.",
 )
 @click.option(
     "--rewalk",
@@ -110,8 +115,8 @@ def update_mainline_command(
 def _echo_update_mainline_outcome(payload: dict) -> None:
     """Render the structured `UpdateMainlineResult` to operator-
     facing lines. Same shape whether the call went via broker (dict
-    payload from RPC) or direct (model dump). State-change lines
-    only; steady-state ticks stay silent.
+    payload from RPC) or direct (model dump). Cadence skips log at INFO,
+    so `-v` explains why a run did no work while scheduler ticks stay quiet.
 
     Per-tree failures are surfaced as Error lines so the operator
     sees them in the terminal output even when the overall RPC
@@ -141,3 +146,12 @@ def _echo_update_mainline_outcome(payload: dict) -> None:
         if not tree_result.get("ok", True):
             err = tree_result.get("error") or "unknown error"
             click.echo(f"update-mainline: tree {slug} failed: {err}", err=True)
+        elif tree_result.get("skipped"):
+            age = tree_result.get("last_walked_seconds_ago")
+            interval = tree_result.get("walk_interval_seconds")
+            detail = (
+                f" (walked {age}s ago, interval {interval}s)"
+                if age is not None and interval is not None
+                else " (walk interval not elapsed)"
+            )
+            logger.info("update-mainline: %s skipped%s", slug, detail)

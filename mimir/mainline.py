@@ -391,6 +391,8 @@ class TreeWalkResult(BaseModel):
     """Per-tree outcome of one update_mainline tick."""
 
     skipped: bool = False  # walk_every_seconds not yet elapsed
+    last_walked_seconds_ago: int | None = None
+    walk_interval_seconds: int | None = None
     ok: bool = True  # False when an exception was caught
     error: str | None = None
     commits_seen: int = 0
@@ -991,6 +993,14 @@ def load_maintainers(
 
     maintainer_allowlist.invalidate()
     subsystems.invalidate_rules_snapshot()
+    logger.info(
+        "mainline: MAINTAINERS reloaded from %s@%s: %d subsystems "
+        "(forced=%s); maintainer caches invalidated",
+        tree_name,
+        head_sha[:12],
+        loaded,
+        force,
+    )
 
     return True, loaded, head_sha
 
@@ -1031,7 +1041,9 @@ def update_mainline(
 
     Per-tree cadence: skip the tree on ticks that arrive sooner than
     `walk_every_seconds` since the last *successful* walk. Failed walks
-    do not advance the cursor; the next tick retries. Any combination
+    do not advance the cursor; the next tick retries. Both `force` and `rewalk`
+    bypass cadence; only `rewalk` resets the commit-walker starting point.
+    Any combination
     of skip_maintainers / skip_commits is treated as a successful tick
     if `_ensure_tree` succeeds and neither the MAINTAINERS nor commit
     phases raised an exception.
@@ -1079,11 +1091,15 @@ def update_mainline(
             state = session.get(MainlineState, slug)
             last = state.last_walked_at if state else None
         if (
-            not rewalk
+            not (rewalk or force)
             and last is not None
             and (now - aware_utc(last)).total_seconds() < tree.walk_every_seconds
         ):
             tr.skipped = True
+            tr.last_walked_seconds_ago = max(
+                0, int((now - aware_utc(last)).total_seconds())
+            )
+            tr.walk_interval_seconds = tree.walk_every_seconds
             continue
 
         try:
