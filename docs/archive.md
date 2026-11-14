@@ -153,16 +153,18 @@ This refreshes MAINTAINERS-derived subsystem ownership and walks tracked trees
 for `Link:` and `Message-ID:` trailers connecting commits to archived patches. An unchanged
 MAINTAINERS blob skips its reload; `--force` reloads it after a parser fix or
 an out-of-band table reset. `--skip-commits` skips the commit walk.
-The per-tree walk interval still applies to `--force`. To reload just the
-MAINTAINERS projection immediately, including its normalized `L:` list contacts:
+`--force` also bypasses the walk interval for every configured tree, without
+rewinding commit cursors. To reload just the MAINTAINERS projection immediately,
+including its normalized `L:` list contacts:
 
 ```sh
-uv run mimir update-mainline --skip-fetch --skip-commits --force --rewalk
+uv run mimir update-mainline --skip-fetch --skip-commits --force
 ```
 
-Here `--rewalk` bypasses the interval, while `--skip-commits` prevents a
-historical commit replay. The additive `subsystem_lists` migration leaves
-contacts empty; an unchanged blob does not populate them until this forced
+Here `--force` bypasses the interval and `--skip-commits` disables commit
+walking. Ordinary cadence-skipped trees print their last-walk age and configured
+interval, including at default verbosity. The additive `subsystem_lists`
+migration leaves contacts empty; an unchanged blob does not populate them until this forced
 reload. List contacts do not join the personal-address display allowlist.
 Verify the populated mapping against the source MAINTAINERS blob after the
 final new broker is running. Old writers remove these rows through the normal
