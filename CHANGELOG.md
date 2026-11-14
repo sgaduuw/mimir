@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Successful MAINTAINERS reloads now log their tree, HEAD, subsystem count and forced status at INFO in the broker after both derived-cache invalidations commit. Unchanged loads stay silent (#1188).
 - `update-mainline --force` now bypasses every tree's walk interval as well as the unchanged MAINTAINERS check, without rewinding commit cursors and while honoring phase skip flags. Ordinary runs report cadence-skipped trees with their last-walk age and interval instead of silently doing nothing (#1186).
 
 ## [4.0.0] - 2026-11-14
