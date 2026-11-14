@@ -408,10 +408,10 @@ class Settings(BaseSettings):
     # it logs a WARNING with the leading bytes of the request and
     # the elapsed time. Successful warm RPCs instead log their handler
     # timing at INFO; target failures still warn regardless of timing.
-    # Cache sets acknowledge writer admission;
-    # sustained warnings indicate queue contention, slow handler
-    # execution or reply delivery. Set to 0 or
-    # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
+    # Cache sets acknowledge writer admission; sustained warnings
+    # indicate queue contention, slow handler execution or reply
+    # delivery. Set to 0 or negative to disable. Override via
+    # BROKER_SLOW_RPC_WARN_MS.
     broker_slow_rpc_warn_ms: int = 100
 
     # How often (seconds) the broker repeats its WARNING about a job

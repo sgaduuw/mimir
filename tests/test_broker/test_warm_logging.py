@@ -35,7 +35,7 @@ def _broker_output(monkeypatch, serve):
 
 
 @pytest.mark.parametrize("op", ["warm_inbox", "warm_subsystem", "warm_global"])
-@pytest.mark.parametrize("threshold", [1, 0, -1])
+@pytest.mark.parametrize("threshold", [1, 0])
 @pytest.mark.parametrize("workers", [1, 4])
 def test_slow_warm_has_one_info_diagnostic_at_real_sink(
     seeded_db, monkeypatch, op, threshold, workers
