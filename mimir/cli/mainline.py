@@ -32,8 +32,8 @@ from mimir.cli._common import _configure_logging
 @click.option(
     "--force",
     is_flag=True,
-    help="Re-parse MAINTAINERS and replace subsystems even if the file is unchanged "
-    "or the tree was walked recently. Bypass the walk interval for every tree.",
+    help="Re-parse MAINTAINERS and replace subsystems even if the file is unchanged. "
+    "Bypass the walk interval for every tree.",
 )
 @click.option(
     "--rewalk",

@@ -169,8 +169,9 @@ loads do not emit the completion line.
 Here `--force` bypasses the interval and `--skip-commits` disables commit
 walking. Ordinary cadence-skipped trees print their last-walk age and configured
 interval, including at default verbosity. The additive `subsystem_lists`
-migration leaves contacts empty; an unchanged blob does not populate them until this forced
-reload. List contacts do not join the personal-address display allowlist.
+migration leaves contacts empty; an unchanged blob does not populate them
+until this forced reload. List contacts do not join the personal-address
+display allowlist.
 Verify the populated mapping against the source MAINTAINERS blob after the
 final new broker is running. Old writers remove these rows through the normal
 replacement cascade without repopulating them, so repeat the check after a
