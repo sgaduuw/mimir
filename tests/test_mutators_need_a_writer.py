@@ -93,8 +93,9 @@ def test_load_maintainers_without_a_writer_raises(seeded_db, monkeypatch, tmp_pa
         load_maintainers(tmp_path / "tree.git", tree_name="linus")
 
 
-def test_update_mainline_cadence_write_without_a_writer_fails(
-    seeded_db, monkeypatch, tmp_path
+@pytest.mark.parametrize("skip_commits", [False, True])
+def test_update_mainline_requires_writer_only_for_commit_phase(
+    seeded_db, monkeypatch, tmp_path, skip_commits
 ):
     from mimir.config import TreeConfig, settings
     from mimir.mainline import update_mainline
@@ -117,14 +118,19 @@ def test_update_mainline_cadence_write_without_a_writer_fails(
         return tree.path
 
     monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
-    monkeypatch.setattr(_context, "_active_pool", None)
+    # Isolate the writer requirement from the separate read-pool requirement.
+    assert _context.get_active_pool() is not None
     monkeypatch.setattr(_context, "_active_writer", None)
 
-    result = update_mainline(skip_maintainers=True, skip_commits=True)
+    result = update_mainline(skip_maintainers=True, skip_commits=skip_commits)
 
     tr = result.trees["fake"]
-    assert tr.ok is False
-    assert "No active broker" in (tr.error or "")
+    assert not tr.skipped
+    assert tr.ok is skip_commits
+    if skip_commits:
+        assert tr.error is None
+    else:
+        assert "No active broker" in (tr.error or "")
     with seeded_db() as s:
         walked = s.scalar(
             select(MainlineState.last_walked_at).where(

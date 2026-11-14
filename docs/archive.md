@@ -154,7 +154,9 @@ for `Link:` and `Message-ID:` trailers connecting commits to archived patches. A
 MAINTAINERS blob skips its reload; `--force` reloads it after a parser fix or
 an out-of-band table reset. `--skip-commits` skips the commit walk.
 `--force` also bypasses the walk interval for every configured tree, without
-rewinding commit cursors. To reload just the MAINTAINERS projection immediately,
+rewinding commit cursors. With `--skip-commits`, commit-walk timestamps stay
+unchanged for every tree, so reloading MAINTAINERS does not postpone the next
+scheduled walk. To reload just the MAINTAINERS projection immediately,
 including its normalized `L:` list contacts:
 
 ```sh
