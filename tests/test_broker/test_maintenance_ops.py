@@ -7,11 +7,13 @@ the CLI dispatcher's broker shim). Together they catch a regression
 in either the RPC plumbing or the CLI delegation."""
 
 import os
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from click.testing import CliRunner
 from dulwich.objects import Blob, Commit, Tree
 from dulwich.repo import Repo
+from freezegun import freeze_time
 
 from mimir.broker import handlers
 from mimir.broker.client import BrokerClient
@@ -241,7 +243,7 @@ def test_update_mainline_via_broker_force_reloads(seeded_db, tmp_path, monkeypat
     with broker_running(sp):
         c = BrokerClient(sp)
         try:
-            c.call(UpdateMainlineRequest(skip_fetch=True, skip_commits=True))
+            c.call(UpdateMainlineRequest(skip_fetch=True))
             skipped = c.call(UpdateMainlineRequest(skip_fetch=True, skip_commits=True))
             assert skipped["trees"]["linus"]["skipped"] is True
             assert skipped["maintainers_ran"] is False
@@ -446,18 +448,17 @@ def test_load_maintainers_dispatches_via_writer(
 # ----- Phase 6a: update_mainline last_walked_at cadence dual-fork ---------
 
 
+@pytest.mark.parametrize("empty_walk", [False, True])
 def test_update_mainline_last_walked_at_dispatches_via_writer(
-    seeded_db, tmp_path, monkeypatch, broker_active
+    seeded_db, tmp_path, monkeypatch, broker_active, empty_walk
 ):
     """Phase 6a: the per-tree `last_walked_at` cadence write lands as a
     WriteOp on the active writer (not on the shared engine via
     SessionLocal), AND `MainlineState.last_walked_at` actually advances.
 
-    All three phase-skip flags are set so only the cadence write fires;
-    the maintainers / commits phases have their own coverage above. This
-    fails before the 6a dual-fork (the cadence block ran on the shared
-    engine, so no `update_mainline:last_walked_at` WriteOp was submitted)
-    and passes after."""
+    Both a first walk and an empty follow-up walk advance commit cadence
+    through the writer. MAINTAINERS is skipped so it cannot supply the
+    write under test."""
     from sqlalchemy import select
 
     from mimir.broker._context import get_active_writer
@@ -468,16 +469,22 @@ def test_update_mainline_last_walked_at_dispatches_via_writer(
     _build_minimal_tree_with_maintainers(repo_path)
     monkeypatch.setattr(settings, "trees", _linus_tree(repo_path))
 
+    before = datetime(2026, 11, 14, 9, tzinfo=UTC)
+    now = before + timedelta(hours=1)
+    if empty_walk:
+        with freeze_time(before):
+            initial = update_mainline(skip_fetch=True, skip_maintainers=True)
+        assert initial.commits_seen == 1
+
     writer = get_active_writer()
     submits = []
     original = writer.submit
     writer.submit = lambda op, **kw: (submits.append(op), original(op, **kw))[1]
     try:
-        update_mainline(
-            skip_fetch=True,
-            skip_commits=True,
-            skip_maintainers=True,
-        )
+        with freeze_time(now):
+            result = update_mainline(skip_fetch=True, skip_maintainers=True)
+        assert result.commits_ran
+        assert result.commits_seen == (0 if empty_walk else 1)
     finally:
         writer.submit = original
 
@@ -495,6 +502,91 @@ def test_update_mainline_last_walked_at_dispatches_via_writer(
         state = s.execute(
             select(MainlineState).where(MainlineState.tree_name == "linus")
         ).scalar_one()
-    assert state.last_walked_at is not None, (
-        "update_mainline must advance MainlineState.last_walked_at on a successful tick"
+    from mimir.datetime_utils import aware_utc
+
+    assert aware_utc(state.last_walked_at) == now
+
+
+@freeze_time("2026-11-14 12:00:00")
+@pytest.mark.parametrize("force", [False, True])
+@pytest.mark.parametrize("linus_recent", [False, True])
+def test_maintainers_only_rpc_preserves_every_tree_cadence(
+    seeded_db, tmp_path, monkeypatch, force, linus_recent
+):
+    from mimir import mainline
+    from mimir.config import TreeConfig
+    from mimir.datetime_utils import aware_utc
+    from mimir.models import MainlineState
+
+    now = datetime.now(UTC)
+    recent = now - timedelta(minutes=10)
+    due = now - timedelta(hours=2)
+    timestamps = {
+        "linus": recent if linus_recent else due,
+        "next": recent,
+        "stable": due,
+        "unseen": None,
+    }
+    trees = {
+        slug: TreeConfig(
+            url="https://example.com/tree.git",
+            path=tmp_path / slug,
+            walk_every_seconds=3600,
+        )
+        for slug in timestamps
+    }
+    head = _build_minimal_tree_with_maintainers(trees["linus"].path)
+    monkeypatch.setattr(settings, "trees", trees)
+    with seeded_db() as session:
+        for slug, timestamp in timestamps.items():
+            if timestamp is not None:
+                session.add(MainlineState(tree_name=slug, last_walked_at=timestamp))
+        session.commit()
+    assert (now - recent).total_seconds() < 3600 < (now - due).total_seconds()
+
+    ensured = []
+    loads = []
+    original_load = mainline.load_maintainers
+
+    def load(*args, **kwargs):
+        loads.append((kwargs["tree_name"], kwargs["force"]))
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(mainline, "load_maintainers", load)
+    monkeypatch.setattr(
+        mainline,
+        "_ensure_tree",
+        lambda tree, **kw: ensured.append(tree.path.name) or tree.path,
     )
+    monkeypatch.setattr(
+        mainline,
+        "walk_commits",
+        lambda *a, **kw: pytest.fail("skip-commits must prevent walking"),
+    )
+    with broker_running(short_socket_path("maintainers-cadence")):
+        client = BrokerClient(short_socket_path("maintainers-cadence"))
+        try:
+            result = client.call(
+                UpdateMainlineRequest(skip_fetch=True, skip_commits=True, force=force)
+            )
+        finally:
+            client.close()
+
+    linus_runs = force or not linus_recent
+    assert ensured == (["linus"] if linus_runs else []) + (
+        ["next"] if force else []
+    ) + ["stable", "unseen"]
+    assert loads == ([("linus", force)] if linus_runs else [])
+    assert result["maintainers_ran"] is linus_runs
+    if linus_runs:
+        assert result["subsystems_loaded"] == 1
+        assert result["mainline_head"] == head
+    assert result["commits_ran"] is False
+    assert all(tr["ok"] for tr in result["trees"].values())
+    with seeded_db() as session:
+        for slug, timestamp in timestamps.items():
+            state = session.get(MainlineState, slug)
+            if timestamp is None:
+                assert state is None
+            else:
+                assert aware_utc(state.last_walked_at) == timestamp

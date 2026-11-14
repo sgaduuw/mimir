@@ -363,6 +363,8 @@ The additive list migration does not reparse an unchanged blob. Populate via
 `update-mainline --skip-fetch --skip-commits --force`: force bypasses
 the blob and per-tree cadence gates, and skip-commits disables commit walking.
 Force applies to every configured tree but does not rewind commit cursors.
+MAINTAINERS-only runs (`--skip-commits`) leave all trees' commit-walk timestamps
+unchanged; they do not postpone the next scheduled commit walk (#1192).
 A second forced run preserves the mapping and advances the rules generation
 again. During mixed old/new writer operation an old replace
 deletes list rows through cascade, so verify the source/store mapping after
@@ -910,6 +912,12 @@ so it was invisible to the slow-write gate), and the steady-state
 invariant is complete for the migrated scope; the only writes that
 bypass the WriterThread during serving are VACUUM and the pre-serve
 startup bootstrap (the two documented exception classes).
+
+The cadence write now runs only after a successful commit phase, including
+a walk with no new commits. MAINTAINERS-only runs leave every tree's
+`last_walked_at` unchanged, so they cannot postpone scheduled commit walks
+(#1192).
+
 **Phase 6b IMPLEMENTED 2026-06-14 (pending release).** The 6a
 deploy-observe gate cleared on prod (held= log silent across an
 update-mainline tick + ingest + warm), so 6b removed the now-dead
