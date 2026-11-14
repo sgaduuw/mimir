@@ -234,9 +234,9 @@ class _BrokerServer(socketserver.UnixStreamServer):
         # `handlers.LONG_OPS` / `WARM_OPS`). Unbounded queues:
         # under observed peak load (a few hundred cache.sets per
         # warm-cache tick) memory is negligible and a hard cap
-        # would just drop work silently. The slow-RPC WARNING
-        # (with breakdown into queue vs dispatch) is the operator-
-        # facing signal.
+        # would just drop work silently. Slow cache/long RPCs and
+        # failed warm replies warn with queue-vs-dispatch breakdown;
+        # successful warm replies retain those details at DEBUG.
         self.cache_queue: queue.Queue[tuple[bytes, ClientConnection, float]] = (
             queue.Queue()
         )
@@ -432,7 +432,8 @@ class _BrokerServer(socketserver.UnixStreamServer):
         worker so writes stay ordered at the SQLAlchemy layer
         without an extra lock. Each iteration: dequeue, dispatch,
         write reply to the originating socket. Slow-RPC WARNING
-        fires with queue-wait + dispatch breakdown.
+        fires with queue-wait + dispatch breakdown, except successful
+        warm replies whose handlers report their own timing at INFO.
 
         `worker_tag` tags the slow-RPC log line ("cache" / "long" /
         "warm") so operators reading the broker log can tell which
@@ -516,7 +517,10 @@ class _BrokerServer(socketserver.UnixStreamServer):
         total_ms = delivery.queue_wait_ms + dispatch_ms
 
         threshold_ms = settings.broker_slow_rpc_warn_ms
-        if threshold_ms > 0 and total_ms >= threshold_ms:
+        successful_warm = (
+            delivery.queue is self.warm_queue and reply.ok and outcome == "sent"
+        )
+        if threshold_ms > 0 and total_ms >= threshold_ms and not successful_warm:
             # Breakdown helps operators tell the
             # difference between front-of-queue contention
             # (high queue_wait_ms; many clients piling on)

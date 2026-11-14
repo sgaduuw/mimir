@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Routine slow cache warming now emits one handler timing line at INFO instead of duplicate WARNING lines. Target failures still warn, including fast failures; slow failed warm replies, failed delivery and non-warm RPC warnings remain visible (#1187).
 - Successful MAINTAINERS reloads now log their tree, HEAD, subsystem count and forced status at INFO in the broker after both derived-cache invalidations commit. Unchanged loads stay silent (#1188).
 - `update-mainline --force` now bypasses every tree's walk interval as well as the unchanged MAINTAINERS check, without rewinding commit cursors and while honoring phase skip flags. With `-v`, ordinary runs log cadence-skipped trees at INFO with their last-walk age and interval (#1186).
 

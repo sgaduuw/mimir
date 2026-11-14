@@ -507,6 +507,16 @@ long worker reads-then-writes while another worker commits between
 the two operations. The listener stays as protection against that
 class of bug.
 
+Routine warm timing is bulk-work telemetry, not a warning signal. When
+`BROKER_SLOW_RPC_WARN_MS` is positive, warm handlers emit their own
+`broker warm slow` timing breakdown at INFO above that threshold. Successful,
+delivered warm RPCs omit the duplicate generic `broker slow rpc` WARNING;
+queue-wait and dispatch details remain available at DEBUG. Per-target
+failures warn even when fast, and slow failed RPCs or failed reply delivery
+retain the generic warning. Non-warm RPC warnings are unchanged. A zero or
+negative threshold disables timing INFO lines for all three warm operations
+(#1187).
+
 The journey here (in case any of this needs revisiting):
 v1.32.0 introduced an opt-in broker for cache writes only; v1.33.0
 reworked the single-handler design into a queue+worker pool;
