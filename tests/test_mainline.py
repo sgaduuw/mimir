@@ -876,8 +876,9 @@ def test_update_mainline_skips_tree_not_yet_due(seeded_db, monkeypatch, tmp_path
     assert result.trees["fake"].walk_interval_seconds == 3600
 
 
+@pytest.mark.parametrize("failure_phase", ["ensure", "walk"])
 def test_update_mainline_per_tree_failure_isolated(
-    seeded_db, monkeypatch, tmp_path, writer
+    seeded_db, monkeypatch, tmp_path, writer, failure_phase
 ):
     """One tree raising doesn't fail the others."""
     from mimir.broker import _context
@@ -900,8 +901,14 @@ def test_update_mainline_per_tree_failure_isolated(
         },
     )
 
+    before = datetime(2020, 1, 1, tzinfo=UTC)
+    with seeded_db() as session:
+        for slug in ("bad", "good"):
+            session.add(MainlineState(tree_name=slug, last_walked_at=before))
+        session.commit()
+
     def fake_ensure(tree, *, reference, skip_fetch):
-        if tree.url.endswith("bad.git"):
+        if tree.url.endswith("bad.git") and failure_phase == "ensure":
             raise RuntimeError("clone failed")
         from pathlib import Path as _P
 
@@ -909,7 +916,16 @@ def test_update_mainline_per_tree_failure_isolated(
         return tree.path
 
     monkeypatch.setattr("mimir.mainline._ensure_tree", fake_ensure)
-    monkeypatch.setattr("mimir.mainline.walk_commits", lambda *a, **kw: WalkResult())
+    walked = []
+
+    def walk(*args, **kwargs):
+        slug = kwargs["tree_name"]
+        walked.append(slug)
+        if slug == "bad":
+            raise RuntimeError("walk failed")
+        return WalkResult()
+
+    monkeypatch.setattr("mimir.mainline.walk_commits", walk)
 
     # Phase 3: update_mainline fetches the active pool + writer from
     # _context when skip_commits=False. Register them for this test.
@@ -924,6 +940,13 @@ def test_update_mainline_per_tree_failure_isolated(
     assert result.trees["bad"].ok is False
     assert result.trees["bad"].error is not None
     assert result.trees["good"].ok is True
+
+    from mimir.datetime_utils import aware_utc
+
+    assert walked == (["good"] if failure_phase == "ensure" else ["bad", "good"])
+    with seeded_db() as session:
+        assert aware_utc(session.get(MainlineState, "bad").last_walked_at) == before
+        assert aware_utc(session.get(MainlineState, "good").last_walked_at) > before
 
 
 def test_walk_commits_closes_repo_at_function_exit(
