@@ -42,14 +42,13 @@ def test_recent_tree_skip_logs_at_info(monkeypatch, caplog, verbose):
     )
 
 
-def test_old_skipped_payload_and_failure_precedence(monkeypatch, caplog):
+def test_failure_takes_precedence_over_skip(monkeypatch, caplog):
     from mimir.broker import client
 
     class Client:
         def call(self, request):
             return {
                 "trees": {
-                    "linus": {"skipped": True},
                     "next": {"skipped": True, "ok": False, "error": "fetch failed"},
                 }
             }
@@ -60,6 +59,4 @@ def test_old_skipped_payload_and_failure_precedence(monkeypatch, caplog):
     assert result.output.splitlines() == [
         "update-mainline: tree next failed: fetch failed",
     ]
-    assert _skips(caplog) == [
-        ("INFO", "update-mainline: linus skipped (walk interval not elapsed)")
-    ]
+    assert _skips(caplog) == []

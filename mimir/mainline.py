@@ -1090,15 +1090,10 @@ def update_mainline(
         with SessionLocal() as session:
             state = session.get(MainlineState, slug)
             last = state.last_walked_at if state else None
-        if (
-            not (rewalk or force)
-            and last is not None
-            and (now - aware_utc(last)).total_seconds() < tree.walk_every_seconds
-        ):
+        age = (now - aware_utc(last)).total_seconds() if last is not None else None
+        if not (rewalk or force) and age is not None and age < tree.walk_every_seconds:
             tr.skipped = True
-            tr.last_walked_seconds_ago = max(
-                0, int((now - aware_utc(last)).total_seconds())
-            )
+            tr.last_walked_seconds_ago = max(0, int(age))
             tr.walk_interval_seconds = tree.walk_every_seconds
             continue
 
