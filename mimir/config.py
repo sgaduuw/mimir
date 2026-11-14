@@ -406,7 +406,9 @@ class Settings(BaseSettings):
     # Slow-RPC warning threshold for the write-broker (milliseconds).
     # When the broker takes longer than this to handle a single RPC,
     # it logs a WARNING with the leading bytes of the request and
-    # the elapsed time. Cache sets acknowledge writer admission;
+    # the elapsed time. Successful warm RPCs instead log their handler
+    # timing at INFO; target failures still warn regardless of timing.
+    # Cache sets acknowledge writer admission;
     # sustained warnings indicate queue contention, slow handler
     # execution or reply delivery. Set to 0 or
     # negative to disable. Override via BROKER_SLOW_RPC_WARN_MS.
