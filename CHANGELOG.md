@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- `CRAWLER_UA_BUDGETS` now refuses the keys `(impossible headers)` and `(other crawlers)`, the labels of the crawler gate's own shared buckets. A listed crawler with such a key was charged to the impossible-header bucket, or caused HTTP 500 responses when that bucket was disabled; such a configuration now fails at startup (#1196).
+- `CRAWLER_UA_BUDGETS` and `CRAWLER_UA_MARKERS` now refuse `(impossible headers)` and `(other crawlers)` case-insensitively, the labels of the crawler gate's own shared buckets. A crawler with such a key was charged to the impossible-header bucket, or caused HTTP 500 responses when that bucket was disabled; such a configuration now fails at startup (#1196).
 
 ### Changed
 

@@ -1194,12 +1194,37 @@ def test_fallback_keeps_pre_3_37_per_worker_totals(tmp_path, monkeypatch):
     "label", [crawler_budget.IMPOSSIBLE_KEY, crawler_budget.OVERFLOW_KEY]
 )
 @pytest.mark.parametrize("impossible_headers_pct", [0, 10])
-def test_listed_ua_named_like_a_shared_bucket_is_refused(label, impossible_headers_pct):
-    """#1196: a listed key equal to the gate's own bucket label was
-    charged to that bucket (header gating on) or raised a 500 (off).
-    Settings refuses it, so neither state can be configured."""
+@pytest.mark.parametrize("uppercase", [False, True])
+@pytest.mark.parametrize("field", ["crawler_ua_budgets", "crawler_ua_markers"])
+def test_crawler_name_matching_shared_bucket_is_refused(
+    label, impossible_headers_pct, uppercase, field
+):
+    """Listed names and lowercased marker tokens share the internal namespace."""
+    name = label.upper() if uppercase else label
+    value = {name: 1} if field == "crawler_ua_budgets" else [name]
     with pytest.raises(ValueError, match="reserved"):
         Settings(
-            crawler_ua_budgets={label: 1},
+            **{field: value},
             crawler_impossible_headers_pct=impossible_headers_pct,
         )
+
+
+@pytest.mark.parametrize("label", [crawler_budget.IMPOSSIBLE_KEY, OVERFLOW_KEY])
+@pytest.mark.parametrize("impossible_headers_pct", [0, 10])
+def test_safe_marker_suffix_cannot_emit_reserved_key(
+    client, monkeypatch, label, impossible_headers_pct
+):
+    # A token prefix must start with a letter, so a reserved label starting
+    # with '(' can only be emitted when the whole label is the marker.
+    marker = label.split()[-1]
+    settings = Settings(
+        crawler_ua_markers=[marker.upper()],
+        crawler_impossible_headers_pct=impossible_headers_pct,
+        crawler_budget_per_minute=60,
+    )
+    gate = CrawlerBudget.from_settings(settings)
+    ua = f"1{label}/1.0"
+    assert gate.crawler_key(ua) == marker
+    _install(monkeypatch, gate)
+    assert _get(client, "/", ua).status_code == 200
+    assert _get(client, "/", ua).status_code == 429
