@@ -1359,6 +1359,8 @@ def inbox_sitemap_xml(
 
         # Highest priority first, for crawlers that read only a prefix.
         # Stable, so each tier keeps its existing order.
+        # Every append in this hub sitemap supplies a float priority. Only
+        # other sitemap kinds omit it, hence SitemapEntry's optional field.
         entries.sort(key=lambda e: -e.priority)
         return SitemapPayload(
             body=_build_sitemap_xml(entries),

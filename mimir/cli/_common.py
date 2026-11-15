@@ -243,7 +243,7 @@ def _broker_backfill_loop(
         extra = {**extra, "reprocess": reprocess}
     aggregated = None
     remaining = limit
-    start = ("force_restart" if yes else "restart") if restart else "resume"
+    start: str | None = ("force_restart" if yes else "restart") if restart else "resume"
     while True:
         req = request_cls(limit=remaining, start=start, **extra)
         for attempt in range(_LOCKED_RETRIES + 1):

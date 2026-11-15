@@ -246,6 +246,8 @@ def _most_active_subsystems_in_inbox_full(
             if not matched:
                 continue
             path_date = coerce_dt(r.art_date)
+            # SQL excludes NULL dates; persisted DateTime values are ISO strings.
+            assert path_date is not None
             for sub_id in matched:
                 counts[sub_id].add(r.article_id)
                 prev = last_activity.get(sub_id)
