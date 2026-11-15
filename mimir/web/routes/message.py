@@ -117,9 +117,9 @@ def message(
         # all is a corrupt row: 404.
         if not any(ix_id == inbox.id for ix_id, _ in all_links):
             target = _canonical_url_for(article, all_links)
-            if target is None:
-                abort(404)
-            return redirect(markdown_path(target) if markdown else target, code=301)
+            if target is not None:
+                return redirect(markdown_path(target) if markdown else target, code=301)
+            abort(404)
 
         # Full thread context (replaces the v1 parent + immediate-replies
         # view). Walk constrained to this article's inbox. Loaded BEFORE
@@ -155,6 +155,8 @@ def message(
             else None
         )
         if window is not None:
+            # Only the aggregate-backed branch above can create a window.
+            assert agg is not None
             thread = window.rows
             thread_total = agg.total
             thread_max_date = agg.last_activity or article.date
@@ -188,6 +190,8 @@ def message(
 
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
+        # Membership above guarantees at least this inbox in the canonical links.
+        assert canonical_url is not None
 
         # Consolidate onto the whole-thread view when this message is
         # actually rendered there. Most replies are a line or two, so
@@ -636,11 +640,12 @@ def message(
             thread_link_url += thread_link_anchor
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
-    thread_summary = (
-        thread_summary_from(agg.authors, agg.last_activity, agg.total)
-        if window is not None
-        else _thread_summary(thread_nodes)
-    )
+    if window is not None:
+        # Window construction requires the thread-wide aggregate snapshot.
+        assert agg is not None
+        thread_summary = thread_summary_from(agg.authors, agg.last_activity, agg.total)
+    else:
+        thread_summary = _thread_summary(thread_nodes)
 
     # Parent URL for the hunk-anchored quote renderer: the message
     # this article replies to. When the parent is in-scope (i.e. in

@@ -130,6 +130,8 @@ def _lookup_global(raw: str | None):
         if not links:
             abort(404)
     inbox_name = _canonical_inbox_name(article, links)
+    # Canonical selection returns None only for the empty links rejected above.
+    assert inbox_name is not None
     return redirect(_msg_url(article, inbox_name), code=301)
 
 

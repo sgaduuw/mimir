@@ -183,6 +183,8 @@ def _compute(session: Session) -> LinusPulls:
     if since is None:
         return LinusPulls(anchor=anchor, rows=[])
 
+    # since is populated only after _tag_time was called with an actual tag.
+    assert anchor is not None
     pulls = classify(session, since, None, _merged_tips(path, anchor))
     names = _canonical_inbox_names_for(session, [p.article.id for p in pulls])
     return LinusPulls(

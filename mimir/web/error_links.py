@@ -48,9 +48,9 @@ def not_found_help(path: str, args) -> NotFoundHelp:
     links: list[tuple[str, str]] = []
     inbox_name = _existing_inbox(segments[0]) if segments else None
     if inbox_name:
-        if len(segments) >= 3 and None not in numbers[:2]:
+        if len(segments) >= 3:
             year, month = numbers[0], numbers[1]
-            if _month_in_range(year, month):
+            if year is not None and month is not None and _month_in_range(year, month):
                 label = date(year, month, 1).strftime("%B %Y")
                 links.append(
                     (f"{label} in {inbox_name}", _month_path(inbox_name, year, month))

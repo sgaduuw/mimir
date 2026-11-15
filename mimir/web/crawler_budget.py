@@ -504,7 +504,8 @@ class CrawlerBudget:
 
     def _charge(self, key: str, now: float) -> str | None:
         # Caller holds both locks.
-        if key == IMPOSSIBLE_KEY:
+        # A listed UA can use this label even when header gating is disabled.
+        if key == IMPOSSIBLE_KEY and self._impossible is not None:
             own, pct, pool = self._impossible, self._impossible_pct, None
         elif key in self._listed:
             _, own, pct = self._listed[key]

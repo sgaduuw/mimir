@@ -192,7 +192,11 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
         return Reply(
             rpc_id=req.rpc_id,
             ok=True,
-            result={"counters": {}, "partial": False, "run": _run_info(run, run)},
+            result={
+                "counters": {},
+                "partial": False,
+                "run": _run_info(run, run) if run is not None else None,
+            },
         )
     result = backfill(limit=req.limit, max_seconds=_chunk_seconds(), run=run, **params)
     # The CLI stops once its remaining budget is spent (`partial` or
@@ -216,9 +220,8 @@ def _run_backfill_chunk(req, name: str, backfill, **params) -> Reply:
     )
 
 
-def _run_info(before, now) -> dict | None:
-    if before is None:
-        return None
+def _run_info(before, now) -> dict:
+    # Callers handle absent runs before serializing a concrete run snapshot.
     return {
         "id": before.id,
         "started_at": before.started_at.isoformat(sep=" ", timespec="seconds"),
