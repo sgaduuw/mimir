@@ -203,6 +203,8 @@ def _more_link(context: _RenderContext, left: int, noun: str) -> str:
     message page renders everything. htmx swaps in the whole message
     body, so one click shows every cut block.
     """
+    # Both call sites require text_more before requesting a compact-render link.
+    assert context.text_more is not None
     href, fragment = context.text_more
     return (
         f'<p class="text-more"><a href="{html.escape(href)}"'
