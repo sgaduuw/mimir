@@ -158,6 +158,7 @@ def series_diff(inbox_name: str, series_key: str):
                         "render the diff."
                     ),
                 )
+            # abort raises on either missing read, so both pairs exist here.
             (v1_article, v1_parsed), (v2_article, v2_parsed) = v1_read, v2_read
             return compute_revision_diff(
                 v1_parsed.body,

@@ -131,6 +131,8 @@ class InFlightJobs:
             # `warned_at`; workers only add and remove whole jobs.
             if job.threshold is None:
                 _identify(job)
+            # Identification sets a timeout even for malformed or unknown ops.
+            assert job.threshold is not None
             if now - job.started < job.threshold:
                 continue
             if job.warned_at is not None and now - job.warned_at < repeat_sec:
