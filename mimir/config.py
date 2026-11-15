@@ -8,7 +8,7 @@ from mimir._inbox_name import INBOX_NAME_RE
 from mimir._outbound import validate_outbound_url
 
 # Labels of the crawler gate's own shared buckets (`mimir.web.crawler_budget`).
-# Defined here so the settings validator can refuse them as listed keys.
+# Defined here so settings can reserve them for both key-producing inputs.
 OVERFLOW_KEY = "(other crawlers)"
 IMPOSSIBLE_KEY = "(impossible headers)"
 
@@ -822,6 +822,19 @@ class Settings(BaseSettings):
     # worker count; the other buckets are shared by all workers (#1026).
     web_workers: int = Field(default=1, ge=1, validation_alias="WORKERS")
 
+    @field_validator("crawler_ua_budgets", "crawler_ua_markers")
+    @classmethod
+    def _validate_crawler_bucket_names(cls, v):
+        # Listed names and lowercased marker tokens share the internal labels'
+        # namespace. The regex prefix starts with a letter, so only an entire
+        # marker equal to a label can produce its leading '(' character.
+        reserved = sorted(
+            name for name in v if name.lower() in {OVERFLOW_KEY, IMPOSSIBLE_KEY}
+        )
+        if reserved:
+            raise ValueError(f"crawler bucket names are reserved: {reserved}")
+        return v
+
     @field_validator("crawler_ua_budgets")
     @classmethod
     def _validate_crawler_ua_budgets(cls, v: dict[str, int]) -> dict[str, int]:
@@ -829,10 +842,6 @@ class Settings(BaseSettings):
         # gate browsers and requests with no User-Agent at all.
         if any(not k.strip() for k in v):
             raise ValueError("crawler_ua_budgets keys must not be blank")
-        # The gate's own bucket labels share the key namespace, so a
-        # listed crawler named like one would be charged or logged as it.
-        if reserved := sorted(set(v) & {OVERFLOW_KEY, IMPOSSIBLE_KEY}):
-            raise ValueError(f"crawler_ua_budgets keys are reserved: {reserved}")
         if any(not 0 <= n <= 100 for n in v.values()):
             raise ValueError(
                 "crawler_ua_budgets values are percentages, 1 to 100, or 0 to drop"
