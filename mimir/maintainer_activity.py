@@ -25,6 +25,15 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _fold(address: str, aliases: dict[str, str], names: dict[str, str]) -> str:
+    """Fold a retired address only into a current M: address. A maintainer
+    still listed under an address `.mailmap` retires keeps it: folding it to
+    a target that is not M: would drop them from the ranking, and their
+    profile is served at the listed address (`identity_addresses` semantics)."""
+    mapped = aliases.get(address)
+    return mapped if mapped in names else address
+
+
 def most_active_maintainers(
     session: Session,
     *,
@@ -80,7 +89,7 @@ def most_active_maintainers(
                 # addresses may still be wider than our profile URL grammar.
                 if not local or not domain:
                     continue
-                address = aliases.get(address, address)
+                address = _fold(address, aliases, names)
                 if address in names:
                     messages[address] += 1
         finally:
@@ -105,8 +114,7 @@ def most_active_maintainers(
         )
         try:
             for address, count in rows:
-                address = address.strip().lower()
-                address = aliases.get(address, address)
+                address = _fold(address.strip().lower(), aliases, names)
                 if address in messages:
                     reviews[address] += count
         finally:
@@ -135,6 +143,5 @@ def most_active_maintainers(
             )
         except _RulesChanged:
             return []
-    return [row for row in rows if is_addressable_maintainer_address(row["address"])][
-        :limit
-    ]
+    # The route rechecks addressability; compute() admitted only addressable names.
+    return rows[:limit]

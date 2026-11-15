@@ -112,6 +112,50 @@ def test_interval_is_half_open_for_messages_and_trailers(session, monkeypatch):
     assert (row["message_count"], row["review_count"]) == (2, 2)
 
 
+def test_listed_address_retired_to_a_non_maintainer_keeps_its_activity(session):
+    """MAINTAINERS lists X, `.mailmap` maps X to Y, and Y is not an M:
+    address (production had eight such maintainers). Mail from X must rank
+    under X, where the profile is served, not fold away to Y and vanish. A
+    target that is itself M: still folds, so one person stays one row."""
+    now = datetime.now(UTC) - timedelta(hours=1)
+    _add_subsystem(
+        session,
+        "RETIRED",
+        "Maintained",
+        [
+            ("M", "Listed", "listed@corp.example"),
+            ("M", "Both", "both@new.example"),
+            ("M", "Both", "both@old.example"),
+        ],
+    )
+    session.add(
+        Mailmap(old_address="listed@corp.example", address="listed@home.example")
+    )
+    session.add(Mailmap(old_address="both@old.example", address="both@new.example"))
+    authors = ["listed@corp.example"] * 3 + ["both@old.example", "both@new.example"]
+    articles = [
+        Article(message_id=f"retired-{i}", author=a, date=now)
+        for i, a in enumerate(authors)
+    ]
+    session.add_all(articles)
+    session.flush()
+    session.add(
+        ArticleTrailer(
+            article_id=articles[3].id,
+            role="Acked-by",
+            name="Listed",
+            address="listed@corp.example",
+            address_normalized="listed@corp.example",
+        )
+    )
+    session.commit()
+    rows = maintainer_activity.most_active_maintainers(session, force=True)
+    assert [(r["address"], r["message_count"], r["review_count"]) for r in rows] == [
+        ("listed@corp.example", 3, 1),
+        ("both@new.example", 2, 0),
+    ]
+
+
 def test_full_ranking_filters_before_limit_and_ties_by_address(session):
     entries = [("M", str(i), f"m{i:02}@example.com") for i in range(15)]
     entries.append(("M", "Invalid", "bad/address@example.com"))
