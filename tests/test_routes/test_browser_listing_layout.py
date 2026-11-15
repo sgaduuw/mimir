@@ -631,3 +631,66 @@ def test_release_pull_cards_at_desktop_and_phone_widths(client, tmp_path):
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def test_maintainer_activity_layout_and_keyboard_profile_links(
+    client, session, tmp_path, monkeypatch
+):
+    from mimir.maintainer_directory import maintainer_path
+    from mimir.web.routes import dashboards
+    from tests.test_routes.test_front_page import _seed_activity_profiles
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    rows = _seed_activity_profiles(session)
+    monkeypatch.setattr(dashboards, "most_active_maintainers", lambda *a, **kw: rows)
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            for width in (390, 1280):
+                for theme in ("light", "dark"):
+                    page = browser.new_page(
+                        viewport={"width": width, "height": 800}, color_scheme=theme
+                    )
+                    blocked = block_external_requests(page, base)
+                    page.goto(base + "/")
+                    section = page.locator("#maintainer-activity-section")
+                    expect(section.get_by_role("heading")).to_have_text(
+                        "Maintainer activity this week"
+                    )
+                    expect(section.locator("thead th")).to_have_text(
+                        ["Maintainer", "Messages", "Review trailers"]
+                    )
+                    expect(section.locator("tbody td")).to_have_text(
+                        ["1,234", "0", "56", "12"]
+                    )
+                    assert page.evaluate(
+                        "document.documentElement.scrollWidth <= innerWidth"
+                    )
+                    assert section.locator("table").evaluate(
+                        "table => [...table.querySelectorAll('th, td')].every(cell => cell.scrollWidth <= cell.clientWidth + 1)"
+                    )
+                    screenshot = tmp_path / f"maintainer-activity-{width}-{theme}.png"
+                    section.screenshot(path=str(screenshot))
+                    print(screenshot)
+                    links = section.get_by_role("link")
+                    expect(links).to_have_count(2)
+                    links.nth(0).focus()
+                    page.keyboard.press("Tab")
+                    expect(links.nth(1)).to_be_focused()
+                    page.keyboard.press("Shift+Tab")
+                    expect(links.nth(0)).to_be_focused()
+                    page.keyboard.press("Enter")
+                    expect(page).to_have_url(base + maintainer_path(rows[0]["address"]))
+                    expect(page.get_by_role("heading", level=1)).to_contain_text(
+                        rows[0]["name"]
+                    )
+                    assert blocked == [], blocked
+                    page.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
