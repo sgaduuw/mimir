@@ -387,7 +387,10 @@ def test_maintainer_activity_has_distinct_counts_and_working_profile_links(
     from mimir.maintainer_directory import maintainer_path
     from mimir.web.routes import dashboards
 
-    rows = _seed_activity_profiles(session)
+    rows = [
+        {**row, "name": row["name"] or row["address"]}
+        for row in _seed_activity_profiles(session)
+    ]
     monkeypatch.setattr(
         dashboards,
         "most_active_subsystems_global",
@@ -428,7 +431,7 @@ def test_maintainer_activity_has_distinct_counts_and_working_profile_links(
     assert len(rendered) == 2
     for expected, row in zip(rows, rendered, strict=True):
         link = row.find("a")
-        assert link.text() == (expected["name"] or expected["address"])
+        assert link.text() == expected["name"]
         assert link.attrs["href"] == maintainer_path(expected["address"])
         assert client.get(link.attrs["href"]).status_code == 200
         assert [int(cell.text().replace(",", "")) for cell in row.find_all("td")] == [

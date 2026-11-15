@@ -86,7 +86,7 @@
       <tbody>
         {% for m in maintainer_activity %}
         <tr>
-          <th scope="row"><a href="{{ m.path }}">{{ m.name or m.address }}</a></th>
+          <th scope="row"><a href="{{ m.path }}">{{ m.name }}</a></th>
           <td class="count">{{ m.message_count|format_count }}</td>
           <td class="count">{{ m.review_count|format_count }}</td>
         </tr>
