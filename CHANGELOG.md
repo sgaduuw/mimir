@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The broker now writes every thread's stack to its log the first time it reports a job as stuck, the same dump SIGUSR1 gives, so a hang is on record without an operator signalling the broker before a restart. Repeat reports for the same job do not dump again (#1195).
+
 ## [4.0.2] - 2026-11-14
 
 ### Fixed
