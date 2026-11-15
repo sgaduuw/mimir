@@ -117,9 +117,9 @@ def message(
         # all is a corrupt row: 404.
         if not any(ix_id == inbox.id for ix_id, _ in all_links):
             target = _canonical_url_for(article, all_links)
-            if target is not None:
-                return redirect(markdown_path(target) if markdown else target, code=301)
-            abort(404)
+            if target is None:
+                abort(404)
+            return redirect(markdown_path(target) if markdown else target, code=301)
 
         # Full thread context (replaces the v1 parent + immediate-replies
         # view). Walk constrained to this article's inbox. Loaded BEFORE

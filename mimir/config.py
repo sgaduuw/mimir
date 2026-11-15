@@ -7,6 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from mimir._inbox_name import INBOX_NAME_RE
 from mimir._outbound import validate_outbound_url
 
+# Labels of the crawler gate's own shared buckets (`mimir.web.crawler_budget`).
+# Defined here so the settings validator can refuse them as listed keys.
+OVERFLOW_KEY = "(other crawlers)"
+IMPOSSIBLE_KEY = "(impossible headers)"
+
 # Project root: <root>/mimir/config.py → parent → parent. Resolving
 # follows symlinks so a container running mimir from a bind-mounted
 # read-only volume still gets a sane absolute path. NB: this assumes a
@@ -824,6 +829,10 @@ class Settings(BaseSettings):
         # gate browsers and requests with no User-Agent at all.
         if any(not k.strip() for k in v):
             raise ValueError("crawler_ua_budgets keys must not be blank")
+        # The gate's own bucket labels share the key namespace, so a
+        # listed crawler named like one would be charged or logged as it.
+        if reserved := sorted(set(v) & {OVERFLOW_KEY, IMPOSSIBLE_KEY}):
+            raise ValueError(f"crawler_ua_budgets keys are reserved: {reserved}")
         if any(not 0 <= n <= 100 for n in v.values()):
             raise ValueError(
                 "crawler_ua_budgets values are percentages, 1 to 100, or 0 to drop"

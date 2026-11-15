@@ -328,7 +328,6 @@ def _series_timeline(
         older = previous.get(version) if version is not None else None
         diff_url: str | None = None
         if older is not None:
-            assert version is not None
             diff_url = _series_diff_url(
                 winner,
                 article.patch_series_key,

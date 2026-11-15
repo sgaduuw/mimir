@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
-- A configured crawler user-agent label matching `(impossible headers)` no longer causes an HTTP 500 when the impossible-header budget is disabled. The normal configured user-agent budget is enforced (#1196).
+- `CRAWLER_UA_BUDGETS` now refuses the keys `(impossible headers)` and `(other crawlers)`, the labels of the crawler gate's own shared buckets. A listed crawler with such a key was charged to the impossible-header bucket, or caused HTTP 500 responses when that bucket was disabled; such a configuration now fails at startup (#1196).
 
 ### Changed
 
