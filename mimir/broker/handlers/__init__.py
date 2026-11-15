@@ -211,6 +211,8 @@ def dispatch(line: bytes) -> Reply:
     entry = _DISPATCH.get(op) if isinstance(op, str) else None
     if entry is None:
         return Reply(rpc_id=pre_parse_rpc_id, ok=False, error="UnknownOp")
+    # Only a string op can select an entry from the dispatch table above.
+    assert isinstance(op, str)
     model, handler = entry
     # The model defaults rpc_id for client-side construction; the wire
     # still requires the key, so a request without it never runs.

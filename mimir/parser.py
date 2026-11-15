@@ -6,6 +6,7 @@ from email.header import decode_header
 from email.message import EmailMessage
 from email.parser import BytesParser
 from email.utils import parsedate_to_datetime
+from typing import overload
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -182,10 +183,19 @@ _CFWS_COMMENT_RE = re.compile(r"\([^)]*\)")
 _FOLD_RE = re.compile(r"\r?\n(?=[ \t])")
 
 
+@overload
+def unfold(value: str) -> str: ...
+
+
+@overload
+def unfold(value: None) -> None: ...
+
+
 def unfold(value: str | None) -> str | None:
     """Remove header folding: the line breaks, keeping the whitespace
     after them. Shared by ingest and `backfill-patch-series`, which
-    rewrites subjects stored before this existed (#710)."""
+    rewrites subjects stored before this existed (#710). Only a missing
+    input stays None; string headers always remain strings."""
     return None if value is None else _FOLD_RE.sub("", value)
 
 

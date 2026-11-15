@@ -165,6 +165,8 @@ def archive_sitemap(
         payload = archive_sitemap_xml(session, inbox, year, month, page, _site_base())
     if payload is None:
         abort(404)
+    # Missing sitemap pages abort above rather than returning a payload.
+    assert payload is not None
     response = _sitemap_response(payload)
     # The edge follows the origin TTL, capped at a week: a cache-key bump
     # cannot drop an edge copy, so a month would outlast a release that

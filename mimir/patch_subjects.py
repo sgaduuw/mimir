@@ -10,7 +10,7 @@ def _is_patch_subject(subject: str | None) -> bool:
     decides, the same predicate both series parsers use (#711), so the
     state card cannot disagree with them. False for replies, prose,
     `[GIT PULL]`, `[ANNOUNCE]` and `[RFC]` without a numbered bracket."""
-    return bool(subject) and patch_bracket(subject) is not None
+    return subject is not None and patch_bracket(subject) is not None
 
 
 def _is_reply_to_patch(article) -> bool:

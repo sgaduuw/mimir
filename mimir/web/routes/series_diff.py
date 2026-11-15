@@ -112,6 +112,8 @@ def series_diff(inbox_name: str, series_key: str):
                 code=301,
             )
 
+        # Complete URLs parsed a position above; incomplete ones already redirected.
+        assert pos is not None
         navigation = load_series_diff_navigation(
             session, inbox, series_key, head_id, from_version, to_version, pos
         )

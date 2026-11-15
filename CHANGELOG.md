@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- A configured crawler user-agent label matching `(impossible headers)` no longer causes an HTTP 500 when the impossible-header budget is disabled. The normal configured user-agent budget is enforced (#1196).
+
 ### Changed
 
 - The broker now writes every thread's stack to its log the first time it reports a job as stuck, the same dump SIGUSR1 gives, so a hang is on record without an operator signalling the broker before a restart. Repeat reports for the same job do not dump again (#1195).

@@ -152,6 +152,8 @@ def walk_articles(
 
             after = None
             if run is not None and batch_examined:
+                # Every examined persisted article assigns its non-null primary key.
+                assert cursor is not None
                 after = backfill_runs.advance(run.id, cursor, batch_examined)
             if batch_payloads or after is not None:
                 flush_batch(writer, batch_payloads, after=after).result(timeout=120)

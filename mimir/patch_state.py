@@ -300,6 +300,8 @@ def _series_timeline(
         slots.setdefault(rev.patch_series_version, []).append((rev, has_diff))
     if len(slots) < 2:
         return []
+    # Both callers obtain these rows by selecting a concrete series key.
+    assert article.patch_series_key is not None
     previous = {
         newer: older
         for older, newer in adjacent_versions(
@@ -322,9 +324,11 @@ def _series_timeline(
     out: list[StateSeriesEntry] = []
     for version, slot in slots.items():
         winner = slot_winner(slot)
-        older = previous.get(version)
+        # adjacent_versions excludes null versions; they cannot have a predecessor.
+        older = previous.get(version) if version is not None else None
         diff_url: str | None = None
         if older is not None:
+            assert version is not None
             diff_url = _series_diff_url(
                 winner,
                 article.patch_series_key,

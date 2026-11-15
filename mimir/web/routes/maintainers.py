@@ -73,6 +73,9 @@ def maintainer_view(address: str):
             abort(404)
         review_counts = cached_maintainer_review_counts(session, address_normalized)
 
+    # Missing profiles above either redirect to a live address or abort with 404.
+    assert profile is not None
+
     # Counts and profile refresh independently. Use one snapshot for both
     # chips and the header total, including an intentionally empty snapshot.
     review_inboxes = (
