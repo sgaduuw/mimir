@@ -642,7 +642,11 @@ def test_maintainer_activity_layout_and_keyboard_profile_links(
 
     playwright = playwright_api()
     expect = playwright.expect
-    rows = _seed_activity_profiles(session)
+    # The aggregate prepares display names; the database keeps its blank-name case.
+    rows = [
+        {**row, "name": row["name"] or row["address"]}
+        for row in _seed_activity_profiles(session)
+    ]
     monkeypatch.setattr(dashboards, "most_active_maintainers", lambda *a, **kw: rows)
     server = make_server("127.0.0.1", 0, client.application, threaded=True)
     thread = Thread(target=server.serve_forever, daemon=True)
@@ -678,6 +682,7 @@ def test_maintainer_activity_layout_and_keyboard_profile_links(
                     print(screenshot)
                     links = section.get_by_role("link")
                     expect(links).to_have_count(2)
+                    expect(links).to_have_text([rows[0]["name"], rows[1]["address"]])
                     links.nth(0).focus()
                     page.keyboard.press("Tab")
                     expect(links.nth(1)).to_be_focused()
