@@ -115,7 +115,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-from mimir.config import Settings
+from mimir.config import IMPOSSIBLE_KEY, OVERFLOW_KEY, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -154,8 +154,6 @@ BURST_SECONDS = 10
 MAX_UNLISTED_BUCKETS = 256
 # A bucket idle this long (and refilled) carries no state: drop it.
 _IDLE_DROP_SEC = 600
-OVERFLOW_KEY = "(other crawlers)"
-IMPOSSIBLE_KEY = "(impossible headers)"
 
 # Shared memory layout: a header marking the slots initialised, then
 # one (tokens, stamp) pair per fixed bucket.
@@ -504,8 +502,7 @@ class CrawlerBudget:
 
     def _charge(self, key: str, now: float) -> str | None:
         # Caller holds both locks.
-        # A listed UA can use this label even when header gating is disabled.
-        if key == IMPOSSIBLE_KEY and self._impossible is not None:
+        if key == IMPOSSIBLE_KEY:
             own, pct, pool = self._impossible, self._impossible_pct, None
         elif key in self._listed:
             _, own, pct = self._listed[key]

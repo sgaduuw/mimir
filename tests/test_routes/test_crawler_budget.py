@@ -1190,18 +1190,16 @@ def test_fallback_keeps_pre_3_37_per_worker_totals(tmp_path, monkeypatch):
     )
 
 
-def test_listed_ua_matching_disabled_header_bucket_label_still_uses_its_budget(
-    client, monkeypatch
-):
-    # This is a valid listed substring, even though it matches the internal label.
-    label = crawler_budget.IMPOSSIBLE_KEY
-    configured = Settings(
-        crawler_ua_budgets={label: 1}, crawler_impossible_headers_pct=0
-    )
-    assert configured.effective_crawler_ua_budgets[label] == 1
-    gate = _gate(Clock(), total=600, uas={label: 1}, impossible_headers_pct=0)
-    assert gate._impossible is None
-    assert gate.crawler_key(label) == label
-    _install(monkeypatch, gate)
-    assert _get(client, "/alpha/", label).status_code == 200
-    assert _get(client, "/alpha/", label).status_code == 429
+@pytest.mark.parametrize(
+    "label", [crawler_budget.IMPOSSIBLE_KEY, crawler_budget.OVERFLOW_KEY]
+)
+@pytest.mark.parametrize("impossible_headers_pct", [0, 10])
+def test_listed_ua_named_like_a_shared_bucket_is_refused(label, impossible_headers_pct):
+    """#1196: a listed key equal to the gate's own bucket label was
+    charged to that bucket (header gating on) or raised a 500 (off).
+    Settings refuses it, so neither state can be configured."""
+    with pytest.raises(ValueError, match="reserved"):
+        Settings(
+            crawler_ua_budgets={label: 1},
+            crawler_impossible_headers_pct=impossible_headers_pct,
+        )
