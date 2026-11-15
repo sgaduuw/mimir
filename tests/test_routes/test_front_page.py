@@ -6,6 +6,7 @@ warmed (never computed on the request), so the tests seed a cross-post on
 purpose: summing per-inbox counts gives a different number.
 """
 
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -338,3 +339,234 @@ def test_index_uses_retained_volume_until_the_warmer_refreshes_it(
 
     cards = _page(client).find_all("a", cls="front-card")
     assert cards[0].find("p", cls="count").text() == "3"
+
+
+def _seed_activity_profiles(session):
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    sub = Subsystem(name="ACTIVITY PROFILES", status="Maintained")
+    session.add(sub)
+    session.flush()
+    rows = [
+        {
+            "address": "alice+kernel@kernel.org",
+            "name": "Alice <Kernel> & Maintainer",
+            "message_count": 1234,
+            "review_count": 0,
+        },
+        {
+            "address": "long.fallback.maintainer+kernel@kernel.org",
+            "name": "",
+            "message_count": 56,
+            "review_count": 12,
+        },
+    ]
+    for row in rows:
+        session.add(
+            SubsystemMaintainer(
+                subsystem_id=sub.id, role="M", name=row["name"], address=row["address"]
+            )
+        )
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id,
+            role="R",
+            name="Reviewer Only",
+            address="reviewer@kernel.org",
+        )
+    )
+    session.commit()
+    return rows
+
+
+def test_maintainer_activity_has_distinct_counts_and_working_profile_links(
+    client, session, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from mimir.maintainer_directory import maintainer_path
+    from mimir.web.routes import dashboards
+
+    rows = [
+        {**row, "name": row["name"] or row["address"]}
+        for row in _seed_activity_profiles(session)
+    ]
+    monkeypatch.setattr(
+        dashboards,
+        "most_active_subsystems_global",
+        lambda *a, **kw: [
+            SimpleNamespace(
+                name="ACTIVITY PROFILES", inbox_name="alpha", message_count=10
+            )
+        ],
+    )
+    calls = []
+
+    def snapshot(session, **kwargs):
+        calls.append(kwargs)
+        return [
+            *rows,
+            {
+                "address": "bad/name@kernel.org",
+                "name": "Unaddressable",
+                "message_count": 999,
+                "review_count": 8,
+            },
+        ]
+
+    monkeypatch.setattr(dashboards, "most_active_maintainers", snapshot, raising=False)
+    page = _page(client)
+    assert calls == [{"days": 7, "limit": 12, "compute_on_miss": False}]
+    assert (
+        page.find("h2", id="maintainer-activity").text()
+        == "Maintainer activity this week"
+    )
+    table = page.find("table", cls="front-maintainers")
+    assert [h.text() for h in table.find("thead").find_all("th")] == [
+        "Maintainer",
+        "Messages",
+        "Review trailers",
+    ]
+    rendered = table.find("tbody").find_all("tr")
+    assert len(rendered) == 2
+    for expected, row in zip(rows, rendered, strict=True):
+        link = row.find("a")
+        assert link.text() == expected["name"]
+        assert link.attrs["href"] == maintainer_path(expected["address"])
+        assert client.get(link.attrs["href"]).status_code == 200
+        assert [int(cell.text().replace(",", "")) for cell in row.find_all("td")] == [
+            expected["message_count"],
+            expected["review_count"],
+        ]
+    assert table.find_all("kernel") == []
+    headings = [h.attrs.get("id") for h in page.find_all("h2")]
+    assert (
+        headings.index("subsystems")
+        < headings.index("maintainer-activity")
+        < headings.index("inboxes")
+    )
+    explanation = page.find("p", cls="front-maintainer-note").text()
+    for phrase in (
+        "once across lists",
+        "seven days",
+        "Reviewed-by",
+        "Acked-by",
+        "Tested-by",
+        "carried forward",
+    ):
+        assert phrase in explanation
+
+
+def test_warmed_maintainer_snapshot_changes_the_next_origin_response(client, session):
+    from mimir.maintainer_activity import most_active_maintainers
+    from mimir.models import ArticleTrailer, SubsystemMaintainer
+
+    rows = _seed_activity_profiles(session)
+    sub_id = session.scalar(select(SubsystemMaintainer.subsystem_id).limit(1))
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub_id, role="M", name="Invalid", address="bad/name@kernel.org"
+        )
+    )
+    for n, address in enumerate(
+        [
+            rows[0]["address"],
+            rows[1]["address"],
+            "reviewer@kernel.org",
+            "bad/name@kernel.org",
+        ]
+    ):
+        article = _post(session, f"activity-{n}@test", ["alpha", "beta"], hours_ago=1)
+        article.author = f"Author <{address}>"
+        if n == 1:
+            session.add(
+                ArticleTrailer(
+                    article_id=article.id,
+                    role="Reviewed-by",
+                    name="Alice",
+                    address=rows[0]["address"],
+                    address_normalized=rows[0]["address"],
+                )
+            )
+    session.commit()
+    warmed = most_active_maintainers(session, force=True)
+    assert {row["address"] for row in warmed} == {row["address"] for row in rows}
+    before = client.get("/")
+    assert before.status_code == 200
+    table = parse(before.get_data(as_text=True)).find("table", cls="front-maintainers")
+    assert [int(c.text()) for c in table.find_all("td")] == [1, 1, 1, 0]
+    assert len(table.find_all("a")) == 2
+
+    article = _post(session, "activity-new@test", ["alpha", "beta"], hours_ago=1)
+    article.author = f"Alice <{rows[0]['address']}>"
+    session.commit()
+    most_active_maintainers(session, force=True)
+    after = client.get("/")
+    assert [
+        int(c.text())
+        for c in parse(after.get_data(as_text=True))
+        .find("table", cls="front-maintainers")
+        .find_all("td")
+    ] == [2, 1, 1, 0]
+    assert (
+        before.headers["Cache-Control"]
+        == after.headers["Cache-Control"]
+        == "public, max-age=300"
+    )
+    for response in (before, after):
+        assert "ETag" not in response.headers
+        assert "Last-Modified" not in response.headers
+
+
+def test_cold_maintainer_activity_omits_section_without_activity_scans(client, session):
+    from sqlalchemy import event
+
+    from mimir.extensions import engine
+    from mimir.maintainer_activity import most_active_maintainers
+
+    statements = []
+
+    def capture(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement.lower())
+
+    event.listen(engine, "before_cursor_execute", capture)
+    try:
+        page = _page(client)
+    finally:
+        event.remove(engine, "before_cursor_execute", capture)
+    assert statements
+    assert page.find_all("h2", id="maintainer-activity") == []
+    for sql in statements:
+        assert "article_trailers" not in sql
+        assert "subsystem_maintainers" not in sql
+        assert re.search(r"\bmailmap\b", sql) is None
+        assert re.search(r"\bauthor\b", sql) is None
+    assert most_active_maintainers(session, force=True) == []
+    assert _page(client).find_all("h2", id="maintainer-activity") == []
+
+
+@pytest.mark.parametrize(
+    "rows",
+    [
+        [],
+        [
+            {
+                "address": "bad/name@kernel.org",
+                "name": "Bad",
+                "message_count": 1,
+                "review_count": 0,
+            }
+        ],
+    ],
+)
+def test_maintainer_activity_omits_the_whole_section_when_empty(
+    client, monkeypatch, rows
+):
+    from mimir.web.routes import dashboards
+
+    monkeypatch.setattr(
+        dashboards, "most_active_maintainers", lambda *a, **kw: rows, raising=False
+    )
+    page = _page(client)
+    assert page.find_all("h2", id="maintainer-activity") == []
+    assert page.find_all("table", cls="front-maintainers") == []

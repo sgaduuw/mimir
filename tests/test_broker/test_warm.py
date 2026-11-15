@@ -946,3 +946,52 @@ def test_broker_client_warm_subsystem_round_trip(seeded_db):
     assert isinstance(result, dict)
     assert "warmed" in result and "elapsed_ms" in result and "errors" in result
     assert result["errors"] == []
+
+
+def test_activity_slow_target_warms_cache_through_real_broker(seeded_db):
+    from datetime import UTC, datetime, timedelta
+
+    from mimir.cli.cache import _build_fast_global_targets, _build_slow_global_targets
+    from mimir.maintainer_activity import most_active_maintainers
+    from mimir.models import Article
+    from tests.test_maintainer_directory import _add_subsystem
+
+    label = "most_active_maintainers (7d)"
+    assert label not in dict(_build_fast_global_targets())
+    labels = list(dict(_build_slow_global_targets()))
+    assert labels.index(label) < labels.index("maintainer_review_counts")
+    with seeded_db() as session:
+        _add_subsystem(session, "ACTIVITY", "Maintained", [("M", "A", "a@example.com")])
+        session.add(
+            Article(
+                message_id="warm-activity",
+                author="a@example.com",
+                date=datetime.now(UTC) - timedelta(hours=1),
+            )
+        )
+        session.commit()
+        assert most_active_maintainers(session, compute_on_miss=False) == []
+    socket_path = short_socket_path("warm-activity")
+    with broker_running(socket_path):
+        client = BrokerClient(socket_path)
+        try:
+            result = client.call(WarmGlobalRequest(targets=[label], priority=1))
+        finally:
+            client.close()
+        assert result["warmed"] == [label]
+        assert result["errors"] == []
+        # Broker cache writes are queued; drain its writer before the reader.
+        from mimir.broker.writes import WriteOp
+
+        _context.get_active_writer().submit(
+            WriteOp(label="barrier", fn=lambda conn: None)
+        ).result()
+    with seeded_db() as session:
+        assert most_active_maintainers(session, compute_on_miss=False) == [
+            {
+                "address": "a@example.com",
+                "name": "A",
+                "message_count": 1,
+                "review_count": 0,
+            }
+        ]
