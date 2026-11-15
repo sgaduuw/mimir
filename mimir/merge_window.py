@@ -316,11 +316,11 @@ def _compute(session: Session) -> MergeWindow:
         )
         # A cover names the posting unless it is an `rfc` or `resend`
         # one and a queued patch carries a stored `vN`.
-        # _covers returns the rank and nonempty cover tuple together.
-        cover = covers.get(posting)
+        # `_covers` stores rank and cover as a pair, so a cover implies a rank.
+        rank, cover = covers.get(posting, (None, None))
         representatives[posting] = (
-            cover[1]
-            if cover is not None and cover[0][0] <= first_rank[0]
+            cover
+            if cover and rank[0] <= first_rank[0]
             else (first.id, first.subject, first.author, first.date)
         )
     nameless = {
