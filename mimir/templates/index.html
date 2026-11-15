@@ -75,6 +75,27 @@
   </ul>
   {% endif %}
 
+  {% if maintainer_activity %}
+  <section id="maintainer-activity-section" aria-labelledby="maintainer-activity">
+    <h2 id="maintainer-activity">Maintainer activity this week</h2>
+    <p class="front-maintainer-note">Ranked by messages, counted once across lists in the last seven days.
+      Review trailers count Reviewed-by, Acked-by and Tested-by entries on messages
+      from the same period, including attestations carried forward from earlier reviews.</p>
+    <table class="front-maintainers">
+      <thead><tr><th scope="col">Maintainer</th><th scope="col" class="count">Messages</th><th scope="col" class="count">Review trailers</th></tr></thead>
+      <tbody>
+        {% for m in maintainer_activity %}
+        <tr>
+          <th scope="row"><a href="{{ m.path }}">{{ m.name or m.address }}</a></th>
+          <td class="count">{{ m.message_count|format_count }}</td>
+          <td class="count">{{ m.review_count|format_count }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </section>
+  {% endif %}
+
   <h2 id="inboxes">All {{ inbox_summaries|length }} inboxes</h2>
   {% if inbox_summaries %}
   <div class="front-controls" data-filter-controls hidden>

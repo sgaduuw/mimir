@@ -1215,6 +1215,11 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
   .front-subsystems > li { break-inside: avoid; }
 }
 
+/* Maintainer names can be long addresses; keep both count columns readable. */
+.front-maintainer-note { color: var(--pico-muted-color); font-size: .85rem; }
+.front-maintainers th[scope="row"] { font-weight: 400; overflow-wrap: anywhere; }
+.front-maintainers th[scope="row"] a { display: inline-flex; align-items: center; min-height: 2.75rem; }
+
 /* One line per inbox, three columns wide. */
 .front-controls { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem 1rem; margin-bottom: 1rem; }
 .front-controls[hidden] { display: none; }
