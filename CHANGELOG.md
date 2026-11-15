@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-16
+
+### Added
+
+- The front page shows up to twelve current maintainers with the most messages authored in the past seven days, alongside counts of Reviewed-by, Acked-by and Tested-by trailers carried by messages in that window. Cross-posts count once, kernel mailmap aliases fold into current maintainer identities, and names link to maintainer profiles. The section appears after slow cache warming (#1202).
+
 ## [4.1.0] - 2026-11-15
 
 ### Fixed
@@ -6827,7 +6833,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.2.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
