@@ -76,7 +76,9 @@ def _identify(job: _Job) -> None:
         job.threshold = _BrokerRequest.timeout
         job.description = repr(job.line[:80])
         return
-    entry = _DISPATCH.get(fields.get("op"))
+    op = fields.get("op")
+    # A missing/null op is deliberately unknown and uses the base timeout.
+    entry = _DISPATCH.get(op) if op is not None else None
     job.threshold = (entry[0] if entry is not None else _BrokerRequest).timeout
     job.description = describe_request(fields)
 

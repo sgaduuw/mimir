@@ -115,7 +115,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 
-from mimir.config import Settings
+from mimir.config import IMPOSSIBLE_KEY, OVERFLOW_KEY, Settings
 
 logger = logging.getLogger(__name__)
 
@@ -154,8 +154,6 @@ BURST_SECONDS = 10
 MAX_UNLISTED_BUCKETS = 256
 # A bucket idle this long (and refilled) carries no state: drop it.
 _IDLE_DROP_SEC = 600
-OVERFLOW_KEY = "(other crawlers)"
-IMPOSSIBLE_KEY = "(impossible headers)"
 
 # Shared memory layout: a header marking the slots initialised, then
 # one (tokens, stamp) pair per fixed bucket.
