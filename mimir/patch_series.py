@@ -476,9 +476,11 @@ def posting_version(cover_subject, patch_subjects, stored=None) -> str | None:
     base = cover.version if cover is not None else stored
     mine = _explicit_version(cover_subject)
     theirs = {_explicit_version(s) for s in patch_subjects}
-    if mine is None or len(theirs) != 1 or None in theirs:
+    if mine is None or len(theirs) != 1:
         return base
     (version,) = theirs
+    if version is None:
+        return base
     return version if int(version[1:]) > int(mine[1:]) else base
 
 

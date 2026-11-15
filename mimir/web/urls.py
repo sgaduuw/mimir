@@ -46,6 +46,7 @@ def _get_inbox_or_404(session: Session, name: str) -> Inbox:
     inbox = _find_inbox(session, name)
     if inbox is None:
         abort(404)
+    # abort raises for a missing row, so callers receive an Inbox, never None.
     return inbox
 
 
