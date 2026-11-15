@@ -316,6 +316,7 @@ def _compute(session: Session) -> MergeWindow:
         )
         # A cover names the posting unless it is an `rfc` or `resend`
         # one and a queued patch carries a stored `vN`.
+        # `_covers` stores rank and cover as a pair, so a cover implies a rank.
         rank, cover = covers.get(posting, (None, None))
         representatives[posting] = (
             cover

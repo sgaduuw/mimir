@@ -794,6 +794,9 @@ def thread_view(
             # Line counts only once every file has one: a posting the
             # backfill has not reached in full would show a part as the
             # total.
+            # extract_touched_paths produces paired counts, and every writer
+            # persists them together: a present insertion count also proves a
+            # deletion count, while the unfinished backfill has both as None.
             counted = bool(files) and all(ins is not None for _, ins, _ in files)
             series_totals = (
                 len(ranks),

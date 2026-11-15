@@ -342,7 +342,11 @@ def _posting(subject: str | None) -> tuple[int, int, str, str] | None:
     patch = parse_in_series_patch_subject(subject)
     if patch is None:
         return None
-    version = _bracket_version(patch_bracket(subject)[0])
+    # A parsed in-series patch requires a subject and the shared patch bracket.
+    assert subject is not None
+    bracket = patch_bracket(subject)
+    assert bracket is not None
+    version = _bracket_version(bracket[0])
     return patch.position, patch.total, version, patch.canonical_subject
 
 
@@ -585,6 +589,8 @@ def in_series_link(
     ):
         return None
     parsed = parse_cover_letter(unfold(cover.subject))
+    # Both cover_of_patch return paths select a successfully parsed cover.
+    assert parsed is not None
     return series_key(parsed.title, cover.author), parsed.version
 
 

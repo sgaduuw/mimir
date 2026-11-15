@@ -7,6 +7,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from mimir._inbox_name import INBOX_NAME_RE
 from mimir._outbound import validate_outbound_url
 
+# Labels of the crawler gate's own shared buckets (`mimir.web.crawler_budget`).
+# Defined here so settings can reserve them for both key-producing inputs.
+OVERFLOW_KEY = "(other crawlers)"
+IMPOSSIBLE_KEY = "(impossible headers)"
+
 # Project root: <root>/mimir/config.py → parent → parent. Resolving
 # follows symlinks so a container running mimir from a bind-mounted
 # read-only volume still gets a sane absolute path. NB: this assumes a
@@ -816,6 +821,19 @@ class Settings(BaseSettings):
     # worker at their share / web_workers, so this must match the real
     # worker count; the other buckets are shared by all workers (#1026).
     web_workers: int = Field(default=1, ge=1, validation_alias="WORKERS")
+
+    @field_validator("crawler_ua_budgets", "crawler_ua_markers")
+    @classmethod
+    def _validate_crawler_bucket_names(cls, v):
+        # Listed names and lowercased marker tokens share the internal labels'
+        # namespace. The regex prefix starts with a letter, so only an entire
+        # marker equal to a label can produce its leading '(' character.
+        reserved = sorted(
+            name for name in v if name.lower() in {OVERFLOW_KEY, IMPOSSIBLE_KEY}
+        )
+        if reserved:
+            raise ValueError(f"crawler bucket names are reserved: {reserved}")
+        return v
 
     @field_validator("crawler_ua_budgets")
     @classmethod

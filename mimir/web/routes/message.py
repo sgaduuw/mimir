@@ -155,6 +155,8 @@ def message(
             else None
         )
         if window is not None:
+            # Only the aggregate-backed branch above can create a window.
+            assert agg is not None
             thread = window.rows
             thread_total = agg.total
             thread_max_date = agg.last_activity or article.date
@@ -188,6 +190,8 @@ def message(
 
         base = _site_base()
         canonical_url = _canonical_url_for(article, all_links, base=base)
+        # Membership above guarantees at least this inbox in the canonical links.
+        assert canonical_url is not None
 
         # Consolidate onto the whole-thread view when this message is
         # actually rendered there. Most replies are a line or two, so
@@ -636,11 +640,12 @@ def message(
             thread_link_url += thread_link_anchor
 
     # Summary line for the closed-state fold ("23 messages, 5 authors, 2h ago").
-    thread_summary = (
-        thread_summary_from(agg.authors, agg.last_activity, agg.total)
-        if window is not None
-        else _thread_summary(thread_nodes)
-    )
+    if window is not None:
+        # Window construction requires the thread-wide aggregate snapshot.
+        assert agg is not None
+        thread_summary = thread_summary_from(agg.authors, agg.last_activity, agg.total)
+    else:
+        thread_summary = _thread_summary(thread_nodes)
 
     # Parent URL for the hunk-anchored quote renderer: the message
     # this article replies to. When the parent is in-scope (i.e. in

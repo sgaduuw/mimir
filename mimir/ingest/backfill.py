@@ -170,6 +170,8 @@ def backfill_canonicals(
         nonlocal batch_payloads, unflushed
         after = None
         if run is not None and unflushed:
+            # unflushed increments only when cursor takes a persisted Article.id.
+            assert cursor is not None
             after = backfill_runs.advance(run.id, cursor, unflushed)
         if batch_payloads or after is not None:
             _submit_canonical_batch(writer, batch_payloads, after=after).result(
