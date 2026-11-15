@@ -299,6 +299,12 @@ guarantee. New owners enter when the cached directory refreshes. The profile
 route checks current `M:` existence before reading either cache, so removed
 owners return 404 even while old entries survive.
 
+The front page's maintainer activity section comes from a second slow global
+target, `most_active_maintainers (7d)`, cached under
+`most_active_maintainers:v1:7:<rules-version>` with the same TTL and refresh
+window. The web only reads that cache, so the section is absent after a deploy
+or a rules reload until the next slow warm run fills it.
+
 Requests only read these count entries. A missing or expired entry uses the
 profile's alphabetical inbox list without counts. A present map, including an
 empty one, supplies both the displayed inboxes and the header total because
