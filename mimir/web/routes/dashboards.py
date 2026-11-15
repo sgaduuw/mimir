@@ -30,6 +30,11 @@ from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.maintainer_activity import most_active_maintainers
+from mimir.maintainer_directory import (
+    is_addressable_maintainer_address,
+    maintainer_path,
+)
 from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_index
 from mimir.subsystems import (
@@ -94,7 +99,8 @@ FRONT_PAGE_BUSIEST = 6
 @bp_web.route("/")
 def index():
     """Front page: header figures, the busiest inboxes this month, the
-    active subsystems this week, and one line per inbox. Pinned inboxes
+    active subsystems and maintainer activity this week, and one line per inbox.
+    Pinned inboxes
     (settings.pinned_inboxes) stay first in config order; the rest follow
     alphabetically.
 
@@ -163,6 +169,15 @@ def index():
         active_subsystems = [
             s for s in active_subsystems if is_addressable_subsystem_name(s.name)
         ]
+        # The warmer supplies current M: identities. Recheck the profile route
+        # predicate, without rebuilding the directory or scanning activity here.
+        maintainer_activity = [
+            {**row, "path": maintainer_path(row["address"])}
+            for row in most_active_maintainers(
+                session, days=7, limit=12, compute_on_miss=False
+            )
+            if is_addressable_maintainer_address(row["address"])
+        ]
     busiest = sorted(
         (s for s in inbox_summaries if s["messages_30d"]),
         key=lambda s: (-s["messages_30d"], s["name"]),
@@ -175,6 +190,7 @@ def index():
         active_24h=sum(1 for s in inbox_summaries if s["active_24h"]),
         recent_total=cached_recent_message_total(),
         active_subsystems=active_subsystems,
+        maintainer_activity=maintainer_activity,
         current_inbox=None,
         canonical_url=base + "/",
         page_json_ld=_json_ld_index(base, inboxes),
