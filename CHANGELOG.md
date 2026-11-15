@@ -11,6 +11,16 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [4.1.0] - 2026-11-15
+
+### Fixed
+
+- `CRAWLER_UA_BUDGETS` and `CRAWLER_UA_MARKERS` now refuse `(impossible headers)` and `(other crawlers)` case-insensitively, the labels of the crawler gate's own shared buckets. A crawler with such a key was charged to the impossible-header bucket, or caused HTTP 500 responses when that bucket was disabled; such a configuration now fails at startup (#1196).
+
+### Changed
+
+- The broker now writes every thread's stack to its log the first time it reports a job as stuck, the same dump SIGUSR1 gives, so a hang is on record without an operator signalling the broker before a restart. Repeat reports for the same job do not dump again (#1195).
+
 ## [4.0.2] - 2026-11-14
 
 ### Fixed
@@ -6817,7 +6827,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.0.2...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.1.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

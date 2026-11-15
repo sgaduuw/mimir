@@ -20,10 +20,19 @@ The threshold is the op's own `timeout` ClassVar, the same value
 broker reports it" are one predicate. Requests are named with
 `protocol.describe_request`, the function the client's timeout error
 uses, so the two log lines can be matched.
+
+The first WARNING for a job also dumps every thread's stack, the same
+dump SIGUSR1 gives. #1123 left that dump to an operator sending the
+signal before restarting, and on 2026-11-14 the restart came first,
+so the stacks of four hung workers were lost (#1195). Later WARNINGs
+for the same job do not dump again: a three-hour hang would otherwise
+write a full dump every interval.
 """
 
+import faulthandler
 import json
 import logging
+import sys
 import threading
 import time
 from dataclasses import dataclass
@@ -67,7 +76,9 @@ def _identify(job: _Job) -> None:
         job.threshold = _BrokerRequest.timeout
         job.description = repr(job.line[:80])
         return
-    entry = _DISPATCH.get(fields.get("op"))
+    op = fields.get("op")
+    # A missing/null op is deliberately unknown and uses the base timeout.
+    entry = _DISPATCH.get(op) if op is not None else None
     job.threshold = (entry[0] if entry is not None else _BrokerRequest).timeout
     job.description = describe_request(fields)
 
@@ -81,6 +92,9 @@ class InFlightJobs:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._jobs: dict[str, _Job] = {}
+        # Where the first-report stack dump goes; None is stderr (the
+        # broker's log), read at dump time. A test sets a real file.
+        self.dump_file = None
 
     def start(self, worker_tag: str, line: bytes) -> None:
         job = _Job(worker_tag=worker_tag, line=line, started=time.monotonic())
@@ -111,15 +125,19 @@ class InFlightJobs:
                 if now - job.started >= floor
             ]
         due: list[tuple[str, _Job]] = []
+        first_report = False
         for thread_name, job in old:
             # Only this thread writes `threshold`, `description` and
             # `warned_at`; workers only add and remove whole jobs.
             if job.threshold is None:
                 _identify(job)
+            # Identification sets a timeout even for malformed or unknown ops.
+            assert job.threshold is not None
             if now - job.started < job.threshold:
                 continue
             if job.warned_at is not None and now - job.warned_at < repeat_sec:
                 continue
+            first_report = first_report or job.warned_at is None
             job.warned_at = now
             due.append((thread_name, job))
         for thread_name, job in due:
@@ -131,6 +149,15 @@ class InFlightJobs:
                 now - job.started,
                 job.threshold,
                 job.description,
+            )
+        if first_report:
+            # One dump covers every thread, so jobs crossing their
+            # threshold in the same check share it. faulthandler writes
+            # from C without taking Python locks, so a deadlocked
+            # thread cannot block it.
+            logger.warning("broker watchdog: dumping all thread stacks to stderr")
+            faulthandler.dump_traceback(
+                file=self.dump_file or sys.stderr, all_threads=True
             )
         return len(due)
 

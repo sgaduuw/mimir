@@ -130,6 +130,8 @@ def _lookup_global(raw: str | None):
         if not links:
             abort(404)
     inbox_name = _canonical_inbox_name(article, links)
+    # Canonical selection returns None only for the empty links rejected above.
+    assert inbox_name is not None
     return redirect(_msg_url(article, inbox_name), code=301)
 
 
@@ -142,8 +144,8 @@ def message_id_lookup_inbox(inbox_name: str, message_id: str):
     user's explicit choice of inbox; the destination page's
     `<link rel="canonical">` still points at the canonical for
     search engines. 301 because the target is stable."""
-    message_id = normalise_message_id(message_id)
-    if message_id is None:
+    normalized_id = normalise_message_id(message_id)
+    if normalized_id is None:
         abort(404)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
@@ -151,7 +153,7 @@ def message_id_lookup_inbox(inbox_name: str, message_id: str):
             select(Article)
             .join(ArticleList, ArticleList.article_id == Article.id)
             .where(
-                Article.message_id == message_id,
+                Article.message_id == normalized_id,
                 ArticleList.inbox_id == inbox.id,
             )
         ).scalar_one_or_none()
