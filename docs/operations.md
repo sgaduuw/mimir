@@ -264,8 +264,9 @@ fields, proxy-supplied country and ASN, and their trust boundaries.
 
 For a broker job that hangs, see
 [Diagnosing a stuck broker](../deploy/README.md#diagnosing-a-stuck-broker):
-the broker warns while the job runs past its client timeout, and `SIGUSR1`
-dumps every thread's stack without stopping it.
+the broker warns while the job runs past its client timeout, dumps every
+thread's stack with its first warning, and `SIGUSR1` takes another dump without
+stopping it.
 
 To investigate broker memory retention, set `TRACEMALLOC_INTERVAL_SECONDS`
 on the broker to a positive interval in seconds, then restart it. For example,
