@@ -137,8 +137,10 @@ after the bounded shutdown joins, `incomplete cache reply drain` reports survivi
 cache workers and pending requests. Its `cache_pending` count includes requests
 still queued for dispatch when SIGTERM stopped the cache workers.
 
-Before restarting a broker with a stuck job, dump every thread's Python stack
-to its log. The broker keeps running:
+The first `broker stuck job` warning for a job also dumps every thread's
+Python stack to the broker's log, once per job. If that dump is missing (a
+broker older than 4.1.0, or a hang the watchdog has not reported yet), take one
+by hand before restarting. The broker keeps running:
 
 ```sh
 docker compose kill -s SIGUSR1 mimir-broker
