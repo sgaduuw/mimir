@@ -155,6 +155,44 @@ def test_job_past_its_client_timeout_is_warned_about_and_repeated(
             c.close()
 
 
+def test_first_stuck_report_dumps_every_stack_once(
+    seeded_db, tmp_path, blocking_warm_subsystem
+):
+    """#1195: the stacks must be on record without an operator sending
+    SIGUSR1. The first report dumps every thread, including the hung
+    handler's frame; repeats of the same job do not dump again."""
+    started, release = blocking_warm_subsystem
+    sp = short_socket_path("wd-dump")
+    with broker_running(sp) as server, open(tmp_path / "dump", "w+") as dump:
+        jobs = server.in_flight
+        jobs.dump_file = dump
+        c = BrokerClient(sp)
+        try:
+            with pytest.raises(BrokerUnavailable):
+                c.call(
+                    WarmSubsystemRequest(inbox_name="lkml", subsystem_id=42),
+                    timeout=0.1,
+                )
+            assert started.wait(5)
+            with jobs._lock:
+                (job,) = jobs._jobs.values()
+            limit = WarmSubsystemRequest.timeout
+
+            assert jobs.check(60, now=job.started + limit - 1) == 0
+            dump.seek(0)
+            assert dump.read() == ""  # precondition: nothing dumped early
+
+            assert jobs.check(60, now=job.started + limit + 1) == 1
+            assert jobs.check(60, now=job.started + limit + 62) == 1
+        finally:
+            release.set()
+            c.close()
+        dump.seek(0)
+        text = dump.read()
+    assert len(re.findall(r"^Current thread ", text, re.MULTILINE)) == 1
+    assert re.search(r"line \d+ in blocked$", text, re.MULTILINE)
+
+
 def test_watchdog_thread_reports_a_running_job_repeatedly(
     seeded_db, monkeypatch, caplog, blocking_warm_subsystem
 ):
