@@ -590,3 +590,34 @@ def test_maintainers_only_rpc_preserves_every_tree_cadence(
                 assert state is None
             else:
                 assert aware_utc(state.last_walked_at) == timestamp
+
+
+@pytest.mark.parametrize("reloaded", [True, False])
+def test_update_mainline_warms_activity_only_after_a_reload(monkeypatch, reloaded):
+    """A reload moves every activity cache key; the web reads them cache-only,
+    so the handler refills them at once instead of waiting for the slow warm."""
+    from mimir import mainline
+    from mimir.broker.handlers import maintenance, warm
+
+    monkeypatch.setattr(
+        mainline,
+        "update_mainline",
+        lambda **_: mainline.UpdateMainlineResult(maintainers_ran=reloaded),
+    )
+    warmed = []
+    monkeypatch.setattr(
+        warm,
+        "_run_targets",
+        lambda targets, **_: (
+            warmed.extend(label for label, _ in targets) or ([], [], 0, [])
+        ),
+    )
+
+    reply = maintenance.handle_update_mainline(UpdateMainlineRequest())
+
+    assert reply.ok
+    assert warmed == (
+        ["most_active_subsystems_global (7d)", "most_active_maintainers (7d)"]
+        if reloaded
+        else []
+    )
