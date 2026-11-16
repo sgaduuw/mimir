@@ -13,8 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- The Releases pages share a Merge window and History tab bar. A release's page links the neighbouring releases the history lists, skipping releases the history leaves out, and the newest links on to the current merge window. The merge window and release pages open with a short list of links to their sections.
-- Section pages (the directories, maintainer profiles, the Releases pages and subsystem dashboards) carry a breadcrumb, and the `h` key goes to the breadcrumb's parent. It used to do nothing outside an inbox.
+- The Releases pages share a Merge window and History tab bar. A release's page links the neighbouring releases the history lists, labelled Older and Newer, above its heading and again after its messages; it skips releases the history leaves out, and the newest links on to the current merge window. The merge window and release pages open with a short list of links to their sections.
+- The directories, maintainer profiles, release pages and subsystem dashboards carry a breadcrumb. The `h` key goes to the page's parent there and on the merge window and release history, which rely on their tabs instead of a breadcrumb. It used to do nothing outside an inbox.
 
 ### Changed
 

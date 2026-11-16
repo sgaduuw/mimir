@@ -631,7 +631,10 @@ nav .subsystems-dd details[open] ~ ul { display: flex; }
    a tap would hide them from the readers who land on a thread (#891).
    2.75rem is the 44 px touch target. Colours are Pico's. */
 .site-nav .nav-sections { margin-right: auto; }
-.site-nav a.nav-section { color: var(--pico-color); }
+/* Pico sets --pico-color to the primary on every <a>, so a colour here
+   would change nothing. Weight marks the section; aria-current="page"
+   keeps Pico's own underlined look, so the two stay distinct. */
+.site-nav a.nav-section { font-weight: 600; }
 .inbox-nav {
   position: relative;
   border-block: var(--pico-border-width) solid var(--pico-muted-border-color);
@@ -649,7 +652,6 @@ nav .subsystems-dd details[open] ~ ul { display: flex; }
   .site-nav a,
   .inbox-nav a,
   .inbox-nav summary { display: flex; align-items: center; min-height: 2.75rem; }
-  .inbox-nav .nav-long { display: none; }
   /* The panel spans the inbox row under it rather than running off the
      right edge from wherever the label wrapped to. */
   .inbox-nav .subsystems-dd { position: static; }

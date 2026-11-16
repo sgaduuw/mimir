@@ -1068,7 +1068,7 @@ def test_message_page_keeps_a_maintainer_who_has_no_address(client, tmp_path):
         # The site nav links the directory root by design; an empty address
         # must not build the same href as a profile link in the header.
         header = re.sub(
-            r'<nav class="site-nav">.*?</nav>', "", html, count=1, flags=re.DOTALL
+            r'<nav class="site-nav"[^>]*>.*?</nav>', "", html, count=1, flags=re.DOTALL
         )
         assert 'href="/maintainers/"' not in header
 

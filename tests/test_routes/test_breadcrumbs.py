@@ -51,8 +51,6 @@ def test_the_h_key_goes_where_the_breadcrumb_says(client, subsystem, monkeypatch
     monkeypatch.setattr(settings, "site_name", "Archive Under Test")
     dashboard = subsystem_path("alpha", subsystem.name)
     expected = {
-        "/merge-window": "/",
-        "/merge-window/history": "/merge-window",
         "/subsystems/": "/",
         "/subsystems/a/": "/subsystems/",
         "/maintainers/": "/",
@@ -74,6 +72,20 @@ def test_the_h_key_goes_where_the_breadcrumb_says(client, subsystem, monkeypatch
             assert trail[0] == ("Archive Under Test", "/"), path
         assert "Ratatoskr" not in str(trail), path
     assert seen == {path: (up, up) for path, up in expected.items()}
+
+
+def test_the_releases_tab_pages_set_crumbs_for_h_but_show_no_trail(client):
+    """On the two tab pages the nav and the tabs already say where the
+    reader is, so the trail is not rendered; `crumbs` is still set, so
+    the `h` key keeps its parent."""
+    seen = {}
+    for path in ("/merge-window", "/merge-window/history"):
+        html = client.get(path).get_data(as_text=True)
+        seen[path] = (_nav_up(html), 'aria-label="breadcrumb"' in html)
+    assert seen == {
+        "/merge-window": ("/", False),
+        "/merge-window/history": ("/merge-window", False),
+    }
 
 
 def test_the_last_crumb_is_the_page_and_not_a_link(client, subsystem):

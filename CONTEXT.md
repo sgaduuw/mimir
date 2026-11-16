@@ -1728,7 +1728,9 @@ Section pages declare their breadcrumb as a top-level
 top-level `set` is visible to `base.html`, which derives the `h`
 key's `data-nav-up` from the same list, so the trail and the key
 cannot disagree about a page's parent. Pages without `crumbs` keep
-the inbox-root rule.
+the inbox-root rule. The merge window and release history set
+`crumbs` for the key but do not render the trail: the nav and the
+Releases tabs already say where the reader is.
 
 ### Most active threads (`/`)
 

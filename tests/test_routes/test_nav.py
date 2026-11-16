@@ -8,7 +8,9 @@ from tests.test_routes._helpers import _ingest_one_article
 
 
 def _nav(html: str) -> str:
-    return re.search(r'<nav class="site-nav">(.*?)</nav>', html, re.DOTALL).group(1)
+    return re.search(r'<nav class="site-nav"[^>]*>(.*?)</nav>', html, re.DOTALL).group(
+        1
+    )
 
 
 def _inbox_nav(html: str) -> str | None:

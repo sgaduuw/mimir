@@ -136,7 +136,7 @@
        mostly arrive on a thread from a search engine and never see the front
        page (#891), so the sections have to be reachable from where they land.
        The second is the list the page belongs to, only inside an inbox. #}
-    <nav class="site-nav">
+    <nav class="site-nav" aria-label="Site">
       <ul>
         <li>{% call nav_link(url_for('web.index')) %}<strong>{{ site_name }}</strong>{% endcall %}</li>
       </ul>
@@ -156,7 +156,7 @@
       </ul>
     </nav>
     {% if current_inbox %}
-    <nav class="inbox-nav" aria-label="{{ current_inbox }}">
+    <nav class="inbox-nav" aria-label="{{ current_inbox }} list">
       <ul>
         <li>{% call nav_link('/' ~ current_inbox ~ '/') %}<strong>{{ current_inbox }}</strong>{% endcall %}</li>
         <li>{% call nav_link('/' ~ current_inbox ~ '/today') %}today{% endcall %}</li>
@@ -168,10 +168,11 @@
            thread routes already computed for their headers (absent
            elsewhere, so only the index links show). There is one menu, so
            its out-of-band refresh has a single target (#892). The label
-           names the list because the top row has a site-wide Subsystems. #}
+           names the list because the top row has a site-wide Subsystems,
+           on phones too, where the two rows sit closest; the row wraps. #}
         {% from "_subsystems_dd_menu.html" import subsystems_dd_menu %}
         <li class="subsystems-dd">
-          <details class="dropdown"><summary>subsystems<span class="nav-long"> in {{ current_inbox }}</span></summary></details>
+          <details class="dropdown"><summary>subsystems in {{ current_inbox }}</summary></details>
           {{ subsystems_dd_menu(subsystem_hits, current_inbox) }}
         </li>
       </ul>
