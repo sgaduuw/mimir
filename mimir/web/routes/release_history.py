@@ -27,13 +27,28 @@ def release_history_index():
     )
 
 
+def _neighbours(catalog, release) -> tuple[str | None, str | None]:
+    """The listed releases either side of this one in the catalog, which
+    is newest first. Listed by `recorded_history`, the history table's own
+    predicate, so the pager reaches exactly the releases the table and
+    the sitemap advertise, never a thin one they leave out. Cached state
+    only, like the index: deciding never starts a walk."""
+    listed = {r.tag for r, _, _ in history.recorded_history(catalog).listed}
+    index = catalog.index(release)
+    newer = next((r.tag for r in reversed(catalog[:index]) if r.tag in listed), None)
+    older = next((r.tag for r in catalog[index + 1 :] if r.tag in listed), None)
+    return older, newer
+
+
 @bp_web.route(history.MERGE_WINDOW_HISTORY_PATH + "/<tag>")
 def release_history_detail(tag):
     if not history.is_release_tag(tag):
         abort(404)
-    release = next((r for r in history.release_catalog() if r.tag == tag), None)
+    catalog = history.release_catalog()
+    release = next((r for r in catalog if r.tag == tag), None)
     if release is None:
         abort(404)
+    older_release, newer_release = _neighbours(catalog, release)
     raw_page = request.args.get("page", "1")
     if not raw_page.isascii() or not raw_page.isdecimal() or len(raw_page) > 9:
         abort(404)
@@ -49,6 +64,9 @@ def release_history_detail(tag):
                 "release_history_detail.html",
                 release=release,
                 unavailable=True,
+                older_release=older_release,
+                newer_release=newer_release,
+                release_path=history.release_history_path,
                 current_inbox=None,
                 canonical_url=_site_base() + history.release_history_path(tag),
             ),
@@ -68,6 +86,9 @@ def release_history_detail(tag):
     return render_template(
         "release_history_detail.html",
         release=release,
+        older_release=older_release,
+        newer_release=newer_release,
+        release_path=history.release_history_path,
         facts=facts,
         links=links,
         rows=rows,

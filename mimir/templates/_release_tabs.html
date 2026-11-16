@@ -1,0 +1,11 @@
+{# The Releases section's two pages, as underline tabs. `active` is
+   "merge-window" or "history"; a release's own page passes "history"
+   with `on_page=false`, so the tab reads as its section without claiming
+   to be the page (aria-current="page" only where the link IS the page,
+   #988). #}
+{% macro release_tabs(active, on_page=true) -%}
+<nav class="release-tabs" aria-label="Releases">
+  <a href="{{ url_for('web.merge_window_page') }}"{% if active == 'merge-window' %} aria-current="page"{% endif %}>Merge window</a>
+  <a href="{{ url_for('web.release_history_index') }}"{% if active == 'history' %}{% if on_page %} aria-current="page"{% else %} class="release-tab-section"{% endif %}{% endif %}>History</a>
+</nav>
+{%- endmacro %}

@@ -2,6 +2,8 @@
 {% from "_pill.html" import status_pill %}
 {% from "_lifecycle_badges.html" import badges %}
 {% from "_sparkline.html" import spark_bars %}
+{% from "_breadcrumb.html" import breadcrumb %}
+{% set crumbs = [(inbox_name, '/' ~ inbox_name ~ '/'), ('subsystems', inbox_name|subsystem_index_url), (subsystem.name|subsystem_label, none)] %}
 {% block title %}{{ subsystem.name|subsystem_label }} | {{ inbox_name }} | {{ site_name }}{% endblock %}
 {% block meta_description %}MAINTAINERS subsystem dashboard for {{ subsystem.name|subsystem_label }} on {{ inbox_name }}: recent patches and maintainer ownership.{% endblock %}
 {% block content %}
@@ -18,7 +20,7 @@
 <div class="subsystem-dashboard">
   <header class="subsystem-header">
     <div>
-      <p class="subsystem-breadcrumb"><a href="/{{ inbox_name }}/">{{ inbox_name }}</a> / <a href="{{ inbox_name|subsystem_index_url }}">subsystems</a></p>
+      {{ breadcrumb(crumbs) }}
       <h1>{{ subsystem.name|subsystem_label }}</h1>
       {{ status_pill(subsystem.status) }}
     </div>

@@ -1,10 +1,12 @@
 {% extends "base.html" %}
 {% from "_search_field.html" import search_field %}
 {% from "_activity_rows.html" import subsystem_row, maintainer_row %}
+{% from "_breadcrumb.html" import breadcrumb %}
+{% set crumbs = [(site_name, url_for('web.index')), (kind|capitalize, root_path if letter else none)] + ([(letter_label, none)] if letter else []) %}
 {% block title %}{{ title }}{% if letter %}: {{ letter_label }}{% endif %} | {{ site_name }}{% endblock %}
 {% block content %}
 <section class="directory">
-  <nav aria-label="breadcrumb"><ul><li><a href="/">Ratatoskr</a></li><li>{% if letter %}<a href="{{ root_path }}">{{ kind }}</a>{% else %}{{ kind }}{% endif %}</li>{% if letter %}<li>{{ letter_label }}</li>{% endif %}</ul></nav>
+  {{ breadcrumb(crumbs) }}
   <h1>{{ title }}{% if letter %}: {{ letter_label }}{% endif %}</h1>
   <p>{{ total|format_count }} current {{ kind }}. {% if not show_rows %}Search all entries or choose an initial.{% endif %}</p>
   <form method="get" action="{{ root_path }}" role="search">

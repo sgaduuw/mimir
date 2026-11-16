@@ -1711,6 +1711,27 @@ not just `/`. A `current_inbox` context processor injects the active
 inbox name into every template render so the nav doesn't have to
 receive it explicitly per view.
 
+The nav is two rows. `.site-nav` holds the site's sections
+(Subsystems, Maintainers, Releases) on every page, because readers
+land on a thread from a search engine and never see `/` (#891); an
+earlier single row only showed site-wide links once the reader was
+inside an inbox. `.inbox-nav` holds the list's own links and appears
+only inside an inbox. There is no phone menu toggle: three section
+links fit a phone on a line of their own, and a toggle would hide
+them from exactly those readers. A section link is aria-current only
+on its own URL; on the pages under it (a release under Releases, a
+profile under Maintainers) it gets the `nav-section` class instead,
+keeping #988's rule that aria-current means "this link is this page".
+
+Section pages declare their breadcrumb as a top-level
+`{% set crumbs = [...] %}` (`_breadcrumb.html`). A child template's
+top-level `set` is visible to `base.html`, which derives the `h`
+key's `data-nav-up` from the same list, so the trail and the key
+cannot disagree about a page's parent. Pages without `crumbs` keep
+the inbox-root rule. The merge window and release history set
+`crumbs` for the key but do not render the trail: the nav and the
+Releases tabs already say where the reader is.
+
 ### Most active threads (`/`)
 
 `active_threads(session, days, limit)` powers the landing page's "most

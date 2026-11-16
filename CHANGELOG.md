@@ -11,6 +11,19 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- The Releases pages share a Merge window and History tab bar. A release's page links the neighbouring releases the history lists, labelled Older and Newer, above its heading and again after its messages; it skips releases the history leaves out, and the newest links on to the current merge window. The merge window and release pages open with a short list of links to their sections.
+- The directories, maintainer profiles, release pages and subsystem dashboards carry a breadcrumb. The `h` key goes to the page's parent there and on the merge window and release history, which rely on their tabs instead of a breadcrumb. It used to do nothing outside an inbox.
+
+### Changed
+
+- The site navigation is two rows. The top row links Subsystems, Maintainers and Releases on every page, so readers who land on a thread can reach the directories; before, the directories were linked only from the front page. Inside an inbox a second row holds the list's dashboard, today, yesterday and its subsystems menu, now labelled "subsystems in <list>" and listing both the list's active subsystems and the site-wide directory. The "Merge window" nav link is now "Releases". The phone menu toggle is gone: the section links take their own line on a phone.
+
+### Fixed
+
+- The subsystem and maintainer directory breadcrumbs named a hard-coded site instead of the configured `SITE_NAME`.
+
 ## [5.0.0] - 2026-11-16
 
 ### Added
