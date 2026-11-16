@@ -18,7 +18,11 @@ changes, not internal refactors. Categories: **Added**,
 ### Changed
 
 - Per-inbox subsystem URLs use `/subsystems/`; the old `/subsystem/` paths redirect permanently while preserving query strings. Root route names are reserved for the application, so operators must check configured and stored inbox names before upgrading. The pre-upgrade checker reports collisions without changing them (#1206).
-- Weekly subsystem activity caches retain every match instead of truncating each inbox and the global ranking at 100. Front-page display limits stay unchanged; aggregate message totals now include contributions previously excluded by that cutoff (#1206).
+- Weekly subsystem activity caches retain every match instead of truncating each inbox and the global ranking at 100. Front-page display limits stay unchanged; aggregate message totals now include contributions previously excluded by that cutoff. Per-inbox subsystem indexes show the busiest 100 with the full active count and a link to the global directory (#1206).
+
+### Fixed
+
+- Activity caches refill after a MAINTAINERS reload instead of leaving subsystem and maintainer activity unavailable until the next scheduled slow warm (#1206).
 
 ## [4.2.1] - 2026-11-16
 
