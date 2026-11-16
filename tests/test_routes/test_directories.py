@@ -252,4 +252,29 @@ def test_directory_search_does_not_match_hidden_address(client, monkeypatch):
     )
     monkeypatch.setattr(filters, "_is_allowlisted", lambda address: False)
     page = parse(client.get("/maintainers/?q=hidden").get_data(as_text=True))
-    assert page.find("tbody", id="directory-list").find_all("tr") == []
+    assert page.find_all("table", cls="directory-table") == []
+
+
+@pytest.mark.parametrize("kind", ["subsystems", "maintainers"])
+def test_empty_directory_search_hides_table_and_local_controls(client, kind):
+    page = parse(client.get(f"/{kind}/?q=no-such-entry").get_data(as_text=True))
+    assert f"No matching {kind}." in page.text()
+    assert page.find_all("table", cls="directory-table") == []
+    assert page.find_all("div", cls="front-controls") == []
+    assert page.find("form", role="search").attrs["action"] == f"/{kind}/"
+
+
+@pytest.mark.parametrize("kind", ["subsystems", "maintainers"])
+@pytest.mark.parametrize("suffix", ["a", "a/", "z/"])
+def test_letter_search_redirects_to_global_search_preserving_query(
+    client, kind, suffix
+):
+    query = "?q=foo%20bar&x=%2F&x=2"
+    response = client.get(f"/{kind}/{suffix}" + query)
+    assert response.status_code == 301
+    assert response.headers["Location"] == f"/{kind}/" + query
+    result = client.get(response.headers["Location"])
+    assert result.status_code == 200
+    page = parse(result.get_data(as_text=True))
+    assert page.find("input", name="q").attrs["value"] == "foo bar"
+    assert "No matching" in page.text()
