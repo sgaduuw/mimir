@@ -9,6 +9,9 @@
   {% for hit in hits or [] if hit.name | is_addressable_subsystem %}
   {% if loop.index <= 8 %}<li>{{ subsystem_link(hit.name, inbox_name) }}</li>{% endif %}
   {% endfor %}
-  <li><a href="{{ subsystem_index_path(inbox_name) }}"{% if request.path == subsystem_index_path(inbox_name) %} aria-current="page"{% endif %}><em>all subsystems</em></a></li>
+  {# Two indexes, each named for its scope: this list's active subsystems,
+     and the site-wide directory the top row's Subsystems also opens. #}
+  <li class="dd-index"><a href="{{ subsystem_index_path(inbox_name) }}"{% if request.path == subsystem_index_path(inbox_name) %} aria-current="page"{% endif %}><em>active on {{ inbox_name }}</em></a></li>
+  <li class="dd-index"><a href="{{ subsystem_directory_path() }}"><em>all subsystems, every list</em></a></li>
 </ul>
 {%- endmacro %}

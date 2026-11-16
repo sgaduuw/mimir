@@ -77,11 +77,11 @@ def test_nav_dropdown_follows_an_in_thread_htmx_swap(client, tmp_path):
     assert "/alpha/subsystems/bcachefs/" in menu
 
 
-def test_phone_menu_holds_the_one_target_the_partial_refreshes(client, tmp_path):
-    """#988: on phones the subsystems menu lives inside the collapsible nav
-    menu. The swap only works if the page has exactly one element with the
-    partial's out-of-band id, and that element sits in the list the menu
-    toggle opens, so the refresh lands there on phone and desktop alike."""
+def test_inbox_row_holds_the_one_target_the_partial_refreshes(client, tmp_path):
+    """#988, #892: the swap only works if the page has exactly one element
+    with the partial's out-of-band id, and that element sits in the inbox
+    row's subsystems menu, which is the same element on phone and desktop
+    (no second copy in a phone menu), so the refresh lands where it shows."""
     _, url = _ingest_one_article(tmp_path, "alpha", "dd-phone@example.com")
     page = client.get(url).get_data(as_text=True)
     partial = client.get(url, headers={"HX-Request": "true"}).get_data(as_text=True)
@@ -93,15 +93,15 @@ def test_phone_menu_holds_the_one_target_the_partial_refreshes(client, tmp_path)
     assert oob_ids == ["subsystems-dd-menu"]
     assert re.findall(r'\bid="subsystems-dd-menu"', page) == ['id="subsystems-dd-menu"']
 
-    assert '<details class="nav-toggle">' in page, "no phone menu toggle in the nav"
-    # `.nav-toggle[open] ~ ul` reaches only siblings: following the toggle
-    # in document order is not enough, a wrapper would leave it unopenable.
-    menu = re.search(
-        r'<details class="nav-toggle">.*?</details>\s*(<ul class="nav-menu">)',
+    row = re.search(r'<nav class="inbox-nav"', page)
+    assert row, "no inbox row in the page"
+    rs, re_ = _element_at(page, row.start())
+    ts, _ = _by_id(page, "subsystems-dd-menu")
+    assert rs < ts < re_, "the OOB target is outside the inbox row"
+    # `details[open] ~ ul` reaches only siblings: the menu must directly
+    # follow the label's <details>, or a tap could never open it.
+    assert re.search(
+        r'<details class="dropdown">.*?</details>\s*<ul id="subsystems-dd-menu"',
         page,
         re.DOTALL,
     )
-    assert menu, "the menu list does not directly follow the toggle"
-    ms, me = _element_at(page, menu.start(1))
-    ts, _ = _by_id(page, "subsystems-dd-menu")
-    assert ms < ts < me, "the OOB target is outside the phone menu"
