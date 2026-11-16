@@ -421,24 +421,24 @@ def test_maintainer_activity_has_distinct_counts_and_working_profile_links(
         page.find("h2", id="maintainer-activity").text()
         == "Maintainer activity this week"
     )
-    table = page.find("table", cls="front-maintainers")
-    assert [h.text() for h in table.find("thead").find_all("th")] == [
-        "Maintainer",
-        "Messages",
-        "Review trailers",
-    ]
-    rendered = table.find("tbody").find_all("tr")
+    listing = page.find("ul", cls="front-maintainers")
+    rendered = listing.find_all("li")
     assert len(rendered) == 2
     for expected, row in zip(rows, rendered, strict=True):
         link = row.find("a")
         assert link.text() == expected["name"]
         assert link.attrs["href"] == maintainer_path(expected["address"])
         assert client.get(link.attrs["href"]).status_code == 200
-        assert [int(cell.text().replace(",", "")) for cell in row.find_all("td")] == [
-            expected["message_count"],
-            expected["review_count"],
-        ]
-    assert table.find_all("kernel") == []
+        count = row.find("span", cls="count").text()
+        assert int(count.replace(",", "")) == expected["message_count"]
+        meta = row.find("small", cls="front-row-meta").text()
+        assert re.fullmatch(r"([\d,]+) review trailers?", meta)
+        assert (
+            int(re.match(r"[\d,]+", meta)[0].replace(",", ""))
+            == (expected["review_count"])
+        )
+        assert row.find("svg", cls="bar-meter") is not None
+    assert listing.find_all("kernel") == []
     headings = [h.attrs.get("id") for h in page.find_all("h2")]
     assert (
         headings.index("subsystems")
@@ -455,6 +455,19 @@ def test_maintainer_activity_has_distinct_counts_and_working_profile_links(
         "carried forward",
     ):
         assert phrase in explanation
+
+
+def _activity_counts(response):
+    """Messages then review trailers, per rendered maintainer row."""
+    listing = parse(response.get_data(as_text=True)).find("ul", cls="front-maintainers")
+    counts = []
+    for li in listing.find_all("li"):
+        meta = li.find("small", cls="front-row-meta").text()
+        counts += [
+            int(li.find("span", cls="count").text().replace(",", "")),
+            int(re.match(r"[\d,]+", meta)[0].replace(",", "")),
+        ]
+    return counts
 
 
 def test_warmed_maintainer_snapshot_changes_the_next_origin_response(client, session):
@@ -493,21 +506,22 @@ def test_warmed_maintainer_snapshot_changes_the_next_origin_response(client, ses
     assert {row["address"] for row in warmed} == {row["address"] for row in rows}
     before = client.get("/")
     assert before.status_code == 200
-    table = parse(before.get_data(as_text=True)).find("table", cls="front-maintainers")
-    assert [int(c.text()) for c in table.find_all("td")] == [1, 1, 1, 0]
-    assert len(table.find_all("a")) == 2
+    assert _activity_counts(before) == [1, 1, 1, 0]
+    assert (
+        len(
+            parse(before.get_data(as_text=True))
+            .find("ul", cls="front-maintainers")
+            .find_all("a")
+        )
+        == 2
+    )
 
     article = _post(session, "activity-new@test", ["alpha", "beta"], hours_ago=1)
     article.author = f"Alice <{rows[0]['address']}>"
     session.commit()
     most_active_maintainers(session, force=True)
     after = client.get("/")
-    assert [
-        int(c.text())
-        for c in parse(after.get_data(as_text=True))
-        .find("table", cls="front-maintainers")
-        .find_all("td")
-    ] == [2, 1, 1, 0]
+    assert _activity_counts(after) == [2, 1, 1, 0]
     assert (
         before.headers["Cache-Control"]
         == after.headers["Cache-Control"]
@@ -569,4 +583,4 @@ def test_maintainer_activity_omits_the_whole_section_when_empty(
     )
     page = _page(client)
     assert page.find_all("h2", id="maintainer-activity") == []
-    assert page.find_all("table", cls="front-maintainers") == []
+    assert page.find_all("ul", cls="front-maintainers") == []

@@ -1206,7 +1206,7 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
 .front-card-count { text-align: left; font-size: 2rem; line-height: 1.2; margin: .25rem 0 0; }
 .front-card-spark { display: block; width: 100%; height: 24px; margin-top: .5rem; color: var(--pico-muted-color); }
 
-/* Active subsystems: name and inbox, a bar, the count. */
+/* Active subsystems and maintainer activity: name and meta, a bar, the count. */
 .front-subsystems > li { display: grid; grid-template-columns: minmax(0, 1fr) 8rem 3.5rem; align-items: center; gap: .75rem; min-height: 2.75rem; }
 .front-row-name { overflow-wrap: anywhere; }
 .front-row-meta { color: var(--pico-muted-color); margin-inline-start: .35rem; white-space: nowrap; }
@@ -1215,10 +1215,8 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
   .front-subsystems > li { break-inside: avoid; }
 }
 
-/* Maintainer names can be long addresses; keep both count columns readable. */
+/* Maintainer activity reuses the subsystem rows above; only the note is its own. */
 .front-maintainer-note { color: var(--pico-muted-color); font-size: .85rem; }
-.front-maintainers th[scope="row"] { font-weight: 400; overflow-wrap: anywhere; }
-.front-maintainers th[scope="row"] a { display: inline-flex; align-items: center; min-height: 2.75rem; }
 
 /* One line per inbox, three columns wide. */
 .front-controls { display: flex; flex-wrap: wrap; align-items: end; gap: .5rem 1rem; margin-bottom: 1rem; }
