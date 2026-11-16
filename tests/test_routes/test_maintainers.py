@@ -325,7 +325,8 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
         assert response.status_code == 200
 
         html = response.get_data(as_text=True)
-        urls = re.findall(r'href="(/maintainers/[^"]*)"', html)
+        # Profiles only: the nav's Maintainers link is the directory root.
+        urls = re.findall(r'href="(/maintainers/[^"]+)"', html)
         for i in range(len(unsupported)):
             assert f"Unsupported {i}" in html
 

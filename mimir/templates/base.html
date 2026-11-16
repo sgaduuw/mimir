@@ -1,11 +1,17 @@
 <!doctype html>
 {# Derive a sane "back out one level" target for the vim-style `h` key.
+   - A page that sets `crumbs` (see _breadcrumb.html): the breadcrumb's
+     last linked entry, so the key and the trail cannot disagree about
+     the parent. A child's top-level `set` is visible here.
    - On `/`: no parent, key is a no-op.
    - On the inbox dashboard `/<inbox>/`: parent is `/`.
    - On any other in-inbox page: parent is `/<inbox>/`.
    `current_inbox` is wired into every render via the context processor
    in mimir.web; `request.path` is Flask's stdlib var. #}
-{%- if current_inbox -%}
+{%- from "_breadcrumb.html" import breadcrumb_parent -%}
+{%- if crumbs is defined -%}
+  {%- set nav_up_url = breadcrumb_parent(crumbs) -%}
+{%- elif current_inbox -%}
   {%- set _inbox_root = '/' ~ current_inbox ~ '/' -%}
   {%- set nav_up_url = '/' if request.path == _inbox_root else _inbox_root -%}
 {%- endif -%}
@@ -118,40 +124,28 @@
   <main class="container">
     {# aria-current="page" only where the link IS this page (#988). #}
     {% macro nav_link(href) %}<a href="{{ href }}"{% if request.path == href %} aria-current="page"{% endif %}>{{ caller() }}</a>{% endmacro %}
+    {# A section link is the page on its own URL and marks the section on the
+       pages under it (a release under Releases, a profile under
+       Maintainers). Only the exact page gets aria-current="page" (#988). #}
+    {% macro section_link(href, label) -%}
+    {%- set _base = href.rstrip('/') -%}
+    {%- set _in = request.path.startswith(_base ~ '/') -%}
+    <a href="{{ href }}"{% if request.path == href %} aria-current="page"{% elif _in %} class="nav-section"{% endif %}>{{ label }}</a>
+    {%- endmacro %}
+    {# Two rows. The first is the site's sections, on every page: readers
+       mostly arrive on a thread from a search engine and never see the front
+       page (#891), so the sections have to be reachable from where they land.
+       The second is the list the page belongs to, only inside an inbox. #}
     <nav class="site-nav">
       <ul>
         <li>{% call nav_link(url_for('web.index')) %}<strong>{{ site_name }}</strong>{% endcall %}</li>
-        {% if current_inbox %}
-        <li>{% call nav_link('/' ~ current_inbox ~ '/') %}{{ current_inbox }}{% endcall %}</li>
-        {% endif %}
       </ul>
-      {% if current_inbox %}
-      {# Phones show the two links above plus this toggle; the lists after it
-         open with `.nav-toggle[open] ~ ul`, the same sibling trick as the
-         subsystems menu below, and for the same reason. Wider screens hide
-         the toggle and show everything. There is one subsystems menu either
-         way, so its out-of-band refresh has a single target (#892). #}
-      <details class="nav-toggle"><summary>menu</summary></details>
-      <ul class="nav-menu">
-        <li>{% call nav_link('/' ~ current_inbox ~ '/today') %}today{% endcall %}</li>
-        <li>{% call nav_link('/' ~ current_inbox ~ '/yesterday') %}yesterday{% endcall %}</li>
-        {# Tap or Enter toggles the <details> (CSS shows the sibling menu
-           when it is open); hover shows the menu directly. The menu is NOT
-           inside the <details>: a closed one never paints its content,
-           whatever the CSS says. `subsystem_hits` is what the message and
-           thread routes already computed for their headers (absent
-           elsewhere, so only the index link shows). #}
-        {% from "_subsystems_dd_menu.html" import subsystems_dd_menu %}
-        <li class="subsystems-dd">
-          <details class="dropdown"><summary>subsystems</summary></details>
-          {{ subsystems_dd_menu(subsystem_hits, current_inbox) }}
-        </li>
+      <ul class="nav-sections">
+        <li>{{ section_link(subsystem_directory_path(), 'Subsystems') }}</li>
+        <li>{{ section_link(maintainer_directory_path(), 'Maintainers') }}</li>
+        <li>{{ section_link(url_for('web.merge_window_page'), 'Releases') }}</li>
       </ul>
-      {% endif %}
       <ul>
-        {# The one site-wide page to browse; readers mostly arrive on a
-           thread from a search engine, never seeing the front page (#891). #}
-        <li><small>{% call nav_link(url_for('web.merge_window_page')) %}Merge window{% endcall %}</small></li>
         <li id="theme-control" hidden>
           <select id="theme-select" class="theme-select" aria-label="Color theme">
             <option value="system">System</option>
@@ -161,6 +155,28 @@
         </li>
       </ul>
     </nav>
+    {% if current_inbox %}
+    <nav class="inbox-nav" aria-label="{{ current_inbox }}">
+      <ul>
+        <li>{% call nav_link('/' ~ current_inbox ~ '/') %}<strong>{{ current_inbox }}</strong>{% endcall %}</li>
+        <li>{% call nav_link('/' ~ current_inbox ~ '/today') %}today{% endcall %}</li>
+        <li>{% call nav_link('/' ~ current_inbox ~ '/yesterday') %}yesterday{% endcall %}</li>
+        {# Tap or Enter toggles the <details> (CSS shows the sibling menu
+           when it is open); hover shows the menu directly. The menu is NOT
+           inside the <details>: a closed one never paints its content,
+           whatever the CSS says. `subsystem_hits` is what the message and
+           thread routes already computed for their headers (absent
+           elsewhere, so only the index links show). There is one menu, so
+           its out-of-band refresh has a single target (#892). The label
+           names the list because the top row has a site-wide Subsystems. #}
+        {% from "_subsystems_dd_menu.html" import subsystems_dd_menu %}
+        <li class="subsystems-dd">
+          <details class="dropdown"><summary>subsystems<span class="nav-long"> in {{ current_inbox }}</span></summary></details>
+          {{ subsystems_dd_menu(subsystem_hits, current_inbox) }}
+        </li>
+      </ul>
+    </nav>
+    {% endif %}
     {% block content %}{% endblock %}
     <footer>
       <hr>

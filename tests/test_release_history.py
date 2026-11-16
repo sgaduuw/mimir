@@ -1234,3 +1234,71 @@ def test_the_warm_links_refresh_writes_the_grouping(releases, seeded_db, monkeyp
     with seeded_db() as session:
         history.warm_release(session, release)
     assert cache.get(release.key + ":subsystems")["references"] == 4
+
+
+def test_release_pager_steps_through_the_releases_the_index_lists(
+    client, releases, seeded_db, monkeypatch
+):
+    """The pager on a release page links its neighbours among the releases
+    the history index lists (`recorded_history`), skipping one the index
+    leaves out, so it never opens a crawl path the index and the sitemap
+    do not advertise. Past the newest it leads to the current cycle."""
+    from mimir import release_history as history
+
+    path, baseline, patch, rc, final = releases
+    with Repo(str(path)) as repo:
+        later = add_commit(repo, b"Linus <linus@x>", [final], b"7.1", when=500000).id
+        repo.refs[b"refs/tags/v7.1"] = later
+        last = add_commit(repo, b"Linus <linus@x>", [later], b"7.2", when=600000).id
+        repo.refs[b"refs/tags/v7.2"] = last
+    monkeypatch.setattr(history, "_linus_path", lambda: path)
+    _record(seeded_db, patch, "art3@example.com")
+    _record(seeded_db, last, "art4@example.com")
+    for release in history.release_catalog():
+        history.release_data(release)
+
+    index = client.get(history.release_history_path()).get_data(as_text=True)
+    prefix = history.release_history_path() + "/"
+    listed = set(re.findall(re.escape(prefix) + r'(v[\d.]+)"', index))
+    # Precondition: v7.1 sits between two listed releases but is not one.
+    assert listed == {"v7.0", "v7.2"}
+
+    def pager(tag):
+        body = client.get(history.release_history_path(tag)).get_data(as_text=True)
+        nav = re.search(r'<nav class="release-pager"[^>]*>(.*?)</nav>', body, re.DOTALL)
+        return re.findall(r'<a href="([^"]+)"', nav.group(1))
+
+    mw = "/merge-window"
+    assert {tag: pager(tag) for tag in ("v7.0", "v7.1", "v7.2")} == {
+        "v7.0": [prefix + "v7.2"],
+        "v7.1": [prefix + "v7.0", prefix + "v7.2"],
+        "v7.2": [prefix + "v7.0", mw],
+    }
+
+
+def test_release_pages_carry_the_section_tabs(client, releases, monkeypatch):
+    """Both Releases pages show the same two tabs. The history tab is the
+    page on the index and only the section on a release's own page."""
+    from mimir import release_history as history
+
+    path = releases[0]
+    monkeypatch.setattr(history, "_linus_path", lambda: path)
+
+    def tabs(url):
+        body = client.get(url).get_data(as_text=True)
+        nav = re.search(r'<nav class="release-tabs"[^>]*>(.*?)</nav>', body, re.DOTALL)
+        return re.findall(r"<a ([^>]*)>", nav.group(1))
+
+    history_url = history.release_history_path()
+    assert tabs("/merge-window") == [
+        'href="/merge-window" aria-current="page"',
+        f'href="{history_url}"',
+    ]
+    assert tabs(history_url) == [
+        'href="/merge-window"',
+        f'href="{history_url}" aria-current="page"',
+    ]
+    assert tabs(history.release_history_path("v7.0")) == [
+        'href="/merge-window"',
+        f'href="{history_url}" class="release-tab-section"',
+    ]

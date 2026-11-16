@@ -152,7 +152,9 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 expect(page.locator("#msg")).to_have_attribute(
                     "data-article-id", str(article_id)
                 )
-                expect(page.locator("main > nav")).to_be_visible()
+                # The whole page came back: both nav rows, not a fragment.
+                expect(page.locator("main > nav.site-nav")).to_be_visible()
+                expect(page.locator("main > nav.inbox-nav")).to_be_visible()
                 expect_message(article_id, path)
                 assert "hx-request" not in restored.request.headers
                 assert restored.request.headers["hx-request-type"] == "full"
@@ -763,7 +765,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
                     "data-nav-up", f"/{inbox}/"
                 )
                 expect(
-                    page.locator(".site-nav > ul").first.locator("a").last
+                    page.locator(".inbox-nav > ul").first.locator("a").first
                 ).to_have_attribute("href", f"/{inbox}/")
                 expect(page.locator('link[rel="canonical"]')).to_have_attribute(
                     "href",
@@ -954,4 +956,39 @@ def test_a_revision_link_in_a_message_details_fragment_scrolls_in_place(
     finally:
         server.shutdown()
         thread.join()
+        server.server_close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_a_tap_on_the_inbox_rows_subsystems_label_opens_its_menu(
+    client, tmp_path, width
+):
+    """A real click, not a forced one: Playwright refuses a click whose
+    point lands on another element. On phones Pico left the <details>
+    inline around the 44 px flex summary, so the click landed on the
+    <details>, which does not toggle (seen while building the two-row
+    nav). Both rows must also fit the width without a sideways scroll."""
+    from tests.test_routes._helpers import _ingest_one_article
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    _, msg_url = _ingest_one_article(tmp_path, "alpha", "dd-tap@example.com")
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": width, "height": 800})
+            block_external_requests(page, base)
+            page.goto(base + msg_url)
+            menu = page.locator("#subsystems-dd-menu")
+            expect(menu).to_be_hidden()
+            page.locator(".inbox-nav .subsystems-dd summary").click(timeout=5000)
+            expect(menu).to_be_visible()
+            expect(menu.locator('a[href="/subsystems/"]')).to_be_visible()
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
         server.server_close()

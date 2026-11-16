@@ -1,9 +1,13 @@
 {% extends "base.html" %}
+{% from "_breadcrumb.html" import breadcrumb %}
+{% from "_release_tabs.html" import release_tabs %}
+{% set crumbs = [(site_name, url_for('web.index')), ('Releases', url_for('web.merge_window_page')), ('History', none)] %}
 {% block title %}Linux release history | {{ site_name }}{% endblock %}
 {% block meta_description %}Linux releases, release-candidate phases, commit counts, and recorded mailing-list references in each release.{% endblock %}
 {% block content %}
+{{ breadcrumb(crumbs) }}
+{{ release_tabs('history') }}
 <h1>Linux release history</h1>
-<p><a href="{{ url_for('web.merge_window_page') }}">Current merge window</a></p>
 <p>Release ranges follow Git ancestry from the previous final tag to the final tag.
   Dates use the annotated tag timestamp, or the commit timestamp for lightweight tags, in UTC.</p>
 {% if listed %}

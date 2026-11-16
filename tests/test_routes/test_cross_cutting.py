@@ -891,37 +891,26 @@ def _nav_merge_window_links(body):
     return re.findall(r'<a href="/merge-window"[^>]*>', nav)
 
 
-def _nav_right_items(body):
-    """Text of each item in the nav's right-hand list."""
-    nav = re.search(r'<nav class="site-nav">(.*?)</nav>', body, re.DOTALL).group(1)
-    right = re.findall(r"<ul>(.*?)</ul>", nav, re.DOTALL)[1]
-    return [
-        re.sub(r"<[^>]+>|\s+", " ", li).strip()
-        for li in re.findall(r"<li>(.*?)</li>", right, re.DOTALL)
-    ]
-
-
 def test_nav_links_the_merge_window_from_every_page(client, tmp_path, inbox_name):
     """A reader who lands on a thread from a search engine can reach the
-    merge window from the nav, not only from the front page (#891). The
-    link marks itself current on that page alone, and it is the only
-    item there: the inbox count and the "archive" label went, as the
-    count never rendered in production's web process (#891)."""
+    merge window from the nav, not only from the front page (#891). It is
+    the Releases section's link, and marks itself current on that page
+    alone."""
     _, msg_url = _ingest_one_article(tmp_path, inbox_name, "nav-mw@example.com")
     pages = ("/", f"/{inbox_name}/", msg_url, "/merge-window")
-    links = {
-        path: _nav_merge_window_links(client.get(path).data.decode()) for path in pages
-    }
+    bodies = {path: client.get(path).data.decode() for path in pages}
+    links = {path: _nav_merge_window_links(b) for path, b in bodies.items()}
     assert links == {
         "/": ['<a href="/merge-window">'],
         f"/{inbox_name}/": ['<a href="/merge-window">'],
         msg_url: ['<a href="/merge-window">'],
         "/merge-window": ['<a href="/merge-window" aria-current="page">'],
     }
-    bodies = {path: client.get(path).data.decode() for path in pages}
-    assert {path: _nav_right_items(b) for path, b in bodies.items()} == {
-        path: ["Merge window"] for path in pages
+    labels = {
+        path: re.findall(r'<a href="/merge-window"[^>]*>([^<]*)</a>', b)
+        for path, b in bodies.items()
     }
+    assert labels["/"] == ["Releases"]
     # The nav link replaced the front page's own prose link.
     assert len(re.findall(r'href="/merge-window"', bodies["/"])) == 1
 
