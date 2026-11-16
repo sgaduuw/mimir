@@ -278,3 +278,33 @@ def test_letter_search_redirects_to_global_search_preserving_query(
     page = parse(result.get_data(as_text=True))
     assert page.find("input", name="q").attrs["value"] == "foo bar"
     assert "No matching" in page.text()
+
+
+def test_directory_rows_memo_pins_only_warmed_rows_per_rules_version(monkeypatch):
+    from mimir.web.routes import directory_pages
+
+    version, built = ["v1"], []
+    result = [([{"name": "A"}], False)]
+    monkeypatch.setattr(directory_pages, "rules_version", lambda s: version[0])
+
+    def build(session):
+        built.append(1)
+        return result[0]
+
+    monkeypatch.setattr(directory_pages, "subsystem_directory_rows", build)
+
+    def rows():
+        return directory_pages._directory_rows("subsystems", None)
+
+    rows(), rows()
+    assert len(built) == 2  # cold activity is rebuilt until the warm lands
+    result[0] = ([{"name": "A"}], True)
+    rows(), rows()
+    assert len(built) == 3  # warmed rows are reused
+    version[0] = "v2"
+    rows()
+    assert len(built) == 4  # a reload invalidates
+    result[0] = ([], True)
+    version[0] = "v3"
+    rows(), rows()
+    assert len(built) == 6  # the mid-reload empty sentinel is never pinned
