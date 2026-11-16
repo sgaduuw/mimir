@@ -16,7 +16,7 @@ from sqlalchemy import DateTime, bindparam, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.dashboard import _inbox_first
+from mimir.dashboard import RECENT_INBOX_FIRST_BELOW_ARTICLES, _inbox_first
 from mimir.datetime_utils import coerce_dt
 from mimir.mailmap import identity_addresses, rules_version
 from mimir.models import Inbox, Subsystem
@@ -251,7 +251,7 @@ def active_reviewers_in_subsystem(
             """article_trailers t
                 JOIN articles a ON a.id = t.article_id
                 JOIN article_lists al ON al.article_id = a.id"""
-            if _inbox_first(inbox)
+            if _inbox_first(inbox, below_articles=RECENT_INBOX_FIRST_BELOW_ARTICLES)
             else """articles a INDEXED BY ix_articles_date
                 CROSS JOIN article_lists al ON al.article_id = a.id
                 CROSS JOIN article_trailers t ON t.article_id = a.id"""
