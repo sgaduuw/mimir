@@ -76,7 +76,7 @@ def test_dashboard_cached_header_layout_and_status_scope(client, dashboard_data)
         is False
     )
     assert 'width="100.0"' in body and 'width="25.0"' in body
-    assert 'href="/alpha/subsystem/"' in body
+    assert 'href="/alpha/subsystems/"' in body
     assert "private@x" not in body
     assert "unknown sender" in body
     assert ">fixes</a>" in body
@@ -92,7 +92,7 @@ def test_dashboard_empty_cached_inputs(client, dashboard_data):
     assert "0 messages" in body and "0 in the last 30 days" in body
     assert "No messages yet" in body
     assert "Since " not in body
-    assert 'href="/alpha/subsystem/"' in body
+    assert 'href="/alpha/subsystems/"' in body
 
 
 def test_recent_fragment_is_badge_free_and_does_not_fetch_status(client, monkeypatch):
@@ -149,7 +149,7 @@ def test_subsystem_bars_handle_empty_counts(client, dashboard_data, counts):
     for row, count in zip(data["most_active_subsystems_in_inbox"], counts, strict=True):
         row.message_count = count
     body = client.get("/alpha/").get_data(as_text=True)
-    assert 'href="/alpha/subsystem/"' in body
+    assert 'href="/alpha/subsystems/"' in body
     widths = [
         float(width)
         for width in re.findall(r'<rect class="bar-added" width="([^"]+)"', body)

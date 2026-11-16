@@ -77,6 +77,19 @@ The subsystem index lists addressable active subsystems in activity order,
 with seven-day message counts, proportional bars, maintainer summaries and
 last-activity dates. Its columns stack on phones. It can be empty before a
 slow cache-warming pass; a request never runs the activity aggregation.
+The global `/subsystems/` and `/maintainers/` directories include quiet entries
+and split by initial. Both landing pages offer search across all letters by
+name or visible maintainer address. Search results show up to 200 matches and
+ask readers to refine larger searches. They are noindex with the directory root
+as canonical. Search queries on letter URLs redirect to the directory-wide
+search, and empty results omit table controls. Within each letter, filtering
+and the A to Z / Most active
+toggle use the shared list controls. A cold activity cache leaves the metadata
+visible with an "Activity not available yet" note. Subsystems link to their
+busiest mirrored inbox, otherwise a mirrored MAINTAINERS `L:` contact; entries
+without either target remain unlinked. Maintainer activity counts weekly review
+trailers even for maintainers who authored no messages.
+
 Maintainer profiles collect activity across inboxes for each MAINTAINERS `M:`
 address. Their header shows initials and subsystem/inbox totals; lowercase
 subsystem cards carry status pills and stack on phones. Cards have no links
@@ -116,8 +129,12 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/<inbox>/<YYYY>/<MM>/<id>/attachment/<n>` | Download attachment |
 | `/<inbox>/<YYYY>/<MM>/<id>/attachment/<n>/preview` | Preview attachment |
 | `/<inbox>/series/<key>/diff?from=<vN>&to=<vM>&pos=<N>[&s=<head>]` | Compare a patch position across revisions; `pos=cover` compares cover letters; `s` names a series split off its key (unrelated postings under one cover title), absent for the key's first series |
-| `/<inbox>/subsystem/` | Active subsystem index |
-| `/<inbox>/subsystem/<name>/` | Subsystem dashboard |
+| `/<inbox>/subsystems/` | Active subsystem index |
+| `/<inbox>/subsystems/<name>/` | Subsystem dashboard |
+| `/subsystems/` | Global subsystem directory letter index |
+| `/subsystems/<letter>/` | All subsystems in that letter bucket, including quiet entries |
+| `/maintainers/` | Global current-maintainer directory letter index |
+| `/maintainers/<letter>/` | Current maintainers in that display-name bucket, with subsystem totals and weekly review trailers |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
 | `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
 | `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references; lists releases with references or pull requests to Linus |
@@ -267,7 +284,7 @@ their membership can be determined.
 | Path | Contents |
 | --- | --- |
 | `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root, `/merge-window`, `/llms.txt`, release-history index and closed releases with recorded references or pull requests to Linus |
+| `/meta-sitemap.xml` | Site root, directory hubs and their letter pages, `/merge-window`, `/llms.txt`, release-history index and closed releases with recorded references or pull requests to Linus |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |

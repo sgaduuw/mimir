@@ -154,7 +154,7 @@ def test_meta_sitemap_lastmod_is_global_max(client, monkeypatch):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 4
+    assert len(urls) == 6
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
     assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
@@ -1159,8 +1159,8 @@ def test_inbox_sitemap_lists_the_subsystem_index_and_active_subsystems(
         most_active_subsystems_in_inbox(s, inbox, days=7)
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
-    assert "<loc>http://localhost/alpha/subsystem/</loc>" in xml
-    assert "<loc>http://localhost/alpha/subsystem/bcachefs/</loc>" in xml
+    assert "<loc>http://localhost/alpha/subsystems/</loc>" in xml
+    assert "<loc>http://localhost/alpha/subsystems/bcachefs/</loc>" in xml
 
 
 def test_inbox_sitemap_omits_subsystems_rather_than_computing_on_a_cold_cache(
@@ -1186,12 +1186,12 @@ def test_inbox_sitemap_omits_subsystems_rather_than_computing_on_a_cold_cache(
     )
     # No warm step: the subsystem-activity cache is cold.
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
-    assert "/alpha/subsystem/bcachefs/" not in xml
+    assert "/alpha/subsystems/bcachefs/" not in xml
     # The index goes too. With nothing to list it renders a bare
     # "nothing active here", and advertising that to crawlers is the
     # thin-page trade this change set refuses elsewhere. It stays
     # linked from the dashboard, so it is still discoverable.
-    assert "<loc>http://localhost/alpha/subsystem/</loc>" not in xml
+    assert "<loc>http://localhost/alpha/subsystems/</loc>" not in xml
 
 
 # Real MAINTAINERS section titles, including the shapes that broke.
@@ -1237,7 +1237,7 @@ def test_sitemap_subsystem_url_matches_what_the_route_serves(
     )
     warm_subsystem_activity("alpha")
 
-    expected = f"/alpha/subsystem/{slug}/"
+    expected = f"/alpha/subsystems/{slug}/"
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     assert f"<loc>http://localhost{expected}</loc>" in xml
 
@@ -1294,8 +1294,8 @@ def test_unservable_subsystem_names_are_never_advertised(client, tmp_path, name)
     )
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
-    assert "/alpha/subsystem/" not in xml.replace(
-        "<loc>http://localhost/alpha/subsystem/</loc>", ""
+    assert "/alpha/subsystems/" not in xml.replace(
+        "<loc>http://localhost/alpha/subsystems/</loc>", ""
     ), "sitemap advertised a subsystem URL the route cannot serve"
 
     # EVERY surface that renders a subsystem name, not just the two the
@@ -1304,18 +1304,18 @@ def test_unservable_subsystem_names_are_never_advertised(client, tmp_path, name)
     # linking, which is how a guaranteed 404 stayed reachable from a page
     # that is itself a sitemap `<loc>`. Confirmed live on production
     # 2026-07-30 before this was fixed:
-    #   /linux-hyperv/subsystem/hpet%3A%09x86/ -> 404
+    #   /linux-hyperv/subsystems/hpet%3A%09x86/ -> 404
     surfaces = {
-        "subsystem index": "/alpha/subsystem/",
+        "subsystem index": "/alpha/subsystems/",
         "inbox dashboard": "/alpha/",
         "front page": "/",
         "message page": msg_url,
         "thread view": msg_url.rstrip("/") + "/t",
     }
     # Matches a link to a specific subsystem, NOT the bare
-    # `/alpha/subsystem/` index, which every inbox dashboard links on
+    # `/alpha/subsystems/` index, which every inbox dashboard links on
     # purpose and which is perfectly servable.
-    named_link = re.compile(r'href="/alpha/subsystem/[^"]+')
+    named_link = re.compile(r'href="/alpha/subsystems/[^"]+')
     for label, url in surfaces.items():
         resp = client.get(url)
         assert resp.status_code in (200, 301, 302), (
@@ -1358,7 +1358,7 @@ def test_sitemap_subsystem_lastmod_is_that_subsystems_last_activity(client, tmp_
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     block = re.search(
-        r"<url><loc>http://localhost/alpha/subsystem/bcachefs/</loc>"
+        r"<url><loc>http://localhost/alpha/subsystems/bcachefs/</loc>"
         r"<lastmod>(\d{4}-\d{2}-\d{2})</lastmod><priority>[^<]+</priority></url>",
         xml,
     )
@@ -1397,7 +1397,7 @@ def test_sitemap_does_not_duplicate_a_loc_for_case_variant_names(client, tmp_pat
     warm_subsystem_activity("alpha")
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
-    assert xml.count("<loc>http://localhost/alpha/subsystem/bcachefs/</loc>") == 1
+    assert xml.count("<loc>http://localhost/alpha/subsystems/bcachefs/</loc>") == 1
 
 
 def test_sitemap_uses_the_loops_own_inbox_not_the_activity_rows(
@@ -1432,8 +1432,8 @@ def test_sitemap_uses_the_loops_own_inbox_not_the_activity_rows(
     )
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
-    assert "<loc>http://localhost/alpha/subsystem/bcachefs/</loc>" in xml
-    assert "/beta/subsystem/" not in xml, "emitted another inbox's URL"
+    assert "<loc>http://localhost/alpha/subsystems/bcachefs/</loc>" in xml
+    assert "/beta/subsystems/" not in xml, "emitted another inbox's URL"
 
 
 def test_sitemap_page_width_stays_under_the_sqlite_bind_limit():
@@ -2266,19 +2266,19 @@ def test_subsystem_index_entry_is_its_canonical_dated_and_linked_back(client, tm
 
     xml = client.get("/alpha/sitemap.xml").get_data(as_text=True)
     entry = re.search(
-        r"<url><loc>([^<]*/alpha/subsystem/)</loc><lastmod>([^<]+)</lastmod>"
+        r"<url><loc>([^<]*/alpha/subsystems/)</loc><lastmod>([^<]+)</lastmod>"
         r"<priority>[^<]+</priority></url>",
         xml,
     )
     assert entry, "the subsystem index is listed without a <lastmod>"
     assert entry.group(2) == newest
 
-    index = client.get("/alpha/subsystem/").get_data(as_text=True)
+    index = client.get("/alpha/subsystems/").get_data(as_text=True)
     canonical = re.search(r'<link rel="canonical" href="([^"]+)"', index).group(1)
     assert canonical == entry.group(1)
 
-    page = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
-    assert 'href="/alpha/subsystem/"' in page
+    page = client.get("/alpha/subsystems/bcachefs/").get_data(as_text=True)
+    assert 'href="/alpha/subsystems/"' in page
 
 
 def _index_lastmods(client, index="/sitemap.xml") -> dict[str, str | None]:
@@ -2565,9 +2565,9 @@ def _expected_priority(path):
         return "1.0"
     if path.startswith("/merge-window/history/"):
         return "0.7"
-    if path.startswith("/maintainers/"):
+    if path.startswith(("/maintainers/", "/subsystems/")):
         return "0.7"
-    if re.fullmatch(r"/[^/]+/subsystem/.*", path):
+    if re.fullmatch(r"/[^/]+/subsystems/.*", path):
         return "0.9"
     if re.fullmatch(r"/[^/]+/", path):
         return "0.7"
@@ -2625,8 +2625,8 @@ def test_every_emitted_priority_matches_the_table(client, tmp_path):
     assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.2", "0.1"}
     assert any(p.endswith("/t") for p in seen), "no /t page crawled"
     assert any(p.startswith("/maintainers/") for p in seen)
-    assert "/alpha/subsystem/bcachefs/" in seen
-    assert "/alpha/subsystem/" in seen
+    assert "/alpha/subsystems/bcachefs/" in seen
+    assert "/alpha/subsystems/" in seen
 
 
 def _archive_lastmods(client, inbox):
@@ -3622,3 +3622,48 @@ def test_an_old_archive_files_index_date_outlives_the_hour(
     frozen_clock.tick(2 * _HOUR)
     _drop_index_cache()
     assert _index_lastmods(client)[child] == "2015-05-03"
+
+
+def test_directory_hub_letter_loc_link_and_canonical_are_identical(client, session):
+    import xml.etree.ElementTree as ET
+
+    from sqlalchemy import select
+
+    from mimir.directory_paths import (
+        maintainer_directory_path,
+        subsystem_directory_path,
+    )
+    from mimir.models import Inbox, SubsystemList
+    from tests.test_subsystems._helpers import _add_subsystem
+
+    sub = _add_subsystem(
+        session,
+        "Alpha & Beta",
+        "Maintained",
+        files=[],
+        maintainers=[("M", "Alice", "alice@example.com")],
+    )
+    alpha = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+    alpha.list_address = "alpha@example.com"
+    session.add(SubsystemList(subsystem_id=sub.id, address="alpha@example.com"))
+    session.commit()
+    response = client.get("/meta-sitemap.xml")
+    assert response.status_code == 200
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = {
+        node.text for node in ET.fromstring(response.data).findall("s:url/s:loc", ns)
+    }
+    for builder in (subsystem_directory_path, maintainer_directory_path):
+        for path in (builder(), builder("a")):
+            page = client.get(path)
+            assert page.status_code == 200
+            canonical = re.search(
+                r'<link rel="canonical" href="([^"]+)"', page.get_data(as_text=True)
+            )
+            assert canonical
+            assert canonical.group(1) == f"http://localhost{path}"
+            assert canonical.group(1) in locs
+        root_links = re.findall(
+            r'href="([^"]+)"', client.get(builder()).get_data(as_text=True)
+        )
+        assert builder("a") in root_links

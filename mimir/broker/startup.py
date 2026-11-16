@@ -18,6 +18,12 @@ logger = logging.getLogger("mimir.broker.server")
 def prepare_database(socket_path: Path) -> None:
     """Complete startup writes, then launch verification outside readiness."""
     schema_changed = _migrate_if_needed(socket_path)
+    # Check every boot, including deployments whose bootstrap sentinel exists.
+    from mimir.extensions import SessionLocal
+    from mimir.inboxes import validate_reserved_inboxes
+
+    with SessionLocal() as session:
+        validate_reserved_inboxes(session)
     _bootstrap_inboxes_if_needed(socket_path)
     _post_migrate_analyze_if_needed(socket_path, schema_changed)
     _backfill_thread_roots_if_needed(socket_path)

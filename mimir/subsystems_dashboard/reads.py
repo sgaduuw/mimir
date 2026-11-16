@@ -114,7 +114,7 @@ def active_threads_in_subsystem(
     `(inbox, subsystem, days, limit)` at the 1h per-subsystem
     dashboard TTL, the recursive CTE is too heavy for the 5min
     front-page real-time feel, and visitors landing on
-    `/<inbox>/subsystem/<name>/` are reading the page, not watching
+    `/<inbox>/subsystems/<name>/` are reading the page, not watching
     for live updates.
     """
 

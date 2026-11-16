@@ -11,6 +11,21 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-11-16
+
+### Added
+
+- Global subsystem and maintainer directories link from the front page, include quiet entries, and offer directory-wide search, per-letter filtering and alphabetical or activity sorting. Search matches names and visible maintainer addresses across all initials, with up to 200 results. Subsystem rows choose the busiest mirrored inbox or a mirrored MAINTAINERS list; maintainer rows show subsystem ownership and weekly review trailers, including reviewers who authored no messages (#1206).
+
+### Changed
+
+- Per-inbox subsystem URLs use `/subsystems/`; the old `/subsystem/` paths redirect permanently while preserving query strings. Root route names are reserved for the application, so operators must check configured and stored inbox names before upgrading. The pre-upgrade checker, `tools/check_inbox_namespace.py` (see the operations guide), reports collisions without changing them (#1206).
+- Weekly subsystem activity caches retain every match instead of truncating each inbox and the global ranking at 100. Front-page display limits stay unchanged; aggregate message totals now include contributions previously excluded by that cutoff. The new activity cache keys start empty, so run a slow cache warm right after upgrading; otherwise activity stays unavailable until the next scheduled slow warm. Per-inbox subsystem indexes show the busiest 100 with the full active count and a link to the global directory (#1206).
+
+### Fixed
+
+- Activity caches refill after a MAINTAINERS reload instead of leaving subsystem and maintainer activity unavailable until the next scheduled slow warm (#1206).
+
 ## [4.2.1] - 2026-11-16
 
 ### Fixed
@@ -6839,7 +6854,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.2.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.0.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

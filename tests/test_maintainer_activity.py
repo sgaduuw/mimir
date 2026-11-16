@@ -229,7 +229,7 @@ def test_cache_only_empty_force_days_and_warm_window(session, monkeypatch):
         rows = maintainer_activity.most_active_maintainers(session, force=True)
     assert len(rows) == 1
     entry = session.execute(
-        select(CacheEntry).where(CacheEntry.key.like("%most_active_maintainers:v1:7:%"))
+        select(CacheEntry).where(CacheEntry.key.like("%most_active_maintainers:v2:7:%"))
     ).scalar_one()
     assert 10795 <= entry.expires_at - cache._now() <= 10800
     monkeypatch.setattr(
@@ -480,8 +480,8 @@ def test_compute_has_constant_query_count_and_cache_only_two_reads(session):
     try:
         maintainer_activity.most_active_maintainers(session, force=True)
         assert (
-            len(statements) == 6
-        )  # version, directory, mailmap, authors, trailers, version
+            len(statements) == 7
+        )  # version, directory version, directory, mailmap, authors, trailers, version
         statements.clear()
         maintainer_activity.most_active_maintainers(session, compute_on_miss=False)
         assert len(statements) == 2  # version and cache only

@@ -8,9 +8,10 @@
 <section class="subsystem-index">
   <nav aria-label="breadcrumb"><ul><li><a href="/{{ inbox_name }}/">{{ inbox_name }}</a></li><li>subsystems</li></ul></nav>
   <h1>Active subsystems</h1>
+  <p class="directory-more"><a href="{{ subsystem_directory_path() }}">All subsystems across inboxes</a></p>
 
   {% if subsystems %}
-  <p class="subsystem-index-note">{{ subsystems|length }} subsystem{{ '' if subsystems|length == 1 else 's' }} with patch activity in the last 7 days, busiest first.
+  <p class="subsystem-index-note">{% if total_subsystems > subsystems|length %}Showing {{ subsystems|length }} of {{ total_subsystems|format_count }} subsystems{% else %}{{ subsystems|length }} subsystem{{ '' if subsystems|length == 1 else 's' }}{% endif %} with patch activity in the last 7 days, busiest first.
     Each links to a dashboard of patches, threads and reviewers.</p>
   {% set max_messages = subsystems|map(attribute='message_count')|max %}
   <table class="subsystem-index-table" role="table">
