@@ -1,7 +1,7 @@
 """Date-first shape of the subsystem dashboard reads (#1156).
 
 Active threads, daily volume and active reviewers filter by a short
-date window. For an inbox with `INBOX_FIRST_BELOW_ARTICLES` or more
+date window. For an inbox with `RECENT_INBOX_FIRST_BELOW_ARTICLES` or more
 articles they must walk `ix_articles_date` over the window, not every
 `article_lists` row of the inbox; smaller inboxes keep the inbox walk.
 Both shapes must return the same rows.
@@ -38,7 +38,7 @@ def _force_shape(monkeypatch, inbox_first):
     from mimir.subsystems_dashboard import reads, reviewers
 
     for mod in (reads, reviewers):
-        monkeypatch.setattr(mod, "_inbox_first", lambda _i: inbox_first)
+        monkeypatch.setattr(mod, "_inbox_first", lambda _i, **_kw: inbox_first)
 
 
 def _seed(s):
@@ -166,3 +166,30 @@ def test_reviewer_display_name_ties_resolve_to_the_newest_article(
         sub = s.execute(select(Subsystem)).scalars().one()
         out = active_reviewers_in_subsystem(s, alpha, sub, force=True)
     assert [r.name for r in out] == ["New Name"]
+
+
+@pytest.mark.parametrize("total", [None, 99_999, 100_000, 610_972])
+@pytest.mark.parametrize("fn,match", HELPERS, ids=IDS)
+def test_short_windows_choose_the_measured_size_boundary(
+    seeded_db, monkeypatch, total, fn, match
+):
+    """Short-window reads must not inherit the 180-day triage threshold."""
+    from mimir import dashboard
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: total)
+    with seeded_db() as s:
+        _seed(s)
+        s.commit()
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
+        inbox = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        subsystem = s.scalars(select(Subsystem)).one()
+        plan = plan_of(s, lambda: fn(s, inbox, subsystem, force=True), match)
+        # Long-window callers retain their established choice, including the
+        # unknown-size fallback. The optimization belongs to these reads only.
+        assert dashboard._inbox_first(inbox)
+    if total is None or total < 100_000:
+        assert "ix_articles_date" not in plan, plan
+        assert "ix_article_lists_inbox_id" in plan, plan
+    else:
+        assert "INDEX ix_articles_date" in plan, plan
+        assert "ix_article_lists_inbox_id" not in plan, plan
