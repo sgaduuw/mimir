@@ -636,6 +636,8 @@ def test_release_pull_cards_at_desktop_and_phone_widths(client, tmp_path):
 def test_maintainer_activity_layout_and_keyboard_profile_links(
     client, session, tmp_path, monkeypatch
 ):
+    from types import SimpleNamespace
+
     from mimir.maintainer_directory import maintainer_path
     from mimir.web.routes import dashboards
     from tests.test_routes.test_front_page import _seed_activity_profiles
@@ -648,6 +650,16 @@ def test_maintainer_activity_layout_and_keyboard_profile_links(
         for row in _seed_activity_profiles(session)
     ]
     monkeypatch.setattr(dashboards, "most_active_maintainers", lambda *a, **kw: rows)
+    # A subsystem section above, so the heading gap below it is measurable.
+    monkeypatch.setattr(
+        dashboards,
+        "most_active_subsystems_global",
+        lambda *a, **kw: [
+            SimpleNamespace(
+                name="ACTIVITY PROFILES", inbox_name="alpha", message_count=10
+            )
+        ],
+    )
     server = make_server("127.0.0.1", 0, client.application, threaded=True)
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -661,21 +673,28 @@ def test_maintainer_activity_layout_and_keyboard_profile_links(
                     )
                     blocked = block_external_requests(page, base)
                     page.goto(base + "/")
-                    section = page.locator("#maintainer-activity-section")
-                    expect(section.get_by_role("heading")).to_have_text(
+                    expect(page.locator("#maintainer-activity")).to_have_text(
                         "Maintainer activity this week"
                     )
-                    expect(section.locator("thead th")).to_have_text(
-                        ["Maintainer", "Messages", "Review trailers"]
+                    section = page.locator("ul.front-maintainers")
+                    expect(section.locator(".count")).to_have_text(["1,234", "56"])
+                    expect(section.locator(".front-row-meta")).to_have_text(
+                        ["0 review trailers", "12 review trailers"]
                     )
-                    expect(section.locator("tbody td")).to_have_text(
-                        ["1,234", "0", "56", "12"]
-                    )
+                    expect(section.locator(".bar-meter")).to_have_count(2)
                     assert page.evaluate(
                         "document.documentElement.scrollWidth <= innerWidth"
                     )
-                    assert section.locator("table").evaluate(
-                        "table => [...table.querySelectorAll('th, td')].every(cell => cell.scrollWidth <= cell.clientWidth + 1)"
+                    assert section.evaluate(
+                        "ul => [...ul.querySelectorAll('li > *')].every(cell => cell.scrollWidth <= cell.clientWidth + 1)"
+                    )
+                    # Pico spaces a heading only after a sibling list; the heading
+                    # must not sit flush against the subsystem rows above it.
+                    assert (
+                        page.evaluate(
+                            "() => document.querySelector('#maintainer-activity').getBoundingClientRect().top - document.querySelector('.front-subsystems:not(.front-maintainers)').getBoundingClientRect().bottom"
+                        )
+                        >= 16
                     )
                     screenshot = tmp_path / f"maintainer-activity-{width}-{theme}.png"
                     section.screenshot(path=str(screenshot))

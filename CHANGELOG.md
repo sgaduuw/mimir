@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [4.2.1] - 2026-11-16
+
+### Fixed
+
+- The front page's maintainer activity section sat flush against the subsystem list above it. It now uses the same bar rows and spacing as "Active subsystems this week", with the review-trailer count beside each name.
+
 ## [4.2.0] - 2026-11-16
 
 ### Added
@@ -6833,7 +6839,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.2.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v4.2.1...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
