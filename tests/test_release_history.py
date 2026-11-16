@@ -1265,14 +1265,26 @@ def test_release_pager_steps_through_the_releases_the_index_lists(
 
     def pager(tag):
         body = client.get(history.release_history_path(tag)).get_data(as_text=True)
-        nav = re.search(r'<nav class="release-pager"[^>]*>(.*?)</nav>', body, re.DOTALL)
-        return re.findall(r'<a href="([^"]+)"', nav.group(1))
+        navs = re.findall(
+            r'<nav class="release-pager"[^>]*>(.*?)</nav>', body, re.DOTALL
+        )
+        # Above the heading and again after the messages, the same both times.
+        assert len(navs) == 2 and navs[0] == navs[1], tag
+        return re.findall(r'<a href="([^"]+)">([^<]*)</a>', navs[0])
 
-    mw = "/merge-window"
+    # Labelled by what they move through, so they cannot be read as the
+    # page's own Previous page / Next page message paging.
+    def older(t):
+        return (prefix + t, f"&larr; Older: {t}")
+
+    def newer(t):
+        return (prefix + t, f"Newer: {t} &rarr;")
+
+    mw = ("/merge-window", "Current merge window &rarr;")
     assert {tag: pager(tag) for tag in ("v7.0", "v7.1", "v7.2")} == {
-        "v7.0": [prefix + "v7.2"],
-        "v7.1": [prefix + "v7.0", prefix + "v7.2"],
-        "v7.2": [prefix + "v7.0", mw],
+        "v7.0": [newer("v7.2")],
+        "v7.1": [older("v7.0"), newer("v7.2")],
+        "v7.2": [older("v7.0"), mw],
     }
 
 

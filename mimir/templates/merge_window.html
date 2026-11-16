@@ -1,6 +1,7 @@
 {% extends "base.html" %}
-{% from "_breadcrumb.html" import breadcrumb %}
 {% from "_release_tabs.html" import release_tabs %}
+{# Not rendered: the nav and the tabs already say where this is. Set for
+   the `h` key, which base.html derives from it. #}
 {% set crumbs = [(site_name, url_for('web.index')), ('Releases', none)] %}
 
 {% block title %}Linux merge window: patches queued in linux-next | {{ site_name }}{% endblock %}
@@ -17,7 +18,6 @@
 {% endmacro %}
 
 <section class="merge-window">
-{{ breadcrumb(crumbs) }}
 {{ release_tabs('merge-window') }}
 <h1>Linux merge window</h1>
 
@@ -48,12 +48,15 @@
 </p>
 
 {# While the window is open the pull requests are the news; otherwise
-   the queue is. The jump list follows the page's own order. #}
-{% if mw.queued %}
-{% set _pulls_jump = ('pull-requests-to-linus', 'Pull requests to Linus') %}
-{% set _queue_jump = [('queued', 'Queued in linux-next'), ('how-counted', 'How these are counted')] %}
+   the queue is. The jump list follows the page's own order and shows
+   only when there are at least two places to jump to: the pull requests
+   always have a heading, the queue only when something is queued. #}
+{% set _pulls_jump = [('pull-requests-to-linus', 'Pull requests to Linus')] %}
+{% set _queue_jump = [('queued', 'Queued in linux-next'), ('how-counted', 'How these are counted')] if mw.queued else [] %}
+{% set _jumps = _pulls_jump + _queue_jump if mw.window_open else _queue_jump + _pulls_jump %}
+{% if _jumps|length >= 2 %}
 <nav class="page-jump" aria-label="On this page"><ul>
-  {%- for anchor, label in ([_pulls_jump] + _queue_jump if mw.window_open else _queue_jump + [_pulls_jump]) %}
+  {%- for anchor, label in _jumps %}
   <li><a href="#{{ anchor }}">{{ label }}</a></li>
   {%- endfor %}
 </ul></nav>

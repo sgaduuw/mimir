@@ -15,8 +15,9 @@ subsystems the current message touches, the list's active subsystems, and the
 site-wide directory. On a phone the sections take a line of their own; nothing
 hides behind a menu. The Releases pages share a Merge window and History tab
 bar, and a release's page links the neighbouring releases the history lists.
-Section pages carry a breadcrumb from the site root, and the `h` key goes to
-the breadcrumb's last linked entry.
+The directories, maintainer profiles, release pages and subsystem dashboards
+carry a breadcrumb, and the `h` key goes to its last linked entry; the merge
+window and release history rely on their tabs, and `h` still goes up a level.
 
 Start at `/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and

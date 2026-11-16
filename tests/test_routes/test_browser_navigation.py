@@ -992,3 +992,96 @@ def test_a_tap_on_the_inbox_rows_subsystems_label_opens_its_menu(
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def _serve(client):
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    return server, worker, f"http://127.0.0.1:{server.server_port}"
+
+
+def _stop(server, worker):
+    server.shutdown()
+    worker.join(timeout=5)
+    server.server_close()
+
+
+def test_a_section_link_looks_different_from_an_unmarked_one(client, session):
+    """`nav-section` once set `color: var(--pico-color)`, which Pico points
+    at the primary on every <a>, so it rendered exactly like an unmarked
+    link and a class-presence test could not see it. Compare computed
+    styles in a real browser instead, on a page under each of two
+    sections, and against the aria-current look too."""
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    sub = Subsystem(name="ALPHA DRIVER", status="Maintained")
+    session.add(sub)
+    session.flush()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id, role="M", name="Alice", address="alice@kernel.org"
+        )
+    )
+    session.commit()
+    playwright = playwright_api()
+    server, worker, base = _serve(client)
+    style = """a => { const s = getComputedStyle(a);
+      return [s.color, s.fontWeight, s.textDecorationLine].join('|'); }"""
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": 1280, "height": 800})
+            block_external_requests(page, base)
+            looks = {}
+            for path, marked in (
+                ("/maintainers/alice@kernel.org", "/maintainers/"),
+                ("/merge-window/history", "/merge-window"),
+            ):
+                page.goto(base + path)
+                links = page.locator(".site-nav .nav-sections a")
+                section = page.locator(f'.site-nav a[href="{marked}"]')
+                assert section.get_attribute("class") == "nav-section"  # precondition
+                plain = links.filter(has_not=page.locator(".nav-section")).first
+                looks[path] = (section.evaluate(style), plain.evaluate(style))
+            page.goto(base + "/maintainers/")
+            current = page.locator('.site-nav a[aria-current="page"]').evaluate(style)
+    finally:
+        _stop(server, worker)
+    for path, (section, plain) in looks.items():
+        assert section != plain, path
+        assert section != current, path
+
+
+def test_both_nav_rows_stay_within_their_phone_height_budget(client, session, tmp_path):
+    """No menu toggle means the rows are always on screen on a phone, the
+    agreed trade-off. Measured 2026-11-16 at 390 px with `linux-arm-kernel`
+    (the list row wraps to two lines): 254 px for both rows together. The
+    ceiling allows small drift and fails on one more 44 px row."""
+    from mimir.models import Inbox
+    from tests.test_routes._helpers import _ingest_one_article
+
+    session.add(
+        Inbox(
+            name="linux-arm-kernel",
+            mirror_path="/tmp/linux-arm-kernel",
+            upstream_url="https://example.com/linux-arm-kernel",
+        )
+    )
+    session.commit()
+    _, msg_url = _ingest_one_article(tmp_path, "linux-arm-kernel", "tall@example.com")
+    playwright = playwright_api()
+    server, worker, base = _serve(client)
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": 390, "height": 800})
+            block_external_requests(page, base)
+            page.goto(base + msg_url)
+            heights = page.evaluate(
+                """() => ['.site-nav', '.inbox-nav'].map(
+                     s => document.querySelector(s).getBoundingClientRect().height)"""
+            )
+    finally:
+        _stop(server, worker)
+    # Precondition: the long name really wraps the list row past one line.
+    assert heights[1] > 2 * 44, heights
+    assert sum(heights) <= 272, heights

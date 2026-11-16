@@ -9,11 +9,16 @@
 {{ release_tabs('history', on_page=false) }}
 {# Sideways through the releases the history table lists, by the same
    predicate (`recorded_history`), so this never links a release the
-   index leaves out. Past the newest one is the current cycle. #}
+   index leaves out. Past the newest one is the current cycle. Labelled
+   Older and Newer so it does not read as the message paging below, and
+   repeated after the messages, where a reader finishes the page. #}
+{% macro release_pager() -%}
 <nav class="release-pager" aria-label="Adjacent releases">
-  {% if older_release %}<a href="{{ release_path(older_release) }}">&larr; {{ older_release }}</a>{% else %}<span></span>{% endif %}
-  {% if newer_release %}<a href="{{ release_path(newer_release) }}">{{ newer_release }} &rarr;</a>{% else %}<a href="{{ url_for('web.merge_window_page') }}">Current merge window &rarr;</a>{% endif %}
+  {% if older_release %}<a href="{{ release_path(older_release) }}">&larr; Older: {{ older_release }}</a>{% else %}<span></span>{% endif %}
+  {% if newer_release %}<a href="{{ release_path(newer_release) }}">Newer: {{ newer_release }} &rarr;</a>{% else %}<a href="{{ url_for('web.merge_window_page') }}">Current merge window &rarr;</a>{% endif %}
 </nav>
+{%- endmacro %}
+{{ release_pager() }}
 <h1>Linux {{ release.tag }}</h1>
 {% if unavailable %}
 <p>This release could not be calculated right now. Please try again shortly.</p>
@@ -75,5 +80,6 @@
 </nav>
 {% endif %}
 {% endif %}
+{{ release_pager() }}
 {% if subsystems and subsystems.references >= handful %}<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>{% endif %}
 {% endblock %}
