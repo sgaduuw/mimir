@@ -58,7 +58,7 @@ def test_nav_dropdown_follows_an_in_thread_htmx_swap(client, tmp_path):
         tmp_path / "a", "alpha", "dd-a@example.com", body=_patch("fs/xfs")
     )
     page = client.get(url_a).get_data(as_text=True)
-    assert "/alpha/subsystem/xfs/" in _DD.search(page).group(1)  # precondition
+    assert "/alpha/subsystems/xfs/" in _DD.search(page).group(1)  # precondition
 
     _, url_b = _ingest_one_article(
         tmp_path / "b",
@@ -68,13 +68,13 @@ def test_nav_dropdown_follows_an_in_thread_htmx_swap(client, tmp_path):
         body=_patch("fs/bcachefs"),
     )
     partial = client.get(url_b, headers={"HX-Request": "true"}).get_data(as_text=True)
-    assert "/alpha/subsystem/bcachefs/" in partial  # B's own header is in it
+    assert "/alpha/subsystems/bcachefs/" in partial  # B's own header is in it
 
     menu = _DD.search(_htmx_swap(page, partial)).group(1)
-    assert "/alpha/subsystem/xfs/" not in menu, (
+    assert "/alpha/subsystems/xfs/" not in menu, (
         "nav still lists the previous message's subsystems"
     )
-    assert "/alpha/subsystem/bcachefs/" in menu
+    assert "/alpha/subsystems/bcachefs/" in menu
 
 
 def test_phone_menu_holds_the_one_target_the_partial_refreshes(client, tmp_path):

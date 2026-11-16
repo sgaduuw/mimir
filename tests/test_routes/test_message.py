@@ -2082,7 +2082,7 @@ def test_message_page_subsystem_header_is_clickable(client, tmp_path):
     text = client.get(_metadata_url(url)).data.decode()
     # Link present with lowercased URL AND lowercased display
     # (anti-shouty pass, display takes the lowercase form too).
-    assert '<a href="/alpha/subsystem/bcachefs/">bcachefs</a>' in text
+    assert '<a href="/alpha/subsystems/bcachefs/">bcachefs</a>' in text
 
 
 def test_off_list_parent_hint_surfaces_unindexed_list(client, tmp_path):

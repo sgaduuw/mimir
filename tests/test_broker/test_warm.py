@@ -952,8 +952,11 @@ def test_activity_slow_target_warms_cache_through_real_broker(seeded_db):
     from datetime import UTC, datetime, timedelta
 
     from mimir.cli.cache import _build_fast_global_targets, _build_slow_global_targets
-    from mimir.maintainer_activity import most_active_maintainers
-    from mimir.models import Article
+    from mimir.maintainer_activity import (
+        maintainer_activity_rows,
+        most_active_maintainers,
+    )
+    from mimir.models import Article, ArticleTrailer
     from tests.test_maintainer_directory import _add_subsystem
 
     label = "most_active_maintainers (7d)"
@@ -961,12 +964,32 @@ def test_activity_slow_target_warms_cache_through_real_broker(seeded_db):
     labels = list(dict(_build_slow_global_targets()))
     assert labels.index(label) < labels.index("maintainer_review_counts")
     with seeded_db() as session:
-        _add_subsystem(session, "ACTIVITY", "Maintained", [("M", "A", "a@example.com")])
+        _add_subsystem(
+            session,
+            "ACTIVITY",
+            "Maintained",
+            [("M", "A", "a@example.com"), ("M", "Review only", "review@example.com")],
+        )
         session.add(
             Article(
                 message_id="warm-activity",
                 author="a@example.com",
                 date=datetime.now(UTC) - timedelta(hours=1),
+            )
+        )
+        session.flush()
+        from sqlalchemy import select
+
+        article_id = session.scalar(
+            select(Article.id).where(Article.message_id == "warm-activity")
+        )
+        session.add(
+            ArticleTrailer(
+                article_id=article_id,
+                role="Reviewed-by",
+                name="Review only",
+                address="review@example.com",
+                address_normalized="review@example.com",
             )
         )
         session.commit()
@@ -995,3 +1018,10 @@ def test_activity_slow_target_warms_cache_through_real_broker(seeded_db):
                 "review_count": 0,
             }
         ]
+        full = maintainer_activity_rows(session, compute_on_miss=False)
+        assert (
+            next(row for row in full if row["address"] == "review@example.com")[
+                "review_count"
+            ]
+            == 1
+        )

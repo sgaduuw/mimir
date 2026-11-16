@@ -1,8 +1,8 @@
-"""Seven-day authored-message ranking for current, addressable maintainers.
+"""Seven-day message and review activity for current maintainers.
 
-Measured 2026-11-15 UTC on a read-only production snapshot: 47,280 messages
-and 13,228 review rows in seven days, 0.81 s forced computation on Python
-3.15.2 free-threaded / SQLite 3.53.1, excluding cache publication.
+Measured 2026-11-16 at 10:37 UTC on a read-only production database:
+772 active current maintainers, 0.78 s for the complete author/reviewer union
+on Python 3.15.2 free-threaded, excluding cache publication.
 """
 
 from collections import Counter
@@ -39,28 +39,26 @@ def _fold(address: str, aliases: dict[str, str], names: dict[str, str]) -> str:
     return mapped if mapped in names else address
 
 
-def most_active_maintainers(
+def maintainer_activity_rows(
     session: Session,
     *,
     days: int = 7,
-    limit: int = 12,
     force: bool = False,
     compute_on_miss: bool = True,
-) -> list[dict]:
-    """Rank current M entries by unique messages authored, with review counts.
+) -> list[dict] | None:
+    """Complete author/reviewer union; None is cold and [] is warmed empty.
 
-    The web only reads the slow warmer's cache. Cache the full ranking so
-    changing a display limit cannot cause a cold scan. Identity generations
-    include forced reloads, even when the source files are unchanged.
+    Measured 2026-11-16: 102 of 516 reviewing current maintainers authored
+    no message that week. The directory must retain their review counts.
     """
     version = mailmap.rules_version(session)
-    key = f"most_active_maintainers:v1:{days}:{version}"
+    key = f"most_active_maintainers:v2:{days}:{version}"
 
     def compute():
         until = _now()
         bounds = {"since": until - timedelta(days=days), "until": until}
-        # The directory's fixed cache key can survive a rules reload; read its
-        # source when recomputing, never on the cache-only web path.
+        # Refresh directory metadata with the aggregate's identity inputs,
+        # never on the cache-only web path.
         names = {
             address: name or address
             for address, name in all_maintainers(session, force=True)
@@ -120,7 +118,7 @@ def most_active_maintainers(
         try:
             for address, count in rows:
                 address = _fold(address.strip().lower(), aliases, names)
-                if address in messages:
+                if address in names:
                     reviews[address] += count
         finally:
             rows.close()
@@ -136,17 +134,33 @@ def most_active_maintainers(
                 "message_count": messages[address],
                 "review_count": reviews[address],
             }
-            for address in sorted(messages, key=lambda a: (-messages[a], a))
+            for address in sorted(
+                messages.keys() | reviews.keys(), key=lambda a: (-messages[a], a)
+            )
         ]
 
     if not compute_on_miss:
-        rows = cache.get(key) or []
+        rows = cache.get(key)
     else:
         try:
             rows = cache.get_or_compute(
                 session, key, MAINTAINER_DIRECTORY_CACHE_TTL_SEC, compute, force=force
             )
         except _RulesChanged:
-            return []
-    # The route rechecks addressability; compute() admitted only addressable names.
-    return rows[:limit]
+            return None
+    return rows
+
+
+def most_active_maintainers(
+    session: Session,
+    *,
+    days: int = 7,
+    limit: int = 12,
+    force: bool = False,
+    compute_on_miss: bool = True,
+) -> list[dict]:
+    """Front-page ranking stays authored-message-only, with its display limit."""
+    rows = maintainer_activity_rows(
+        session, days=days, force=force, compute_on_miss=compute_on_miss
+    )
+    return [row for row in rows or [] if row["message_count"] > 0][:limit]

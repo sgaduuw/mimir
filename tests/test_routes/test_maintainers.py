@@ -8,7 +8,10 @@ import pytest
 from sqlalchemy import select
 
 from mimir.mailmap import rules_version
-from mimir.maintainer_directory import maintainer_path
+from mimir.maintainer_directory import (
+    is_addressable_maintainer_address,
+    maintainer_path,
+)
 from mimir.models import (
     Article,
     ArticleTrailer,
@@ -309,7 +312,7 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
             for node in ElementTree.fromstring(response.data).findall("{*}url/{*}loc")
         ]
     else:
-        url = "/alpha/subsystem/shapes/"
+        url = "/alpha/subsystems/shapes/"
         if surface in {"thread", "metadata"}:
             _, url = _ingest_one_article(
                 tmp_path,
@@ -330,7 +333,12 @@ def test_maintainer_links_skip_unaddressable_profiles(client, tmp_path, surface)
     assert paths == ["/maintainers/mixed%2Btag%25name@kernel.org"]
     assert client.get(paths[0]).status_code == 200
     for addr in unsupported:
-        assert client.get("/maintainers/" + quote(addr, safe="@")).status_code == 404
+        assert not is_addressable_maintainer_address(addr)
+        # The empty identity has no profile; its bare prefix is now the directory.
+        if addr:
+            assert (
+                client.get("/maintainers/" + quote(addr, safe="@")).status_code == 404
+            )
 
 
 def _profile_panel(body):

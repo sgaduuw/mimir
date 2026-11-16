@@ -3,7 +3,7 @@
 {% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
 {% block content %}
 {% from "_sparkline.html" import spark_bars %}
-{% from "_bar_meter.html" import bar_meter %}
+{% from "_activity_rows.html" import subsystem_row, maintainer_row %}
 {% from "_message_id_form.html" import message_id_form %}
 <section class="front-page">
   <header class="front-head">
@@ -66,14 +66,12 @@
   {% set busiest_count = active_subsystems|map(attribute='message_count')|max %}
   <ul class="divided front-subsystems">
     {% for s in active_subsystems %}
-    <li>
-      <span class="front-row-name"><a href="{{ s.name|subsystem_url(s.inbox_name) }}">{{ s.name|subsystem_label }}</a> <small class="front-row-meta">{{ s.inbox_name }}</small></span>
-      {{ bar_meter(s.message_count, busiest_count) }}
-      <span class="count">{{ s.message_count }}</span>
-    </li>
+    {{ subsystem_row(s, busiest_count) }}
     {% endfor %}
   </ul>
   {% endif %}
+
+  <p class="directory-more"><a href="{{ subsystem_directory_path() }}">All subsystems</a></p>
 
   {% if maintainer_activity %}
   <h2 id="maintainer-activity">Maintainer activity this week</h2>
@@ -83,14 +81,12 @@
   {% set busiest_maintainer = maintainer_activity|map(attribute='message_count')|max %}
   <ul class="divided front-subsystems front-maintainers">
     {% for m in maintainer_activity %}
-    <li>
-      <span class="front-row-name"><a href="{{ m.path }}">{{ m.name }}</a> <small class="front-row-meta">{{ m.review_count|format_count }} review trailer{{ '' if m.review_count == 1 else 's' }}</small></span>
-      {{ bar_meter(m.message_count, busiest_maintainer) }}
-      <span class="count">{{ m.message_count|format_count }}</span>
-    </li>
+    {{ maintainer_row(m, busiest_maintainer) }}
     {% endfor %}
   </ul>
   {% endif %}
+
+  <p class="directory-more"><a href="{{ maintainer_directory_path() }}">All maintainers</a></p>
 
   <h2 id="inboxes">All {{ inbox_summaries|length }} inboxes</h2>
   {% if inbox_summaries %}

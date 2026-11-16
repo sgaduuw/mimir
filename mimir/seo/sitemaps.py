@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir._inbox_name import inbox_path
 from mimir.config import settings
+from mimir.mailmap import rules_version
 from mimir.maintainer_directory import (
     all_maintainers,
     is_addressable_maintainer_address,
@@ -56,7 +57,6 @@ from mimir.subsystems import (
     subsystem_path,
 )
 from mimir.subsystems_dashboard import (
-    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     most_active_subsystems_in_inbox,
 )
 from mimir.threading import unmaterialised_roots
@@ -976,9 +976,15 @@ def sitemap_index_xml(
     )
 
 
-def meta_sitemap_key(release_tags: list[str]) -> str:
-    digest = hashlib.sha256(" ".join(release_tags).encode()).hexdigest()[:16]
-    return f"sitemap:meta:{digest}"
+def meta_sitemap_key(
+    release_tags: list[str], directory_paths: list[str], version: str
+) -> str:
+    digest = hashlib.sha256(
+        json.dumps(
+            [release_tags, directory_paths, version], separators=(",", ":")
+        ).encode()
+    ).hexdigest()[:16]
+    return f"sitemap:meta:v2:{digest}"
 
 
 def meta_sitemap_xml(
@@ -997,8 +1003,9 @@ def meta_sitemap_xml(
     Release history pages are listed only when
     `mimir.release_history.recorded_history` lists them on the index, read
     from cached history and never calculated here. The cache key carries
-    the listed tags, so a release the warm fills in enters on the next
-    request rather than after the row's lifetime."""
+    the listed tags, rules version and directory paths, so newly visible
+    releases, letter pages and subsystem targets enter on the next request
+    rather than after the row's lifetime."""
     # Late import: `mimir.merge_window` reaches the web layer's URL
     # helpers, which import this module's package at load time.
     from mimir.release_history import (
@@ -1010,6 +1017,12 @@ def meta_sitemap_xml(
     release_tags = [
         release.tag for release, _f, _l in recorded_history(release_catalog()).listed
     ]
+    from mimir.directories import directory_sitemap_paths
+
+    # Path membership versions this body, including a changed busiest inbox,
+    # mirrored L: fallback or newly occupied letter after a rules reload.
+    version = rules_version(session)
+    directory_paths = directory_sitemap_paths(session)
 
     def compute() -> SitemapPayload:
         from mimir.merge_window import MERGE_WINDOW_PATH, QUEUED_TREE
@@ -1038,6 +1051,16 @@ def meta_sitemap_xml(
                     SitemapEntry(base + release_history_path(), None, PRIORITY_SITE),
                     *(
                         SitemapEntry(
+                            base + path,
+                            None,
+                            PRIORITY_HUB
+                            if path.startswith(("/subsystems/", "/maintainers/"))
+                            else PRIORITY_PAGE,
+                        )
+                        for path in directory_paths
+                    ),
+                    *(
+                        SitemapEntry(
                             base + release_history_path(tag), None, PRIORITY_HUB
                         )
                         for tag in release_tags
@@ -1049,7 +1072,7 @@ def meta_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        meta_sitemap_key(release_tags),
+        meta_sitemap_key(release_tags, directory_paths, version),
         SITEMAP_TTL_SEC,
         compute,
         force=force,
@@ -1068,8 +1091,8 @@ def maintainers_sitemap_xml(
     here would NOT produce one, contrary to what this said.)
     `all_maintainers` doesn't carry a
     per-maintainer "last active" date, and deriving one would mean a
-    date query per maintainer (~4000 on the production MAINTAINERS
-    corpus) just to populate a freshness hint crawlers treat as
+    date query per maintainer (2,072 addressable current M identities
+    measured on 2026-11-16) just to populate a freshness hint crawlers treat as
     secondary to discovery. Revisit if maintainer profile pages ever
     gain a cheap last-changed signal."""
 
@@ -1276,14 +1299,11 @@ def inbox_sitemap_xml(
         # recent patches, threads and reviewers, derived from
         # MAINTAINERS), and until now they were in no sitemap at all.
         #
-        # The ACTIVE set only, which is the same cached payload the
-        # dashboard widget and the index page read: `most_active_...`
-        # is capped at `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP` (100) per
-        # inbox, measuring 3,394 (inbox, subsystem) pairs in total on
-        # the production corpus 2026-07-29. The full MAINTAINERS
-        # taxonomy would instead be ~3,300 sections x ~200 inboxes,
-        # i.e. ~660,000 URLs, almost all of them a page for a
-        # subsystem no patch in that inbox has ever touched.
+        # Every active subsystem, without the former top-100 cutoff. The
+        # complete 203-inbox production sweep on 2026-11-16 found at most
+        # 1,180 active subsystems in one inbox, below the sitemap URL limit.
+        # Quiet sections get one mirrored-list target through the global
+        # directory, rather than a thin page for every possible inbox.
         #
         # `compute_on_miss=False` matters: this builder runs on the
         # request path on a cold sitemap cache, and that aggregation is
@@ -1298,7 +1318,7 @@ def inbox_sitemap_xml(
             session,
             inbox,
             days=7,
-            limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+            limit=None,
             compute_on_miss=False,
         )
         for activity in active:
@@ -1370,7 +1390,7 @@ def inbox_sitemap_xml(
     return cache.get_or_compute(
         session,
         # Hub pages only, so the render cap is not in the key (#964).
-        f"sitemap:inboxhubs2:{inbox.name}",
+        f"sitemap:inboxhubs3:{inbox.name}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,

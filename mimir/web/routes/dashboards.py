@@ -6,8 +6,8 @@ load-more endpoint (`api_recent` in `api.py`) consume it; the latter
 imports it from here.
 """
 
-import re
 from datetime import UTC, datetime, timedelta
+from urllib.parse import unquote
 
 from flask import abort, redirect, render_template, request, url_for
 from sqlalchemy import func, select
@@ -43,7 +43,6 @@ from mimir.subsystems import (
     subsystem_path,
 )
 from mimir.subsystems_dashboard import (
-    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     active_reviewers_in_subsystem,
     active_threads_in_subsystem,
     daily_volume_in_subsystem,
@@ -68,17 +67,6 @@ from mimir.web.urls import (
 )
 
 RECENT_PAGE_SIZE = 10
-
-
-# Real MAINTAINERS subsystem names are quite permissive (spaces,
-# slashes, parens, ampersands, commas, dots, see "ARM/AT91 SOC
-# SUPPORT", "LINUX FOR POWERPC (32-BIT AND 64-BIT)"). The conservative
-# guard here just rejects ASCII control bytes, NUL, CR, LF, tab, and
-# every C0/C1 control codepoint. Werkzeug already %-encodes those in
-# the Location header, so this is defense-in-depth rather than a
-# patch for a known injection. Anything else falls to the DB lookup
-# below and naturally 404s if no row matches.
-_SUBSYSTEM_NAME_RE = re.compile(r"^[^\x00-\x1f\x7f]+\Z")
 
 
 def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
@@ -284,7 +272,14 @@ def inbox_dashboard(inbox_name: str):
     )
 
 
-@bp_web.route("/<inbox_name>/subsystem/")
+def _subsystem_redirect(path: str):
+    if request.query_string:
+        path += "?" + request.query_string.decode("utf-8", "replace")
+    return redirect(path, code=301)
+
+
+@bp_web.route("/<inbox_name>/subsystem/", strict_slashes=False)
+@bp_web.route("/<inbox_name>/subsystems/", strict_slashes=False)
 def subsystem_index(inbox_name: str):
     """Browsable list of the subsystems active in this inbox.
 
@@ -310,11 +305,14 @@ def subsystem_index(inbox_name: str):
     """
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
+        canonical_path = subsystem_index_path(inbox.name)
+        if request.path != canonical_path:
+            return _subsystem_redirect(canonical_path)
         subsystems = most_active_subsystems_in_inbox(
             session,
             inbox,
             days=7,
-            limit=MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
+            limit=None,
             compute_on_miss=False,
         )
         # Count and scale only rows whose shared URL predicate permits a link.
@@ -329,7 +327,8 @@ def subsystem_index(inbox_name: str):
         )
 
 
-@bp_web.route("/<inbox_name>/subsystem/<path:name>/")
+@bp_web.route("/<inbox_name>/subsystem/<path:name>/", strict_slashes=False)
+@bp_web.route("/<inbox_name>/subsystems/<path:name>/", strict_slashes=False)
 def subsystem_dashboard(inbox_name: str, name: str):
     """Per-subsystem dashboard. Surfaces the MAINTAINERS-derived
     header (name, status, M:/R: maintainers), F:/X: paths, a 30-day
@@ -346,7 +345,7 @@ def subsystem_dashboard(inbox_name: str, name: str):
     form. The DB row's stored casing remains the upstream-verbatim
     one; the H1 shows it through `subsystem_label` (lowercased).
     """
-    if not _SUBSYSTEM_NAME_RE.match(name):
+    if not is_addressable_subsystem_name(name):
         abort(404)
     with SessionLocal() as session:
         # Resolve the inbox before the case-correction redirect so a
@@ -355,21 +354,6 @@ def subsystem_dashboard(inbox_name: str, name: str):
         # crawler / bookmarked-URL hop on bad inbox slugs.
         inbox = _get_inbox_or_404(session, inbox_name)
         name_lower = name.lower()
-        if name != name_lower:
-            # `url_for` rather than f-string interpolation: `inbox.name`
-            # is validated by `mimir.inboxes` on insert and `name_lower`
-            # is regex-matched above, but routing the redirect target
-            # through Flask's URL builder is what CodeQL recognises as
-            # safe (clears alert #14, `py/url-redirection`) and reads
-            # cleaner than the manual string interpolation.
-            return redirect(
-                url_for(
-                    "web.subsystem_dashboard",
-                    inbox_name=inbox.name,
-                    name=name_lower,
-                ),
-                code=301,
-            )
         # `.first()`, not `.scalar_one_or_none()`: `subsystems.name` has
         # no unique constraint and the URL form is lowercased, so two
         # MAINTAINERS sections differing only in case collapse onto one
@@ -392,6 +376,10 @@ def subsystem_dashboard(inbox_name: str, name: str):
         )
         if subsystem is None:
             abort(404)
+        canonical_path = subsystem_path(inbox.name, subsystem.name)
+        if request.path != unquote(canonical_path):
+            return _subsystem_redirect(canonical_path)
+
         recent = recent_postings_in_subsystem(
             session,
             inbox,

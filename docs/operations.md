@@ -334,3 +334,41 @@ policy does not guarantee a refresh on every hourly tick or five-minute
 freshness. This listing change preserves that policy. Oversized compressed
 values are logged and skipped; web requests still render the complete result, while
 listing warm targets report an error rather than claiming a successful warm.
+
+
+## Check inbox names before upgrading directory routes
+
+Root application routes are reserved inbox names. Before upgrading, export the
+**effective configuration from the old application**, in its normal runtime:
+
+```sh
+python -c 'import json, sys; from mimir.config import settings; json.dump(list(settings.inboxes), sys.stdout)' > configured-inboxes.json
+```
+
+Then run the new checkout's standalone checker against that export and the
+existing database. Replace the example paths with the operator's local paths:
+
+```sh
+python tools/check_inbox_namespace.py --configured configured-inboxes.json --database /path/to/mimir.db
+```
+
+The checker uses only the standard library, opens SQLite read-only, and checks
+both configured names and persisted inbox rows. It does not import the new
+application settings, which would reject a collision before it could be
+inventoried. A nonzero exit means an explicit inbox rename is needed before the
+upgrade; neither the checker nor startup silently renames anything. Startup
+also checks stored rows even when initial inbox bootstrap already ran.
+
+Directory activity is populated by the existing slow warm tier. Cold directory
+requests still show the taxonomy and omit unavailable counts. Maintainer review
+counts include Reviewed-by, Acked-by and Tested-by rows carried by messages in
+the last seven days, including maintainers who authored no messages. Subsystem
+counts retain the existing per-inbox membership semantics: a cross-post can
+contribute once in each inbox to the global total.
+
+The existing IndexNow ingestion pipeline submits new thread and message URLs;
+it does not publish subsystem URLs during deployment. This upgrade adds no
+background deployment publisher. Directory hubs and canonical plural subsystem
+URLs are advertised through sitemaps and page links, and singular URLs redirect
+to them. Check those sitemaps and redirects after deployment; no deployment-time
+IndexNow notification is implied by this change.

@@ -718,3 +718,125 @@ def test_maintainer_activity_layout_and_keyboard_profile_links(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch):
+    from mimir.maintainer_directory import maintainer_path
+    from mimir.models import Subsystem, SubsystemMaintainer
+    from mimir.subsystems import subsystem_path
+    from mimir.web.routes import directory_pages
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    names = [
+        "ALPHA DRIVER WITH A NAME THAT SHOULD TRUNCATE ON A PHONE",
+        "ANOTHER DRIVER",
+        "A QUIET DRIVER",
+    ]
+    subs = []
+    for name in names:
+        sub = Subsystem(name=name, status="Maintained")
+        session.add(sub)
+        subs.append(sub)
+    session.flush()
+    maintainers = []
+    for n, name in enumerate(
+        ["Alice Long Display Name For A Maintainer", "Anne", "Arthur"]
+    ):
+        address = name.split()[0].lower() + "@kernel.org"
+        session.add(
+            SubsystemMaintainer(
+                subsystem_id=subs[n].id, role="M", name=name, address=address
+            )
+        )
+        maintainers.append(
+            {
+                "name": name,
+                "address": address,
+                "path": maintainer_path(address),
+                "subsystem_count": 1,
+                "review_count": [2, 0, 12][n],
+            }
+        )
+    session.commit()
+    subsystem_rows = [
+        {
+            "name": name,
+            "inbox_name": "alpha" if n < 2 else None,
+            "path": subsystem_path("alpha", name) if n < 2 else None,
+            "message_count": [2, 30, 0][n],
+        }
+        for n, name in enumerate(names)
+    ]
+    monkeypatch.setattr(
+        directory_pages,
+        "subsystem_directory_rows",
+        lambda session: (subsystem_rows, True),
+    )
+    monkeypatch.setattr(
+        directory_pages,
+        "maintainer_directory_rows",
+        lambda session: (maintainers, True),
+    )
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            for kind, query, active_name in (
+                ("subsystems", "another", "another driver"),
+                ("maintainers", "anne@kernel.org", "Arthur"),
+            ):
+                for width in (390, 1280):
+                    for theme in ("light", "dark"):
+                        page = browser.new_page(
+                            viewport={"width": width, "height": 900}, color_scheme=theme
+                        )
+                        blocked = block_external_requests(page, base)
+                        page.goto(base + f"/{kind}/")
+                        page.get_by_role("link", name="A", exact=True).click()
+                        expect(page).to_have_url(base + f"/{kind}/a/")
+                        table = page.locator(".directory-table")
+                        rows = table.locator("tbody tr")
+                        expect(rows).to_have_count(3)
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= innerWidth"
+                        )
+                        assert table.locator("td.listing-count").evaluate_all(
+                            "cells => cells.every(c => c.scrollWidth <= c.clientWidth + 1)"
+                        )
+                        assert table.locator(".listing-subject").evaluate_all(
+                            "items => items.every(el => getComputedStyle(el).whiteSpace === 'nowrap')"
+                        )
+                        shot = tmp_path / f"directory-{kind}-{width}-{theme}.png"
+                        page.screenshot(path=str(shot), full_page=True)
+                        print(shot)
+                        page.get_by_role("searchbox", name="Find a " + kind[:-1]).fill(
+                            query
+                        )
+                        expect(table.locator("tbody tr:visible")).to_have_count(1)
+                        page.get_by_role("searchbox").fill("")
+                        page.get_by_role(
+                            "button", name="Most active", exact=True
+                        ).click()
+                        expect(rows.first.locator(".listing-subject")).to_have_text(
+                            active_name
+                        )
+                        expect(
+                            page.get_by_role("button", name="Most active", exact=True)
+                        ).to_have_attribute("aria-pressed", "true")
+                        page.get_by_role("button", name="A to Z", exact=True).click()
+                        link = table.locator("tbody a").first
+                        link.focus()
+                        expect(link).to_be_focused()
+                        href = link.get_attribute("href")
+                        page.keyboard.press("Enter")
+                        expect(page).to_have_url(base + href)
+                        expect(page.get_by_role("heading", level=1)).to_be_visible()
+                        assert blocked == []
+                        page.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()

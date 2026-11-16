@@ -2,8 +2,8 @@
 
 A name flows into URL paths and cache-key fragments, so it must be
 URL-safe and `:`-free: lowercase, alphanumeric and hyphens, not starting
-or ending with a hyphen, at most 64 characters. Exact names `r` and `all`
-are reserved for lore-shaped recovery redirects.
+or ending with a hyphen, at most 64 characters. Literal root-route names
+are reserved for the site, including lore-shaped recovery redirects.
 
 Its own module because `mimir.config` checks `INBOXES` keys against it
 at load (#747) and cannot import `mimir.inboxes`, which imports
@@ -12,9 +12,40 @@ at load (#747) and cannot import `mimir.inboxes`, which imports
 
 import re
 
-# Recovery routes own these exact top-level prefixes; similar names remain
-# valid. Keep the reservation here so config, CRUD and the wire agree.
-INBOX_NAME_RE = re.compile(r"^(?!(?:r|all)$)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$")
+# Every wholly literal first segment in the route map belongs to the site,
+# even when punctuation would already exclude it from the slug grammar.
+RESERVED_ROOT_WORDS = frozenset(
+    {
+        ".well-known",
+        "all",
+        "api",
+        "apple-touch-icon-precomposed.png",
+        "apple-touch-icon.png",
+        "favicon.ico",
+        "favicon.svg",
+        "healthz",
+        "llms.txt",
+        "m",
+        "maintainers",
+        "merge-window",
+        "messages-sitemap.xml",
+        "meta-sitemap.xml",
+        "og-image.png",
+        "privacy",
+        "r",
+        "readyz",
+        "robots.txt",
+        "security.txt",
+        "sitemap-maintainers.xml",
+        "sitemap.xml",
+        "static",
+        "subsystems",
+    }
+)
+_RESERVED_PATTERN = "|".join(re.escape(name) for name in sorted(RESERVED_ROOT_WORDS))
+INBOX_NAME_RE = re.compile(
+    rf"^(?!(?:{_RESERVED_PATTERN})$)[a-z0-9](?:[a-z0-9-]{{0,62}}[a-z0-9])?$"
+)
 
 
 def inbox_path(name: str) -> str:

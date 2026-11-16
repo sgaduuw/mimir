@@ -30,7 +30,8 @@ message bodies and attachments from the mirrors when you open them.
   plus a history of past releases with their merge windows, pull requests
   and archived discussions. The front page also ranks current maintainers by
   messages authored in the past seven days, with review-trailer counts and
-  links to their profiles.
+  links to their profiles. Browse every current subsystem and maintainer through
+  the directories at `/subsystems/` and `/maintainers/`, including quiet entries.
 - **Archive several lists.** Cross-posted messages share an index entry,
   while each list keeps its own thread view. Updates are incremental.
 - **Make the archive discoverable.** Atom feeds, sitemaps, stable message

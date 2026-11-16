@@ -217,7 +217,7 @@ def test_llms_txt_page_links_answer_200_and_shapes_have_routes(client):
         for line in lines
         if not line.startswith("- [")
     ]
-    assert shapes == ["/<inbox>/subsystem/", "/maintainers/<address>"]
+    assert shapes == ["/<inbox>/subsystems/", "/maintainers/<address>"]
     adapter = client.application.url_map.bind("localhost")
     for shape in shapes:
         path = shape.replace("<inbox>", "alpha").replace("<address>", "a@b.example")
