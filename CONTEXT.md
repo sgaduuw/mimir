@@ -2507,10 +2507,32 @@ every row in the window belongs to another list, so one page costs
 the whole archive's window (#775). Below `INBOX_FIRST_BELOW_ARTICLES`
 the triage queues instead seek the inbox's own `article_lists` rows
 and fetch each article by primary key (`_triage_sql`, one builder for
-both shapes). The size comes from the cached `archive_stats` row and
+the original two shapes). The size comes from the cached `archive_stats` row and
 is never computed on the request; no row counts as small. The
 constant's comment carries the measurements. Plan pinned in
 `test_inbox_first_plan_drives_from_the_inbox_index`.
+
+Sparse subsystem triage adds a third shape (#1215). For known inboxes
+with at least 100k articles, a covering path-index probe counts at most
+25,001 raw F: matches. Duplicated matches and X:-excluded paths count
+toward this work budget; applying exclusions first could scan an unbounded
+include range to find no survivors. At most 25,000 matches selects path
+seeks with inbox membership guarded before engagement checks. Otherwise
+the original inbox/date plan remains. This selects a plan, never truncates
+results. The original inbox/date choice still controls page size because
+an early stop can affect which RFC/v1 representative is seen. The
+article-ID enumerator uses UNION ALL, consumed by IN for set membership;
+it must not be joined directly without deduplication.
+
+Measured against the same snapshot on 2026-11-16 (17,948,921 articles),
+forced-cold linux-mm/KASAN rendering fell from 1.153 s to 0.220 s,
+lkml/PROC FILESYSTEM from 1.252 s to 0.473 s, and netdev/PROC FILESYSTEM
+from 1.107 s to 0.268 s. Dense controls retained their original plans;
+broad linux-mm/NETWORKING still costs about 3 s, mostly its full-history
+recent-posting fallback. No cache lifetime or warm-target changes.
+Recent-posting date/inbox plans guard both inbox and path membership in
+CASE before invoking canonical_patch, since SQLite may reorder WHERE
+conjuncts and otherwise call Python on unrelated or excluded paths.
 
 The same shape serves the dashboard listings in `mimir/dashboard.py`
 (#791, #796), built once by `_inbox_first_sql`. Search and

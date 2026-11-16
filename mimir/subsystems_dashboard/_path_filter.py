@@ -8,6 +8,11 @@ Split out of `reads.py` as part of the one-concern-per-file pass
 builder", the literal "and" being the load-bearing signal).
 """
 
+import sqlite3
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
 from mimir.models import Subsystem
 
 
@@ -22,16 +27,20 @@ def _prefix_bounds(g: str) -> tuple[str, str]:
 def _subsystem_path_filter_sql(
     subsystem: Subsystem,
     prefix: str = "ssp",
+    *,
+    apply_excludes: bool = True,
 ) -> tuple[str, dict] | None:
     """Return `(sql, params)` where `sql` is a SELECT that enumerates
     article IDs matching the subsystem's F: globs and not vetoed by
-    its X: globs. `params` is the bind-parameter dict to pass to
-    `text()`.
+    its X: globs. IDs may repeat: membership callers use IN, so a
+    global DISTINCT sort would be wasted work. `params` is the bind-parameter
+    dict to pass to `text()`. `apply_excludes=False` is only for the
+    conservative raw-work probe, never for selecting matching articles.
 
     Per-path semantics: an article belongs to the subsystem if at
     least one of its `article_files.path` rows is matched by an
     include and not by any exclude. The SQL realises that as a
-    UNION of independent index seeks, one per F: rule, each AND-ed
+    UNION ALL of independent index seeks, one per F: rule, each AND-ed
     with a per-row NOT-any-exclude predicate.
 
     Why UNION-of-seeks and not OR-of-LIKEs: SQLite's LIKE→range-scan
@@ -54,7 +63,9 @@ def _subsystem_path_filter_sql(
     `recent_postings_in_subsystem`.
     """
     includes = [r.glob for r in subsystem.paths if not r.is_exclude]
-    excludes = [r.glob for r in subsystem.paths if r.is_exclude]
+    excludes = (
+        [r.glob for r in subsystem.paths if r.is_exclude] if apply_excludes else []
+    )
     params: dict[str, str] = {}
 
     def _add(name: str, value: str) -> str:
@@ -81,8 +92,8 @@ def _subsystem_path_filter_sql(
     exc_clause = " AND NOT (" + " OR ".join(exc_parts) + ")" if exc_parts else ""
 
     branches: list[str] = []
-    # Pin each seek: SQLite 3.54 can otherwise scan the article/path
-    # covering index to satisfy UNION ordering instead of using path bounds.
+    # Pin each branch to its path bounds, rather than letting the planner
+    # choose the article/path covering index for these path-driven reads.
     for i, g in enumerate(includes):
         if g.endswith("/"):
             lo, hi = _prefix_bounds(g)
@@ -108,7 +119,35 @@ def _subsystem_path_filter_sql(
 
     if not branches:
         return None
-    return " UNION ".join(branches), params
+    return " UNION ALL ".join(branches), params
+
+
+def _path_seek_is_bounded(
+    session: Session, subsystem: Subsystem, max_matches: int
+) -> bool:
+    """Conservatively bound path-index work before choosing a path-first query.
+
+    Count raw include rows, including duplicates and excluded paths: filtering
+    X: rules before LIMIT could scan a huge include range that produces no
+    survivors. Projection to 1 keeps the probe on the covering path index.
+    This chooses a query plan, never truncates the result or caches candidates.
+    """
+    built = _subsystem_path_filter_sql(
+        subsystem, prefix="path_budget", apply_excludes=False
+    )
+    if built is None:
+        return True
+    sql, params = built
+    connection = session.connection().connection.driver_connection
+    compound_limit = connection.getlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT)
+    # Zero means unlimited. A probe must not reject a working EXISTS query.
+    if compound_limit > 0 and sql.count(" UNION ALL ") + 1 > compound_limit:
+        return False
+    count = session.scalar(
+        text(f"SELECT count(*) FROM (SELECT 1 FROM ({sql}) LIMIT :path_budget_limit)"),
+        {**params, "path_budget_limit": max_matches + 1},
+    )
+    return count <= max_matches
 
 
 def _subsystem_path_filter_exists_sql(
