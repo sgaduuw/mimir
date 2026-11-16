@@ -10,6 +10,7 @@ from mimir.web.routes import (
     api,  # noqa: F401
     attachments,  # noqa: F401
     dashboards,  # noqa: F401
+    directory_pages,  # noqa: F401
     feeds,  # noqa: F401
     health,  # noqa: F401
     maintainers,  # noqa: F401

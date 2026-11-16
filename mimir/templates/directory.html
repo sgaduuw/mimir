@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_search_field.html" import search_field %}
+{% from "_activity_rows.html" import subsystem_row, maintainer_row %}
+{% block title %}{{ title }}{% if letter %}: {{ letter_label }}{% endif %} | {{ site_name }}{% endblock %}
+{% block content %}
+<section class="directory">
+  <nav aria-label="breadcrumb"><ul><li><a href="/">Ratatoskr</a></li><li>{% if letter %}<a href="{{ root_path }}">{{ kind }}</a>{% else %}{{ kind }}{% endif %}</li>{% if letter %}<li>{{ letter_label }}</li>{% endif %}</ul></nav>
+  <h1>{{ title }}{% if letter %}: {{ letter_label }}{% endif %}</h1>
+  <p>{{ total|format_count }} current {{ kind }}. {% if not show_rows %}Search all entries or choose an initial.{% endif %}</p>
+  <form method="get" action="{{ root_path }}" role="search">
+    {% call search_field('directory-query', 'Search all ' ~ kind, 'Search') %}<input id="directory-query" type="search" name="q" value="{{ query }}">{% endcall %}
+  </form>
+  {% if searching %}<p>{{ search_total|format_count }} result{{ '' if search_total == 1 else 's' }} for “{{ query }}”.{% if search_truncated %} Showing the first {{ rows|length|format_count }}; refine your search to see fewer results.{% endif %}</p>{% endif %}
+  {% if letters %}<nav class="directory-letters" aria-label="{{ title }} by initial">{% for item in letters %}<a href="{{ item.path }}"{% if item.letter == 'other' %} aria-label="Numbers and other"{% endif %}{% if item.letter == letter %} aria-current="page"{% endif %}>{{ item.label }}</a>{% endfor %}</nav>{% endif %}
+  {% if show_rows and not activity_available %}<p class="directory-note">Activity not available yet</p>{% elif show_rows and kind == 'maintainers' %}<p class="directory-note">Reviewed-by, Acked-by and Tested-by trailers in the last seven days, with mail aliases grouped.</p>{% elif show_rows %}<p class="directory-note">Messages in the last seven days, summed across inboxes; cross-posts may count more than once. Quiet subsystems link to a mirrored mailing list where available.</p>{% endif %}
+  {% if show_rows %}
+  {% if not rows %}<p>No matching {{ kind }}.</p>{% endif %}
+  {% if rows %}
+  <div class="front-controls" data-filter-controls hidden>
+    {% call search_field('directory-find', 'Filter these results' if searching else 'Find a ' ~ singular) %}<input id="directory-find" type="search" data-filter-input="directory-list" autocomplete="off">{% endcall %}
+    <span class="front-sort"><button type="button" class="outline secondary" data-sort-button="default" data-sort-list="directory-list" aria-pressed="true">A to Z</button>{% if activity_available %}<button type="button" class="outline secondary" data-sort-button="active" data-sort-list="directory-list" aria-pressed="false">Most active</button>{% endif %}</span>
+  </div>
+  <table class="listing-table directory-table"><thead><tr><th scope="col">{{ singular|capitalize }}</th><th scope="col"{% if kind == 'maintainers' %} class="directory-number"{% endif %}>{{ 'Discussed on' if kind == 'subsystems' else 'Subsystems' }}</th>{% if activity_available %}<th scope="col" class="listing-count">{{ 'Messages' if kind == 'subsystems' else 'Review trailers' }}</th>{% endif %}</tr></thead><tbody id="directory-list">
+    {% for row in rows %}{% if kind == 'subsystems' %}{{ subsystem_row(row, maximum, true, activity_available, loop.index0) }}{% else %}{{ maintainer_row(row, maximum, true, activity_available, loop.index0) }}{% endif %}{% endfor %}
+  </tbody></table>
+  {% endif %}
+  {% endif %}
+</section>
+<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>
+{% endblock %}

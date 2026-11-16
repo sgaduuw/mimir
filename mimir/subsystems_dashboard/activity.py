@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from mimir import cache
 from mimir.datetime_utils import coerce_dt
+from mimir.mailmap import rules_version
 from mimir.models import Inbox, Subsystem
 
 
@@ -24,7 +25,7 @@ class SubsystemActivity:
     """One row in the "most active subsystems" surface.
 
     `inbox_name` carries the per-row inbox attribution: the inbox
-    whose `/<inbox>/subsystem/<name>/` page the row's link should
+    whose `/<inbox>/subsystems/<name>/` page the row's link should
     target. For the per-inbox helper that's always the calling
     inbox; for the cross-inbox helper it's the inbox where this
     subsystem saw the most activity in the window, so the user
@@ -63,39 +64,25 @@ class SubsystemActivity:
 cache.register("SubsystemActivity", SubsystemActivity)
 
 
-# Cache TTL for the "most active subsystems" surfaces. Must exceed
-# the warm-cache cycle time, otherwise the row expires faster than
-# warm-cache can refresh it and request-path callers fall through to
-# a cold-compute path that is multi-second on the per-inbox version
-# and multi-minute on the cross-inbox version. On the production
-# 203-inbox corpus warm-cache takes ~10 min per cycle, so the prior
-# 5 min TTL had the row expired for ~4-5 min of every cycle; the
-# front page's meta-index serialised on that recompute and tripped
-# Cloudflare's 100 s gateway timeout (HTTP 524). 1 h covers any
-# plausible warm-cache cycle time with comfortable margin; the
-# `compute_on_miss=False` request-path guard below removes the
-# request-path-recompute footgun even when this TTL is somehow
-# exceeded. The "freshness" trade-off is acceptable: a 1 h cache
-# of "what's hot in the last 7 days" lags by ~14% at worst, and
-# warm-cache refreshes the row every ~10 min in practice.
+# One hour matches slow warming. A fresh complete sweep of 203 production
+# inboxes took 46.43 s on 2026-11-16 at 10:37 UTC; requests only read the cache.
 MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC = 3600
 
 
-# How many ranked subsystems we cache per (inbox, days) tuple. Callers
-# pass any `limit` ≤ this and slice from the cached list. 100 covers
-# every current surface (front-page top-12, inbox dashboard top-10,
-# the global aggregator's `limit*3` hedge) without recomputing per
-# caller, which was the v1.19.2 warm-cache hot spot: each inbox was
-# computing the same expensive aggregation three times for three
-# distinct limit suffixes (10, 30, 36).
-MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP = 100
+# Measured 2026-11-16 at 10:37 UTC: 1,294 active subsystems across 203 inboxes.
+# The complete global payload is 320,616 bytes; the largest inbox has 1,180
+# active subsystems. Keep all of them, and apply display limits only at callers.
+
+
+class _RulesChanged(Exception):
+    """Do not publish counts against subsystem IDs from a replaced rule set."""
 
 
 def most_active_subsystems_in_inbox(
     session: Session,
     inbox: Inbox,
     days: int = 7,
-    limit: int = 10,
+    limit: int | None = 10,
     force: bool = False,
     *,
     compute_on_miss: bool = True,
@@ -105,12 +92,9 @@ def most_active_subsystems_in_inbox(
     the per-inbox dashboard.
 
     Thin slicer over `_most_active_subsystems_in_inbox_full`: the
-    cached list is internally capped at
-    `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP`; every caller slices from
-    that one cached payload regardless of `limit`. The cache key is
-    therefore `(inbox.name, days)` only, adding `limit` to the key
-    was the v1.19.2 cold-path waste (three caches for one
-    aggregation).
+    complete cached list is shared regardless of display `limit`.
+    Keys carry inbox, days and the rules generation so replacement IDs
+    never inherit an older rule set's activity.
 
     `compute_on_miss=True` (the default, used by warm-cache and any
     background context) falls through to a fresh compute when the
@@ -130,7 +114,7 @@ def most_active_subsystems_in_inbox(
         force=force,
         compute_on_miss=compute_on_miss,
     )
-    return full[:limit]
+    return (full or [])[:limit]
 
 
 def _most_active_subsystems_in_inbox_full(
@@ -140,17 +124,17 @@ def _most_active_subsystems_in_inbox_full(
     force: bool = False,
     *,
     compute_on_miss: bool = True,
-) -> list[SubsystemActivity]:
-    """Cached full ranked list (top `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP`)
-    for `(inbox, days)`. The public `most_active_subsystems_in_inbox`
-    slices this; callers should not invoke directly unless they
-    truly want the full cap (e.g. the cross-inbox aggregator).
+) -> list[SubsystemActivity] | None:
+    """Complete cached ranking, or None when a cache-only read is cold.
+    The public helper slices this for its widget; directories retain every row.
 
     Implementation: one bulk SQL pulls every (article_id, path, date)
     tuple in the recent window, an inverted-index walk over MAINTAINERS
     rules buckets paths into subsystems, and a single Python pass
     aggregates per-subsystem counts.
     """
+
+    version = rules_version(session)
 
     def compute() -> list[SubsystemActivity]:
         # Match the dashboard's calendar-day window. UTC keeps local
@@ -189,7 +173,11 @@ def _most_active_subsystems_in_inbox_full(
         # include rule, same convention as `_subsystem_path_filter_sql`.
         subs = (
             session.execute(
-                select(Subsystem).options(
+                select(Subsystem)
+                # A reused caller Session may retain objects from an older
+                # generation even after the database rules changed.
+                .execution_options(populate_existing=True)
+                .options(
                     selectinload(Subsystem.paths),
                     selectinload(Subsystem.maintainers),
                 )
@@ -254,13 +242,11 @@ def _most_active_subsystems_in_inbox_full(
                 if prev is None or path_date > prev:
                     last_activity[sub_id] = path_date
 
-        # Sort + truncate to the internal cap. Callers slice further
-        # for their specific `limit`; one cached payload feeds every
-        # surface.
+        # Callers alone choose display limits; directories need every match.
         ranked = sorted(
             counts.items(),
             key=lambda kv: (-len(kv[1]), -last_activity[kv[0]].timestamp()),
-        )[:MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP]
+        )
 
         out: list[SubsystemActivity] = []
         for sub_id, article_set in ranked:
@@ -282,28 +268,28 @@ def _most_active_subsystems_in_inbox_full(
                     status=sub.status,
                 )
             )
+        if rules_version(session) != version:
+            raise _RulesChanged
         return out
 
-    key = f"most_active_subsystems_in_inbox:{inbox.name}:{days}"
+    key = f"most_active_subsystems_in_inbox:v2:{inbox.name}:{days}:{version}"
     if not compute_on_miss:
         # Request-path posture: cache hit serves immediately, cache
         # miss serves empty so the page render never blocks on the
         # multi-second aggregation. Warm-cache keeps the row fresh.
-        cached = cache.get(key)
-        return cached if cached is not None else []
-    return cache.get_or_compute(
-        session,
-        key,
-        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-        compute,
-        force=force,
-    )
+        return cache.get(key)
+    try:
+        return cache.get_or_compute(
+            session, key, MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC, compute, force=force
+        )
+    except _RulesChanged:
+        return None
 
 
 def most_active_subsystems_global(
     session: Session,
     days: int = 7,
-    limit: int = 10,
+    limit: int | None = 10,
     force: bool = False,
     *,
     compute_on_miss: bool = True,
@@ -333,7 +319,7 @@ def most_active_subsystems_global(
         force=force,
         compute_on_miss=compute_on_miss,
     )
-    return full[:limit]
+    return (full or [])[:limit]
 
 
 def _most_active_subsystems_global_full(
@@ -342,19 +328,20 @@ def _most_active_subsystems_global_full(
     force: bool = False,
     *,
     compute_on_miss: bool = True,
-) -> list[SubsystemActivity]:
-    """Cached full cross-inbox ranking (top `MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP`)
-    for `days`. Each subsystem appears at most once; the row's
+) -> list[SubsystemActivity] | None:
+    """Complete cached cross-inbox ranking, or None when cold.
+    Counts sum per-inbox membership, preserving the existing cross-post semantics. Each subsystem appears at most once; the row's
     `inbox_name` is the inbox where this subsystem saw the most
     activity in the window, so the chip links the reader to the
     busiest variant. Inbox-name tie-break is alphabetical for
     determinism.
 
     Implementation: consume each inbox's already-cached full ranked
-    list (no `limit*3` hedge needed, we have the whole top-100 per
-    inbox), merge by subsystem id, pick the busiest inbox per
-    subsystem, re-sort globally, truncate to the internal cap.
+    list, merge by subsystem id, pick the busiest inbox per subsystem
+    and re-sort globally without truncation.
     """
+
+    version = rules_version(session)
 
     def compute() -> list[SubsystemActivity]:
         inboxes = session.execute(select(Inbox)).scalars().all()
@@ -366,12 +353,12 @@ def _most_active_subsystems_global_full(
             # the per-inbox cache last wrote. Audit (2026-05-15)
             # flagged this gap: the outer cache wrap bypasses, the
             # inner one silently doesn't.
-            for row in _most_active_subsystems_in_inbox_full(
-                session,
-                inbox,
-                days=days,
-                force=force,
-            ):
+            rows = _most_active_subsystems_in_inbox_full(
+                session, inbox, days=days, force=force
+            )
+            if rows is None:
+                raise _RulesChanged
+            for row in rows:
                 entry = agg.get(row.id)
                 if entry is None:
                     agg[row.id] = {
@@ -401,16 +388,16 @@ def _most_active_subsystems_global_full(
             for sub_id, e in agg.items()
         ]
         out.sort(key=lambda a: (-a.message_count, -a.last_activity.timestamp()))
-        return out[:MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP]
+        if rules_version(session) != version:
+            raise _RulesChanged
+        return out
 
-    key = f"most_active_subsystems_global:{days}"
+    key = f"most_active_subsystems_global:v2:{days}:{version}"
     if not compute_on_miss:
-        cached = cache.get(key)
-        return cached if cached is not None else []
-    return cache.get_or_compute(
-        session,
-        key,
-        MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-        compute,
-        force=force,
-    )
+        return cache.get(key)
+    try:
+        return cache.get_or_compute(
+            session, key, MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC, compute, force=force
+        )
+    except _RulesChanged:
+        return None
