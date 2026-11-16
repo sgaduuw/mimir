@@ -240,7 +240,7 @@ def test_most_active_subsystems_in_inbox_compute_on_miss_false_returns_empty(
     # is allowed to render empty for the brief window between TTL
     # expiry and the next warm-cache refresh.
     cache_mod.delete(
-        f"most_active_subsystems_in_inbox:{alpha.name}:7",
+        f"most_active_subsystems_in_inbox:v2:{alpha.name}:7:",
     )
 
     with patch.object(
@@ -303,7 +303,7 @@ def test_most_active_subsystems_global_compute_on_miss_false_returns_empty(
     from mimir import cache as cache_mod
     from mimir.subsystems_dashboard import activity as activity_mod
 
-    cache_mod.delete("most_active_subsystems_global:7")
+    cache_mod.delete("most_active_subsystems_global:v2:7:")
 
     with patch.object(
         activity_mod,
@@ -346,3 +346,150 @@ def test_most_active_subsystems_counts_an_article_on_the_start_day(
         global_ = most_active_subsystems_global(s, days=days, force=True)
     assert [(a.name, a.message_count) for a in in_inbox] == [("BCACHEFS", 1)]
     assert [(a.name, a.message_count) for a in global_] == [("BCACHEFS", 1)]
+
+
+def test_complete_activity_keeps_subsystems_beyond_both_old_caps(seeded_db):
+    with seeded_db() as s:
+        for i in range(105):
+            _add_subsystem(s, f"COMPLETE {i:03}", "Maintained", files=["complete/"])
+        _add_recent_thread_root(
+            s, "complete-alpha@x", ["complete/a.c"], inbox_name="alpha"
+        )
+        _add_recent_thread_root(
+            s, "complete-beta@x", ["complete/b.c"], inbox_name="beta"
+        )
+        s.commit()
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        local = most_active_subsystems_in_inbox(s, alpha, limit=None, force=True)
+        global_rows = most_active_subsystems_global(s, limit=None, force=True)
+    assert len(local) == len(global_rows) == 105
+    assert all(row.message_count == 2 for row in global_rows)
+    assert all(row.inbox_name == "alpha" for row in global_rows)
+
+
+def test_global_winner_can_be_below_100_in_every_inbox(seeded_db):
+    with seeded_db() as s:
+        for i in range(100):
+            _add_subsystem(s, f"ALPHA {i:03}", None, files=["leaders/alpha/"])
+            _add_subsystem(s, f"BETA {i:03}", None, files=["leaders/beta/"])
+        common = _add_subsystem(s, "COMMON", None, files=["common/"])
+        for inbox in ("alpha", "beta"):
+            for i in range(3):
+                _add_recent_thread_root(
+                    s,
+                    f"leader-{inbox}-{i}@x",
+                    [f"leaders/{inbox}/a.c"],
+                    inbox_name=inbox,
+                )
+            for i in range(2):
+                _add_recent_thread_root(
+                    s, f"common-{inbox}-{i}@x", ["common/a.c"], inbox_name=inbox
+                )
+        s.commit()
+        for inbox in s.scalars(select(Inbox)):
+            local = most_active_subsystems_in_inbox(s, inbox, limit=None, force=True)
+            assert local[100].id == common.id
+        rows = most_active_subsystems_global(s, limit=None, force=True)
+    assert len(rows) == 201
+    assert (rows[0].name, rows[0].message_count) == ("COMMON", 4)
+
+
+def test_activity_reload_discards_mixed_generation_counts(seeded_db):
+    from sqlalchemy import event, update
+
+    from mimir.models import MainlineState
+    from mimir.subsystems_dashboard.activity import _most_active_subsystems_global_full
+
+    with seeded_db() as s:
+        s.add(MainlineState(tree_name="linus", last_commit_sha="before"))
+        _add_subsystem(s, "RELOAD", None, files=["reload/"])
+        _add_recent_thread_root(s, "reload@x", ["reload/a.c"])
+        s.commit()
+        engine = s.get_bind()
+        changed = False
+
+        def reload(conn, cursor, statement, parameters, context, executemany):
+            nonlocal changed
+            if "a.id AS article_id, af.path" in statement and not changed:
+                changed = True
+                with seeded_db() as writer:
+                    writer.execute(
+                        update(MainlineState).values(last_commit_sha="after")
+                    )
+                    writer.commit()
+
+        event.listen(engine, "after_cursor_execute", reload)
+        try:
+            assert _most_active_subsystems_global_full(s, force=True) is None
+        finally:
+            event.remove(engine, "after_cursor_execute", reload)
+        assert changed
+        assert _most_active_subsystems_global_full(s, compute_on_miss=False) is None
+
+
+def test_full_activity_distinguishes_cold_from_warmed_empty_and_ignores_old_cap_cache(
+    session,
+):
+    from mimir import cache
+    from mimir.subsystems_dashboard.activity import (
+        _most_active_subsystems_global_full,
+        _most_active_subsystems_in_inbox_full,
+    )
+
+    alpha = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+    cache.set("most_active_subsystems_global:7", [], 3600)
+    cache.set("most_active_subsystems_in_inbox:alpha:7", [], 3600)
+    assert _most_active_subsystems_global_full(session, compute_on_miss=False) is None
+    assert (
+        _most_active_subsystems_in_inbox_full(session, alpha, compute_on_miss=False)
+        is None
+    )
+    assert _most_active_subsystems_global_full(session, force=True) == []
+    assert _most_active_subsystems_global_full(session, compute_on_miss=False) == []
+    assert (
+        _most_active_subsystems_in_inbox_full(session, alpha, compute_on_miss=False)
+        == []
+    )
+
+
+def test_complete_activity_actual_query_uses_index_lookups(seeded_db):
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
+        alpha = s.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        plan = plan_of(
+            s,
+            lambda: most_active_subsystems_in_inbox(s, alpha, force=True),
+            "a.id AS article_id, af.path",
+        )
+    assert "SCAN a" not in plan
+    assert "SEARCH a USING INTEGER PRIMARY KEY" in plan or "ix_articles_date" in plan
+    assert "article_files" in plan or "sqlite_autoindex_article_files" in plan
+
+
+def test_new_rules_generation_refreshes_retained_orm_metadata(session, seeded_db):
+    from sqlalchemy import update
+
+    from mimir.models import MainlineState, Subsystem, SubsystemPath
+
+    session.add(MainlineState(tree_name="linus", last_commit_sha="before"))
+    retained = _add_subsystem(session, "OLD", None, files=["old/"])
+    retained_paths = list(retained.paths)
+    _add_recent_thread_root(session, "new-rules-path@x", ["new/a.c"])
+    session.commit()
+    with seeded_db() as writer:
+        writer.execute(
+            update(Subsystem).where(Subsystem.id == retained.id).values(name="NEW")
+        )
+        writer.execute(
+            update(SubsystemPath)
+            .where(SubsystemPath.subsystem_id == retained.id)
+            .values(glob="new/")
+        )
+        writer.execute(update(MainlineState).values(last_commit_sha="after"))
+        writer.commit()
+    assert retained.name == "OLD"
+    assert retained_paths[0].glob == "old/"
+    alpha = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+    rows = most_active_subsystems_in_inbox(session, alpha, force=True)
+    assert [(row.name, row.message_count) for row in rows] == [("NEW", 1)]

@@ -25,7 +25,7 @@ from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import AfterValidator, BaseModel, Field
 
-from mimir._inbox_name import INBOX_NAME_RE
+from mimir._inbox_name import INBOX_NAME_RE, RESERVED_ROOT_WORDS
 from mimir.robots import CONTENT_SIGNAL_KEYS, CONTENT_SIGNAL_VALUES, PATH_RE, UA_RE
 
 
@@ -38,7 +38,8 @@ def _validate_inbox_name(v: str) -> str:
     if not INBOX_NAME_RE.fullmatch(v):
         raise ValueError(
             "name must be lowercase alphanumeric/hyphen, "
-            "1 to 64 chars, not starting or ending with a hyphen; r and all are reserved"
+            "1 to 64 chars, not starting or ending with a hyphen; "
+            f"reserved root names: {', '.join(sorted(RESERVED_ROOT_WORDS))}"
         )
     return v
 

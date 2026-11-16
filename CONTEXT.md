@@ -2675,6 +2675,23 @@ cardinality (CLAUDE.md "Corpus scale" carries the numbers):
   is the property that makes them worth indexing; a complete index
   would trade it away.
 
+The global directories added in #1206 expose the complete taxonomy without
+creating that Cartesian product. Each subsystem chooses one target: its busiest
+active inbox, otherwise the lexically first mirrored `L:` contact, otherwise
+unlinked. The page and sitemap share that selection. Both directories split
+by initial according to measured row count and rendered HTML size; they retain
+metadata when activity is cold, and never compute activity on a request.
+
+Activity caches now retain complete rankings while widgets apply their own
+display limits. Per-inbox and global subsystem keys carry the rules generation,
+and computation discards a result if a reload lands between its input reads.
+Directory metadata also checks the cached snapshot's own generation because
+rule replacement commits before snapshot invalidation. Maintainer directory
+membership stays literal current `M:` addresses; weekly author/reviewer activity
+folds one-hop mailmap aliases into an eligible current maintainer, retaining a
+listed address when its mailmap target is not eligible. The front page still
+ranks only positive authored-message counts.
+
 The index is also omitted from the sitemap when it would be empty
 (~45 of 203 inboxes see no MAINTAINERS-claimed path in a week). It
 stays linked from the inbox dashboard, so it is discoverable the
