@@ -359,7 +359,9 @@ inventoried. A nonzero exit means an explicit inbox rename is needed before the
 upgrade; neither the checker nor startup silently renames anything. Startup
 also checks stored rows even when initial inbox bootstrap already ran.
 
-Directory activity is populated by the existing slow warm tier. Cold directory
+Directory activity is populated by the existing slow warm tier, and the broker
+refills subsystem and maintainer activity right after each MAINTAINERS reload,
+whose new rules version leaves every activity key empty. Cold directory
 requests still show the taxonomy and omit unavailable counts. Maintainer review
 counts include Reviewed-by, Acked-by and Tested-by rows carried by messages in
 the last seven days, including maintainers who authored no messages. Subsystem
