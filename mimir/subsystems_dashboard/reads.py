@@ -14,7 +14,12 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.dashboard import DAILY_VOLUME_CACHE_TTL_SEC, DailyVolume, _inbox_first
+from mimir.dashboard import (
+    DAILY_VOLUME_CACHE_TTL_SEC,
+    RECENT_INBOX_FIRST_BELOW_ARTICLES,
+    DailyVolume,
+    _inbox_first,
+)
 from mimir.models import (
     Inbox,
     Subsystem,
@@ -55,6 +60,10 @@ def daily_volume_in_subsystem(
         # articles outside the range on any non-UTC TZ.
         today = datetime.now(UTC).date()
         start = today - timedelta(days=days - 1)
+        # Measured 2026-11-16: linux-mm (611k articles) took 0.40 s
+        # inbox-first versus 0.05 s date-first for this 30-day read.
+        # At 65k the shapes tied; 132k already favoured date-first. Reuse
+        # the short-list boundary, not triage's 180-day/1M boundary.
         # The date window lets us probe files for recent articles without
         # enumerating every historical match for broad paths like drivers/net/.
         path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="dvss")
@@ -64,11 +73,16 @@ def daily_volume_in_subsystem(
                 max_count=1,
             )
         path_predicate, path_params = path_filter
+        source = articles_in_inbox_from(
+            date_first=not _inbox_first(
+                inbox, below_articles=RECENT_INBOX_FIRST_BELOW_ARTICLES
+            )
+        )
         rows = session.execute(
             text(
                 f"""
                 SELECT date(a.date) AS day, COUNT(*) AS n
-                FROM {articles_in_inbox_from(date_first=not _inbox_first(inbox))}
+                FROM {source}
                   ON al.article_id = a.id
                 WHERE al.inbox_id = :inbox_id AND a.date >= :start
                   AND {path_predicate}
@@ -134,7 +148,9 @@ def active_threads_in_subsystem(
             limit=limit,
             extra_seed_filter_sql=f" AND {path_predicate}",
             extra_params=path_params,
-            date_first=not _inbox_first(inbox),
+            date_first=not _inbox_first(
+                inbox, below_articles=RECENT_INBOX_FIRST_BELOW_ARTICLES
+            ),
         )
 
     return cache.get_or_compute(
