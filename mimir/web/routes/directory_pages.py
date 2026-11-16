@@ -31,6 +31,11 @@ def _directory(kind: str, letter: str | None):
     path_for = (
         subsystem_directory_path if kind == "subsystems" else maintainer_directory_path
     )
+    query = request.args.get("q", "").strip()
+    if letter is not None and query:
+        return redirect(
+            path_for() + "?" + request.query_string.decode("utf-8", "replace"), code=301
+        )
     with SessionLocal() as session:
         rows, available = (
             subsystem_directory_rows(session)
@@ -50,7 +55,6 @@ def _directory(kind: str, letter: str | None):
             else ""
         )
         return redirect(canonical_path + query, code=301)
-    query = request.args.get("q", "").strip()
     searching = letter is None and bool(query)
     selected = (
         rows
