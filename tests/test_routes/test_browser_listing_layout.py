@@ -5,6 +5,7 @@ are written to pytest's temporary directory, whose path is printed with -s.
 CI sets MIMIR_BROWSER_REQUIRED=1 and uploads those screenshots on failure.
 """
 
+import re
 from datetime import UTC, datetime
 from threading import Thread
 from types import SimpleNamespace
@@ -741,7 +742,7 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
     session.flush()
     maintainers = []
     for n, name in enumerate(
-        ["Alice Long Display Name For A Maintainer", "Anne", "Arthur"]
+        ["Alice Kroah Long Display Name For A Maintainer", "Anne", "Arthur"]
     ):
         address = name.split()[0].lower() + "@kernel.org"
         session.add(
@@ -795,6 +796,23 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
                         )
                         blocked = block_external_requests(page, base)
                         page.goto(base + f"/{kind}/")
+                        search = page.get_by_role(
+                            "searchbox", name="Search all " + kind
+                        )
+                        search.fill("truncate" if kind == "subsystems" else "Kroah")
+                        page.get_by_role("button", name="Search", exact=True).click()
+                        expect(page.locator(".directory-table tbody tr")).to_have_count(
+                            1
+                        )
+                        assert (
+                            page.locator('link[rel="canonical"]')
+                            .get_attribute("href")
+                            .endswith(f"/{kind}/")
+                        )
+                        expect(page.locator('meta[name="robots"]')).to_have_attribute(
+                            "content", re.compile(".*noindex.*")
+                        )
+                        page.goto(base + f"/{kind}/")
                         page.get_by_role("link", name="A", exact=True).click()
                         expect(page).to_have_url(base + f"/{kind}/a/")
                         table = page.locator(".directory-table")
@@ -809,6 +827,22 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
                         assert table.locator(".listing-subject").evaluate_all(
                             "items => items.every(el => getComputedStyle(el).whiteSpace === 'nowrap')"
                         )
+                        subjects = table.locator(".listing-subject")
+                        for subject in subjects.all():
+                            expect(subject).to_have_attribute(
+                                "title", subject.inner_text()
+                            )
+                        if width == 390:
+                            assert (
+                                table.locator("td.directory-name").first.evaluate(
+                                    "cell => cell.getBoundingClientRect().width / cell.parentElement.getBoundingClientRect().width"
+                                )
+                                >= 0.55
+                            )
+                            expect(table.locator(".bar-meter").first).to_be_hidden()
+                            assert table.locator(".directory-name a").first.evaluate(
+                                "el => getComputedStyle(el).textOverflow === 'ellipsis' && el.scrollWidth > el.clientWidth"
+                            )
                         shot = tmp_path / f"directory-{kind}-{width}-{theme}.png"
                         page.screenshot(path=str(shot), full_page=True)
                         print(shot)
@@ -816,7 +850,9 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
                             query
                         )
                         expect(table.locator("tbody tr:visible")).to_have_count(1)
-                        page.get_by_role("searchbox").fill("")
+                        page.get_by_role("searchbox", name="Find a " + kind[:-1]).fill(
+                            ""
+                        )
                         page.get_by_role(
                             "button", name="Most active", exact=True
                         ).click()

@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
-- Global subsystem and maintainer directories link from the front page, include quiet entries, and offer name filtering and alphabetical or activity sorting. Subsystem rows choose the busiest mirrored inbox or a mirrored MAINTAINERS list; maintainer rows show subsystem ownership and weekly review trailers, including reviewers who authored no messages (#1206).
+- Global subsystem and maintainer directories link from the front page, include quiet entries, and offer directory-wide search, per-letter filtering and alphabetical or activity sorting. Search matches names and visible maintainer addresses across all initials, with up to 200 results. Subsystem rows choose the busiest mirrored inbox or a mirrored MAINTAINERS list; maintainer rows show subsystem ownership and weekly review trailers, including reviewers who authored no messages (#1206).
 
 ### Changed
 

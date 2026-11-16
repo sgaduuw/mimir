@@ -69,9 +69,8 @@
     {{ subsystem_row(s, busiest_count) }}
     {% endfor %}
   </ul>
-  {% endif %}
-
   <p class="directory-more"><a href="{{ subsystem_directory_path() }}">All subsystems</a></p>
+  {% endif %}
 
   {% if maintainer_activity %}
   <h2 id="maintainer-activity">Maintainer activity this week</h2>
@@ -84,9 +83,11 @@
     {{ maintainer_row(m, busiest_maintainer) }}
     {% endfor %}
   </ul>
-  {% endif %}
-
   <p class="directory-more"><a href="{{ maintainer_directory_path() }}">All maintainers</a></p>
+  {% endif %}
+  {% if not active_subsystems or not maintainer_activity %}
+  <p class="directory-note">Browse {% if not active_subsystems %}<a href="{{ subsystem_directory_path() }}">all subsystems</a>{% endif %}{% if not active_subsystems and not maintainer_activity %} · {% endif %}{% if not maintainer_activity %}<a href="{{ maintainer_directory_path() }}">all maintainers</a>{% endif %}</p>
+  {% endif %}
 
   <h2 id="inboxes">All {{ inbox_summaries|length }} inboxes</h2>
   {% if inbox_summaries %}

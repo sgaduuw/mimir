@@ -24,6 +24,7 @@ bp_web.add_app_template_global(subsystem_index_path)
 # (>500 KB), so both
 # directories use stable occupied-letter pages rather than one large document.
 _LETTER_CONVERTER = "<any(" + ",".join(DIRECTORY_LETTERS) + "):letter>/"
+_SEARCH_LIMIT = 200
 
 
 def _directory(kind: str, letter: str | None):
@@ -49,14 +50,12 @@ def _directory(kind: str, letter: str | None):
             else ""
         )
         return redirect(canonical_path + query, code=301)
+    query = request.args.get("q", "").strip()
+    searching = letter is None and bool(query)
     selected = (
-        [row for row in rows if directory_letter(row["name"]) == letter]
-        if letter
-        else []
-    )
-    selected = sorted(
-        selected,
-        key=lambda row: (row["name"].casefold(), row.get("address", row["name"])),
+        rows
+        if searching
+        else [row for row in rows if directory_letter(row["name"]) == letter]
     )
     if kind == "maintainers":
         prepared = []
@@ -76,6 +75,20 @@ def _directory(kind: str, letter: str | None):
                 }
             )
         selected = prepared
+    else:
+        selected = [
+            {**row, "search_text": filters._subsystem_label_filter(row["name"])}
+            for row in selected
+        ]
+    if searching:
+        selected = [row for row in selected if query.lower() in row["search_text"]]
+    selected = sorted(
+        selected,
+        key=lambda row: (row["name"].casefold(), row.get("address", row["name"])),
+    )
+    search_total = len(selected)
+    if searching:
+        selected = selected[:_SEARCH_LIMIT]
     metric = "message_count" if kind == "subsystems" else "review_count"
     maximum = max((row[metric] or 0 for row in selected), default=0)
     return render_template(
@@ -102,7 +115,13 @@ def _directory(kind: str, letter: str | None):
             for value in DIRECTORY_LETTERS
             if value in occupied
         ],
-        show_rows=letter is not None,
+        show_rows=letter is not None or searching,
+        query=query,
+        searching=searching,
+        search_total=search_total,
+        search_truncated=searching and search_total > _SEARCH_LIMIT,
+        noindex=searching,
+        canonical_when_noindex=searching,
         current_inbox=None,
     )
 

@@ -78,7 +78,10 @@ with seven-day message counts, proportional bars, maintainer summaries and
 last-activity dates. Its columns stack on phones. It can be empty before a
 slow cache-warming pass; a request never runs the activity aggregation.
 The global `/subsystems/` and `/maintainers/` directories include quiet entries
-and split by initial. Within each letter, filtering and the A to Z / Most active
+and split by initial. Both landing pages offer search across all letters by
+name or visible maintainer address. Search results show up to 200 matches and
+ask readers to refine larger searches. They are noindex with the directory root
+as canonical. Within each letter, filtering and the A to Z / Most active
 toggle use the shared list controls. A cold activity cache leaves the metadata
 visible with an "Activity not available yet" note. Subsystems link to their
 busiest mirrored inbox, otherwise a mirrored MAINTAINERS `L:` contact; entries
