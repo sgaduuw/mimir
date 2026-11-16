@@ -1,5 +1,7 @@
 """Global, letter-paged MAINTAINERS directories with cache-only activity."""
 
+import time
+
 from flask import abort, redirect, render_template, request
 
 from mimir.directories import maintainer_directory_rows, subsystem_directory_rows
@@ -10,6 +12,7 @@ from mimir.directory_paths import (
     subsystem_directory_path,
 )
 from mimir.extensions import SessionLocal
+from mimir.mailmap import rules_version
 from mimir.subsystems import subsystem_index_path
 from mimir.web import filters
 from mimir.web._blueprint import bp_web
@@ -26,6 +29,32 @@ bp_web.add_app_template_global(subsystem_index_path)
 _LETTER_CONVERTER = "<any(" + ",".join(DIRECTORY_LETTERS) + "):letter>/"
 _SEARCH_LIMIT = 200
 
+# ponytail: per-process memo of the prepared rows, keyed by rules version.
+# Building them took 0.212 s on production (2026-11-16) for every letter page.
+# Activity moves at most once per slow warm, so five minutes of lag is
+# invisible; move to the shared cache if worker count makes rebuilds matter.
+_ROWS_TTL_SEC = 300
+_rows_memo: dict[str, tuple[str, float, tuple[list[dict], bool]]] = {}
+
+
+def _directory_rows(kind: str, session) -> tuple[list[dict], bool]:
+    version = rules_version(session)
+    now = time.monotonic()
+    hit = _rows_memo.get(kind)
+    if hit is not None and hit[0] == version and hit[1] > now:
+        return hit[2]
+    result = (
+        subsystem_directory_rows(session)
+        if kind == "subsystems"
+        else maintainer_directory_rows(session)
+    )
+    # Pin only warmed results: empty rows are the mid-reload sentinel, and a
+    # cold page should pick up activity as soon as the warm lands.
+    rows, available = result
+    if rows and available:
+        _rows_memo[kind] = (version, now + _ROWS_TTL_SEC, result)
+    return result
+
 
 def _directory(kind: str, letter: str | None):
     path_for = (
@@ -37,11 +66,7 @@ def _directory(kind: str, letter: str | None):
             path_for() + "?" + request.query_string.decode("utf-8", "replace"), code=301
         )
     with SessionLocal() as session:
-        rows, available = (
-            subsystem_directory_rows(session)
-            if kind == "subsystems"
-            else maintainer_directory_rows(session)
-        )
+        rows, available = _directory_rows(kind, session)
     # Partition before display redaction, just as the sitemap does: a rendering
     # policy must not move an entry between canonical letter pages.
     occupied = {directory_letter(row["name"]) for row in rows}
