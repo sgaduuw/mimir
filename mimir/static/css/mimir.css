@@ -1245,8 +1245,16 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
 .directory-table th:nth-child(2) { width: 25%; }
 .directory-table th.listing-count { width: 35%; }
 .directory-table thead th { white-space: normal; }
+.directory-table th.directory-number { text-align: right; }
 .directory-name .listing-subject, .directory-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .directory-name .listing-subject { display: block; min-height: 2.75rem; align-content: center; font-family: inherit; font-weight: 400; }
 .directory-name a { display: block; overflow: hidden; text-overflow: ellipsis; }
 .directory-activity { display: grid; grid-template-columns: minmax(0, 1fr) 4rem; align-items: center; gap: .4rem; }
-@media (width < 40rem) { .directory-table { font-size: .8rem; } .directory-activity { grid-template-columns: minmax(0, 1fr) 3rem; } }
+@media (width < 40rem) {
+  .directory-table { font-size: .8rem; }
+  .directory-table th:first-child { width: 60%; }
+  .directory-table th:nth-child(2) { width: 20%; }
+  .directory-table th.listing-count { width: 20%; }
+  .directory-activity { display: block; }
+  .directory-activity .bar-meter { display: none; }
+}

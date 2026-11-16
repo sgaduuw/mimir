@@ -27,7 +27,8 @@
   <link rel="apple-touch-icon" sizes="180x180" href="{{ url_for('web.apple_touch_icon') }}">
   {% if noindex %}
   <meta name="robots" content="noindex">
-  {% else %}
+  {% endif %}
+  {% if not noindex or canonical_when_noindex %}
   <link rel="canonical" href="{{ canonical_url or default_canonical_url }}">
   {% endif %}
   {% if current_inbox %}

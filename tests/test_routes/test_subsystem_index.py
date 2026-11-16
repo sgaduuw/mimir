@@ -52,15 +52,15 @@ def test_subsystem_index_limits_display_after_filtering_without_truncating_data(
     client, monkeypatch
 ):
     activity = [_activity("HIDDEN\tNAME", 1000)] + [
-        _activity(f"SUBSYSTEM {index}", 200 - index) for index in range(105)
+        _activity(f"SUBSYSTEM {index}", 2000 - index) for index in range(1105)
     ]
     body = _render(client, monkeypatch, activity)
     rows = _table(body).findall("./tbody/tr")
     assert len(rows) == 100
-    assert "Showing 100 of 105 subsystems" in body
+    assert "Showing 100 of 1,105 subsystems" in body
     assert rows[-1].find("./th/a").text == "subsystem 99"
     assert 'href="/subsystems/"' in body
-    assert len(activity) == 106
+    assert len(activity) == 1106
 
 
 def test_subsystem_index_aligns_visible_rows_counts_meters_and_links(

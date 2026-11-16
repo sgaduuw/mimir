@@ -162,7 +162,94 @@ def test_hidden_directory_address_is_absent_from_labels_and_search_metadata(
 def test_cold_front_page_still_links_both_directories(client):
     page = parse(client.get("/").get_data(as_text=True))
     links = {a.text(): a.attrs["href"] for a in page.find_all("a")}
-    assert links["All subsystems"] == "/subsystems/"
-    assert links["All maintainers"] == "/maintainers/"
+    assert links["all subsystems"] == "/subsystems/"
+    assert links["all maintainers"] == "/maintainers/"
+    assert "Browse all subsystems · all maintainers" in page.text()
     assert page.find_all("h2", id="subsystems") == []
     assert page.find_all("h2", id="maintainer-activity") == []
+
+
+@pytest.mark.parametrize("path", ["/subsystems/", "/maintainers/?q=%20%20"])
+def test_directory_landing_search_is_usable_without_javascript(client, path):
+    page = parse(client.get(path).get_data(as_text=True))
+    form = page.find("form", role="search")
+    assert form.attrs["method"] == "get"
+    assert form.find("input", name="q").attrs["type"] == "search"
+    assert form.find("button", type="submit").text() == "Search"
+    assert page.find_all("meta", name="robots") == []
+    assert page.find_all("tbody", id="directory-list") == []
+    assert "Activity not available yet" not in page.text()
+
+
+@pytest.mark.parametrize("query", ["Kroah", "greg@kernel.org"])
+def test_maintainer_search_crosses_letters_using_visible_search_text(
+    client, monkeypatch, query
+):
+    from mimir.web import filters
+    from mimir.web.routes import directory_pages
+
+    rows = [
+        dict(
+            name=name,
+            address=address,
+            path="/maintainers/" + address,
+            subsystem_count=1,
+            review_count=0,
+        )
+        for name, address in [
+            ("Alice", "alice@kernel.org"),
+            ("Greg Kroah-Hartman", "greg@kernel.org"),
+        ]
+    ]
+    monkeypatch.setattr(
+        directory_pages, "maintainer_directory_rows", lambda s: (rows, True)
+    )
+    monkeypatch.setattr(filters, "_is_allowlisted", lambda address: True)
+    response = client.get("/maintainers/", query_string={"q": query})
+    page = parse(response.get_data(as_text=True))
+    rendered = page.find("tbody", id="directory-list").find_all("tr")
+    assert len(rendered) == 1
+    assert query.lower() in rendered[0].attrs["data-filter-text"]
+    assert page.find("meta", name="robots").attrs["content"] == "noindex"
+    assert page.find("link", rel="canonical").attrs["href"].endswith("/maintainers/")
+
+
+def test_subsystem_search_is_global_bounded_and_not_computed(client, monkeypatch):
+    from mimir.web.routes import directory_pages
+
+    rows = [
+        dict(name=f"MEMORY THP {n:03}", inbox_name=None, path=None, message_count=None)
+        for n in range(205)
+    ]
+    monkeypatch.setattr(
+        directory_pages, "subsystem_directory_rows", lambda s: (rows, False)
+    )
+    page = parse(client.get("/subsystems/?q=THP").get_data(as_text=True))
+    rendered = page.find("tbody", id="directory-list").find_all("tr")
+    assert len(rendered) == 200
+    assert all("thp" in row.attrs["data-filter-text"] for row in rendered)
+    assert "205" in page.text()
+    assert "refine" in page.text().lower()
+    assert len(rows) == 205
+
+
+def test_directory_search_does_not_match_hidden_address(client, monkeypatch):
+    from mimir.web import filters
+    from mimir.web.routes import directory_pages
+
+    secret = "hidden@private.test"
+    rows = [
+        dict(
+            name="Alice " + secret,
+            address=secret,
+            path="/maintainers/" + secret,
+            subsystem_count=1,
+            review_count=0,
+        )
+    ]
+    monkeypatch.setattr(
+        directory_pages, "maintainer_directory_rows", lambda s: (rows, True)
+    )
+    monkeypatch.setattr(filters, "_is_allowlisted", lambda address: False)
+    page = parse(client.get("/maintainers/?q=hidden").get_data(as_text=True))
+    assert page.find("tbody", id="directory-list").find_all("tr") == []
