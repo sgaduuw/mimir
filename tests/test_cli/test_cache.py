@@ -405,12 +405,17 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     cap = settings.thread_view_render_cap
+    from mimir.directories import directory_sitemap_paths
+    from mimir.mailmap import rules_version
     from mimir.release_history import recorded_history, release_catalog
     from mimir.seo.sitemaps import meta_sitemap_key
 
-    meta_key = meta_sitemap_key(
-        [r.tag for r, _f, _l in recorded_history(release_catalog()).listed]
-    )
+    with SessionLocal() as session:
+        meta_key = meta_sitemap_key(
+            [r.tag for r, _f, _l in recorded_history(release_catalog()).listed],
+            directory_sitemap_paths(session),
+            rules_version(session),
+        )
     index = cache.get(f"sitemap:index:{cap}")
     assert index is not None, "missing cache row for the index"
     expected_root = {
@@ -418,7 +423,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
         "sitemap:meta": (cache.get(meta_key), f"{{{ns}}}urlset"),
         **{
             key: (cache.get(key), f"{{{ns}}}urlset")
-            for key in ("sitemap:inboxhubs2:alpha", "sitemap:inboxhubs2:beta")
+            for key in ("sitemap:inboxhubs3:alpha", "sitemap:inboxhubs3:beta")
         },
     }
     assert "messages-sitemap" not in index.body
@@ -448,7 +453,7 @@ def test_warm_cache_sitemap_helpers_force_recompute(seeded_db):
     from mimir.extensions import SessionLocal
     from mimir.seo import inbox_sitemap_xml
 
-    key = "sitemap:inboxhubs2:alpha"
+    key = "sitemap:inboxhubs3:alpha"
     cache.set(key, "STALE", ttl=3600)
     assert cache.get(key) == "STALE"
     with SessionLocal() as s:

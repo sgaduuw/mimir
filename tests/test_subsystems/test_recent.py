@@ -261,7 +261,7 @@ def test_route_and_slow_warm_use_same_cache_and_bounds(client, seeded_db, monkey
         monkeypatch.setattr(
             "mimir.subsystems_dashboard.recent.recent_postings_query", unexpected
         )
-        response = client.get("/alpha/subsystem/warm/")
+        response = client.get("/alpha/subsystems/warm/")
         assert response.status_code == 200
         assert "Posting without cover" in response.get_data(as_text=True)
         rows = recent_postings_in_subsystem(session, inbox, sub)
@@ -343,7 +343,7 @@ def test_dashboard_disclosures_source_counts_and_unusable_links(
         "mimir.web.routes.dashboards.needs_attention_patches_in_subsystem",
         lambda *a, **kw: triage,
     )
-    html = client.get("/alpha/subsystem/display/").get_data(as_text=True)
+    html = client.get("/alpha/subsystems/display/").get_data(as_text=True)
     triage_html = re.search(
         r'<section class="subsystem-triage".*?</section>', html, re.DOTALL
     ).group()

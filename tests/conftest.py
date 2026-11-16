@@ -318,6 +318,10 @@ def _reset_db():
 
     mimir.robots.reset_rules()
 
+    from mimir.web.routes import directory_pages
+
+    directory_pages._rows_memo.clear()
+
     with SessionLocal() as s:
         # `last_article_date` mirrors what real ingest would set, so
         # `archive_stats.last_date` (which now overlays this column

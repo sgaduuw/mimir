@@ -41,7 +41,6 @@ postings have their own versioned key and no registered shared DTO.
 
 from mimir.subsystems_dashboard.activity import (
     MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC,
-    MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP,
     SubsystemActivity,
     most_active_subsystems_global,
     most_active_subsystems_in_inbox,
@@ -66,7 +65,6 @@ from mimir.subsystems_dashboard.triage import (
 
 __all__ = [
     "MOST_ACTIVE_SUBSYSTEMS_CACHE_TTL_SEC",
-    "MOST_ACTIVE_SUBSYSTEMS_INTERNAL_CAP",
     "REVIEWS_PER_PAGE_LIMIT",
     "PatchAttention",
     "ReviewEntry",

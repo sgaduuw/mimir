@@ -9,6 +9,6 @@
   {% for hit in hits or [] if hit.name | is_addressable_subsystem %}
   {% if loop.index <= 8 %}<li>{{ subsystem_link(hit.name, inbox_name) }}</li>{% endif %}
   {% endfor %}
-  <li><a href="/{{ inbox_name }}/subsystem/"><em>all subsystems</em></a></li>
+  <li><a href="{{ subsystem_index_path(inbox_name) }}"{% if request.path == subsystem_index_path(inbox_name) %} aria-current="page"{% endif %}><em>all subsystems</em></a></li>
 </ul>
 {%- endmacro %}

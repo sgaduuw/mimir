@@ -120,7 +120,7 @@ def all_maintainers(session: Session, *, force: bool = False) -> list[tuple[str,
     there's no identity to key a directory entry on.
 
     Cached for `MAINTAINER_DIRECTORY_CACHE_TTL_SEC` under
-    `maintainers:all`. The cached value is a plain
+    a key carrying the current rules version. The cached value is a plain
     `list[tuple[str, str]]`; it round-trips through `mimir.cache`
     without registration because the encoder has a generic tuple
     case (`{"__t": "tuple", "v": [...]}`) independent of the
@@ -148,7 +148,7 @@ def all_maintainers(session: Session, *, force: bool = False) -> list[tuple[str,
 
     return cache.get_or_compute(
         session,
-        "maintainers:all",
+        f"maintainers:all:{rules_version(session)}",
         MAINTAINER_DIRECTORY_CACHE_TTL_SEC,
         compute,
         force=force,

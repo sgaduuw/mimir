@@ -34,7 +34,7 @@ from sqlalchemy import delete, exists, func, select, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from mimir import cache
-from mimir._inbox_name import INBOX_NAME_RE
+from mimir._inbox_name import INBOX_NAME_RE, RESERVED_ROOT_WORDS
 from mimir._outbound import OutboundUrlError, validate_outbound_url
 from mimir.config import settings
 from mimir.extensions import SessionLocal
@@ -61,9 +61,26 @@ def validate_name(name: str) -> str:
     if not INBOX_NAME_RE.fullmatch(name):
         raise InboxValidationError(
             f"name {name!r} must be lowercase alphanumeric/hyphen, "
-            "1 64 chars, not starting or ending with a hyphen; r and all are reserved"
+            "1 to 64 chars, not starting or ending with a hyphen; "
+            f"reserved root names: {', '.join(sorted(RESERVED_ROOT_WORDS))}"
         )
     return name
+
+
+def validate_reserved_inboxes(session) -> None:
+    """Refuse an upgrade that would hide persisted inboxes behind root routes."""
+    conflicts = session.scalars(
+        select(Inbox.name)
+        .where(Inbox.name.in_(RESERVED_ROOT_WORDS))
+        .order_by(Inbox.name)
+    ).all()
+    if conflicts:
+        raise InboxValidationError(
+            "Stored inbox names conflict with root routes: "
+            + ", ".join(conflicts)
+            + ". Resolve these names on the previous version before upgrading; "
+            "no inbox has been renamed automatically."
+        )
 
 
 def validate_upstream_url(url: str) -> str:
