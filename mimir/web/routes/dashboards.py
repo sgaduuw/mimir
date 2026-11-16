@@ -297,7 +297,7 @@ def subsystem_index(inbox_name: str):
     The heading says "active" so the page is not claiming to be a
     complete directory.
 
-    Reads the same cached top-N payload as the dashboard widget, with
+    Reads the complete cached ranking and displays the busiest 100, with
     `compute_on_miss=False` for the same reason that one does: the
     underlying aggregation is multi-second per inbox and must never
     run on a request. Cold cache renders an empty list for at most one
@@ -317,12 +317,17 @@ def subsystem_index(inbox_name: str):
         )
         # Count and scale only rows whose shared URL predicate permits a link.
         subsystems = [s for s in subsystems if is_addressable_subsystem_name(s.name)]
+        total_subsystems = len(subsystems)
+        # The complete lkml page measured 888,860 bytes for 1,183 rows
+        # on 2026-11-16. Bound this view, not the shared activity payload.
+        subsystems = subsystems[:100]
         base = _site_base()
         return render_template(
             "subsystem_index.html",
             inbox_name=inbox.name,
             current_inbox=inbox.name,
             subsystems=subsystems,
+            total_subsystems=total_subsystems,
             canonical_url=base + subsystem_index_path(inbox.name),
         )
 
