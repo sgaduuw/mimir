@@ -22,6 +22,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Subsystem dashboards use date-index reads for their seven- and thirty-day sections on medium-sized inboxes, avoiding repeated scans of the entire inbox history. Recent postings on known-small inboxes use inbox membership to bound path matching. Posting contents and cache lifetimes are unchanged.
 - The subsystem and maintainer directory breadcrumbs named a hard-coded site instead of the configured `SITE_NAME`.
 
 ## [5.0.0] - 2026-11-16

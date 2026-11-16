@@ -1570,10 +1570,20 @@ testing inbox and F/X path membership per article. If it finds the full posting
 limit, only those selected identities expand through the series-key index,
 across all dates, for their complete matching counts and previews. A recent
 resend can therefore surface an old posting with its original slot winners and
-undated members intact. If the window yields fewer postings than the limit, the
-UNION of path-index seeks selects from all history. This keeps quiet inboxes
-complete and avoids an open-ended date walk (#1165). Future-dated articles
-remain eligible in both paths.
+undated members intact. If the window yields fewer postings than the limit,
+known-small inboxes (below the existing 100k short-list boundary) enumerate
+inbox membership and probe each article's files. Other inboxes, including
+unknown sizes, use the UNION of path-index seeks across all history. This
+keeps quiet inboxes complete and avoids an open-ended date walk (#1165,
+#1212). Future-dated articles remain eligible in every shape.
+
+The active-thread, daily-volume and reviewer sections use that same 100k
+boundary for their 7/30-day windows, instead of the 1M boundary retained for
+180-day triage. Measured on 2026-11-16, the 30-day date and inbox shapes tied
+at 65k inbox articles; at 132k date-first roughly halved the cost. Small
+inboxes retain inbox-first, and missing archive-size metadata retains the
+existing conservative fallback. Cache lifetimes and the limited slow-warmer
+fan-out are unchanged.
 
 A deterministic connection-local SQLite function calls the existing subject
 predicates so replies and non-patches cannot consume grouped slots. A CASE
