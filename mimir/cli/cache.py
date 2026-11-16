@@ -29,7 +29,7 @@ from mimir.extensions import SessionLocal
 from mimir.inboxes import list_inboxes, pinned_first
 from mimir.listings import listing_for_day as threads_for_day
 from mimir.listings import listing_for_month, listing_since, warm_listing
-from mimir.maintainer_activity import most_active_maintainers
+from mimir.maintainer_activity import maintainer_activity_rows
 from mimir.maintainer_directory import warm_maintainer_review_counts
 from mimir.models import Inbox, Subsystem
 from mimir.subsystems_dashboard import (
@@ -172,7 +172,7 @@ def _build_slow_inbox_targets(
         # warm target per inbox: the cache key is limit-less
         # since v1.19.3, so every caller (front-page top-12,
         # inbox dashboard top-10, cross-inbox aggregator)
-        # slices from the same cached top-100 payload.
+        # slices from the same complete cached payload.
         (
             f"{inbox.name} most_active_subsystems_in_inbox (7d)",
             lambda s, ib=inbox: most_active_subsystems_in_inbox(s, ib, days=7),
@@ -318,7 +318,7 @@ def _build_slow_global_targets(
             lambda s: most_active_subsystems_global(s, days=7),
         )
     )
-    targets.append(("most_active_maintainers (7d)", most_active_maintainers))
+    targets.append(("most_active_maintainers (7d)", maintainer_activity_rows))
     targets.append(("maintainer_review_counts", warm_maintainer_review_counts))
     # Last, so nothing else waits behind it and an overrun costs only the
     # fill. It reads the ID lists the per-release targets above write.

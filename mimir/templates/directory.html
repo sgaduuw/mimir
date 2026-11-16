@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% from "_search_field.html" import search_field %}
+{% from "_activity_rows.html" import subsystem_row, maintainer_row %}
+{% block title %}{{ title }}{% if letter %}: {{ letter_label }}{% endif %} | {{ site_name }}{% endblock %}
+{% block content %}
+<section class="directory">
+  <nav aria-label="breadcrumb"><ul><li><a href="/">Ratatoskr</a></li><li>{% if letter %}<a href="{{ root_path }}">{{ kind }}</a>{% else %}{{ kind }}{% endif %}</li>{% if letter %}<li>{{ letter_label }}</li>{% endif %}</ul></nav>
+  <h1>{{ title }}{% if letter %}: {{ letter_label }}{% endif %}</h1>
+  <p>{{ total|format_count }} current {{ kind }}. {% if not show_rows %}Choose an initial, then filter or sort its entries.{% endif %}</p>
+  {% if letters %}<nav class="directory-letters" aria-label="{{ title }} by initial">{% for item in letters %}<a href="{{ item.path }}"{% if item.letter == letter %} aria-current="page"{% endif %}>{{ item.label }}</a>{% endfor %}</nav>{% endif %}
+  {% if not activity_available %}<p class="directory-note">Activity not available yet</p>{% elif show_rows and kind == 'maintainers' %}<p class="directory-note">Review trailers: Reviewed-by, Acked-by and Tested-by entries on messages from the last seven days, including attestations carried forward from earlier reviews. Mailmap aliases are grouped under the current canonical maintainer. Profile counts cover all time, individual inboxes and more trailer roles.</p>{% elif show_rows %}<p class="directory-note">Messages in the last seven days, summed across inboxes; cross-posts may count more than once. Quiet subsystems link to a mirrored mailing list where available.</p>{% endif %}
+  {% if show_rows %}
+  <div class="front-controls" data-filter-controls hidden>
+    {% call search_field('directory-find', 'Find a ' ~ singular) %}<input id="directory-find" type="search" data-filter-input="directory-list" autocomplete="off">{% endcall %}
+    <span class="front-sort"><button type="button" class="outline secondary" data-sort-button="default" data-sort-list="directory-list" aria-pressed="true">A to Z</button>{% if activity_available %}<button type="button" class="outline secondary" data-sort-button="active" data-sort-list="directory-list" aria-pressed="false">Most active</button>{% endif %}</span>
+  </div>
+  <table class="listing-table directory-table"><thead><tr><th scope="col">{{ singular|capitalize }}</th><th scope="col">{{ 'Discussed on' if kind == 'subsystems' else 'Subsystems' }}</th>{% if activity_available %}<th scope="col" class="listing-count">{{ 'Messages' if kind == 'subsystems' else 'Review trailers' }}</th>{% endif %}</tr></thead><tbody id="directory-list">
+    {% for row in rows %}{% if kind == 'subsystems' %}{{ subsystem_row(row, maximum, true, activity_available, loop.index0) }}{% else %}{{ maintainer_row(row, maximum, true, activity_available, loop.index0) }}{% endif %}{% endfor %}
+  </tbody></table>
+  {% endif %}
+</section>
+<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>
+{% endblock %}

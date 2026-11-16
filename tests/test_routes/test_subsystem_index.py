@@ -32,7 +32,7 @@ def _render(client, monkeypatch, rows):
         return rows
 
     monkeypatch.setattr(dashboards, "most_active_subsystems_in_inbox", cached)
-    response = client.get("/alpha/subsystem/")
+    response = client.get("/alpha/subsystems/")
     assert response.status_code == 200
     assert len(calls) == 1
     assert calls[0][0] == "alpha"

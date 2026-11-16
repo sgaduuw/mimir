@@ -170,7 +170,7 @@ def test_meta_index_subsystem_row_names_inbox_count_and_bar(client, tmp_path):
     assert len(rows) == 1
     link = rows[0].find("a")
     assert link.text() == "bcachefs"
-    assert link.attrs["href"] == "/alpha/subsystem/bcachefs/"
+    assert link.attrs["href"] == "/alpha/subsystems/bcachefs/"
     assert rows[0].find("small", cls="front-row-meta").text() == "alpha"
     assert rows[0].find("span", cls="count").text() == "1"
     assert rows[0].find("rect").attrs["width"] == "100.0"
@@ -239,7 +239,7 @@ def test_index_emits_website_json_ld(client):
 
 
 def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
-    """`/<inbox>/subsystem/<name>/` renders the subsystem name,
+    """`/<inbox>/subsystems/<name>/` renders the subsystem name,
     status, maintainers, and a list of recent patches touching
     the subsystem's paths."""
     _seed_subsystem(
@@ -258,7 +258,7 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
         subject="bcachefs: tweak super",
         body=patch_body,
     )
-    r = client.get("/alpha/subsystem/bcachefs/")
+    r = client.get("/alpha/subsystems/bcachefs/")
     assert r.status_code == 200
     body = r.data.decode()
     # H1 lowercases the upstream MAINTAINERS-verbatim name.
@@ -272,7 +272,7 @@ def test_subsystem_dashboard_renders_header_and_recent(client, tmp_path):
 
 
 def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
-    """`/<inbox>/subsystem/<name>/` surfaces an Active reviewers
+    """`/<inbox>/subsystems/<name>/` surfaces an Active reviewers
     section when the subsystem has attestations on patches in the
     last 30 days. Allowlisted addresses get a clickable link to
     the per-reviewer page.
@@ -304,7 +304,7 @@ def test_subsystem_dashboard_renders_active_reviewers(client, tmp_path):
         art = s.get(Article, art_id)
         art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
-    r = client.get("/alpha/subsystem/bcachefs/")
+    r = client.get("/alpha/subsystems/bcachefs/")
     assert r.status_code == 200
     text = r.data.decode()
     assert "Active reviewers" in text
@@ -343,7 +343,7 @@ def test_subsystem_dashboard_no_link_for_non_allowlisted_reviewer(
         art = s.get(Article, art_id)
         art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
-    text = client.get("/alpha/subsystem/bcachefs/").data.decode()
+    text = client.get("/alpha/subsystems/bcachefs/").data.decode()
     assert "Active reviewers" in text
     # Address is redacted in the display surface (safe_from policy).
     assert "rando@somecorp.example" not in text
@@ -396,7 +396,7 @@ def test_subsystem_reviewer_links_respect_route_syntax_and_redaction(
         path = "/alpha/reviewer/" + quote(address.lower(), safe="")
         assert client.get(path).status_code == status
 
-    response = client.get("/alpha/subsystem/bcachefs/")
+    response = client.get("/alpha/subsystems/bcachefs/")
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert "Active reviewers" in html
@@ -411,7 +411,7 @@ def test_subsystem_dashboard_404_on_unknown_subsystem(client):
     """404 on an unknown subsystem name. URL is already lowercase
     so the redirect doesn't intercept; the lookup misses and 404
     fires."""
-    assert client.get("/alpha/subsystem/nope/").status_code == 404
+    assert client.get("/alpha/subsystems/nope/").status_code == 404
 
 
 def test_subsystem_dashboard_redirects_uppercase_to_canonical(client):
@@ -421,18 +421,18 @@ def test_subsystem_dashboard_redirects_uppercase_to_canonical(client):
     the page directly, so bookmarks and search-engine indexing
     consolidate on one URL."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    r = client.get("/alpha/subsystem/BCACHEFS/")
+    r = client.get("/alpha/subsystems/BCACHEFS/")
     assert r.status_code == 301
-    assert r.headers["Location"].endswith("/alpha/subsystem/bcachefs/")
+    assert r.headers["Location"].endswith("/alpha/subsystems/bcachefs/")
 
 
 def test_subsystem_dashboard_redirects_mixed_case(client):
     """Any non-lowercase shape (mixed casing, single capital, …)
     redirects to the lowercase canonical form."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    r = client.get("/alpha/subsystem/BcacheFS/")
+    r = client.get("/alpha/subsystems/BcacheFS/")
     assert r.status_code == 301
-    assert r.headers["Location"].endswith("/alpha/subsystem/bcachefs/")
+    assert r.headers["Location"].endswith("/alpha/subsystems/bcachefs/")
 
 
 def test_subsystem_dashboard_lookup_case_insensitive(client):
@@ -441,7 +441,7 @@ def test_subsystem_dashboard_lookup_case_insensitive(client):
     that lowercases stored names doesn't silently break the lookup
     (or vice-versa)."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    r = client.get("/alpha/subsystem/bcachefs/")
+    r = client.get("/alpha/subsystems/bcachefs/")
     assert r.status_code == 200
     # Lookup matched the uppercase DB row via func.lower(); the
     # rendered H1 lowercases the display name (anti-shouty pass).
@@ -450,7 +450,7 @@ def test_subsystem_dashboard_lookup_case_insensitive(client):
 
 def test_subsystem_dashboard_404_on_unknown_inbox(client):
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    assert client.get("/nonexistent/subsystem/bcachefs/").status_code == 404
+    assert client.get("/nonexistent/subsystems/bcachefs/").status_code == 404
 
 
 def test_subsystem_dashboard_unknown_inbox_with_uppercase_404s_directly(client):
@@ -460,7 +460,7 @@ def test_subsystem_dashboard_unknown_inbox_with_uppercase_404s_directly(client):
     crawlers hitting a bad-inbox URL paid a wasted hop. The audit
     (2026-05-15) flagged the ordering."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    r = client.get("/nonexistent/subsystem/BCACHEFS/")
+    r = client.get("/nonexistent/subsystems/BCACHEFS/")
     assert r.status_code == 404
     # And specifically NOT a 301; a regression to the old order
     # would surface as one of these instead.
@@ -490,7 +490,7 @@ def test_subsystem_dashboard_rejects_control_chars_in_name(client):
         # quote(..., safe="") percent-encodes everything including
         # the control bytes; that produces the URL a browser/bot
         # would actually send for the literal name.
-        path = f"/alpha/subsystem/{quote(bad, safe='')}/"
+        path = f"/alpha/subsystems/{quote(bad, safe='')}/"
         r = client.get(path)
         assert r.status_code == 404, (
             f"subsystem name {bad!r} should 404 at validator, got {r.status_code}"
@@ -520,8 +520,8 @@ def test_subsystem_dashboard_scopes_recent_to_inbox(client, tmp_path):
         subject="beta-side patch",
         body=patch_body,
     )
-    body_a = client.get("/alpha/subsystem/bcachefs/").data.decode()
-    body_b = client.get("/beta/subsystem/bcachefs/").data.decode()
+    body_a = client.get("/alpha/subsystems/bcachefs/").data.decode()
+    body_b = client.get("/beta/subsystems/bcachefs/").data.decode()
     assert "alpha-side patch" in body_a
     assert "beta-side patch" not in body_a
     assert "beta-side patch" in body_b
@@ -532,7 +532,7 @@ def test_subsystem_dashboard_empty_when_no_matches(client):
     """A subsystem with no articles in this inbox still renders
     cleanly with an empty-state message, not a 404 or an error."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    r = client.get("/alpha/subsystem/bcachefs/")
+    r = client.get("/alpha/subsystems/bcachefs/")
     assert r.status_code == 200
     body = r.data.decode()
     assert "bcachefs" in body
@@ -545,7 +545,7 @@ def test_subsystem_dashboard_renders_sparkline(client):
     (all-zero bars) so the surface doesn't disappear on dormant
     subsystems."""
     _seed_subsystem("BCACHEFS", "Supported", files=["fs/bcachefs/"])
-    body = client.get("/alpha/subsystem/bcachefs/").data.decode()
+    body = client.get("/alpha/subsystems/bcachefs/").data.decode()
     assert "<svg" in body
     # The SVG carries an aria-label naming the subsystem (lowercased).
     assert "bcachefs, last 30 days" in body
@@ -583,7 +583,7 @@ def test_subsystem_dashboard_renders_active_threads_section(
         art = s.get(Article, art_id)
         art.date = datetime.now(UTC) - timedelta(hours=2)
         s.commit()
-    body = client.get("/alpha/subsystem/bcachefs/").data.decode()
+    body = client.get("/alpha/subsystems/bcachefs/").data.decode()
     assert "Most active threads" in body
     assert "bcachefs active thread" in body
     # Sparkline SVG is unconditional.
@@ -652,7 +652,7 @@ def test_inbox_dashboard_renders_subsystem_list_with_activity(
     _warm_active_subsystems(inbox_name="alpha")
     text = client.get("/alpha/").data.decode()
     assert "Most active subsystems" in text
-    assert "/alpha/subsystem/bcachefs/" in text
+    assert "/alpha/subsystems/bcachefs/" in text
 
 
 def test_index_json_ld_includes_inbox_item_list(client):
@@ -919,7 +919,7 @@ def test_subsystem_page_links_its_maintainers_to_their_profiles(client, tmp_path
         files=["fs/bcachefs/"],
         maintainers=[("M", "Kent Overstreet", "kent.overstreet@kernel.org")],
     )
-    html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+    html = client.get("/alpha/subsystems/bcachefs/").get_data(as_text=True)
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
 
 
@@ -955,8 +955,8 @@ def test_subsystem_index_lists_active_subsystems_and_links_them(client, tmp_path
         inbox = s.execute(sa_select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         most_active_subsystems_in_inbox(s, inbox, days=7)
 
-    html = client.get("/alpha/subsystem/").get_data(as_text=True)
-    assert 'href="/alpha/subsystem/bcachefs/"' in html
+    html = client.get("/alpha/subsystems/").get_data(as_text=True)
+    assert 'href="/alpha/subsystems/bcachefs/"' in html
     assert "bcachefs" in html
 
 
@@ -969,7 +969,7 @@ def test_subsystem_index_renders_when_the_cache_is_cold(client):
     erroring. 45 of ~200 production inboxes are also genuinely empty
     here.
     """
-    r = client.get("/alpha/subsystem/")
+    r = client.get("/alpha/subsystems/")
     assert r.status_code == 200
     assert "No subsystem has seen patch activity" in r.get_data(as_text=True)
 
@@ -978,7 +978,7 @@ def test_inbox_dashboard_links_the_subsystem_index(client):
     """The index is only worth building if something links to it, and
     the dashboard is the sitemapped hub that should."""
     html = client.get("/alpha/").get_data(as_text=True)
-    assert 'href="/alpha/subsystem/"' in html
+    assert 'href="/alpha/subsystems/"' in html
 
 
 def test_subsystem_index_does_not_compute_on_a_cold_cache(client, tmp_path):
@@ -1003,7 +1003,7 @@ def test_subsystem_index_does_not_compute_on_a_cold_cache(client, tmp_path):
         body=b"diff --git a/fs/bcachefs/super.c b/fs/bcachefs/super.c\n@@ -1 +1 @@\n-x\n+y\n",
     )
 
-    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    html = client.get("/alpha/subsystems/").get_data(as_text=True)
     assert "bcachefs" not in html, "index computed the aggregation on a request"
     assert "No subsystem has seen patch activity" in html
 
@@ -1031,7 +1031,7 @@ def test_subsystem_page_does_not_link_reviewer_addresses_to_maintainer_profiles(
             ("R", "Reviewer Person", "reviewer.only@kernel.org"),
         ],
     )
-    html = client.get("/alpha/subsystem/bcachefs/").get_data(as_text=True)
+    html = client.get("/alpha/subsystems/bcachefs/").get_data(as_text=True)
 
     assert 'href="/maintainers/kent.overstreet@kernel.org"' in html
     assert "Reviewer Person" in html, "the reviewer should still be shown"
@@ -1076,7 +1076,7 @@ def test_subsystem_index_carries_its_own_meta_description_and_title(client):
     On a change set whose whole premise is index shaping, a duplicate
     description is the wrong outcome.
     """
-    html = client.get("/alpha/subsystem/").get_data(as_text=True)
+    html = client.get("/alpha/subsystems/").get_data(as_text=True)
     assert "<title>Active subsystems | alpha | mimir</title>" in html
     assert 'name="description" content="Kernel subsystems with recent' in html
 
@@ -1110,13 +1110,13 @@ def test_subsystem_dashboard_does_not_500_on_case_colliding_section_names(
         s.add(Subsystem(name="CASE COLLIDE", status="Odd Fixes"))
         s.commit()
 
-    r = client.get("/alpha/subsystem/case%20collide/")
+    r = client.get("/alpha/subsystems/case%20collide/")
     assert r.status_code in (200, 404), (
         f"case-colliding section names returned {r.status_code}; "
         "the lookup raised instead of resolving"
     )
     # And the pick is stable, not order-of-insertion roulette.
-    again = client.get("/alpha/subsystem/case%20collide/")
+    again = client.get("/alpha/subsystems/case%20collide/")
     assert again.status_code == r.status_code
     if r.status_code == 200:
         assert again.get_data() == r.get_data(), (
@@ -1186,7 +1186,7 @@ def test_subsystem_dashboard_folds_a_series_into_one_triage_row(client, tmp_path
             art.patch_series_position = n
             s.add(ArticleFile(article_id=art.id, path="fs/bcachefs/super.c"))
         s.commit()
-    text = client.get("/alpha/subsystem/bcachefs/").data.decode()
+    text = client.get("/alpha/subsystems/bcachefs/").data.decode()
     assert "Quiet for" in text  # precondition: the quiet list rendered
     quiet = text.split("Quiet for", 1)[1]
     assert quiet.count("bcachefs: fold") == 1, quiet
@@ -1291,7 +1291,7 @@ def test_reviewed_triage_states_event_counts_once_and_keeps_date_author(
             _bulk_uncached(session, [aid], inbox_id)[aid].count_suffix
             == " · 4 reviews, 3 by maintainers"
         )
-    response = client.get("/alpha/subsystem/counts/")
+    response = client.get("/alpha/subsystems/counts/")
     assert response.status_code == 200
     section = parse(response.get_data(as_text=True)).find(
         "section", cls="subsystem-triage"
@@ -1341,7 +1341,7 @@ def test_subsystem_dashboard_links_a_merged_reviewer_to_the_canonical_address(
         s.add(Mailmap(old_address=hidden, address=canon))
         s.commit()
 
-    text = client.get("/alpha/subsystem/cxl/").data.decode()
+    text = client.get("/alpha/subsystems/cxl/").data.decode()
     # Precondition: one merged row carrying both attestations.
     assert text.count('class="subsystem-reviewer-heading"') == 1
     assert '<span class="count">2</span>' in text

@@ -29,7 +29,7 @@ def _patch(*dirs: str) -> bytes:
 def test_dropdown_present_in_an_inbox_and_absent_outside_one(client, tmp_path):
     _, url = _ingest_one_article(tmp_path, "alpha", "nav-a@example.com")
     assert _dropdown_hrefs(client.get("/alpha/").get_data(as_text=True)) == [
-        "/alpha/subsystem/"
+        "/alpha/subsystems/"
     ]
     assert _DD.search(client.get("/").get_data(as_text=True)) is None
 
@@ -46,9 +46,9 @@ def test_message_page_lists_its_subsystems_then_all_subsystems(client, tmp_path)
     html = client.get(url).get_data(as_text=True)
     hrefs = _dropdown_hrefs(html)
     assert hrefs == [
-        "/alpha/subsystem/bcachefs/",
-        "/alpha/subsystem/xfs/",
-        "/alpha/subsystem/",
+        "/alpha/subsystems/bcachefs/",
+        "/alpha/subsystems/xfs/",
+        "/alpha/subsystems/",
     ]
     # The relocated metadata header uses the same subsystem predicates/URLs.
     metadata = client.get(_metadata_url(url))
@@ -73,19 +73,19 @@ def test_dropdown_caps_at_eight_subsystems(client, tmp_path):
     metadata = client.get(_metadata_url(url))
     assert metadata.status_code == 200
     for i in range(10):
-        assert f'<a href="/alpha/subsystem/sub{i:02d}/">' in metadata.get_data(
+        assert f'<a href="/alpha/subsystems/sub{i:02d}/">' in metadata.get_data(
             as_text=True
         )
     hrefs = _dropdown_hrefs(html)
-    assert hrefs == [f"/alpha/subsystem/sub{i:02d}/" for i in range(8)] + [
-        "/alpha/subsystem/"
+    assert hrefs == [f"/alpha/subsystems/sub{i:02d}/" for i in range(8)] + [
+        "/alpha/subsystems/"
     ]
 
 
 def test_message_without_subsystems_shows_only_all_subsystems(client, tmp_path):
     _, url = _ingest_one_article(tmp_path, "alpha", "nav-d@example.com")
     html = client.get(url).get_data(as_text=True)
-    assert _dropdown_hrefs(html) == ["/alpha/subsystem/"]
+    assert _dropdown_hrefs(html) == ["/alpha/subsystems/"]
 
 
 def test_css_pins_hover_open_and_link_like_summary():

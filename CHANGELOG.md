@@ -11,6 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Global subsystem and maintainer directories link from the front page, include quiet entries, and offer name filtering and alphabetical or activity sorting. Subsystem rows choose the busiest mirrored inbox or a mirrored MAINTAINERS list; maintainer rows show subsystem ownership and weekly review trailers, including reviewers who authored no messages (#1206).
+
+### Changed
+
+- Per-inbox subsystem URLs use `/subsystems/`; the old `/subsystem/` paths redirect permanently while preserving query strings. Root route names are reserved for the application, so operators must check configured and stored inbox names before upgrading. The pre-upgrade checker reports collisions without changing them (#1206).
+- Weekly subsystem activity caches retain every match instead of truncating each inbox and the global ranking at 100. Front-page display limits stay unchanged; aggregate message totals now include contributions previously excluded by that cutoff (#1206).
+
 ## [4.2.1] - 2026-11-16
 
 ### Fixed

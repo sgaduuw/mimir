@@ -1232,3 +1232,21 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
 .front-inboxes .inbox-link:hover { text-decoration: underline; }
 .inbox-pinned { align-self: center; font-size: .75rem; padding: .1rem .45rem; border-radius: 999px; background: var(--pico-muted-background-color); color: var(--pico-muted-color); }
 .inbox-meta { font-size: .85rem; color: var(--pico-muted-color); white-space: nowrap; font-variant-numeric: tabular-nums; align-self: center; }
+
+/* Directory rows stay on one line, with the identity yielding to the count. */
+.directory-letters { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: 1rem; }
+.directory-letters a { display: inline-block; min-width: 2.75rem; min-height: 2.75rem; text-align: center; align-content: center; }
+.directory-letters a[aria-current] { font-weight: 700; }
+.directory-note, .directory-more { color: var(--pico-muted-color); font-size: .85rem; }
+.directory-more { text-align: right; }
+.directory-table { table-layout: fixed; }
+.directory-table th, .directory-table td { padding: .4rem .35rem; vertical-align: middle; }
+.directory-table th:first-child { width: 40%; }
+.directory-table th:nth-child(2) { width: 25%; }
+.directory-table th.listing-count { width: 35%; }
+.directory-table thead th { white-space: normal; }
+.directory-name .listing-subject, .directory-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.directory-name .listing-subject { display: block; min-height: 2.75rem; align-content: center; font-family: inherit; font-weight: 400; }
+.directory-name a { display: block; overflow: hidden; text-overflow: ellipsis; }
+.directory-activity { display: grid; grid-template-columns: minmax(0, 1fr) 4rem; align-items: center; gap: .4rem; }
+@media (width < 40rem) { .directory-table { font-size: .8rem; } .directory-activity { grid-template-columns: minmax(0, 1fr) 3rem; } }
