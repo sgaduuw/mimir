@@ -990,11 +990,20 @@ _RECENT = [
 ]
 
 
-@pytest.mark.parametrize("total", [1, RECENT_INBOX_FIRST_BELOW_ARTICLES - 1, None])
+@pytest.mark.parametrize(
+    "total",
+    [
+        1,
+        RECENT_INBOX_FIRST_BELOW_ARTICLES,
+        INBOX_FIRST_BELOW_ARTICLES - 1,
+        None,
+    ],
+)
 def test_author_recent_small_inbox_drives_from_the_inbox(seeded_db, total):
     """A date-first walk reads the whole archive for a sparse author
-    (#796), so a small or unknown-size list stays inbox-first; a large
-    one walks the date index over a floor (tests/test_front_page_date_first.py)."""
+    (#796), so a list under 1M or of unknown size stays inbox-first; a
+    larger one walks the date index over a floor
+    (tests/test_front_page_date_first.py)."""
     alpha = _inbox(seeded_db, "alpha")
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
         if total is None:
