@@ -990,13 +990,17 @@ _RECENT = [
 ]
 
 
-@pytest.mark.parametrize("total", [1, INBOX_FIRST_BELOW_ARTICLES * 6])
-def test_author_recent_always_drives_from_the_inbox(seeded_db, total):
-    """No date floor, so a date-first walk reads the whole archive for a
-    sparse author, on any list size (#796)."""
+@pytest.mark.parametrize("total", [1, RECENT_INBOX_FIRST_BELOW_ARTICLES - 1, None])
+def test_author_recent_small_inbox_drives_from_the_inbox(seeded_db, total):
+    """A date-first walk reads the whole archive for a sparse author
+    (#796), so a small or unknown-size list stays inbox-first; a large
+    one walks the date index over a floor (tests/test_front_page_date_first.py)."""
     alpha = _inbox(seeded_db, "alpha")
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
-        _cache_total(alpha, total)
+        if total is None:
+            cache.delete(_archive_stats_key(alpha))
+        else:
+            _cache_total(alpha, total)
         plan = _listing_plan(s, _author_listing, alpha)
     assert "USING INDEX ix_article_lists_inbox_id" in plan, plan
     assert "ix_articles_date" not in plan, plan
