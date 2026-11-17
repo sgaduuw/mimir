@@ -4,7 +4,7 @@ the SQL-plan pin that asserts UNION-of-range-seeks (not
 the LIKE-with-ESCAPE shape that disabled the index)."""
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mimir.models import Inbox
 from mimir.subsystems_dashboard.reads import (
@@ -50,9 +50,9 @@ def test_subsystem_path_filter_uses_index_seeks(seeded_db):
         assert path_filter is not None
         path_sql, path_params = path_filter
         # Must be a UNION of independent seeks, not OR-of-LIKEs.
-        assert " UNION " in path_sql
+        assert " UNION ALL " in path_sql
         assert "LIKE" not in path_sql
-        branches = path_sql.split(" UNION ")
+        branches = path_sql.split(" UNION ALL ")
         assert len(branches) == 3  # Directory range, bare directory and exact path.
         assert all(
             "article_files INDEXED BY ix_article_files_path" in branch
@@ -147,3 +147,81 @@ def test_path_filter_consumers_use_the_expected_index(seeded_db, helper):
         assert [reviewer.total for reviewer in result] == [3]
     else:
         assert len(result) == 3
+
+
+def test_path_budget_counts_raw_rows_with_a_covering_bounded_scan(seeded_db):
+    from mimir.models import ArticleFile, Subsystem
+    from mimir.subsystems_dashboard._path_filter import _path_seek_is_bounded
+    from tests._helpers import count_steps
+
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session, "EXCLUDED BUDGET", None, files=["net/"], excludes=["net/"]
+        )
+        sid = sub.id
+        article = _add_recent_patch_with_trailers(session, "many-paths@x", [], [])
+        article_id = article.id
+        session.add_all(
+            ArticleFile(article_id=article.id, path=f"net/{n:04}.c")
+            for n in range(2000)
+        )
+        session.commit()
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        sub = session.get(Subsystem, sid)
+        assert len(sub.paths) == 2  # Entire include range is excluded.
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(ArticleFile)
+                .where(ArticleFile.article_id == article_id)
+            )
+            == 2000
+        )
+        results = []
+        with count_steps(session) as steps:
+            plan = plan_of(
+                session,
+                lambda: results.append(_path_seek_is_bounded(session, sub, 5)),
+                "SELECT count(*) FROM (SELECT 1",
+            )
+        assert results == [False]
+        assert steps.count < 1000, steps.count
+    assert "COVERING INDEX ix_article_files_path" in plan, plan
+    assert "TEMP B-TREE" not in plan, plan
+    assert "SCAN article_files" not in plan, plan
+
+
+def test_path_budget_counts_overlaps_and_exact_boundary(seeded_db):
+    from mimir.subsystems_dashboard._path_filter import _path_seek_is_bounded
+
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session,
+            "OVERLAP BUDGET",
+            None,
+            files=["net/", "net/a.c"],
+            excludes=["net/"],
+        )
+        _add_recent_patch_with_trailers(session, "overlap@x", ["net/a.c"], [])
+        session.commit()
+        # One file is reached by two independent seeks, even though X: removes it.
+        assert not _path_seek_is_bounded(session, sub, 1)
+        assert _path_seek_is_bounded(session, sub, 2)
+
+
+def test_zero_compound_limit_does_not_disable_bounded_probe(seeded_db):
+    import sqlite3
+
+    from mimir.subsystems_dashboard._path_filter import _path_seek_is_bounded
+
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "UNLIMITED", None, files=["net/", "drivers/"])
+        _add_recent_patch_with_trailers(session, "unlimited@x", ["net/a.c"], [])
+        session.commit()
+        connection = session.connection().connection.driver_connection
+        previous = connection.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 0)
+        try:
+            # SQLite treats zero as unlimited, not as a ban on compound SELECTs.
+            assert _path_seek_is_bounded(session, sub, 1)
+        finally:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, previous)

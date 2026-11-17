@@ -83,12 +83,15 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     path_sql, params = path_filter
     head = series_head_sql("a")
     identity = "series_key, series_head, version, singleton"
-    eligibility = """
+    # SQLite may reorder WHERE terms. The CASE must gate the Python
+    # parser on both inbox and path membership, not merely on the inbox.
+    path_guard = f" AND {path_sql}" if since is not None or inbox_first else ""
+    eligibility = f"""
         COALESCE(a.patch_series_position, 1) != 0
         AND CASE WHEN EXISTS (
             SELECT 1 FROM article_lists al
              WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
-        ) THEN canonical_patch(a.subject, a.patch_series_position,
+        ){path_guard} THEN canonical_patch(a.subject, a.patch_series_position,
                                a.patch_series_key)
           ELSE 0 END
     """
@@ -99,7 +102,7 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
                 "article_lists al INDEXED BY ix_article_lists_inbox_id "
                 "CROSS JOIN articles a ON a.id = al.article_id"
             )
-            predicate = f"al.inbox_id = :inbox_id AND {path_sql}"
+            predicate = "al.inbox_id = :inbox_id"
         else:
             source = "articles a"
             predicate = f"a.id IN ({path_sql})"
@@ -114,7 +117,7 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     else:
         candidates = "recent_candidates"
         source = articles_in_inbox_from(date_first=True) + " ON al.article_id = a.id"
-        predicate = "al.inbox_id = :inbox_id AND a.date >= :since AND " + path_sql
+        predicate = "al.inbox_id = :inbox_id AND a.date >= :since"
         params["since"] = since
         # The shared series predicate compares actual articles, keeping the
         # head normalization in one place. The date bound never reaches members.
@@ -128,7 +131,7 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
                AND g.singleton = 0 AND {same_series_sql("a", "r")}
                AND a.patch_series_version = g.version
                AND a.patch_series_position > 0
-               AND {path_sql} AND {eligibility}
+               AND {eligibility}
             UNION ALL
             SELECT g.id, g.id, g.position FROM selected g
              WHERE (SELECT COUNT(*) FROM selected) = :limit
