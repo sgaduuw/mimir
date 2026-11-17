@@ -152,7 +152,9 @@ def test_htmx_navigation_and_progressive_links(client, tmp_path, monkeypatch):
                 expect(page.locator("#msg")).to_have_attribute(
                     "data-article-id", str(article_id)
                 )
-                expect(page.locator("main > nav")).to_be_visible()
+                # The whole page came back: both nav rows, not a fragment.
+                expect(page.locator("main > nav.site-nav")).to_be_visible()
+                expect(page.locator("main > nav.inbox-nav")).to_be_visible()
                 expect_message(article_id, path)
                 assert "hx-request" not in restored.request.headers
                 assert restored.request.headers["hx-request-type"] == "full"
@@ -763,7 +765,7 @@ def test_series_diff_htmx_navigation_history_failures_and_native_form(
                     "data-nav-up", f"/{inbox}/"
                 )
                 expect(
-                    page.locator(".site-nav > ul").first.locator("a").last
+                    page.locator(".inbox-nav > ul").first.locator("a").first
                 ).to_have_attribute("href", f"/{inbox}/")
                 expect(page.locator('link[rel="canonical"]')).to_have_attribute(
                     "href",
@@ -955,3 +957,131 @@ def test_a_revision_link_in_a_message_details_fragment_scrolls_in_place(
         server.shutdown()
         thread.join()
         server.server_close()
+
+
+@pytest.mark.parametrize("width", [390, 1280])
+def test_a_tap_on_the_inbox_rows_subsystems_label_opens_its_menu(
+    client, tmp_path, width
+):
+    """A real click, not a forced one: Playwright refuses a click whose
+    point lands on another element. On phones Pico left the <details>
+    inline around the 44 px flex summary, so the click landed on the
+    <details>, which does not toggle (seen while building the two-row
+    nav). Both rows must also fit the width without a sideways scroll."""
+    from tests.test_routes._helpers import _ingest_one_article
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    _, msg_url = _ingest_one_article(tmp_path, "alpha", "dd-tap@example.com")
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": width, "height": 800})
+            block_external_requests(page, base)
+            page.goto(base + msg_url)
+            menu = page.locator("#subsystems-dd-menu")
+            expect(menu).to_be_hidden()
+            page.locator(".inbox-nav .subsystems-dd summary").click(timeout=5000)
+            expect(menu).to_be_visible()
+            expect(menu.locator('a[href="/subsystems/"]')).to_be_visible()
+            assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
+
+
+def _serve(client):
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    return server, worker, f"http://127.0.0.1:{server.server_port}"
+
+
+def _stop(server, worker):
+    server.shutdown()
+    worker.join(timeout=5)
+    server.server_close()
+
+
+def test_a_section_link_looks_different_from_an_unmarked_one(client, session):
+    """`nav-section` once set `color: var(--pico-color)`, which Pico points
+    at the primary on every <a>, so it rendered exactly like an unmarked
+    link and a class-presence test could not see it. Compare computed
+    styles in a real browser instead, on a page under each of two
+    sections, and against the aria-current look too."""
+    from mimir.models import Subsystem, SubsystemMaintainer
+
+    sub = Subsystem(name="ALPHA DRIVER", status="Maintained")
+    session.add(sub)
+    session.flush()
+    session.add(
+        SubsystemMaintainer(
+            subsystem_id=sub.id, role="M", name="Alice", address="alice@kernel.org"
+        )
+    )
+    session.commit()
+    playwright = playwright_api()
+    server, worker, base = _serve(client)
+    style = """a => { const s = getComputedStyle(a);
+      return [s.color, s.fontWeight, s.textDecorationLine].join('|'); }"""
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": 1280, "height": 800})
+            block_external_requests(page, base)
+            looks = {}
+            for path, marked in (
+                ("/maintainers/alice@kernel.org", "/maintainers/"),
+                ("/merge-window/history", "/merge-window"),
+            ):
+                page.goto(base + path)
+                links = page.locator(".site-nav .nav-sections a")
+                section = page.locator(f'.site-nav a[href="{marked}"]')
+                assert section.get_attribute("class") == "nav-section"  # precondition
+                plain = links.filter(has_not=page.locator(".nav-section")).first
+                looks[path] = (section.evaluate(style), plain.evaluate(style))
+            page.goto(base + "/maintainers/")
+            current = page.locator('.site-nav a[aria-current="page"]').evaluate(style)
+    finally:
+        _stop(server, worker)
+    for path, (section, plain) in looks.items():
+        assert section != plain, path
+        assert section != current, path
+
+
+def test_both_nav_rows_stay_within_their_phone_height_budget(client, session, tmp_path):
+    """No menu toggle means the rows are always on screen on a phone, the
+    agreed trade-off. Measured 2026-11-16 at 390 px with `linux-arm-kernel`
+    (the list row wraps to two lines): 254 px for both rows together. The
+    ceiling allows small drift and fails on one more 44 px row."""
+    from mimir.models import Inbox
+    from tests.test_routes._helpers import _ingest_one_article
+
+    session.add(
+        Inbox(
+            name="linux-arm-kernel",
+            mirror_path="/tmp/linux-arm-kernel",
+            upstream_url="https://example.com/linux-arm-kernel",
+        )
+    )
+    session.commit()
+    _, msg_url = _ingest_one_article(tmp_path, "linux-arm-kernel", "tall@example.com")
+    playwright = playwright_api()
+    server, worker, base = _serve(client)
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": 390, "height": 800})
+            block_external_requests(page, base)
+            page.goto(base + msg_url)
+            heights = page.evaluate(
+                """() => ['.site-nav', '.inbox-nav'].map(
+                     s => document.querySelector(s).getBoundingClientRect().height)"""
+            )
+    finally:
+        _stop(server, worker)
+    # Precondition: the long name really wraps the list row past one line.
+    assert heights[1] > 2 * 44, heights
+    assert sum(heights) <= 272, heights

@@ -11,6 +11,26 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.1.0] - 2026-11-17
+
+No migration, no backfill and no cache version bump.
+
+### Added
+
+- The Releases pages share a Merge window and History tab bar. A release's page links the neighbouring releases the history lists, labelled Older and Newer, above its heading and again after its messages; it skips releases the history leaves out, and the newest links on to the current merge window. The merge window and release pages open with a short list of links to their sections.
+- The directories, maintainer profiles, release pages and subsystem dashboards carry a breadcrumb. The `h` key goes to the page's parent there and on the merge window and release history, which rely on their tabs instead of a breadcrumb. It used to do nothing outside an inbox.
+
+### Changed
+
+- The site navigation is two rows. The top row links Subsystems, Maintainers and Releases on every page, so readers who land on a thread can reach the directories; before, the directories were linked only from the front page. Inside an inbox a second row holds the list's dashboard, today, yesterday and its subsystems menu, now labelled "subsystems in <list>" and listing both the list's active subsystems and the site-wide directory. The "Merge window" nav link is now "Releases". The phone menu toggle is gone: the section links take their own line on a phone.
+- Dependencies move up: gunicorn 27.0.1 and pydantic-settings 2.16.3. Gunicorn 27 parses requests more strictly: it answers 400 to a request whose `Transfer-Encoding` does not end with `chunked`, or whose `Content-Length` is not plain digits, and 414 to an over-long request line.
+
+### Fixed
+
+- Sparse subsystem triage queues avoid scanning the inbox history or the whole date window on a cold dashboard request. A bounded path-index check retains the existing query plan for broad subsystems; recent-posting eligibility callbacks also skip unrelated and excluded paths. Queue contents, paging and cache lifetimes are unchanged (#1215).
+- Subsystem dashboards use date-index reads for their seven- and thirty-day sections on medium-sized inboxes, avoiding repeated scans of the entire inbox history. Recent postings on known-small inboxes use inbox membership to bound path matching. Posting contents and cache lifetimes are unchanged.
+- The subsystem and maintainer directory breadcrumbs named a hard-coded site instead of the configured `SITE_NAME`.
+
 ## [5.0.0] - 2026-11-16
 
 ### Added
@@ -6854,7 +6874,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.0.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.1.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

@@ -6,14 +6,12 @@ not in the SQL) and the maintainer-pickup exclusion is a triage-only
 concern.
 
 Both helpers ORDER BY `articles.date ASC` so the oldest concerning
-entries surface first, walking either `ix_articles_date` (big inboxes)
-or the inbox's own `article_lists` rows (the rest), see `_triage_sql`;
-a maintainer scanning the triage queue cares about "what's been sitting
-longest", not "what's most recent." Both
-filter through the shared `_subsystem_path_filter_sql` UNION-of-seeks
-so the path-side cost is the same as the other per-subsystem
-helpers. Both cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` to
-ride out repeat dashboard hits within a refresh window.
+entries surface first. A bounded raw-path probe selects path-index seeks
+for sparse subsystems on known medium/large inboxes. Otherwise they retain
+the date-index or inbox-membership walk selected by `_inbox_first`.
+The query shape does not change candidate page sizes or post-filtering.
+Both are cached for `SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC` to ride out repeat
+dashboard hits within a refresh window.
 """
 
 from collections.abc import Callable
@@ -24,9 +22,12 @@ from sqlalchemy import DateTime, bindparam, func, select, text, tuple_
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import TextClause
 
-from mimir import cache
+from mimir import cache, dashboard
 from mimir.config import settings
-from mimir.dashboard import _inbox_first
+from mimir.dashboard import (
+    RECENT_INBOX_FIRST_BELOW_ARTICLES,
+    _inbox_first,
+)
 from mimir.datetime_utils import coerce_dt
 from mimir.models import (
     Article,
@@ -44,7 +45,9 @@ from mimir.patch_series import (
 )
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import (
+    _path_seek_is_bounded,
     _subsystem_path_filter_exists_sql,
+    _subsystem_path_filter_sql,
 )
 from mimir.trailers import REVIEW_TRAILER_ROLES
 
@@ -145,6 +148,11 @@ MAX_PAGE = 2000
 # First page of an inbox-first walk: it costs the inbox scan plus the
 # sort whatever its size, so a small page only buys more round trips.
 INBOX_FIRST_PAGE = 200
+# Measured 2026-11-16: 5,675/13,458/23,068 raw include matches for
+# KASAN/PROC FILESYSTEM/THERMAL made path-first triage take 10-103 ms,
+# versus 330-640 ms walking dates/inbox history. Broad rules retain
+# their existing plan; the covering-index probe stops at this budget.
+TRIAGE_PATH_MATCH_BUDGET = 25_000
 
 
 def _page_size(limit: int, *, inbox_first: bool = False) -> int:
@@ -157,9 +165,13 @@ def _page_size(limit: int, *, inbox_first: bool = False) -> int:
 
 
 def _triage_sql(
-    *, inbox_first: bool, path_predicate: str, engagement_predicates: str
+    *,
+    inbox_first: bool,
+    path_predicate: str,
+    engagement_predicates: str,
+    path_first: bool = False,
 ) -> str:
-    """The one candidate SELECT behind both lists and both driving
+    """The one candidate SELECT behind both lists and all three driving
     shapes, so the predicates cannot drift apart.
 
     Date-first walks `ix_articles_date` ASC over the bounded window
@@ -173,7 +185,7 @@ def _triage_sql(
     in the WHERE it ran on every survivor before the LIMIT (#785). It
     runs on the fetched page instead, `_filter_superseded`.
     """
-    if inbox_first:
+    if inbox_first and not path_first:
         source = (
             "article_lists al_in INDEXED BY ix_article_lists_inbox_id\n"
             "        CROSS JOIN articles a ON a.id = al_in.article_id"
@@ -193,6 +205,12 @@ def _triage_sql(
         # index-only. CASE keeps the cheap tests first (#1156).
         where = f"""AND CASE WHEN {in_inbox} AND {path_predicate}
           THEN ({engagement_predicates}) ELSE 0 END"""
+        if path_first:
+            # IN must be outside CASE to drive primary-key seeks from the
+            # bounded path set. Keep engagement behind inbox membership.
+            where = f"""AND {path_predicate}
+              AND CASE WHEN {in_inbox}
+                THEN ({engagement_predicates}) ELSE 0 END"""
     return f"""
         SELECT a.id AS article_id, a.message_id, a.subject,
                a.author, a.date AS art_date,
@@ -208,6 +226,13 @@ def _triage_sql(
     """
 
 
+def _candidate_path_filter(subsystem: Subsystem, prefix: str, path_first: bool):
+    if not path_first:
+        return _subsystem_path_filter_exists_sql(subsystem, prefix)
+    built = _subsystem_path_filter_sql(subsystem, prefix)
+    return (f"a.id IN ({built[0]})", built[1]) if built is not None else None
+
+
 def _candidate_query_needs_attention(
     inbox: Inbox,
     subsystem: Subsystem,
@@ -215,6 +240,7 @@ def _candidate_query_needs_attention(
     limit: int,
     *,
     inbox_first: bool = False,
+    path_first: bool = False,
 ) -> tuple[str, dict] | None:
     """SQL for needs-attention candidates (before the superseded and
     maintainer-Ack post-filters). Returns `(sql, params)` or `None` when the
@@ -229,7 +255,7 @@ def _candidate_query_needs_attention(
     walk scans the full date index back to the dawn of lkml (~6M
     rows), bounded to the triage window it's a few hundred thousand.
     """
-    path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="na")
+    path_filter = _candidate_path_filter(subsystem, "na", path_first)
     if path_filter is None:
         return None
     path_predicate, path_params = path_filter
@@ -237,6 +263,7 @@ def _candidate_query_needs_attention(
     review_role_params = ", ".join(f":{name}" for name in review_roles)
     sql = _triage_sql(
         inbox_first=inbox_first,
+        path_first=path_first,
         path_predicate=path_predicate,
         engagement_predicates=f"""EXISTS (
               SELECT 1 FROM article_trailers t
@@ -269,17 +296,19 @@ def _candidate_query_quiet(
     limit: int,
     *,
     inbox_first: bool = False,
+    path_first: bool = False,
 ) -> tuple[str, dict] | None:
     """SQL for the quiet list. Patches with no engagement: no
     trailers AND no replies, and no newer revision (the pill's
     superseded rule, #688, applied per page by `_run_triage`). Returns `(sql, params)` or `None`.
     Same `_triage_sql` shapes as `_candidate_query_needs_attention`."""
-    path_filter = _subsystem_path_filter_exists_sql(subsystem, prefix="qt")
+    path_filter = _candidate_path_filter(subsystem, "qt", path_first)
     if path_filter is None:
         return None
     path_predicate, path_params = path_filter
     sql = _triage_sql(
         inbox_first=inbox_first,
+        path_first=path_first,
         path_predicate=path_predicate,
         engagement_predicates="""NOT EXISTS (
               SELECT 1 FROM article_trailers t
@@ -332,8 +361,19 @@ def _run_triage(
     row, the `representative_key` winner: a stored `vN` over `rfc` and
     `resend`, then the oldest (#686, #691), until `limit` rows are built
     or the candidates run out."""
+    total = dashboard.cached_archive_total(inbox)
+    path_first = (
+        total is not None
+        and total >= RECENT_INBOX_FIRST_BELOW_ARTICLES
+        and _path_seek_is_bounded(session, subsystem, TRIAGE_PATH_MATCH_BUDGET)
+    )
     built = build_query(
-        inbox, subsystem, cutoff_date, limit, inbox_first=_inbox_first(inbox)
+        inbox,
+        subsystem,
+        cutoff_date,
+        limit,
+        inbox_first=_inbox_first(inbox),
+        path_first=path_first,
     )
     if built is None:
         return []

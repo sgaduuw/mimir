@@ -15,7 +15,6 @@ from mimir.merge_window import (
     merge_window,
     merge_window_state,
 )
-from mimir.release_history import release_history_path
 from mimir.web._blueprint import bp_web
 from mimir.web.routes._validators import allowlist_tag
 from mimir.web.urls import _site_base
@@ -56,7 +55,6 @@ def merge_window_page():
             current_inbox=None,
             canonical_url=canonical_url,
             section_min=SECTION_MIN_PATCHES,
-            release_history_url=release_history_path(),
         )
     )
     response.set_etag(etag)

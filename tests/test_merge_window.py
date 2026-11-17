@@ -739,6 +739,29 @@ def test_linux_next_mirror_path_moves_the_etag(
     assert "Jane Doe" in again.get_data(as_text=True)
 
 
+def test_a_release_moves_the_merge_window_etag(client, monkeypatch):
+    """The page's markup changes with a release (the two-row site nav and
+    the Releases tabs, for one), so `merge_window_state` carries the
+    version. Pinned here at the route: dropping it would let a crawler or
+    CDN edge revalidating an old copy get a 304 and keep the old nav."""
+    import mimir
+
+    monkeypatch.setattr(mimir, "__version__", "0.0.1")
+    first = client.get(MERGE_WINDOW_PATH)
+    assert first.status_code == 200
+    # Precondition: the same version revalidates, so a 200 below is the
+    # version moving the ETag and not an ETag that never matches.
+    same = client.get(
+        MERGE_WINDOW_PATH, headers={"If-None-Match": first.headers["ETag"]}
+    )
+    assert same.status_code == 304
+    monkeypatch.setattr(mimir, "__version__", "0.0.2")
+    again = client.get(
+        MERGE_WINDOW_PATH, headers={"If-None-Match": first.headers["ETag"]}
+    )
+    assert again.status_code == 200
+
+
 @pytest.mark.parametrize("knob", ["tree_display_name", "demoted_inboxes"])
 def test_config_knobs_move_the_etag(client, monkeypatch, knob):
     """Restart-only config the page depends on is in its validator:

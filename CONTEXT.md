@@ -1570,10 +1570,20 @@ testing inbox and F/X path membership per article. If it finds the full posting
 limit, only those selected identities expand through the series-key index,
 across all dates, for their complete matching counts and previews. A recent
 resend can therefore surface an old posting with its original slot winners and
-undated members intact. If the window yields fewer postings than the limit, the
-UNION of path-index seeks selects from all history. This keeps quiet inboxes
-complete and avoids an open-ended date walk (#1165). Future-dated articles
-remain eligible in both paths.
+undated members intact. If the window yields fewer postings than the limit,
+known-small inboxes (below the existing 100k short-list boundary) enumerate
+inbox membership and probe each article's files. Other inboxes, including
+unknown sizes, use the UNION of path-index seeks across all history. This
+keeps quiet inboxes complete and avoids an open-ended date walk (#1165,
+#1212). Future-dated articles remain eligible in every shape.
+
+The active-thread, daily-volume and reviewer sections use that same 100k
+boundary for their 7/30-day windows, instead of the 1M boundary retained for
+180-day triage. Measured on 2026-11-16, the 30-day date and inbox shapes tied
+at 65k inbox articles; at 132k date-first roughly halved the cost. Small
+inboxes retain inbox-first, and missing archive-size metadata retains the
+existing conservative fallback. Cache lifetimes and the limited slow-warmer
+fan-out are unchanged.
 
 A deterministic connection-local SQLite function calls the existing subject
 predicates so replies and non-patches cannot consume grouped slots. A CASE
@@ -1710,6 +1720,27 @@ Nav links live in `base.html` so they're discoverable from anywhere,
 not just `/`. A `current_inbox` context processor injects the active
 inbox name into every template render so the nav doesn't have to
 receive it explicitly per view.
+
+The nav is two rows. `.site-nav` holds the site's sections
+(Subsystems, Maintainers, Releases) on every page, because readers
+land on a thread from a search engine and never see `/` (#891); an
+earlier single row only showed site-wide links once the reader was
+inside an inbox. `.inbox-nav` holds the list's own links and appears
+only inside an inbox. There is no phone menu toggle: three section
+links fit a phone on a line of their own, and a toggle would hide
+them from exactly those readers. A section link is aria-current only
+on its own URL; on the pages under it (a release under Releases, a
+profile under Maintainers) it gets the `nav-section` class instead,
+keeping #988's rule that aria-current means "this link is this page".
+
+Section pages declare their breadcrumb as a top-level
+`{% set crumbs = [...] %}` (`_breadcrumb.html`). A child template's
+top-level `set` is visible to `base.html`, which derives the `h`
+key's `data-nav-up` from the same list, so the trail and the key
+cannot disagree about a page's parent. Pages without `crumbs` keep
+the inbox-root rule. The merge window and release history set
+`crumbs` for the key but do not render the trail: the nav and the
+Releases tabs already say where the reader is.
 
 ### Most active threads (`/`)
 
@@ -2476,10 +2507,32 @@ every row in the window belongs to another list, so one page costs
 the whole archive's window (#775). Below `INBOX_FIRST_BELOW_ARTICLES`
 the triage queues instead seek the inbox's own `article_lists` rows
 and fetch each article by primary key (`_triage_sql`, one builder for
-both shapes). The size comes from the cached `archive_stats` row and
+the original two shapes). The size comes from the cached `archive_stats` row and
 is never computed on the request; no row counts as small. The
 constant's comment carries the measurements. Plan pinned in
 `test_inbox_first_plan_drives_from_the_inbox_index`.
+
+Sparse subsystem triage adds a third shape (#1215). For known inboxes
+with at least 100k articles, a covering path-index probe counts at most
+25,001 raw F: matches. Duplicated matches and X:-excluded paths count
+toward this work budget; applying exclusions first could scan an unbounded
+include range to find no survivors. At most 25,000 matches selects path
+seeks with inbox membership guarded before engagement checks. Otherwise
+the original inbox/date plan remains. This selects a plan, never truncates
+results. The original inbox/date choice still controls page size because
+an early stop can affect which RFC/v1 representative is seen. The
+article-ID enumerator uses UNION ALL, consumed by IN for set membership;
+it must not be joined directly without deduplication.
+
+Measured against the same snapshot on 2026-11-16 (17,948,921 articles),
+forced-cold linux-mm/KASAN rendering fell from 1.153 s to 0.220 s,
+lkml/PROC FILESYSTEM from 1.252 s to 0.473 s, and netdev/PROC FILESYSTEM
+from 1.107 s to 0.268 s. Dense controls retained their original plans;
+broad linux-mm/NETWORKING still costs about 3 s, mostly its full-history
+recent-posting fallback. No cache lifetime or warm-target changes.
+Recent-posting date/inbox plans guard both inbox and path membership in
+CASE before invoking canonical_patch, since SQLite may reorder WHERE
+conjuncts and otherwise call Python on unrelated or excluded paths.
 
 The same shape serves the dashboard listings in `mimir/dashboard.py`
 (#791, #796), built once by `_inbox_first_sql`. Search and

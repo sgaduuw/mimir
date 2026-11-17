@@ -1065,7 +1065,12 @@ def test_message_page_keeps_a_maintainer_who_has_no_address(client, tmp_path):
         assert response.status_code == 200
         html = response.get_data(as_text=True)
         assert "No Address Person" in html
-        assert 'href="/maintainers/"' not in html
+        # The site nav links the directory root by design; an empty address
+        # must not build the same href as a profile link in the header.
+        header = re.sub(
+            r'<nav class="site-nav"[^>]*>.*?</nav>', "", html, count=1, flags=re.DOTALL
+        )
+        assert 'href="/maintainers/"' not in header
 
 
 def test_subsystem_index_carries_its_own_meta_description_and_title(client):

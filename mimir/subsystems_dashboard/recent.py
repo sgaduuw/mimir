@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 from sqlalchemy import DateTime, bindparam, select, text
 
-from mimir import cache
+from mimir import cache, dashboard
 from mimir.canonical import fallback_canonical_name
 from mimir.datetime_utils import coerce_dt
 from mimir.models import ArticleList, Inbox
@@ -64,17 +64,18 @@ def _canonical_patch(subject, position, key):
     return _is_patch_subject(subject) and not _is_reply_to_patch(article)
 
 
-def recent_postings_sql(subsystem, *, since=None):
+def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     """Build a posting query, optionally selecting from a recent date window.
 
     The date window limits representative selection only. Selected postings
     still collect matching members across all history, including old slot
-    winners and undated children. Without a window the path index remains
-    the driver, which is cheaper than an open-ended date walk for quiet lists.
+    winners and undated children. Without a window, known-small inboxes
+    probe paths per inbox member; otherwise the path index remains the
+    driver. Neither fallback performs an open-ended date walk.
     """
     path_filter = (
         _subsystem_path_filter_sql(subsystem, prefix="rps")
-        if since is None
+        if since is None and not inbox_first
         else _subsystem_path_filter_exists_sql(subsystem, prefix="rps")
     )
     if path_filter is None:
@@ -82,19 +83,29 @@ def recent_postings_sql(subsystem, *, since=None):
     path_sql, params = path_filter
     head = series_head_sql("a")
     identity = "series_key, series_head, version, singleton"
-    eligibility = """
+    # SQLite may reorder WHERE terms. The CASE must gate the Python
+    # parser on both inbox and path membership, not merely on the inbox.
+    path_guard = f" AND {path_sql}" if since is not None or inbox_first else ""
+    eligibility = f"""
         COALESCE(a.patch_series_position, 1) != 0
         AND CASE WHEN EXISTS (
             SELECT 1 FROM article_lists al
              WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
-        ) THEN canonical_patch(a.subject, a.patch_series_position,
+        ){path_guard} THEN canonical_patch(a.subject, a.patch_series_position,
                                a.patch_series_key)
           ELSE 0 END
     """
     if since is None:
         candidates = "candidates"
-        source = "articles a"
-        predicate = f"a.id IN ({path_sql})"
+        if inbox_first:
+            source = (
+                "article_lists al INDEXED BY ix_article_lists_inbox_id "
+                "CROSS JOIN articles a ON a.id = al.article_id"
+            )
+            predicate = "al.inbox_id = :inbox_id"
+        else:
+            source = "articles a"
+            predicate = f"a.id IN ({path_sql})"
         members = ""
         slot_source = """
             selected g JOIN candidates c
@@ -106,7 +117,7 @@ def recent_postings_sql(subsystem, *, since=None):
     else:
         candidates = "recent_candidates"
         source = articles_in_inbox_from(date_first=True) + " ON al.article_id = a.id"
-        predicate = "al.inbox_id = :inbox_id AND a.date >= :since AND " + path_sql
+        predicate = "al.inbox_id = :inbox_id AND a.date >= :since"
         params["since"] = since
         # The shared series predicate compares actual articles, keeping the
         # head normalization in one place. The date bound never reaches members.
@@ -120,7 +131,7 @@ def recent_postings_sql(subsystem, *, since=None):
                AND g.singleton = 0 AND {same_series_sql("a", "r")}
                AND a.patch_series_version = g.version
                AND a.patch_series_position > 0
-               AND {path_sql} AND {eligibility}
+               AND {eligibility}
             UNION ALL
             SELECT g.id, g.id, g.position FROM selected g
              WHERE (SELECT COUNT(*) FROM selected) = :limit
@@ -176,7 +187,15 @@ def recent_postings_query(session, inbox, subsystem, limit=30, preview_limit=30)
     """Read the bounded dataset without cache writes or lifecycle work."""
     since = datetime.now(UTC) - timedelta(days=RECENT_POSTINGS_WINDOW_DAYS)
     for start in (since, None):
-        built = recent_postings_sql(subsystem, since=start)
+        # Broad paths can enumerate years of other inboxes before rejecting
+        # membership. On 2026-11-16 driver-core (9,527 articles) took 1.59 s
+        # path-first versus 0.057 s inbox-first, with identical full postings.
+        # Unknown sizes retain the established all-history path strategy.
+        total = dashboard.cached_archive_total(inbox) if start is None else None
+        inbox_first = (
+            total is not None and total < dashboard.RECENT_INBOX_FIRST_BELOW_ARTICLES
+        )
+        built = recent_postings_sql(subsystem, since=start, inbox_first=inbox_first)
         if built is None:
             return []
         if limit < 1 or preview_limit < 1:

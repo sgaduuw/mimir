@@ -1,6 +1,6 @@
 [project]
 name = "mimir"
-version = "5.0.0"
+version = "5.1.0"
 description = "toy project for reading lkml"
 authors = [{name = "Eelco Wesemann", email = "6771014+sgaduuw@users.noreply.github.com"}]
 license = "MIT"
@@ -12,9 +12,9 @@ dependencies = [
     "alembic>=1.20.1,<2.0.0",
     "dulwich>=1.2.21,<2.0.0",
     "pydantic>=2.14.3,<3.0.0",
-    "pydantic-settings>=2.16.2,<3.0.0",
+    "pydantic-settings>=2.16.3,<3.0.0",
     "pygments>=2.21.0,<3.0.0",
-    "gunicorn>=26.2.0,<27.0.0",
+    "gunicorn>=27.0.1,<28.0.0",
 ]
 
 [project.scripts]
@@ -27,7 +27,7 @@ mimir-broker-ping = "mimir_broker_ping:main"
 
 [dependency-groups]
 dev = [
-    "ruff>=0.17.4,<0.18",
+    "ruff>=0.17.5,<0.18",
     "pytest>=9.2.0,<10",
     "pillow>=13.0.0,<14",
     "freezegun>=1.5.5,<2",
