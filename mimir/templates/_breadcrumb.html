@@ -1,0 +1,20 @@
+{# One breadcrumb for the site's own sections. A page sets
+   `crumbs` at the top level of its template, a list of (label, href) pairs
+   from the site root down to itself, with href none where there is no page
+   to link (the last entry always). base.html reads the same list for the
+   `h` key's target, so the trail and the key share one idea of "parent". #}
+{% macro breadcrumb(crumbs) -%}
+<nav aria-label="breadcrumb"><ul>
+  {%- for label, href in crumbs %}
+  {%- if loop.last %}<li aria-current="page">{{ label }}</li>
+  {%- elif href %}<li><a href="{{ href }}">{{ label }}</a></li>
+  {%- else %}<li>{{ label }}</li>{% endif %}
+  {%- endfor %}
+</ul></nav>
+{%- endmacro %}
+
+{# The last linked entry before the page itself, or "" at the root (the
+   `h` key's no-op). Returned as text, which is what a macro gives. #}
+{% macro breadcrumb_parent(crumbs) -%}
+{%- for label, href in crumbs[:-1]|reverse if href -%}{% if loop.first %}{{ href }}{% endif %}{%- endfor -%}
+{%- endmacro %}

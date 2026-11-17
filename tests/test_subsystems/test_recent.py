@@ -201,7 +201,7 @@ def test_query_statement_count_and_selected_cover_plan(seeded_db):
         finally:
             event.remove(engine, "before_cursor_execute", capture)
         assert len(rows) == 12
-        assert len(statements) == 5  # One bounded attempt, then the full-history path.
+        assert len(statements) == 6  # Bounded attempt, size hint, full-history path.
         plan = plan_of(
             session,
             lambda: recent_postings_query(session, inbox, sub),
@@ -544,3 +544,101 @@ def test_recent_window_short_of_limit_falls_back_to_history(seeded_db):
         "old-1@x",
         "old-2@x",
     ]
+
+
+@pytest.mark.parametrize("total", [None, 99_999, 100_000])
+def test_history_fallback_uses_known_small_inbox_without_changing_postings(
+    seeded_db, monkeypatch, total
+):
+    from dataclasses import asdict
+
+    from mimir import dashboard
+    from mimir.models import Subsystem
+    from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
+
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session, "SMALL HISTORY", None, ["drivers/demo/"], ["drivers/demo/no/"]
+        )
+        sid = sub.id
+        original = _patch(session, "old-slot@x")
+        original.date = datetime.now(UTC) - timedelta(days=90)
+        _patch(session, "resend-slot@x").date = datetime.now(UTC)
+        _patch(session, "undated-slot@x", position=2).date = None
+        _patch(session, "future@x", key="future").date = datetime.now(UTC) + timedelta(
+            days=90
+        )
+        _patch(session, "different-version@x", version="rfc")
+        _patch(session, "other-inbox@x", position=3, inbox="beta")
+        _patch(session, "excluded@x", position=4, paths=("drivers/demo/no/a.c",))
+        session.commit()
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        sub = session.get(Subsystem, sid)
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: None)
+        expected = recent_postings_query(session, inbox, sub)
+        assert len(expected) == 3
+        series = next(row for row in expected if row.matching_count == 2)
+        assert [child.message_id for child in series.children] == [
+            "old-slot@x",
+            "undated-slot@x",
+        ]
+        monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: total)
+        observed = []
+        plan = plan_of(
+            session,
+            lambda: observed.extend(recent_postings_query(session, inbox, sub)),
+            "WITH candidates AS MATERIALIZED",
+        )
+    assert [asdict(row) for row in observed] == [asdict(row) for row in expected]
+    if total is not None and total < 100_000:
+        assert "ix_article_lists_inbox_id" in plan, plan
+        assert "ix_article_files_path" not in plan, plan
+    else:
+        assert "ix_article_files_path" in plan, plan
+        assert "ix_article_lists_inbox_id" not in plan, plan
+
+
+@pytest.mark.parametrize("limit", [1, 30], ids=["date-window", "inbox-history"])
+def test_path_membership_guards_subject_callback(seeded_db, monkeypatch, limit):
+    from mimir import dashboard
+    from mimir.models import Subsystem
+    from mimir.subsystems_dashboard import recent
+    from tests._helpers import PRODUCTION_STATS, planner_stats
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: 9_527)
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session, "CALLBACK PATH", None, ["drivers/demo/"], ["drivers/demo/no/"]
+        )
+        sid = sub.id
+        now = datetime.now(UTC)
+        _patch(session, "eligible@x", key="eligible").date = now
+        irrelevant = []
+        for index in range(20):
+            path = "drivers/demo/no/a.c" if index % 2 else "unrelated/a.c"
+            row = _patch(
+                session,
+                f"irrelevant-{index}@x",
+                key=f"irrelevant-{index}",
+                paths=(path,),
+            )
+            row.date = now
+            irrelevant.append(row)
+        assert len(irrelevant) == 20
+        session.commit()
+    calls = []
+    original = recent._canonical_patch
+
+    def observed(subject, position, key):
+        calls.append(subject)
+        return original(subject, position, key)
+
+    monkeypatch.setattr(recent, "_canonical_patch", observed)
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        sub = session.get(Subsystem, sid)
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        output = recent_postings_query(session, inbox, sub, limit=limit)
+    assert [row.representative.message_id for row in output] == ["eligible@x"]
+    assert calls
+    assert all("irrelevant-" not in subject for subject in calls), calls

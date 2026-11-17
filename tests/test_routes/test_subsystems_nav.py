@@ -11,7 +11,7 @@ from tests.test_routes._helpers import (
 )
 
 _DD = re.compile(r'<ul id="subsystems-dd-menu"[^>]*>(.*?)</ul>', re.DOTALL)
-_HREF = re.compile(r'<li><a href="([^"]+)"')
+_HREF = re.compile(r'<li[^>]*><a href="([^"]+)"')
 
 
 def _dropdown_hrefs(html: str) -> list[str]:
@@ -29,7 +29,8 @@ def _patch(*dirs: str) -> bytes:
 def test_dropdown_present_in_an_inbox_and_absent_outside_one(client, tmp_path):
     _, url = _ingest_one_article(tmp_path, "alpha", "nav-a@example.com")
     assert _dropdown_hrefs(client.get("/alpha/").get_data(as_text=True)) == [
-        "/alpha/subsystems/"
+        "/alpha/subsystems/",
+        "/subsystems/",
     ]
     assert _DD.search(client.get("/").get_data(as_text=True)) is None
 
@@ -49,11 +50,12 @@ def test_message_page_lists_its_subsystems_then_all_subsystems(client, tmp_path)
         "/alpha/subsystems/bcachefs/",
         "/alpha/subsystems/xfs/",
         "/alpha/subsystems/",
+        "/subsystems/",
     ]
     # The relocated metadata header uses the same subsystem predicates/URLs.
     metadata = client.get(_metadata_url(url))
     assert metadata.status_code == 200
-    for h in hrefs[:-1]:
+    for h in hrefs[:-2]:
         assert html.count(f'<a href="{h}">') == 1
         assert f'<a href="{h}">' in metadata.get_data(as_text=True)
 
@@ -78,20 +80,21 @@ def test_dropdown_caps_at_eight_subsystems(client, tmp_path):
         )
     hrefs = _dropdown_hrefs(html)
     assert hrefs == [f"/alpha/subsystems/sub{i:02d}/" for i in range(8)] + [
-        "/alpha/subsystems/"
+        "/alpha/subsystems/",
+        "/subsystems/",
     ]
 
 
 def test_message_without_subsystems_shows_only_all_subsystems(client, tmp_path):
     _, url = _ingest_one_article(tmp_path, "alpha", "nav-d@example.com")
     html = client.get(url).get_data(as_text=True)
-    assert _dropdown_hrefs(html) == ["/alpha/subsystems/"]
+    assert _dropdown_hrefs(html) == ["/alpha/subsystems/", "/subsystems/"]
 
 
 def test_css_pins_hover_open_and_link_like_summary():
     css = (Path(mimir.__file__).parent / "static/css/mimir.css").read_text()
-    # Not in the phone menu (#988): there the panel opens in place, so a
-    # hover would shift the rows below it under the pointer.
+    # Not on phones (#988): there the panel spans the inbox row, and a
+    # hover would open it under a finger scrolling past.
     assert re.search(
         r"@media \(hover: hover\) and \(width >= 768px\)\s*\{\s*"
         r"nav \.subsystems-dd:hover > ul\s*"
@@ -110,5 +113,5 @@ def test_css_pins_hover_open_and_link_like_summary():
     assert "var(--pico-primary)" in summary.group(1)
     # The panel starts at the label's bottom edge: no gap for hover to drop in.
     assert re.search(r"nav \.subsystems-dd > ul\s*\{[^}]*top:\s*calc\(100% - ", css)
-    # The separator only exists when links precede "all subsystems".
-    assert ":not(:only-child):last-child" in css
+    # The separator only exists when subsystem links precede the indexes.
+    assert "nav .subsystems-dd > ul > li:not(.dd-index) + li.dd-index {" in css

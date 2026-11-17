@@ -7,6 +7,18 @@ thread pagination also works with ordinary links. The interface is read-only.
 
 ## Find and read messages
 
+Every page has two navigation rows. The top row is the site's sections:
+Subsystems and Maintainers (the global directories) and Releases (the current
+merge window and the release history). Inside an inbox a second row names the
+list and links its dashboard, today, yesterday and a subsystems menu: the
+subsystems the current message touches, the list's active subsystems, and the
+site-wide directory. On a phone the sections take a line of their own; nothing
+hides behind a menu. The Releases pages share a Merge window and History tab
+bar, and a release's page links the neighbouring releases the history lists.
+The directories, maintainer profiles, release pages and subsystem dashboards
+carry a breadcrumb, and the `h` key goes to its last linked entry; the merge
+window and release history rely on their tabs, and `h` still goes up a level.
+
 Start at `/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and
 archive statistics. Active threads and compact recent messages share the main
@@ -53,9 +65,8 @@ text, so it works without JavaScript too). Patch bodies there keep their
 ## Follow patch and review activity
 
 The navigation's theme selector offers System, Light and Dark. System follows
-your device preference; Light and Dark are remembered in this browser. On a
-phone within an inbox, open the navigation menu to reach the selector. Without JavaScript,
-the site follows your system theme.
+your device preference; Light and Dark are remembered in this browser. Without
+JavaScript, the site follows your system theme.
 
 Thread pages show review trailers, maintainer attestations, tracked-tree landing
 records, revision history, and links to compare patch revisions. Each message

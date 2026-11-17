@@ -631,16 +631,21 @@ INBOX_FIRST_BELOW_ARTICLES = 1_000_000
 # ms, and a dormant list needs it: stgt 3712 / 6273 vs 0 / 0;
 # kernelnewbies 370 / 2643 vs 11 / 21; keyrings 1 / 683 vs 17 / 26.
 # A dormant list above 100k stays as slow as before; accepted.
+# The subsystem active-thread, volume and reviewer reads also use this
+# boundary for their 7/30-day windows. Measured 2026-11-16: at 65k
+# articles the 30-day shapes tied; at 132k date-first halved the cost.
 RECENT_INBOX_FIRST_BELOW_ARTICLES = 100_000
 
 
-def _inbox_first(inbox: Inbox) -> bool:
+def _inbox_first(
+    inbox: Inbox, *, below_articles: int = INBOX_FIRST_BELOW_ARTICLES
+) -> bool:
     """Whether to drive from the inbox's own rows: the inbox has fewer
-    than `INBOX_FIRST_BELOW_ARTICLES` articles. An unknown size (no live `archive_stats`
+    than `below_articles` articles. An unknown size (no live `archive_stats`
     row) counts as small: inbox-first's worst measured case (5.85 s,
     the biggest list) beats date-first's (14 s, a small list)."""
     total = cached_archive_total(inbox)
-    return total is None or total < INBOX_FIRST_BELOW_ARTICLES
+    return total is None or total < below_articles
 
 
 def archive_stats(session: Session, inbox: Inbox, force: bool = False) -> ArchiveStats:
