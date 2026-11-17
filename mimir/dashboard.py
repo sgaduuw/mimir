@@ -157,9 +157,11 @@ def author_recent(
     """Last N messages in `inbox` whose From contains the substring.
 
     A sparse author makes a date-first walk read the whole archive
-    (#796), so a small or unknown-size inbox goes inbox-first. A large
-    one first walks `ix_articles_date` over `LISTING_RECENCY_FLOOR_DAYS`:
-    those rows are the newest of the inbox, so `limit` of them are the
+    (#796), so an inbox under `INBOX_FIRST_BELOW_ARTICLES` or of unknown
+    size goes inbox-first, as the other 180-day listings do (the feed
+    and author view read this too, and below 1M a quiet author would
+    pay the walk on top of a 0.3 s scan). A larger one first walks
+    `ix_articles_date` over `LISTING_RECENCY_FLOOR_DAYS`: those rows are the newest of the inbox, so `limit` of them are the
     answer. With fewer, older ones may exist and the inbox scan runs, so
     the rows and their order are the inbox scan's either way (#1218). The
     substring is not LIKE-escaped, as before; LIKE folds ASCII case as
@@ -167,7 +169,7 @@ def author_recent(
 
     def compute() -> list[ArticleSummary]:
         where, binds = "a.author LIKE :pattern", {"pattern": f"%{email_substring}%"}
-        if not _inbox_first(inbox, below_articles=RECENT_INBOX_FIRST_BELOW_ARTICLES):
+        if not _inbox_first(inbox):
             floor = datetime.now(UTC) - timedelta(days=LISTING_RECENCY_FLOOR_DAYS)
             rows = _listing_rows(
                 session, inbox, where, binds, limit, floor=floor, inbox_first=False
@@ -624,7 +626,8 @@ def cached_archive_total(inbox: Inbox) -> int | None:
 # drive their listing queries from `ix_articles_date`; smaller ones from
 # their own `article_lists` rows. Users: the triage queues (#775) and
 # the pull-request and stable-release listings (#796) through
-# `_inbox_first`, and the related-discussions candidate query (#785);
+# `_inbox_first`, `author_recent` (#1218), and the related-discussions
+# candidate query (#785);
 # the unfiltered recent listing has its own, lower
 # threshold below. Measured on production on 2026-10-18,
 # the same rows from both shapes, first page, in seconds
@@ -644,7 +647,8 @@ INBOX_FIRST_BELOW_ARTICLES = 1_000_000
 # ms, and a dormant list needs it: stgt 3712 / 6273 vs 0 / 0;
 # kernelnewbies 370 / 2643 vs 11 / 21; keyrings 1 / 683 vs 17 / 26.
 # A dormant list above 100k stays as slow as before; accepted.
-# The subsystem active-thread, volume and reviewer reads also use this
+# The subsystem active-thread, volume and reviewer reads and the
+# front-page `active_threads` and `daily_volume` also use this
 # boundary for their 7/30-day windows. Measured 2026-11-16: at 65k
 # articles the 30-day shapes tied; at 132k date-first halved the cost.
 RECENT_INBOX_FIRST_BELOW_ARTICLES = 100_000

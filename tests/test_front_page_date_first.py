@@ -3,8 +3,10 @@
 `active_threads`, `daily_volume` and `author_recent` (the trackers) used
 to start from every `article_lists` row of the inbox, 6.67M on lkml, for a
 7 to 30 day window or a handful of newest rows. From
-`RECENT_INBOX_FIRST_BELOW_ARTICLES` articles up they walk `ix_articles_date`
-instead; a small inbox or one of unknown size keeps the inbox walk.
+`RECENT_INBOX_FIRST_BELOW_ARTICLES` articles up (the trackers: from
+`INBOX_FIRST_BELOW_ARTICLES`, as the other 180-day listings) they walk
+`ix_articles_date` instead; a smaller inbox or one of unknown size keeps the
+inbox walk.
 
 Plan tests pin `PRODUCTION_STATS` on purpose: the date-first statements pin
 their shape with `INDEXED BY`, and the inbox-first ones rely on production's
@@ -20,6 +22,7 @@ from sqlalchemy import select
 
 from mimir import cache
 from mimir.dashboard import (
+    INBOX_FIRST_BELOW_ARTICLES,
     RECENT_INBOX_FIRST_BELOW_ARTICLES,
     _archive_stats_key,
     _listing_rows,
@@ -30,8 +33,13 @@ from mimir.models import Article, ArticleList, Inbox
 from mimir.threading import active_threads
 from tests._helpers import PRODUCTION_STATS, _cache_total, plan_of, planner_stats
 
+# Threads and volume switch at 100k, the trackers at 1M (the feed and the
+# author view also read them, and a quiet author pays the walk on top of a
+# 0.3 s inbox scan below that).
 BIG = RECENT_INBOX_FIRST_BELOW_ARTICLES
 SMALL = RECENT_INBOX_FIRST_BELOW_ARTICLES - 1
+TRACKER_BIG = INBOX_FIRST_BELOW_ARTICLES
+TRACKER_SMALL = INBOX_FIRST_BELOW_ARTICLES - 1
 UNKNOWN = None
 
 
@@ -80,15 +88,41 @@ def _trackers(s, inbox, **kw):
     return author_recent(s, inbox, "trk@", limit=1, force=True)
 
 
+# (call, statement fragment, sizes that walk dates, sizes that do not)
 READS = [
-    pytest.param(_threads, "WITH RECURSIVE chains", id="active_threads"),
-    pytest.param(_volume, "date(a.date) AS day", id="daily_volume"),
-    pytest.param(_trackers, "a.author LIKE", id="author_recent"),
+    pytest.param(
+        _threads,
+        "WITH RECURSIVE chains",
+        [BIG, BIG * 66],
+        [SMALL, 1, UNKNOWN],
+        id="active_threads",
+    ),
+    pytest.param(
+        _volume,
+        "date(a.date) AS day",
+        [BIG, BIG * 66],
+        [SMALL, 1, UNKNOWN],
+        id="daily_volume",
+    ),
+    pytest.param(
+        _trackers,
+        "a.author LIKE",
+        [TRACKER_BIG, TRACKER_BIG * 6],
+        [TRACKER_SMALL, BIG, SMALL, 1, UNKNOWN],
+        id="author_recent",
+    ),
 ]
 
 
-@pytest.mark.parametrize("total", [BIG, BIG * 66])
-@pytest.mark.parametrize(("call", "match"), READS)
+def _cases(index):
+    return [
+        pytest.param(call, match, total, id=f"{call.__name__}-{total}")
+        for call, match, *sizes in (p.values for p in READS)
+        for total in sizes[index]
+    ]
+
+
+@pytest.mark.parametrize(("call", "match", "total"), _cases(0))
 def test_large_inbox_walks_the_date_index(seeded_db, call, match, total):
     with seeded_db() as s:
         _add(s, _alpha(s), "recent@x", _now() - timedelta(days=1))
@@ -104,8 +138,7 @@ def test_large_inbox_walks_the_date_index(seeded_db, call, match, total):
     assert "ix_article_lists_inbox_id" not in plan, plan
 
 
-@pytest.mark.parametrize("total", [SMALL, 1, UNKNOWN])
-@pytest.mark.parametrize(("call", "match"), READS)
+@pytest.mark.parametrize(("call", "match", "total"), _cases(1))
 def test_small_or_unknown_inbox_keeps_the_inbox_walk(seeded_db, call, match, total):
     with seeded_db() as s:
         _add(s, _alpha(s), "recent@x", _now() - timedelta(days=1))
@@ -182,7 +215,9 @@ def _oracle(s, inbox, limit):
 
 
 @pytest.mark.parametrize("days", TRACKER_CASES.values(), ids=TRACKER_CASES.keys())
-@pytest.mark.parametrize("total", [BIG, SMALL], ids=["date_first", "inbox_first"])
+@pytest.mark.parametrize(
+    "total", [TRACKER_BIG, TRACKER_SMALL], ids=["date_first", "inbox_first"]
+)
 def test_author_recent_matches_the_inbox_scan(seeded_db, days, total):
     with seeded_db() as s:
         alpha = _alpha(s)
@@ -205,7 +240,7 @@ def test_author_recent_straddling_reaches_past_the_floor(seeded_db):
         alpha = _alpha(s)
         ids = _seed_tracker(s, alpha, [1, 400, 500, 600])
         s.commit()
-        _size(alpha, BIG)
+        _size(alpha, TRACKER_BIG)
         got = author_recent(s, alpha, "trk@", limit=_LIMIT, force=True)
     assert [r.id for r in got] == ids[:3]
 
@@ -219,7 +254,7 @@ def test_author_recent_date_ties_at_the_limit_keep_the_highest_ids(seeded_db):
         ids = [_add(s, alpha, f"tie{i}@x", when) for i in range(4)]
         _add(s, alpha, "older@x", _now() - timedelta(days=3))
         s.commit()
-        _size(alpha, BIG)
+        _size(alpha, TRACKER_BIG)
         got = author_recent(s, alpha, "trk@", limit=_LIMIT, force=True)
         want = _oracle(s, alpha, _LIMIT)
     assert [r.id for r in got] == ids[::-1][:3]
@@ -235,6 +270,67 @@ def test_author_recent_ties_across_the_fallback(seeded_db):
         recent = _add(s, alpha, "recent@x", _now() - timedelta(days=1))
         tie = [_add(s, alpha, f"tie{i}@x", old) for i in range(3)]
         s.commit()
-        _size(alpha, BIG)
+        _size(alpha, TRACKER_BIG)
         got = author_recent(s, alpha, "trk@", limit=2, force=True)
     assert [r.id for r in got] == [recent, tie[-1]]
+
+
+def _thread_art(s, inbox_ids, msgid, when, parent=None):
+    s.add(
+        Article(
+            message_id=msgid,
+            subject=msgid,
+            author="a@x",
+            date=when,
+            thread_parent=parent,
+            subject_normalized=msgid,
+            lists=[
+                ArticleList(inbox_id=i, epoch="0.git", commit_sha="f" * 40)
+                for i in inbox_ids
+            ],
+        )
+    )
+    s.flush()
+
+
+def test_active_threads_same_under_ties_and_chains(seeded_db):
+    """Both shapes return the same list when score ties are cut by the
+    limit, a chain's root sits outside the window, and replies are
+    crossposted or hang off another inbox's parent."""
+    now = _now()
+    tie = now - timedelta(days=2)
+    with seeded_db() as s:
+        alpha = _alpha(s)
+        beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
+        # 15 single-message threads with identical score and last_activity
+        for i in range(15):
+            _thread_art(s, [alpha.id], f"tie{i:02d}@x", tie)
+        # chain rooted 40 days back, replies inside the window, one crossposted
+        _thread_art(s, [alpha.id], "root@x", now - timedelta(days=40))
+        _thread_art(s, [alpha.id], "r1@x", now - timedelta(days=30), "root@x")
+        _thread_art(s, [alpha.id, beta.id], "r2@x", now - timedelta(days=3), "r1@x")
+        _thread_art(s, [alpha.id], "r3@x", now - timedelta(days=1), "r2@x")
+        # a reply whose parent is only in beta: the chain stops at alpha's edge
+        _thread_art(s, [beta.id], "bparent@x", now - timedelta(days=20))
+        _thread_art(s, [alpha.id], "orphan@x", now - timedelta(days=2), "bparent@x")
+        s.commit()
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
+        alpha = _alpha(s)
+        out = {}
+        for key, total in (("inbox", SMALL), ("date", BIG)):
+            _size(alpha, total)
+            out[key] = [
+                (t.message_id, t.recent_count, t.reply_count, t.last_activity)
+                for t in _threads(s, alpha, limit=10)
+            ]
+            out[key + "_all"] = [t.message_id for t in _threads(s, alpha, limit=30)]
+    assert out["inbox"] == out["date"]
+    assert out["inbox_all"] == out["date_all"]
+    assert "root@x" in out["date_all"]
+    # Explicit, as equal shapes would hide a fault in the shared window or
+    # membership filter: r1 (30 days) is outside the window, so the old
+    # root counts r2 and r3 only; the beta-only parent never becomes a root.
+    by_id = {row[0]: row for row in out["date"]}
+    assert by_id["root@x"][1:3] == (2, 2)
+    assert "orphan@x" in out["date_all"]
+    assert "bparent@x" not in out["date_all"]
