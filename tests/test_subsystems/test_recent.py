@@ -597,3 +597,48 @@ def test_history_fallback_uses_known_small_inbox_without_changing_postings(
     else:
         assert "ix_article_files_path" in plan, plan
         assert "ix_article_lists_inbox_id" not in plan, plan
+
+
+@pytest.mark.parametrize("limit", [1, 30], ids=["date-window", "inbox-history"])
+def test_path_membership_guards_subject_callback(seeded_db, monkeypatch, limit):
+    from mimir import dashboard
+    from mimir.models import Subsystem
+    from mimir.subsystems_dashboard import recent
+    from tests._helpers import PRODUCTION_STATS, planner_stats
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: 9_527)
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session, "CALLBACK PATH", None, ["drivers/demo/"], ["drivers/demo/no/"]
+        )
+        sid = sub.id
+        now = datetime.now(UTC)
+        _patch(session, "eligible@x", key="eligible").date = now
+        irrelevant = []
+        for index in range(20):
+            path = "drivers/demo/no/a.c" if index % 2 else "unrelated/a.c"
+            row = _patch(
+                session,
+                f"irrelevant-{index}@x",
+                key=f"irrelevant-{index}",
+                paths=(path,),
+            )
+            row.date = now
+            irrelevant.append(row)
+        assert len(irrelevant) == 20
+        session.commit()
+    calls = []
+    original = recent._canonical_patch
+
+    def observed(subject, position, key):
+        calls.append(subject)
+        return original(subject, position, key)
+
+    monkeypatch.setattr(recent, "_canonical_patch", observed)
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        sub = session.get(Subsystem, sid)
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        output = recent_postings_query(session, inbox, sub, limit=limit)
+    assert [row.representative.message_id for row in output] == ["eligible@x"]
+    assert calls
+    assert all("irrelevant-" not in subject for subject in calls), calls

@@ -10,7 +10,7 @@ production cold-miss."""
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from mimir.models import (
     Article,
@@ -1319,3 +1319,205 @@ def test_dense_superseded_rows_do_not_multiply_pages(
     # Fixed 20 rows at 200 postings, the first version of this test,
     # took 3.7M to 3.9M.
     assert steps.count < DENSE_SUPERSEDED_STEP_BUDGET, steps.count
+
+
+@pytest.mark.parametrize("total", [None, 9_527, 610_972, 1_300_490])
+@pytest.mark.parametrize(
+    "helper,trailers",
+    [
+        (needs_attention_patches_in_subsystem, [("Reviewed-by", "rev@example.com")]),
+        (quiet_patches_in_subsystem, []),
+    ],
+)
+def test_sparse_paths_choose_bounded_path_seeks(
+    seeded_db, monkeypatch, total, helper, trailers
+):
+    from mimir import dashboard
+    from mimir.models import Subsystem
+    from tests._helpers import PRODUCTION_STATS, plan_of
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: total)
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session, "SPARSE", None, files=["net/"], excludes=["net/no/"]
+        )
+        sid = sub.id
+        _add_article(
+            session, "eligible@x", paths=["net/a.c"], days_ago=60, trailers=trailers
+        )
+        _add_article(
+            session, "excluded@x", paths=["net/no/b.c"], days_ago=60, trailers=trailers
+        )
+        session.commit()
+    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
+        sub = session.get(Subsystem, sid)
+        output = []
+        plan = plan_of(
+            session,
+            lambda: output.extend(helper(session, _alpha(session), sub, force=True)),
+            "SELECT a.id AS article_id",
+        )
+    assert [row.message_id for row in output] == ["eligible@x"]
+    if total is not None and total >= 100_000:
+        assert "ix_article_files_path" in plan, plan
+        assert "ix_article_lists_inbox_id" not in plan, plan
+        assert "ix_articles_date" not in plan, plan
+    else:
+        assert "ix_article_lists_inbox_id" in plan, plan
+
+
+@pytest.mark.parametrize(
+    "helper,review",
+    [(needs_attention_patches_in_subsystem, True), (quiet_patches_in_subsystem, False)],
+)
+@pytest.mark.parametrize("total", [610_972, 1_300_490])
+def test_path_plan_preserves_complete_paged_and_folded_output(
+    seeded_db, monkeypatch, helper, review, total
+):
+    from mimir import dashboard
+    from mimir.subsystems_dashboard import triage
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: total)
+    # Exercise multiple candidate pages, superseded rows and posting folds.
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session,
+            "COMPLETE",
+            None,
+            files=["net/"],
+            maintainers=[("M", "Maint", "maint@x.com")],
+        )
+        trailers = [("Reviewed-by", "rev@example.com")] if review else []
+        for index in range(205):
+            _add_article(
+                session,
+                f"old-{index}@x",
+                paths=["net/a.c"],
+                days_ago=160 - index / 1000,
+                trailers=trailers,
+                patch_series_key=f"old-{index}",
+                patch_series_version="v1",
+                patch_series_position=1,
+            )
+            _add_article(
+                session,
+                f"new-{index}@x",
+                paths=["net/a.c"],
+                days_ago=2,
+                trailers=trailers,
+                patch_series_key=f"old-{index}",
+                patch_series_version="v2",
+                patch_series_position=1,
+            )
+        _series(session, "representative", "rfc", 25, trailers=review, days_ago=100)
+        _series(session, "representative", "v1", 3, trailers=review, days_ago=95)
+        _series(session, "other", "v1", 2, trailers=review, days_ago=90)
+        _add_article(
+            session,
+            "acked@x",
+            paths=["net/a.c"],
+            days_ago=110,
+            trailers=[("Reviewed-by", "rev@example.com"), ("Acked-by", "maint@x.com")],
+        )
+        session.commit()
+        observed = {}
+        pages = {}
+        original = triage._triage_stmt
+        for path_first in (False, True):
+            monkeypatch.setattr(
+                triage, "_path_seek_is_bounded", lambda *args, value=path_first: value
+            )
+            calls = []
+
+            def count_page(sql):
+                calls.append(sql)
+                return original(sql)
+
+            monkeypatch.setattr(triage, "_triage_stmt", count_page)
+            rows = helper(session, _alpha(session), sub, limit=50, force=True)
+            observed[path_first] = [row.model_dump() for row in rows]
+            pages[path_first] = len(calls)
+        assert observed[True] == observed[False]
+        assert pages[True] == pages[False] and pages[True] > 1
+        assert [(row["message_id"], row["series_more"]) for row in observed[True]] == [
+            ("representative-v1-1@x", 2),
+            ("other-v1-1@x", 1),
+        ]
+
+
+@pytest.mark.parametrize(
+    "helper,review",
+    [(needs_attention_patches_in_subsystem, True), (quiet_patches_in_subsystem, False)],
+)
+def test_medium_path_plan_retains_preferred_row_before_early_stop(
+    seeded_db, monkeypatch, helper, review
+):
+    from mimir import dashboard
+    from mimir.subsystems_dashboard import triage
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: 610_972)
+    with seeded_db() as session:
+        before_count = session.scalar(select(func.count()).select_from(Article))
+        sub = _add_subsystem(session, "EARLY STOP", None, files=["net/"])
+        # Ten surviving groups fill a 20-row page, but the preferred v1
+        # arrives later in the original medium-inbox 200-row page.
+        _series(session, "representative", "rfc", 11, trailers=review, days_ago=100)
+        for index in range(9):
+            _series(
+                session, f"singleton-{index}", "v1", 1, trailers=review, days_ago=99
+            )
+        _series(session, "representative", "v1", 1, trailers=review, days_ago=95)
+        session.commit()
+        assert (
+            session.scalar(select(func.count()).select_from(Article)) - before_count
+            == 21
+        )
+        outputs = []
+        for path_first in (False, True):
+            monkeypatch.setattr(
+                triage, "_path_seek_is_bounded", lambda *args, value=path_first: value
+            )
+            rows = helper(session, _alpha(session), sub, limit=10, force=True)
+            assert len(rows) == 10
+            outputs.append([row.model_dump() for row in rows])
+        assert outputs[0] == outputs[1]
+        assert outputs[1][-1]["message_id"] == "representative-v1-1@x"
+
+
+@pytest.mark.parametrize(
+    "helper,review",
+    [(needs_attention_patches_in_subsystem, True), (quiet_patches_in_subsystem, False)],
+)
+def test_path_probe_respects_connection_compound_limit(
+    seeded_db, monkeypatch, helper, review
+):
+    import sqlite3
+
+    from mimir import dashboard
+    from mimir.subsystems_dashboard import triage
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: 610_972)
+    with seeded_db() as session:
+        sub = _add_subsystem(
+            session, "MANY RULES", None, files=[f"path{n}/" for n in range(60)]
+        )
+        _add_article(
+            session,
+            "eligible@x",
+            paths=["path0/a.c"],
+            days_ago=60,
+            trailers=[("Reviewed-by", "rev@example.com")] if review else [],
+        )
+        session.commit()
+        connection = session.connection().connection.driver_connection
+        previous = connection.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, 100)
+        try:
+            # The existing EXISTS query works at this connection limit.
+            with monkeypatch.context() as patch:
+                patch.setattr(triage, "_path_seek_is_bounded", lambda *args: False)
+                expected = helper(session, _alpha(session), sub, force=True)
+            assert [row.message_id for row in expected] == ["eligible@x"]
+            actual = helper(session, _alpha(session), sub, force=True)
+            assert actual == expected
+        finally:
+            connection.setlimit(sqlite3.SQLITE_LIMIT_COMPOUND_SELECT, previous)

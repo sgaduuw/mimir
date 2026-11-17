@@ -22,6 +22,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Fixed
 
+- Sparse subsystem triage queues avoid scanning the inbox history or the whole date window on a cold dashboard request. A bounded path-index check retains the existing query plan for broad subsystems; recent-posting eligibility callbacks also skip unrelated and excluded paths. Queue contents, paging and cache lifetimes are unchanged (#1215).
 - Subsystem dashboards use date-index reads for their seven- and thirty-day sections on medium-sized inboxes, avoiding repeated scans of the entire inbox history. Recent postings on known-small inboxes use inbox membership to bound path matching. Posting contents and cache lifetimes are unchanged.
 - The subsystem and maintainer directory breadcrumbs named a hard-coded site instead of the configured `SITE_NAME`.
 
