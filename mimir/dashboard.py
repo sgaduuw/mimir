@@ -158,11 +158,13 @@ def author_recent(
 
     A sparse author makes a date-first walk read the whole archive
     (#796), so an inbox under `INBOX_FIRST_BELOW_ARTICLES` or of unknown
-    size goes inbox-first, as the other 180-day listings do (the feed
-    and author view read this too, and below 1M a quiet author would
-    pay the walk on top of a 0.3 s scan). A larger one first walks
-    `ix_articles_date` over `LISTING_RECENCY_FLOOR_DAYS`: those rows are the newest of the inbox, so `limit` of them are the
-    answer. With fewer, older ones may exist and the inbox scan runs, so
+    size goes inbox-first, as the other 180-day listings do. The feed
+    and author view read this too; below 1M the inbox scan is cheap,
+    so a quiet author would only add the walk's cost on top of it. A
+    larger inbox first walks `ix_articles_date` over
+    `LISTING_RECENCY_FLOOR_DAYS`: those rows are the newest of the
+    inbox, so `limit` of them are the answer. With fewer, older ones
+    may exist and the inbox scan runs, so
     the rows and their order are the inbox scan's either way (#1218). The
     substring is not LIKE-escaped, as before; LIKE folds ASCII case as
     `ilike` did."""
