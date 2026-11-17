@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- The front page of a very large inbox such as lkml computes its most active threads, 30-day volume and tracked authors in a fraction of the time. They used to read every message of the inbox for a window of days or a few newest rows; they now start from the date index, as the subsystem pages already did. Small inboxes, and inboxes whose size is not yet known, read as before, and the figures and their order do not change. The tracked-author lookup starts from the date index only for inboxes of a million articles or more. The per-author feed and the author search view share it: on lkml-sized inboxes they are faster for prolific authors and slightly slower (about 0.3 s) for quiet ones. Closes #1218.
+
 ## [5.1.0] - 2026-11-17
 
 No migration, no backfill and no cache version bump.

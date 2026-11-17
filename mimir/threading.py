@@ -1071,8 +1071,21 @@ def active_threads(
     def compute() -> list[ActiveThread]:
         end = datetime.now(UTC)
         start = end - timedelta(days=days)
+        # Local import: dashboard imports this module.
+        from mimir.dashboard import RECENT_INBOX_FIRST_BELOW_ARTICLES, _inbox_first
+
         return _active_threads_query(
-            session, inbox, start, end, order_by="score", limit=limit
+            session,
+            inbox,
+            start,
+            end,
+            order_by="score",
+            limit=limit,
+            # A large inbox walks the 7-day date range (lkml: 1.9 s
+            # inbox-first, 28 ms date-first, #1218).
+            date_first=not _inbox_first(
+                inbox, below_articles=RECENT_INBOX_FIRST_BELOW_ARTICLES
+            ),
         )
 
     return cache.get_or_compute(
