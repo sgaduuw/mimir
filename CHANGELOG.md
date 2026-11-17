@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.1.1] - 2026-11-17
+
+### Fixed
+
+- The front page of a large inbox such as lkml computes its most active threads and 30-day volume in a fraction of the time. Both used to read every message of the inbox; above 100,000 articles they now start from the date index, as the subsystem pages already did. Tracked authors, the per-author feed and the author search view do the same for inboxes of a million articles or more: faster for prolific authors, slightly slower (about 0.3 s) for authors with few recent messages. Smaller inboxes, and inboxes whose size is not yet known, read as before, and the figures and their order do not change. Closes #1218.
+
 ## [5.1.0] - 2026-11-17
 
 No migration, no backfill and no cache version bump.
@@ -6874,7 +6880,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.1.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.1.1...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
