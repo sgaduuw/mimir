@@ -40,6 +40,13 @@ class ReadSessionPool:
             pool_size=pool_size,
             max_overflow=0,
             future=True,
+            # #1221: with free-threaded CPython, a Statement that one
+            # thread evicts from a connection's cache is freed by the
+            # thread that compiled it, inside `canonical_patch` while
+            # it holds another connection's mutex. Two threads doing
+            # that to each other deadlock. No cache, no cross-thread
+            # frees. Re-prepare cost measured in the 5.1.2 commit.
+            connect_args={"cached_statements": 0},
         )
 
         @event.listens_for(self._engine, "connect")
@@ -63,7 +70,7 @@ class ReadSessionPool:
         # The rationale recorded here (audit #472) was that without the
         # drain, `dispose()` invalidates connections mid-query and a
         # warm handler hits OperationalError on its next statement.
-        # Measured against the pinned SQLAlchemy 2.0.51 with QueuePool,
+        # Measured against the pinned SQLAlchemy 2.1.8 with QueuePool,
         # that does not happen: `dispose()` closes only IDLE
         # connections, while a checked-out one is detached and keeps
         # working. What the drain still buys is deterministic close at
