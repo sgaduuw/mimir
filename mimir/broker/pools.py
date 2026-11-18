@@ -45,7 +45,8 @@ class ReadSessionPool:
             # thread that compiled it, inside `canonical_patch` while
             # it holds another connection's mutex. Two threads doing
             # that to each other deadlock. No cache, no cross-thread
-            # frees. Re-prepare cost measured in the 5.1.2 commit.
+            # frees. Costs about 2 us per keyed cache lookup (14.1 vs
+            # 16.1 us through SQLAlchemy, 3.15t).
             connect_args={"cached_statements": 0},
         )
 
