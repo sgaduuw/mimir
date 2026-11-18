@@ -1,6 +1,7 @@
-"""Subprocess body for test_pools_lockstep_ft (#1221). Exit 0 = no hang,
-exit 3 = a round stalled. Two threads check out pool sessions in lockstep
-and run a fresh SQL text each round through the `canonical_patch` UDF."""
+"""Subprocess body for test_pool_lockstep_canonical_patch_does_not_deadlock
+(#1221). Exit 0 = all rounds ran, 3 = a round stalled, 4 = the workers
+stopped early. Two threads check out pool sessions in lockstep and run a
+fresh SQL text each round through the `canonical_patch` UDF."""
 
 import os
 import sqlite3
@@ -50,3 +51,4 @@ while any(t.is_alive() for t in threads):
         last, changed = progress[0], time.monotonic()
     elif time.monotonic() - changed > 3:
         os._exit(3)
+sys.exit(0 if progress[0] == rounds else 4)
