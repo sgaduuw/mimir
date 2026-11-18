@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Warming the subsystem pages could hang two background jobs for hours, which stalled database maintenance and slowed the whole site until the broker was restarted. The broker's read connections no longer keep a statement cache, which removes the deadlock at a cost of about 0.1 ms per query. Refs #1221.
+
 ## [5.1.1] - 2026-11-17
 
 ### Fixed
