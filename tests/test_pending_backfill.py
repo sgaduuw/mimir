@@ -206,6 +206,7 @@ def test_submit_patch_series_batch_updates_columns(writer, seeded_db):
             patch_series_version="v2",
             patch_series_position=0,
             old_key=None,
+            canonical_patch=False,
         ),
         _PatchSeriesPending(
             article_id=b,
@@ -213,6 +214,7 @@ def test_submit_patch_series_batch_updates_columns(writer, seeded_db):
             patch_series_version="v2",
             patch_series_position=1,
             old_key=None,
+            canonical_patch=False,
         ),
     ]
     _submit_patch_series_batch(writer, payloads).result(timeout=10)
@@ -265,6 +267,7 @@ def test_submit_patch_series_batch_nulls_overwrite_set_values(writer, seeded_db)
             patch_series_version=None,
             patch_series_position=None,
             old_key="old-key",
+            canonical_patch=False,
         )
     ]
     _submit_patch_series_batch(writer, payloads).result(timeout=10)
@@ -583,6 +586,7 @@ def test_submit_batch_issues_exactly_one_writeop(backfill_name, writer, seeded_d
                 patch_series_version="v1",
                 patch_series_position=1,
                 old_key=None,
+                canonical_patch=False,
             )
         ]
         submit_fn = _submit_patch_series_batch
