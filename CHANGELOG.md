@@ -11,9 +11,11 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.2.0] - 2026-11-19
+
 ### Fixed
 
-- The subsystem pages no longer call Python from inside a database query, which is what let two background jobs deadlock (5.1.2 worked around it). Whether an article counts as a patch in recent postings is now stored with the article: `articles` gains a `canonical_patch` column, filled at ingest and by `backfill-patch-series`. The migration fills it for every stored article before the broker starts serving, so the first start after this deploy takes longer: about a minute on the production archive, extrapolated from a measured 24 s read on production and a 1M-row synthetic run, so treat it as a floor. It commits per batch, so the WAL stays small. The 5.1.2 workaround stays until production has run without the Python call. Rolling back needs `alembic downgrade a3c1e5f7b9d2`, run from this image before the older image starts (the older broker does not know the new revision and refuses to start). The downgrade drops the column, which rewrites the `articles` table in one transaction: roughly 50 to 75 s on the production archive (extrapolated from a synthetic run), with the WAL growing to about the size of that table. Closes #1221.
+- The subsystem pages no longer call Python from inside a database query, which is what let two background jobs deadlock (5.1.2 worked around it). Whether an article counts as a patch in recent postings is now stored with the article: `articles` gains a `canonical_patch` column, filled at ingest and by `backfill-patch-series`. The migration fills it for every stored article before the broker starts serving, so the first start after this deploy takes longer: about a minute for the migration on the production archive, extrapolated from a measured 24 s read on production and a 1M-row synthetic run, so treat it as a floor, plus the usual full ANALYZE after a migration. The fill commits per batch, so the WAL stays small. The 5.1.2 workaround stays until production has run without the Python call. Rolling back needs `alembic downgrade a3c1e5f7b9d2`, run from this image in the broker service (with `MIMIR_IS_BROKER=true`, while the broker itself is stopped) before the older image starts (the older broker does not know the new revision and refuses to start). The downgrade drops the column, which rewrites the `articles` table in one transaction: roughly 50 to 75 s on the production archive (extrapolated from a synthetic run), with the WAL growing to about the size of that table. Closes #1221.
 
 ## [5.1.2] - 2026-11-19
 
@@ -6890,7 +6892,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.1.2...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.2.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
