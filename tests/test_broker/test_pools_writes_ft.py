@@ -7,8 +7,11 @@ These tests use threading.Barrier to force contention. Each one
 loops N times to surface intermittent races; if a race exists,
 running free-threaded will eventually expose it."""
 
+import subprocess
+import sys
 import threading
 from concurrent.futures import wait
+from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -212,3 +215,19 @@ def test_warm_cache_contexts_are_isolated_between_threads(
         8300,
         1100,
     ]
+
+
+@pytest.mark.skipif(
+    sys._is_gil_enabled(), reason="#1221 deadlock needs free-threaded CPython"
+)
+def test_pool_lockstep_canonical_patch_does_not_deadlock(tmp_path):
+    """#1221: two threads running a fresh SQL text per round through the
+    `canonical_patch` UDF on pool sessions. With the statement cache on,
+    this hangs within a few seconds on 3.15t. Subprocess so a hang is a
+    failure, not a stuck suite."""
+    script = Path(__file__).with_name("_pool_lockstep_1221.py")
+    result = subprocess.run(
+        [sys.executable, str(script), str(tmp_path / "lockstep.db"), "2000"],
+        timeout=60,
+    )
+    assert result.returncode == 0, "pool lockstep stalled (exit 3 means a hang)"
