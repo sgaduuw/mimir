@@ -11,14 +11,13 @@ the series fields must keep it true.
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select, text
 
 import mimir
 from mimir.models import Article, ArticleList, Inbox
-from mimir.patch_subjects import _is_patch_subject, _is_reply_to_patch
+from mimir.patch_subjects import canonical_patch
 from mimir.subsystems_dashboard.recent import recent_postings_sql
 from tests.test_subsystems._helpers import _add_subsystem
 
@@ -43,15 +42,6 @@ CORPUS = [
     ("", None, None),
     (None, None, None),
 ]
-
-
-def _expected(subject, position, key):
-    """The predicate the removed SQL function evaluated, spelled out
-    independently of the code under test."""
-    row = SimpleNamespace(
-        subject=subject, patch_series_position=position, patch_series_key=key
-    )
-    return _is_patch_subject(subject) and not _is_reply_to_patch(row)
 
 
 def _stored(seeded_db, message_id):
@@ -127,11 +117,11 @@ def test_stored_value_matches_the_predicate_on_insert(seeded_db):
             )
         s.commit()
     got = [_stored(seeded_db, f"p{i}@x") for i in range(len(CORPUS))]
-    assert got == [_expected(*row) for row in CORPUS]
+    assert got == [canonical_patch(*row) for row in CORPUS]
     # The corpus must exercise both answers and the cleared-reply rule.
     assert set(got) == {0, 1}
-    assert _expected("[PATCH v2 0/3] series title", 0, "k1")
-    assert not _expected("[PATCH v2 0/3] series title", None, None)
+    assert canonical_patch("[PATCH v2 0/3] series title", 0, "k1")
+    assert not canonical_patch("[PATCH v2 0/3] series title", None, None)
 
 
 def test_batches_yield_exactly_the_true_ids_across_batch_boundaries(seeded_db):
@@ -152,7 +142,9 @@ def test_batches_yield_exactly_the_true_ids_across_batch_boundaries(seeded_db):
                 text("SELECT message_id, id FROM articles WHERE message_id LIKE 'b%'")
             ).all()
         )
-        want = sorted(ids[f"b{i}@x"] for i, row in enumerate(CORPUS) if _expected(*row))
+        want = sorted(
+            ids[f"b{i}@x"] for i, row in enumerate(CORPUS) if canonical_patch(*row)
+        )
         conn = s.connection()
         got = [
             i for batch in canonical_patch_batches(conn, batch_size=2) for i in batch

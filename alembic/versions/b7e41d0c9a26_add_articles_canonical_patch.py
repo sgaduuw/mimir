@@ -16,28 +16,11 @@ fallback for unfilled rows: the only fallback is the Python function
 this removes. ADD COLUMN with a default does not rewrite the table; the
 fill walks id ranges and writes only the rows that are true.
 
-Production has 6.4M true rows among 18M, spread over the whole id range,
-so the fill rewrites nearly every leaf page of `articles`. In one
-transaction the WAL would hold all of them until the commit: on a 1M-row
-synthetic table it peaked at the table's own size (302 MiB). Committing
-each batch kept it at 18 MiB in the same time, so each batch is its own
-transaction.
+Each batch commits on its own, so the WAL holds one batch, not the table.
+A re-run is safe: the column is added only if missing, and the fill only
+ever sets rows to 1.
 
-An interrupted run therefore leaves the column present, some batches
-filled, and this revision unstamped. The column is added only when
-missing, and the re-run walks every batch again. The fill only ever sets
-rows to 1, so the rows a partial run set are a subset of the true ones.
-A predicate changed between the two runs is not repaired here;
-`backfill-patch-series` repairs it.
-
-Cost, extrapolated rather than measured on production: the read side
-took 24 s there (2026-11-19). On the 1M-row synthetic table the writes
-took 1.6 s per 360k true rows, so about 30 to 45 s for 6.4M. Budget about
-a minute in all, as a floor.
-
-Downgrade drops the column, which rewrites every row of `articles` in
-one transaction: 2.7 s per 1M synthetic rows, so roughly 50 to 75 s on
-production (extrapolated), with the WAL growing to about the table's size.
+Downgrade drops the column, which rewrites every row of `articles`.
 """
 
 from typing import Sequence, Union
