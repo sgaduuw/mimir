@@ -108,6 +108,10 @@ class _PatchSeriesPending:
     patch_series_key: str | None
     patch_series_version: str | None
     patch_series_position: int | None
+    # `canonical_patch` over the subject and series fields as written
+    # (#1221); recomputed here because the column default fires only on
+    # INSERT.
+    canonical_patch: bool
     # The unfolded subject, when the stored one was folded (#710);
     # None leaves the subject untouched.
     subject: str | None = None
@@ -220,8 +224,8 @@ def _submit_patch_series_batch(
 
     The closure issues N `UPDATE articles SET patch_series_key=?,
     patch_series_version=?, patch_series_position=?,
-    patch_series_head_id=NULL WHERE id=?` in payload order, then
-    re-chains every payload's old and new key with `rechain_keys`,
+    patch_series_head_id=NULL, canonical_patch=? WHERE id=?` in payload
+    order, then re-chains every payload's old and new key with `rechain_keys`,
     before `after`. Heads come only from that re-chain, from the state
     the writer holds, so an ingest batch that re-chained a key after
     this batch's read is not undone (#824). Order never matters here
@@ -254,6 +258,7 @@ def _submit_patch_series_batch(
                     patch_series_version=p.patch_series_version,
                     patch_series_position=p.patch_series_position,
                     patch_series_head_id=None,
+                    canonical_patch=p.canonical_patch,
                     **({"subject": p.subject} if p.subject is not None else {}),
                 )
             )

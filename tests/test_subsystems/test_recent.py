@@ -44,10 +44,10 @@ def test_group_before_limit_and_bound_matching_preview(seeded_db):
 def test_hostile_numeric_subject_cannot_abort_dashboard():
     from time import monotonic
 
-    from mimir.subsystems_dashboard.recent import _canonical_patch
+    from mimir.patch_subjects import canonical_patch
 
     start = monotonic()
-    assert not _canonical_patch("[RFC " + "9" * 5000 + "/6] title", None, None)
+    assert not canonical_patch("[RFC " + "9" * 5000 + "/6] title", None, None)
     assert monotonic() - start < 2
 
 
@@ -371,9 +371,8 @@ def test_dashboard_disclosures_source_counts_and_unusable_links(
     assert files.count("drivers/demo/") == 2
 
 
-def test_only_inbox_matching_candidates_reach_subject_parser(seeded_db, monkeypatch):
+def test_only_inbox_matching_candidates_become_postings(seeded_db):
     from mimir.models import Subsystem
-    from mimir.subsystems_dashboard import recent
     from tests._helpers import PRODUCTION_STATS, planner_stats
 
     with seeded_db() as session:
@@ -389,14 +388,6 @@ def test_only_inbox_matching_candidates_reach_subject_parser(seeded_db, monkeypa
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
         sub = session.get(Subsystem, sid)
         inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
-        parser = recent._canonical_patch
-        parsed = []
-
-        def observed(subject, position, key):
-            parsed.append(subject)
-            return parser(subject, position, key)
-
-        monkeypatch.setattr(recent, "_canonical_patch", observed)
         rows = recent_postings_query(session, inbox, sub)
         assert len(rows) == 3
         assert sorted(p.matching_count for p in rows) == [1, 1, 1]
@@ -405,8 +396,6 @@ def test_only_inbox_matching_candidates_reach_subject_parser(seeded_db, monkeypa
             "v2@x",
             "other-head@x",
         }
-        assert len(parsed) == 4
-        assert all("other-inbox" not in subject for subject in parsed)
 
 
 def test_recent_selection_probes_full_posting_members_by_series(seeded_db):
@@ -600,10 +589,9 @@ def test_history_fallback_uses_known_small_inbox_without_changing_postings(
 
 
 @pytest.mark.parametrize("limit", [1, 30], ids=["date-window", "inbox-history"])
-def test_path_membership_guards_subject_callback(seeded_db, monkeypatch, limit):
+def test_path_membership_excludes_unmatched_paths(seeded_db, monkeypatch, limit):
     from mimir import dashboard
     from mimir.models import Subsystem
-    from mimir.subsystems_dashboard import recent
     from tests._helpers import PRODUCTION_STATS, planner_stats
 
     monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: 9_527)
@@ -627,18 +615,8 @@ def test_path_membership_guards_subject_callback(seeded_db, monkeypatch, limit):
             irrelevant.append(row)
         assert len(irrelevant) == 20
         session.commit()
-    calls = []
-    original = recent._canonical_patch
-
-    def observed(subject, position, key):
-        calls.append(subject)
-        return original(subject, position, key)
-
-    monkeypatch.setattr(recent, "_canonical_patch", observed)
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
         sub = session.get(Subsystem, sid)
         inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
         output = recent_postings_query(session, inbox, sub, limit=limit)
     assert [row.representative.message_id for row in output] == ["eligible@x"]
-    assert calls
-    assert all("irrelevant-" not in subject for subject in calls), calls

@@ -2531,8 +2531,11 @@ from 1.107 s to 0.268 s. Dense controls retained their original plans;
 broad linux-mm/NETWORKING still costs about 3 s, mostly its full-history
 recent-posting fallback. No cache lifetime or warm-target changes.
 Recent-posting date/inbox plans guard both inbox and path membership in
-CASE before invoking canonical_patch, since SQLite may reorder WHERE
-conjuncts and otherwise call Python on unrelated or excluded paths.
+CASE before reading `articles.canonical_patch`. The CASE used to keep a
+Python SQL function off unrelated or excluded paths; the value is stored
+since #1221, because no mimir SQL may call Python (on free-threaded
+CPython such a call can free another thread's cached statement while
+holding its own connection's mutex, and two threads deadlock).
 
 The same shape serves the dashboard listings in `mimir/dashboard.py`
 (#791, #796), built once by `_inbox_first_sql`. Search and

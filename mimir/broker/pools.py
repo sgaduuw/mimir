@@ -42,11 +42,13 @@ class ReadSessionPool:
             future=True,
             # #1221: with free-threaded CPython, a Statement that one
             # thread evicts from a connection's cache is freed by the
-            # thread that compiled it, inside `canonical_patch` while
+            # thread that compiled it, inside a Python SQL function while
             # it holds another connection's mutex. Two threads doing
             # that to each other deadlock. No cache, no cross-thread
             # frees. Costs about 2 us per keyed cache lookup (14.1 vs
-            # 16.1 us through SQLAlchemy, 3.15t).
+            # 16.1 us through SQLAlchemy, 3.15t). The only such function,
+            # `canonical_patch`, is now a stored column; this stays
+            # until production has run clean without it.
             connect_args={"cached_statements": 0},
         )
 

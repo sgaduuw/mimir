@@ -12,7 +12,7 @@ import time
 from sqlalchemy import text
 
 from mimir.broker.pools import ReadSessionPool
-from mimir.subsystems_dashboard.recent import _canonical_patch
+from mimir.patch_subjects import canonical_patch as _canonical_patch
 
 db, rounds = sys.argv[1], int(sys.argv[2])
 c = sqlite3.connect(db)

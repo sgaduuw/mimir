@@ -4,7 +4,6 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 from sqlalchemy import DateTime, bindparam, select, text
 
@@ -13,7 +12,6 @@ from mimir.canonical import fallback_canonical_name
 from mimir.datetime_utils import coerce_dt
 from mimir.models import ArticleList, Inbox
 from mimir.patch_series import parse_cover_letter, same_series_sql, series_head_sql
-from mimir.patch_subjects import _is_patch_subject, _is_reply_to_patch
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import (
     _subsystem_path_filter_exists_sql,
@@ -57,13 +55,6 @@ class RecentPosting:
         return None if self.children else self.representative.article_id
 
 
-def _canonical_patch(subject, position, key):
-    article = SimpleNamespace(
-        subject=subject, patch_series_position=position, patch_series_key=key
-    )
-    return _is_patch_subject(subject) and not _is_reply_to_patch(article)
-
-
 def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     """Build a posting query, optionally selecting from a recent date window.
 
@@ -83,16 +74,16 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     path_sql, params = path_filter
     head = series_head_sql("a")
     identity = "series_key, series_head, version, singleton"
-    # SQLite may reorder WHERE terms. The CASE must gate the Python
-    # parser on both inbox and path membership, not merely on the inbox.
+    # The CASE once gated a Python SQL function (#1221). In the date-window
+    # and inbox-first shapes its path test is the only path filter; kept as
+    # a CASE so the plans measured on 2026-11-16 hold.
     path_guard = f" AND {path_sql}" if since is not None or inbox_first else ""
     eligibility = f"""
         COALESCE(a.patch_series_position, 1) != 0
         AND CASE WHEN EXISTS (
             SELECT 1 FROM article_lists al
              WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
-        ){path_guard} THEN canonical_patch(a.subject, a.patch_series_position,
-                               a.patch_series_key)
+        ){path_guard} THEN a.canonical_patch
           ELSE 0 END
     """
     if since is None:
@@ -200,9 +191,6 @@ def recent_postings_query(session, inbox, subsystem, limit=30, preview_limit=30)
             return []
         if limit < 1 or preview_limit < 1:
             raise ValueError("Posting and preview limits must be positive")
-        session.connection().connection.driver_connection.create_function(
-            "canonical_patch", 3, _canonical_patch, deterministic=True
-        )
         statement, params = built
         rows = session.execute(
             statement,

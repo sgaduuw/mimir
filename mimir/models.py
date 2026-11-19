@@ -1,6 +1,15 @@
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Index, String, Text, text
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    event,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from mimir.extensions import Base
@@ -123,6 +132,15 @@ class Article(Base):
     patch_series_head_id: Mapped[int | None] = mapped_column(
         nullable=True,
     )
+    # `canonical_patch` (#1221): `mimir.patch_subjects.canonical_patch`
+    # over subject, position and key, stored because SQL must not call
+    # Python. Inserts fill it through the default below, ORM updates
+    # through `_recompute_canonical_patch`; the one Core UPDATE that
+    # writes these inputs (`_submit_patch_series_batch`) sets it itself.
+    canonical_patch: Mapped[bool] = mapped_column(
+        default=lambda context: _canonical_patch_of(context.get_current_parameters()),
+        server_default=text("0"),
+    )
 
     # Author's intended primary list, derived from the first list-shaped
     # address in `To:` (then `Cc:`) at ingest time. NULL when no
@@ -162,6 +180,25 @@ class Article(Base):
     # per-author "reviewed by this person").
     trailers: Mapped[list[ArticleTrailer]] = relationship(
         back_populates="article", cascade="all, delete-orphan"
+    )
+
+
+_CANONICAL_PATCH_INPUTS = ("subject", "patch_series_position", "patch_series_key")
+
+
+def _canonical_patch_of(values) -> bool:
+    # Imported here: mimir.patch_subjects imports this module.
+    from mimir import patch_subjects
+
+    return patch_subjects.canonical_patch(
+        *(values.get(name) for name in _CANONICAL_PATCH_INPUTS)
+    )
+
+
+@event.listens_for(Article, "before_update")
+def _recompute_canonical_patch(mapper, connection, target) -> None:
+    target.canonical_patch = _canonical_patch_of(
+        {name: getattr(target, name) for name in _CANONICAL_PATCH_INPUTS}
     )
 
 

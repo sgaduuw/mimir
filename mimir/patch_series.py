@@ -673,6 +673,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     module scope.
     """
     from mimir._pending_backfill import _PatchSeriesPending
+    from mimir.patch_subjects import canonical_patch  # imports this module
 
     # Subjects stored before ingest unfolded them (#710) are parsed
     # unfolded and written back, in every mode, including rows that are
@@ -691,8 +692,14 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     def pending(key, version, position) -> _PatchSeriesPending | None:
         # Correctness does not need this skip, since every payload's keys
         # are re-chained; cost does: a reprocess writes and re-chains only
-        # the rows it changes, not every row it walks.
-        if rewrite is None and (key, version, position) == stored:
+        # the rows it changes, not every row it walks. The stored
+        # `canonical_patch` counts as a change, so a run also repairs it.
+        canonical = canonical_patch(subject, position, key)
+        if (
+            rewrite is None
+            and (key, version, position) == stored
+            and canonical == article.canonical_patch
+        ):
             return None
         return _PatchSeriesPending(
             article_id=article.id,
@@ -700,6 +707,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
             patch_series_key=key,
             patch_series_version=version,
             patch_series_position=position,
+            canonical_patch=canonical,
             subject=rewrite,
         )
 
