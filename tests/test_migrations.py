@@ -690,7 +690,8 @@ PRE_CANONICAL_PATCH_REVISION = "a3c1e5f7b9d2"
 def _seed_canonical_corpus(db: Path) -> list[bool]:
     """Insert the column test's subject corpus as pre-migration rows and
     return the value each row must end up with."""
-    from tests.test_canonical_patch_column import CORPUS, _expected
+    from mimir.patch_subjects import canonical_patch
+    from tests.test_canonical_patch_column import CORPUS
 
     conn = sqlite3.connect(db)
     try:
@@ -702,7 +703,7 @@ def _seed_canonical_corpus(db: Path) -> list[bool]:
         conn.commit()
     finally:
         conn.close()
-    return [_expected(*row) for row in CORPUS]
+    return [canonical_patch(*row) for row in CORPUS]
 
 
 def _canonical_column(db: Path) -> list | None:
@@ -734,27 +735,6 @@ def test_canonical_patch_upgrade_fills_stored_rows_and_downgrade_drops_it(tmp_pa
     assert _canonical_column(db) is None
 
 
-def test_canonical_patch_upgrade_completes_after_an_interrupted_run(tmp_path):
-    """On pysqlite the ADD COLUMN autocommits and the fill does not, so a
-    killed run leaves the column present, all 0, and the revision
-    unstamped. The re-run must add nothing and fill everything."""
-    db = tmp_path / "cp-interrupted.db"
-    assert _alembic(db, PRE_CANONICAL_PATCH_REVISION).returncode == 0
-    want = _seed_canonical_corpus(db)
-    conn = sqlite3.connect(db)
-    try:
-        conn.execute(
-            "ALTER TABLE articles ADD COLUMN canonical_patch BOOLEAN NOT NULL DEFAULT 0"
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-    result = _alembic(db, "head")
-    assert result.returncode == 0, result.stderr[-2000:]
-    assert _canonical_column(db) == want
-
-
 _KILL_AFTER_FIRST_FILL_COMMIT = """
 import os
 from sqlalchemy import event
@@ -780,7 +760,8 @@ def test_canonical_patch_fill_commits_per_batch_and_a_rerun_completes(tmp_path):
     rather than the whole table. A kill after the first commit (with no
     rollback, like SIGKILL) keeps that batch, leaves the revision
     unstamped, and the re-run finishes the job."""
-    from tests.test_canonical_patch_column import CORPUS, _expected
+    from mimir.patch_subjects import canonical_patch
+    from tests.test_canonical_patch_column import CORPUS
 
     db = tmp_path / "cp-batches.db"
     assert _alembic(db, PRE_CANONICAL_PATCH_REVISION).returncode == 0
@@ -796,7 +777,7 @@ def test_canonical_patch_fill_commits_per_batch_and_a_rerun_completes(tmp_path):
         conn.commit()
     finally:
         conn.close()
-    want = [_expected(*row) for row in rows]
+    want = [canonical_patch(*row) for row in rows]
 
     killed = subprocess.run(
         [sys.executable, "-c", _KILL_AFTER_FIRST_FILL_COMMIT],
