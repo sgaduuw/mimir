@@ -180,31 +180,6 @@ def test_orm_update_recomputes_when_subject_or_series_fields_change(seeded_db):
         assert _stored(seeded_db, "u1@x") == 0
 
 
-def test_orm_update_skips_the_predicate_when_inputs_are_unchanged(
-    seeded_db, monkeypatch
-):
-    import mimir.patch_subjects
-
-    with seeded_db() as s:
-        art = _article("[PATCH] solo", "u2@x", inbox_id=_alpha_id(s))
-        s.add(art)
-        s.commit()
-        calls = []
-        real = mimir.patch_subjects.canonical_patch
-        monkeypatch.setattr(
-            mimir.patch_subjects,
-            "canonical_patch",
-            lambda *a: calls.append(a) or real(*a),
-        )
-        art.date = datetime(2025, 1, 1, tzinfo=UTC)
-        s.commit()
-        assert calls == []
-        art.subject = "Re: [PATCH] solo"
-        s.commit()
-        assert len(calls) == 1
-    assert _stored(seeded_db, "u2@x") == 0
-
-
 # --- Write paths -----------------------------------------------------------
 
 
@@ -324,3 +299,27 @@ def test_reprocess_repairs_a_stale_value_when_the_series_fields_hold(
     backfill_patch_series()
 
     assert _stored(seeded_db, "stale@x") == 1
+
+
+def test_backfill_stores_the_value_of_the_unfolded_subject(seeded_db, broker_active):
+    """A subject stored folded (#710) does not parse as a patch; the backfill
+    writes it back unfolded, so the stored value must follow the subject it
+    writes, not the one it read."""
+    from mimir.patch_series import backfill_patch_series, series_key
+
+    with seeded_db() as s:
+        s.add(
+            _article(
+                "[PATCH v2 0/2] improve\n foo handling",
+                "folded@x",
+                position=0,
+                key=series_key("improve foo handling", "a@example"),
+                inbox_id=_alpha_id(s),
+            )
+        )
+        s.commit()
+    assert _stored(seeded_db, "folded@x") == 0
+
+    backfill_patch_series()
+
+    assert _stored(seeded_db, "folded@x") == 1

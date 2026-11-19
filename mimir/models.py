@@ -8,7 +8,6 @@ from sqlalchemy import (
     String,
     Text,
     event,
-    inspect,
     text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -198,13 +197,9 @@ def _canonical_patch_of(values) -> bool:
 
 @event.listens_for(Article, "before_update")
 def _recompute_canonical_patch(mapper, connection, target) -> None:
-    """Recompute on an ORM update only when one of the inputs changed, so
-    an unrelated update does not rerun the subject parsers."""
-    attrs = inspect(target).attrs
-    if any(attrs[name].history.has_changes() for name in _CANONICAL_PATCH_INPUTS):
-        target.canonical_patch = _canonical_patch_of(
-            {name: getattr(target, name) for name in _CANONICAL_PATCH_INPUTS}
-        )
+    target.canonical_patch = _canonical_patch_of(
+        {name: getattr(target, name) for name in _CANONICAL_PATCH_INPUTS}
+    )
 
 
 class ArticleList(Base):
