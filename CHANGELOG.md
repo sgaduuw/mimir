@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.1.2] - 2026-11-19
+
+### Fixed
+
+- Warming the subsystem pages could hang two background jobs for hours, which stalled database maintenance and slowed the whole site until the broker was restarted. The broker's read connections no longer keep a statement cache, which removes the deadlock at the cost of preparing each query again. Refs #1221.
+
 ## [5.1.1] - 2026-11-17
 
 ### Fixed
@@ -6880,7 +6886,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.1.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.1.2...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
