@@ -1,5 +1,10 @@
 """Shared patch identity predicates independent of web state aggregation."""
 
+from collections.abc import Iterator
+from types import SimpleNamespace
+
+from sqlalchemy import text
+
 from mimir.patch_revisions import parse_in_series_patch_subject, patch_bracket
 from mimir.patch_series import parse_cover_letter
 
@@ -28,3 +33,39 @@ def _is_reply_to_patch(article) -> bool:
             or parse_in_series_patch_subject(article.subject) is not None
         )
     )
+
+
+def canonical_patch(subject: str | None, position: int | None, key: str | None) -> bool:
+    """True when an article counts as a patch in recent postings: a patch
+    subject that is not a reply whose series fields were cleared. Stored
+    as `articles.canonical_patch` at every write of these three inputs,
+    because SQL must not call back into Python (#1221)."""
+    row = SimpleNamespace(
+        subject=subject, patch_series_position=position, patch_series_key=key
+    )
+    return _is_patch_subject(subject) and not _is_reply_to_patch(row)
+
+
+def canonical_patch_batches(conn, batch_size: int = 50_000) -> Iterator[list[int]]:
+    """Yield, per id range, the ids of articles whose `canonical_patch` is
+    true. Reads only; the migration that adds the column writes them.
+
+    Walks the primary key in order, so each batch is one bounded read and
+    no cursor is open on `articles` while the caller updates rows already
+    passed.
+    Subjects without a `[` never parse as a patch, so SQLite drops them
+    before Python sees them."""
+    last = 0
+    while True:
+        rows = conn.execute(
+            text(
+                "SELECT id, subject, patch_series_position, patch_series_key"
+                " FROM articles WHERE id > :last AND instr(subject, '[') > 0"
+                " ORDER BY id LIMIT :n"
+            ),
+            {"last": last, "n": batch_size},
+        ).all()
+        if not rows:
+            return
+        last = rows[-1][0]
+        yield [row[0] for row in rows if canonical_patch(*row[1:])]

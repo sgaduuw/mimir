@@ -680,3 +680,76 @@ def test_line_count_upgrade_reads_stored_rows_as_uncounted(tmp_path):
     result = _alembic(db, SERIES_HEAD_REVISION, command="downgrade")
     assert result.returncode == 0, result.stderr[-2000:]
     assert _article_files(db) == (["article_id", "path"], [(1, "fs/foo.c")])
+
+
+# Stored canonical-patch eligibility (#1221).
+
+PRE_CANONICAL_PATCH_REVISION = "a3c1e5f7b9d2"
+
+
+def _seed_canonical_corpus(db: Path) -> list[bool]:
+    """Insert the column test's subject corpus as pre-migration rows and
+    return the value each row must end up with."""
+    from tests.test_canonical_patch_column import CORPUS, _expected
+
+    conn = sqlite3.connect(db)
+    try:
+        conn.executemany(
+            "INSERT INTO articles(id, message_id, subject, patch_series_position,"
+            " patch_series_key) VALUES (?,?,?,?,?)",
+            [(i, f"m{i}@x", *row) for i, row in enumerate(CORPUS, start=1)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return [_expected(*row) for row in CORPUS]
+
+
+def _canonical_column(db: Path) -> list | None:
+    conn = sqlite3.connect(db)
+    try:
+        cols = [row[1] for row in conn.execute("PRAGMA table_info(articles)")]
+        if "canonical_patch" not in cols:
+            return None
+        return [
+            bool(v)
+            for (v,) in conn.execute("SELECT canonical_patch FROM articles ORDER BY id")
+        ]
+    finally:
+        conn.close()
+
+
+def test_canonical_patch_upgrade_fills_stored_rows_and_downgrade_drops_it(tmp_path):
+    db = tmp_path / "cp.db"
+    assert _alembic(db, PRE_CANONICAL_PATCH_REVISION).returncode == 0
+    want = _seed_canonical_corpus(db)
+    assert set(want) == {True, False}
+
+    result = _alembic(db, "head")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _canonical_column(db) == want
+
+    result = _alembic(db, PRE_CANONICAL_PATCH_REVISION, command="downgrade")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _canonical_column(db) is None
+
+
+def test_canonical_patch_upgrade_completes_after_an_interrupted_run(tmp_path):
+    """On pysqlite the ADD COLUMN autocommits and the fill does not, so a
+    killed run leaves the column present, all 0, and the revision
+    unstamped. The re-run must add nothing and fill everything."""
+    db = tmp_path / "cp-interrupted.db"
+    assert _alembic(db, PRE_CANONICAL_PATCH_REVISION).returncode == 0
+    want = _seed_canonical_corpus(db)
+    conn = sqlite3.connect(db)
+    try:
+        conn.execute(
+            "ALTER TABLE articles ADD COLUMN canonical_patch BOOLEAN NOT NULL DEFAULT 0"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    result = _alembic(db, "head")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _canonical_column(db) == want
