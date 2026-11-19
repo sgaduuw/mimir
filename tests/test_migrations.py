@@ -753,3 +753,71 @@ def test_canonical_patch_upgrade_completes_after_an_interrupted_run(tmp_path):
     result = _alembic(db, "head")
     assert result.returncode == 0, result.stderr[-2000:]
     assert _canonical_column(db) == want
+
+
+_KILL_AFTER_FIRST_FILL_COMMIT = """
+import os
+from sqlalchemy import event
+from mimir.extensions import engine
+
+@event.listens_for(engine, "after_cursor_execute")
+def _kill(conn, cursor, statement, *args):
+    if statement == "COMMIT":
+        os._exit(1)
+
+from alembic import command
+from alembic.config import Config
+
+cfg = Config()
+cfg.set_main_option("script_location", "alembic")
+cfg.set_main_option("sqlalchemy.url", os.environ["DATABASE_URL"])
+command.upgrade(cfg, "head")
+"""
+
+
+def test_canonical_patch_fill_commits_per_batch_and_a_rerun_completes(tmp_path):
+    """The fill commits each 50,000-row batch, so the WAL holds one batch
+    rather than the whole table. A kill after the first commit (with no
+    rollback, like SIGKILL) keeps that batch, leaves the revision
+    unstamped, and the re-run finishes the job."""
+    from tests.test_canonical_patch_column import CORPUS, _expected
+
+    db = tmp_path / "cp-batches.db"
+    assert _alembic(db, PRE_CANONICAL_PATCH_REVISION).returncode == 0
+    with_bracket = [row for row in CORPUS if row[0] and "[" in row[0]]
+    rows = [with_bracket[i % len(with_bracket)] for i in range(60_000)]
+    conn = sqlite3.connect(db)
+    try:
+        conn.executemany(
+            "INSERT INTO articles(id, message_id, subject, patch_series_position,"
+            " patch_series_key) VALUES (?,?,?,?,?)",
+            [(i, f"m{i}@x", *row) for i, row in enumerate(rows, start=1)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    want = [_expected(*row) for row in rows]
+
+    killed = subprocess.run(
+        [sys.executable, "-c", _KILL_AFTER_FIRST_FILL_COMMIT],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "DATABASE_URL": f"sqlite:///{db}",
+            "SECRET_KEY": "test-secret-key-not-for-real-1234567890abc",
+        },
+    )
+    assert killed.returncode == 1, killed.stderr[-2000:]
+    partial = _canonical_column(db)
+    first_batch = sum(want[:50_000])
+    assert sum(partial) == first_batch
+    assert partial[:50_000] == want[:50_000]
+    with sqlite3.connect(db) as conn:
+        revision = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert revision == (PRE_CANONICAL_PATCH_REVISION,)
+
+    result = _alembic(db, "head")
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert _canonical_column(db) == want
