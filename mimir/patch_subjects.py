@@ -39,7 +39,10 @@ def canonical_patch(subject: str | None, position: int | None, key: str | None) 
     """True when an article counts as a patch in recent postings: a patch
     subject that is not a reply whose series fields were cleared. Stored
     as `articles.canonical_patch` at every write of these three inputs,
-    because SQL must not call back into Python (#1221)."""
+    because SQL must not call back into Python (#1221). A change to
+    `patch_bracket`, `parse_cover_letter` or
+    `parse_in_series_patch_subject` therefore needs a
+    `backfill-patch-series` run to refresh stored rows."""
     row = SimpleNamespace(
         subject=subject, patch_series_position=position, patch_series_key=key
     )
