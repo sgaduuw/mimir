@@ -74,8 +74,9 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     path_sql, params = path_filter
     head = series_head_sql("a")
     identity = "series_key, series_head, version, singleton"
-    # The CASE gated a Python SQL function until `canonical_patch` was
-    # stored (#1221). It stays so the plans measured on 2026-11-16 hold.
+    # The CASE once gated a Python SQL function (#1221). In the date-window
+    # and inbox-first shapes its path test is the only path filter; kept as
+    # a CASE so the plans measured on 2026-11-16 hold.
     path_guard = f" AND {path_sql}" if since is not None or inbox_first else ""
     eligibility = f"""
         COALESCE(a.patch_series_position, 1) != 0
