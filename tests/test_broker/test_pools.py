@@ -8,7 +8,7 @@ import threading
 import time
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from mimir.broker.pools import ReadSessionPool
 
@@ -272,3 +272,24 @@ def test_read_session_pool_close_disposes_even_when_a_session_is_stuck(seeded_db
         f"close() waited {elapsed:.1f}s on a session that never releases; "
         "the drain timeout is what keeps shutdown bounded"
     )
+
+
+def test_read_session_pool_disables_sqlite_statement_cache(seeded_db):
+    """#1221: on free-threaded CPython, a cached Statement evicted by
+    another thread is freed by its owner inside `canonical_patch`,
+    ABBA-deadlocking two connection mutexes. The pool must open its
+    connections with the statement cache off."""
+    pool = ReadSessionPool.from_settings()
+    seen = []
+    event.listen(
+        pool._engine,
+        "do_connect",
+        lambda dialect, rec, args, params: seen.append(params),
+    )
+    try:
+        with pool.session() as s:
+            s.execute(text("SELECT 1"))
+        assert seen, "no connection was opened"
+        assert all(p.get("cached_statements") == 0 for p in seen)
+    finally:
+        pool.close()
