@@ -46,7 +46,7 @@ from mimir.patch_series import (
     same_series,
     slot_winner,
 )
-from mimir.patch_subjects import _is_patch_subject, _is_reply_to_patch
+from mimir.patch_subjects import is_canonical_patch
 from mimir.patches import article_has_files
 from mimir.subsystems import is_cover
 from mimir.trailers import INDEXED_TRAILER_ROLES
@@ -131,8 +131,8 @@ def _not_a_patch() -> PatchState:
 def message_kind(row) -> str:
     """`"cover"`, `"patch"` or `"reply"` for a thread row (#989): what the
     thread page's tabs, Patches index and counts sort a message into.
-    Built only from the state card's own predicates (`_is_patch_subject`,
-    `_is_reply_to_patch`, `is_cover`), so the two cannot disagree on what
+    Built only from the state card's own predicates (`is_canonical_patch`,
+    `is_cover`), so the two cannot disagree on what
     a patch is. `row` needs `subject` and the series key, version and
     position, which an `Article` or a `threading.thread_rows` row has.
 
@@ -140,7 +140,7 @@ def message_kind(row) -> str:
     out: it needs `article_has_files()` for every row of the thread. So a
     patch whose slot went to a re-post with a diff is still "patch" here,
     while its state card treats it as not a patch (decided 2026-10-30)."""
-    if not _is_patch_subject(row.subject) or _is_reply_to_patch(row):
+    if not is_canonical_patch(row):
         return "reply"
     return "cover" if is_cover(row) else "patch"
 
@@ -458,7 +458,7 @@ def patch_state_for_article(
     non-patch articles; the template skips the whole card when
     `is_patch` is False.
     """
-    is_patch = _is_patch_subject(article.subject) and not _is_reply_to_patch(article)
+    is_patch = is_canonical_patch(article)
     if not is_patch:
         return _not_a_patch()
 

@@ -8,17 +8,20 @@ stored at write time instead, and every path that writes the subject or
 the series fields must keep it true.
 """
 
+import ast
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import column, create_engine, event, literal, select, text
 
 import mimir
 from mimir.models import Article, ArticleList, Inbox
-from mimir.patch_subjects import canonical_patch
+from mimir.patch_subjects import is_canonical_patch
 from mimir.subsystems_dashboard.recent import recent_postings_sql
+from tests._helpers import PYTHON_SQL_CALLBACK
 from tests.test_subsystems._helpers import _add_subsystem
 
 # (subject, position, key). Covers, in-series patches, solo and
@@ -42,6 +45,43 @@ CORPUS = [
     ("", None, None),
     (None, None, None),
 ]
+
+
+def _patch_row(subject, position, key):
+    return SimpleNamespace(
+        subject=subject, patch_series_position=position, patch_series_key=key
+    )
+
+
+@pytest.mark.parametrize(
+    "values, expected",
+    list(
+        zip(
+            CORPUS,
+            [
+                True,
+                True,
+                True,
+                True,
+                False,
+                False,
+                True,
+                True,
+                True,
+                True,
+                False,
+                False,
+                False,
+                False,
+                False,
+                False,
+            ],
+            strict=True,
+        )
+    ),
+)
+def test_canonical_patch_classification(values, expected):
+    assert is_canonical_patch(_patch_row(*values)) is expected
 
 
 def _stored(seeded_db, message_id):
@@ -101,9 +141,134 @@ def test_recent_postings_sql_runs_without_python_functions(
         conn.close()
 
 
+def _python_sql_uses(source):
+    tree = ast.parse(source)
+    docstrings = {
+        id(node.body[0].value)
+        for node in ast.walk(tree)
+        if isinstance(
+            node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        )
+        and ast.get_docstring(node) is not None
+    }
+    func_names = {"func"} | {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module is not None
+        and (node.module == "sqlalchemy" or node.module.startswith("sqlalchemy."))
+        for alias in node.names
+        if alias.name == "func"
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            name, owner = node.attr.lower(), node.value
+            if name in {
+                "create_function",
+                "create_aggregate",
+                "create_window_function",
+                "regexp_match",
+            } or (
+                name in {"regexp", "floor"}
+                and (
+                    isinstance(owner, ast.Name)
+                    and owner.id in func_names
+                    or isinstance(owner, ast.Attribute)
+                    and owner.attr == "func"
+                )
+            ):
+                yield node.lineno
+        # SQL fragments can be passed to text(), op(), or assembled later.
+        # Reserve REGEXP as a token, even in a currently harmless SQL literal.
+        if (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and id(node) not in docstrings
+        ):
+            if PYTHON_SQL_CALLBACK.search(node.value) or node.value in {
+                "create_function",
+                "create_aggregate",
+                "create_window_function",
+            }:
+                yield node.lineno
+
+
 def test_no_python_sql_functions_are_registered():
     package = Path(mimir.__file__).parent
-    assert not [p for p in package.rglob("*.py") if "create_function" in p.read_text()]
+    assert not [
+        (p, line)
+        for p in package.rglob("*.py")
+        for line in _python_sql_uses(p.read_text())
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from sqlalchemy import func; query = func.floor(value)",
+        "from sqlalchemy import func as sql; query = sql.FLOOR(value)",
+        "from sqlalchemy.sql import func as sql; query = sql.floor(value)",
+        "register = connection.create_function; register('python', 1, callback)",
+        "matches = column.regexp_match; query = matches(pattern)",
+        "floor_sql = func.floor; query = floor_sql(value)",
+        'register = getattr(connection, "create_function"); register("python", 1, callback)',
+        "import sqlalchemy as sa; query = sa.func.regexp(pattern, value)",
+        "query = column.regexp_match(pattern)",
+        "connection.create_aggregate('sum_python', 1, Aggregate)",
+        "connection.create_window_function('window_python', 1, Window)",
+        'query = text("SELECT FLOOR \\n (value) FROM articles")',
+        'query = text("SELECT value ReGeXp :pattern FROM articles")',
+        'query = column.op("REGEXP")(pattern)',
+    ],
+)
+def test_guard_rejects_python_sql_function_uses(tmp_path, monkeypatch, source):
+    module = tmp_path / "query.py"
+    module.write_text(source)
+    monkeypatch.setattr(mimir, "__file__", str(tmp_path / "__init__.py"))
+    with pytest.raises(AssertionError):
+        test_no_python_sql_functions_are_registered()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'query = text("SELECT flooring, not_regexp FROM articles")',
+        'description = "floor and regexp_match are plain words"',
+        "import math; result = math.floor(value)",
+        '"""A local floor (synthetic), not a SQL function."""',
+    ],
+)
+def test_guard_allows_non_sql_words(tmp_path, monkeypatch, source):
+    (tmp_path / "query.py").write_text(source)
+    monkeypatch.setattr(mimir, "__file__", str(tmp_path / "__init__.py"))
+    test_no_python_sql_functions_are_registered()
+
+
+def test_compiled_sql_guard_rejects_implicit_floor_before_driver():
+    engine = create_engine("sqlite://")
+    reached_driver = []
+
+    @event.listens_for(engine, "before_cursor_execute")
+    def stop_before_driver(*args):
+        reached_driver.append(True)
+        raise RuntimeError("guard did not stop the statement before the driver")
+
+    try:
+        with engine.connect() as conn:
+            with pytest.raises(AssertionError, match="Python SQL callback"):
+                conn.execute(select(column("x") // 2.5))
+        assert reached_driver == []
+    finally:
+        engine.dispose()
+
+
+def test_compiled_sql_guard_allows_integer_division():
+    engine = create_engine("sqlite://")
+    try:
+        with engine.connect() as conn:
+            assert conn.scalar(select(literal(7) // 2)) == 3
+    finally:
+        engine.dispose()
 
 
 def test_stored_value_matches_the_predicate_on_insert(seeded_db):
@@ -117,11 +282,11 @@ def test_stored_value_matches_the_predicate_on_insert(seeded_db):
             )
         s.commit()
     got = [_stored(seeded_db, f"p{i}@x") for i in range(len(CORPUS))]
-    assert got == [canonical_patch(*row) for row in CORPUS]
+    assert got == [is_canonical_patch(_patch_row(*row)) for row in CORPUS]
     # The corpus must exercise both answers and the cleared-reply rule.
     assert set(got) == {0, 1}
-    assert canonical_patch("[PATCH v2 0/3] series title", 0, "k1")
-    assert not canonical_patch("[PATCH v2 0/3] series title", None, None)
+    assert is_canonical_patch(_patch_row("[PATCH v2 0/3] series title", 0, "k1"))
+    assert not is_canonical_patch(_patch_row("[PATCH v2 0/3] series title", None, None))
 
 
 def test_batches_yield_exactly_the_true_ids_across_batch_boundaries(seeded_db):
@@ -143,7 +308,9 @@ def test_batches_yield_exactly_the_true_ids_across_batch_boundaries(seeded_db):
             ).all()
         )
         want = sorted(
-            ids[f"b{i}@x"] for i, row in enumerate(CORPUS) if canonical_patch(*row)
+            ids[f"b{i}@x"]
+            for i, row in enumerate(CORPUS)
+            if is_canonical_patch(_patch_row(*row))
         )
         conn = s.connection()
         got = [

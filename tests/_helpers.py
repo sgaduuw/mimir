@@ -1,5 +1,6 @@
 """Helpers shared by test modules."""
 
+import re
 from collections import Counter
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -10,6 +11,10 @@ from sqlalchemy import event, select, text
 from mimir import cache
 from mimir.dashboard import ArchiveStats, _archive_stats_key
 from mimir.release_history import ReleaseFacts, ReleaseLinks
+
+# SQLAlchemy also emits FLOOR for non-integer // expressions. This pattern
+# guards compiled statements as well as explicit SQL source fragments.
+PYTHON_SQL_CALLBACK = re.compile(r"\bregexp\b|\bfloor\s*\(", re.IGNORECASE)
 
 
 def _cache_total(inbox, total):
