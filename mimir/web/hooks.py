@@ -87,8 +87,6 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.search": "public, max-age=300",
     "web.author_view": "public, max-age=300",
     "web.reviewer_view": "public, max-age=600",
-    "web.inbox_feed": "public, max-age=300",
-    "web.author_feed": "public, max-age=300",
     # /robots.txt is now operator-tunable at runtime (see
     # `admin robots`). Keep the edge cache short so an
     # `admin robots add GPTBot --disallow /` propagates within
