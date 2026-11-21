@@ -355,12 +355,15 @@ def update_inbox(
         return Inbox(**dict(updated._mapping)), renamed_from
 
     result, renamed_from = submit_write(f"inbox:update:{name}", _fn, timeout=30)
-    # Drop cached entries that referenced the old name. Cache values
-    # don't depend on mirror_path / upstream_url, so non-rename
-    # updates don't need invalidation. Stay outside the writer closure:
-    # invalidation submits another WriteOp and waits for its commit.
+    # Names and list addresses affect directory destinations, unlike mirror
+    # paths and upstream URLs. Invalidation waits for its own writer operation,
+    # so it must run after the update and outside the writer closure.
     if renamed_from is not None:
         cache.delete_for_inbox(renamed_from)
+    if renamed_from is not None or list_address is not None:
+        from mimir.directories import invalidate_subsystem_targets
+
+        invalidate_subsystem_targets()
     return result
 
 
@@ -464,6 +467,9 @@ def delete_inbox(
     # Invalidation submits another WriteOp and waits, so it must run outside
     # the writer closure to avoid waiting on that same writer thread.
     cache.delete_for_inbox(name)
+    from mimir.directories import invalidate_subsystem_targets
+
+    invalidate_subsystem_targets()
 
     if remove_inbox_data:
         path = Path(mirror_path_str)
