@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Inbox and author feeds reuse their canonical links for up to five minutes, including when warmed by the scheduler. New listing entries and thread page-size changes refresh the links immediately, while expired entries still leave the five-day window on each request. HTTP caches receive only that snapshot's remaining lifetime (#1230).
+
 ### Added
 
 - Maintainer profile subsystem labels link to the same dashboard selected by the directory and sitemap when warmed targets are available. Missing or expired activity keeps labels as plain text (#1227).
