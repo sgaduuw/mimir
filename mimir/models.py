@@ -1,4 +1,5 @@
 from datetime import datetime
+from types import SimpleNamespace
 
 from sqlalchemy import (
     JSON,
@@ -132,7 +133,7 @@ class Article(Base):
     patch_series_head_id: Mapped[int | None] = mapped_column(
         nullable=True,
     )
-    # `canonical_patch` (#1221): `mimir.patch_subjects.canonical_patch`
+    # `canonical_patch` (#1221): `mimir.patch_subjects.is_canonical_patch`
     # over subject, position and key, stored because SQL must not call
     # Python. Inserts fill it through the default below, ORM updates
     # through `_recompute_canonical_patch`; the one Core UPDATE that
@@ -190,16 +191,16 @@ def _canonical_patch_of(values) -> bool:
     # Imported here: mimir.patch_subjects imports this module.
     from mimir import patch_subjects
 
-    return patch_subjects.canonical_patch(
-        *(values.get(name) for name in _CANONICAL_PATCH_INPUTS)
+    return patch_subjects.is_canonical_patch(
+        SimpleNamespace(**{name: values.get(name) for name in _CANONICAL_PATCH_INPUTS})
     )
 
 
 @event.listens_for(Article, "before_update")
 def _recompute_canonical_patch(mapper, connection, target) -> None:
-    target.canonical_patch = _canonical_patch_of(
-        {name: getattr(target, name) for name in _CANONICAL_PATCH_INPUTS}
-    )
+    from mimir.patch_subjects import is_canonical_patch
+
+    target.canonical_patch = is_canonical_patch(target)
 
 
 class ArticleList(Base):

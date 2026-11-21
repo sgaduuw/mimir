@@ -28,7 +28,7 @@ from mimir.dashboard import (
     latest_pull_requests,
     latest_stable_releases,
     monthly_volume,
-    recent_articles,
+    recent_page,
     search_articles,
     this_day_in_history,
 )
@@ -761,16 +761,16 @@ def test_this_day_in_history_returns_articles_summary(seeded_db, frozen_clock):
     assert not any(r.subject == "out of window" for r in results2)
 
 
-# recent_articles
+# recent_page
 
 
-def test_recent_articles_returns_summaries(seeded_db):
+def test_recent_page_returns_summaries(seeded_db):
     from mimir.dashboard import ArticleSummary
 
     alpha = _inbox(seeded_db, "alpha")
     ids = _ids_by_message_id(seeded_db)
     with seeded_db() as s:
-        results = recent_articles(s, alpha, limit=10, force=True)
+        results = recent_page(s, alpha, 0, 10)
     # alpha has art1, art3, art4, date-desc → art3 (Mar), art4 (Jan 2), art1 (Jan 1).
     assert [r.id for r in results] == [
         ids["art3@example.com"],
@@ -985,7 +985,7 @@ def _author_listing(s, inbox, **kw):
 
 
 _RECENT = [
-    pytest.param(recent_articles, id="recent_articles"),
+    pytest.param(lambda s, ib, **_: recent_page(s, ib, 0, 50), id="recent_page"),
     pytest.param(_fetch_recent_page, id="fetch_recent"),
 ]
 
@@ -1092,7 +1092,7 @@ def test_recent_rows_do_not_depend_on_the_shape(seeded_db):
         results = []
         for total in (1, INBOX_FIRST_BELOW_ARTICLES):
             _cache_total(alpha, total)
-            results.append(recent_articles(s, alpha, force=True))
+            results.append(recent_page(s, alpha, 0, 50))
     assert results[0] == results[1]
 
 

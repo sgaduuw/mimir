@@ -8,11 +8,21 @@ import sqlite3
 import sys
 import threading
 import time
+from types import SimpleNamespace
 
 from sqlalchemy import text
 
 from mimir.broker.pools import ReadSessionPool
-from mimir.patch_subjects import canonical_patch as _canonical_patch
+from mimir.patch_subjects import is_canonical_patch
+
+
+def _canonical_patch(subject, position, key):
+    return is_canonical_patch(
+        SimpleNamespace(
+            subject=subject, patch_series_position=position, patch_series_key=key
+        )
+    )
+
 
 db, rounds = sys.argv[1], int(sys.argv[2])
 c = sqlite3.connect(db)

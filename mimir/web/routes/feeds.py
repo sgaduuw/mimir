@@ -11,14 +11,16 @@ from flask import abort
 
 from mimir._inbox_name import inbox_path
 from mimir.config import settings
-from mimir.dashboard import author_recent, recent_articles
+from mimir.dashboard import feed_articles
 from mimir.extensions import SessionLocal
 from mimir.seo import atom_response
 from mimir.web._blueprint import bp_web
 from mimir.web.routes.search import SEARCH_QUERY_MAX_LEN, SEARCH_QUERY_MIN_LEN
-from mimir.web.urls import _canonical_inbox_names_for, _get_inbox_or_404, _site_base
-
-FEED_ENTRY_LIMIT = 50
+from mimir.web.urls import (
+    _canonical_destinations_for,
+    _get_inbox_or_404,
+    _site_base,
+)
 
 
 @bp_web.route("/<inbox_name>/feed.atom")
@@ -26,8 +28,8 @@ def inbox_feed(inbox_name: str):
     """Atom feed of the most-recent messages in an inbox."""
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        entries = recent_articles(session, inbox, limit=FEED_ENTRY_LIMIT)
-        canonical_map = _canonical_inbox_names_for(session, [e.id for e in entries])
+        entries = feed_articles(session, inbox)
+        destinations = _canonical_destinations_for(session, entries)
 
     base = _site_base() + "/"
     return atom_response(
@@ -38,7 +40,10 @@ def inbox_feed(inbox_name: str):
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
-        canonical_inbox_by_article=canonical_map,
+        canonical_inbox_by_article={
+            aid: d.inbox_name for aid, d in destinations.items()
+        },
+        entry_urls={aid: d.url for aid, d in destinations.items()},
     )
 
 
@@ -52,8 +57,8 @@ def author_feed(inbox_name: str, sub: str):
         abort(404)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        entries = author_recent(session, inbox, sub, limit=FEED_ENTRY_LIMIT)
-        canonical_map = _canonical_inbox_names_for(session, [e.id for e in entries])
+        entries = feed_articles(session, inbox, author=sub)
+        destinations = _canonical_destinations_for(session, entries)
 
     base = _site_base() + "/"
     sub_quoted = quote(sub, safe="")
@@ -65,5 +70,8 @@ def author_feed(inbox_name: str, sub: str):
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
-        canonical_inbox_by_article=canonical_map,
+        canonical_inbox_by_article={
+            aid: d.inbox_name for aid, d in destinations.items()
+        },
+        entry_urls={aid: d.url for aid, d in destinations.items()},
     )

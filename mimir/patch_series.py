@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from email.utils import parseaddr
 from itertools import pairwise
+from types import SimpleNamespace
 
 from sqlalchemy import and_, literal_column, select
 
@@ -673,7 +674,7 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
     module scope.
     """
     from mimir._pending_backfill import _PatchSeriesPending
-    from mimir.patch_subjects import canonical_patch  # imports this module
+    from mimir.patch_subjects import is_canonical_patch  # imports this module
 
     # Subjects stored before ingest unfolded them (#710) are parsed
     # unfolded and written back, in every mode, including rows that are
@@ -694,7 +695,11 @@ def _process_one(session, article, reprocess: bool) -> tuple[str, object]:
         # are re-chained; cost does: a reprocess writes and re-chains only
         # the rows it changes, not every row it walks. The stored
         # `canonical_patch` counts as a change, so a run also repairs it.
-        canonical = canonical_patch(subject, position, key)
+        canonical = is_canonical_patch(
+            SimpleNamespace(
+                subject=subject, patch_series_position=position, patch_series_key=key
+            )
+        )
         if (
             rewrite is None
             and (key, version, position) == stored

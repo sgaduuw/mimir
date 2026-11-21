@@ -585,9 +585,9 @@ def test_window_counts_the_thread_page_once(client, tmp_path, monkeypatch):
     page_counts = [
         st
         for st in statements
-        if st.startswith("SELECT count(*)")
-        and "article_lists.thread_root_id = ?" in st
-        and "articles.id != ?" in st
+        if st.startswith("WITH wanted")
+        and "article_lists.thread_root_id = wanted.root_id" in st
+        and "articles.id != wanted.root_id" in st
     ]
     assert len(page_counts) == 1, page_counts
 

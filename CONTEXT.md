@@ -2535,7 +2535,15 @@ CASE before reading `articles.canonical_patch`. The CASE used to keep a
 Python SQL function off unrelated or excluded paths; the value is stored
 since #1221, because no mimir SQL may call Python (on free-threaded
 CPython such a call can free another thread's cached statement while
-holding its own connection's mutex, and two threads deadlock).
+holding its own connection's mutex, and two threads deadlock). The source
+guard also rejects SQLAlchemy regexp/floor calls and raw SQL
+using those functions or the REGEXP operator (#1224): the SQLite dialect
+registers Python implementations even when mimir registers none. A test-only
+Engine listener also checks statements before the driver executes them,
+including SQLAlchemy operators such as non-integer `//` that emit FLOOR.
+Patch
+classification itself is shared by stored values, listings and state cards
+through `patch_subjects.is_canonical_patch(row)`.
 
 The same shape serves the dashboard listings in `mimir/dashboard.py`
 (#791, #796), built once by `_inbox_first_sql`. Search and
@@ -2544,7 +2552,7 @@ so a date walk reads
 the whole archive for a rare term or sender. The pull-request and
 stable-release listings follow `_inbox_first` (the 180-day floor
 bounds their date walk on the biggest lists). The unfiltered recent
-listing (`recent_page`: feed, inbox page, load-more) has its own,
+listing (`recent_page`: inbox page, load-more) has its own,
 lower `RECENT_INBOX_FIRST_BELOW_ARTICLES` (100k), because every
 article matches and a busy mid-size list's date walk is a few ms
 where inbox-first costs hundreds; only dormant lists need it. Unlike

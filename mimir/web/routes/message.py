@@ -45,6 +45,7 @@ from mimir.web.routes._validators import render_state_tag
 from mimir.web.urls import (
     MD_SUFFIX,
     _abort_404_if_url_date_mismatches,
+    _canonical_destinations_for,
     _canonical_inbox_name,
     _canonical_url_for,
     _get_inbox_or_404,
@@ -193,120 +194,25 @@ def message(
         # Membership above guarantees at least this inbox in the canonical links.
         assert canonical_url is not None
 
-        # Consolidate onto the whole-thread view when this message is
-        # actually rendered there. Most replies are a line or two, so
-        # one thread of N messages otherwise presents as N thin,
-        # near-duplicate URLs competing with each other; pointing them
-        # at the conversation gives search engines one substantial
-        # document per thread instead.
-        #
-        # Conditional on the thread being RANKABLE, not on the
-        # message's position: since 3.8.0 the view paginates and
-        # truncates nothing, so every message is contained by some
-        # page and the canonical names that page rather than page 1.
-        # What it cannot do is name a page for a thread whose
-        # `thread_root_id` column is incomplete, because the rank would
-        # be computed from rows the renderer does not agree with; those
-        # threads stay self-canonical per message. The gate below is
-        # `thread_is_materialised`, and a canonical pointing at a page
-        # that does not contain this content would be a false claim.
-        #
-        # Built on the canonical inbox, so this composes with (rather
-        # than fights) the existing cross-post consolidation: a
-        # cross-posted thread still collapses to one inbox first.
         canonical_inbox_name = _canonical_inbox_name(article, all_links) or inbox.name
-
-        # `message_canonical_url` stays the message's own URL and keeps
-        # feeding the JSON-LD entity: a DiscussionForumPosting on this
-        # page IS this message, so its `@id` must remain the message's
-        # URL even once the page's canonical points at the thread.
-        # Only the `<link rel="canonical">` (and `og:url`, which
-        # follows it in base.html) moves.
+        # The entity remains this message. Only the page canonical consolidates
+        # onto its thread. Feed and IndexNow links use this same resolver.
         message_canonical_url = canonical_url
-        thread_view_url: str | None = None
-
-        # Consolidate onto the thread view, resolved in the inbox the
-        # canonical already points at.
-        #
-        # Doing this in the REQUESTED inbox instead produces a CHAIN on
-        # cross-posts: this page would point at its own inbox's thread
-        # view while `_canonical_url_for` had already elected a
-        # different inbox, so the other arm canonicalises here and here
-        # canonicalises onward. Every hop is individually truthful,
-        # which is why a per-page check misses it; the composition is
-        # the defect, and search engines do not follow chains reliably.
-        #
-        # Threading is inbox-scoped, so the target inbox's copy of the
-        # conversation is a DIFFERENT node set: the root may be absent
-        # there, or this message may not be in that inbox's thread. Each
-        # is checked against the target inbox's own rows rather than
-        # assumed from this inbox's. Anything unmet falls back to the
-        # plain cross-post canonical.
-        #
-        # Asked of the column, not of a walk. The claim being made is
-        # that `thread_page_of`'s page holds this message, and that
-        # page is built from the column, so the column is what has to
-        # agree. Walking the target's thread here cost a second
-        # whole-thread walk on every cross-posted page.
-        own_page_no: int | None = None
-        if canonical_url:
-            target_inbox = inbox
-            target_root = root
-            if canonical_inbox_name != inbox.name:
-                target_inbox = session.execute(
-                    select(Inbox).where(Inbox.name == canonical_inbox_name)
-                ).scalar_one_or_none()
-                target_root = None
-                if target_inbox is not None:
-                    target_root_msgid = find_thread_root(
-                        session, target_inbox, article.message_id
-                    )
-                    if target_root_msgid:
-                        target_root = _article_by_message_id(session, target_root_msgid)
-            in_target_thread = False
-            if target_inbox is not None and target_root is not None:
-                # Its own row carries the root. A single-message thread
-                # counts too (#1003): every thread's aggregations live on
-                # its `/t`, so that is every message's canonical. This
-                # matters when the row names a root no longer in the inbox
-                # (a `reindex --from-scratch` leftover): `find_thread_root`
-                # falls back to the walk and `thread_is_materialised` only
-                # looks for NULL rows, but `thread_page_of` would not count
-                # this message.
-                in_target_thread = (
-                    session.execute(
-                        select(ArticleList.thread_root_id).where(
-                            ArticleList.article_id == article.id,
-                            ArticleList.inbox_id == target_inbox.id,
-                        )
-                    ).scalar_one_or_none()
-                    == target_root.id
-                )
-            if (
-                in_target_thread
-                and target_root.date is not None
-                and thread_is_materialised(session, target_inbox.id, target_root.id)
-            ):
-                # Canonicalise to the PAGE that contains this message,
-                # not to page 1. Since 3.8.0 the thread view is
-                # paginated, so every message is rendered somewhere.
-                #
-                # The page number comes from `thread_page_of`, the same
-                # helper the thread view builds its page URLs with, so
-                # the canonical and the page cannot disagree about where
-                # the message lives.
-                page_no = thread_page_of(
-                    session, target_inbox.id, target_root.id, article, cap
-                )
-                if target_inbox is inbox:
-                    own_page_no = page_no  # the window's gap links want it too
-                thread_view_url = thread_page_url(
-                    target_root.id,
-                    target_root.date,
-                    target_inbox.name,
-                    page_no,
-                )
-                canonical_url = base + thread_view_url
+        destination = _canonical_destinations_for(session, [article], base).get(
+            article.id
+        )
+        if destination is not None:
+            canonical_url = destination.url
+        thread_view_url = (
+            canonical_url.removeprefix(base)
+            if destination is not None and destination.page is not None
+            else None
+        )
+        own_page_no = (
+            destination.page
+            if destination is not None and destination.inbox_name == inbox.name
+            else None
+        )
 
         # Where the window's gaps lead: the thread-view page holding this
         # message in THIS inbox, whose thread the window shows. A

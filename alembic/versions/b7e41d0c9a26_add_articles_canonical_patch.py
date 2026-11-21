@@ -8,7 +8,7 @@ Create Date: 2026-11-19 12:00:00.000000
 free-threaded CPython that function can free another thread's cached
 statement while holding its own connection's mutex, and two broker
 threads doing that to each other deadlock. The value is stored instead,
-computed by `mimir.patch_subjects.canonical_patch` at every write of
+computed by `mimir.patch_subjects.is_canonical_patch` at every write of
 subject, position or key.
 
 The fill runs here, before the broker serves, because the query has no
