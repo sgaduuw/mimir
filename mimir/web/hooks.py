@@ -87,8 +87,6 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.search": "public, max-age=300",
     "web.author_view": "public, max-age=300",
     "web.reviewer_view": "public, max-age=600",
-    "web.inbox_feed": "public, max-age=300",
-    "web.author_feed": "public, max-age=300",
     # /robots.txt is now operator-tunable at runtime (see
     # `admin robots`). Keep the edge cache short so an
     # `admin robots add GPTBot --disallow /` propagates within
@@ -111,9 +109,8 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     "web.archive_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
     "web.series_diff_sitemap": "public, max-age=300",
-    # Maintainer profiles change only when MAINTAINERS is reparsed or
-    # a new review trailer lands, and they were the one reader-facing
-    # hub with no entry here at all (so no explicit Cache-Control).
+    # Profiles follow MAINTAINERS, review trailers and warmed subsystem targets.
+    # Keep the edge lifetime short enough to pick up refreshed destinations.
     "web.maintainer_view": "public, max-age=600",
     "web.message_id_lookup": "public, max-age=3600",
     "web.message_id_lookup_alias": "public, max-age=3600",

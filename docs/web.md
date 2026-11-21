@@ -89,7 +89,9 @@ with seven-day message counts, proportional bars, maintainer summaries and
 last-activity dates. Its columns stack on phones. It can be empty before a
 slow cache-warming pass; a request never runs the activity aggregation.
 The global `/subsystems/` and `/maintainers/` directories include quiet entries
-and split by initial. Both landing pages offer search across all letters by
+and split by initial. Every directory page shows A to Z plus # in a stable grid.
+Occupied initials are links; empty initials are muted text and have no page.
+Both landing pages offer search across all letters by
 name or visible maintainer address. Search results show up to 200 matches and
 ask readers to refine larger searches. They are noindex with the directory root
 as canonical. Search queries on letter URLs redirect to the directory-wide
@@ -102,10 +104,11 @@ without either target remain unlinked. Maintainer activity counts weekly review
 trailers even for maintainers who authored no messages.
 
 Maintainer profiles collect activity across inboxes for each MAINTAINERS `M:`
-address. Their header shows initials and subsystem/inbox totals; lowercase
-subsystem cards carry status pills and stack on phones. Cards have no links
-because this page has no selected inbox. Review chips link to each inbox's
-reviewer listing. When cached counts are available, chips sort by descending
+address. Their header shows initials and subsystem/inbox totals. Lowercase
+subsystem cards retain status pills and stack on phones. When warmed targets
+and their source activity are available, labels link to the same dashboard
+chosen by the subsystem directory and sitemap. Otherwise labels stay plain
+text. Review chips link to each inbox's reviewer listing. When cached counts are available, chips sort by descending
 count with alphabetical ties; otherwise they stay alphabetical without counts.
 Counts cover all indexed review-trailer events: multiple roles on one message
 count separately, and cross-posts contribute to each inbox. They are not counts
@@ -159,6 +162,11 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 Atom entry links name the canonical thread page containing the message, including
 its page number and message anchor. Entry IDs stay stable when thread links change.
 Unrepaired threads use the message page until their thread membership is complete.
+Feed destinations are cached for at most five minutes. Root repairs or removed
+inbox memberships can remain visible for that interval. Newly listed entries
+and thread page-size changes trigger a fresh link snapshot. The HTTP max-age is
+limited to the link snapshot's remaining lifetime, so downstream caching cannot
+add another five-minute window.
 
 Release history follows the previous-final to final Git reachability range,
 not commit timestamps. Annotated tags supply their tagger date; lightweight

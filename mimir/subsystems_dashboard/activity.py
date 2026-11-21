@@ -286,6 +286,11 @@ def _most_active_subsystems_in_inbox_full(
         return None
 
 
+def global_subsystem_activity_key(version: str, days: int = 7) -> str:
+    """Share the complete ranking key with cache-only derived surfaces."""
+    return f"most_active_subsystems_global:v2:{days}:{version}"
+
+
 def most_active_subsystems_global(
     session: Session,
     days: int = 7,
@@ -392,7 +397,7 @@ def _most_active_subsystems_global_full(
             raise _RulesChanged
         return out
 
-    key = f"most_active_subsystems_global:v2:{days}:{version}"
+    key = global_subsystem_activity_key(version, days)
     if not compute_on_miss:
         return cache.get(key)
     try:

@@ -11,6 +11,23 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.4.0] - 2026-11-21
+
+No migration, no backfill and no cache version bump.
+
+### Added
+
+- Maintainer profile subsystem labels link to the same dashboard selected by the directory and sitemap when warmed targets are available. Missing or expired activity keeps labels as plain text (#1227).
+
+### Changed
+
+- Subsystem and maintainer directories show all 27 initial buckets in a stable grid. Empty buckets are muted text, while occupied buckets remain links (#1208).
+- Inbox and author feeds reuse their canonical links for up to five minutes, including when warmed by the scheduler. New listing entries and thread page-size changes refresh the links immediately, while expired entries still leave the five-day window on each request. HTTP caches receive only that snapshot's remaining lifetime (#1230).
+
+### Fixed
+
+- Reduced historical subsystem-posting query work by testing the stored patch flag directly and choosing between path and inbox reads using bounded work estimates (#1215).
+
 ## [5.3.0] - 2026-11-21
 
 ### Changed
@@ -6898,7 +6915,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.3.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.4.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
