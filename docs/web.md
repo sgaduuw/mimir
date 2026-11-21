@@ -150,11 +150,15 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
 | `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references; lists releases with references or pull requests to Linus |
 | `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page; page 1 first shows the release's pull requests to Linus and groups the messages by primary subsystem |
-| `/<inbox>/feed.atom` | Inbox Atom feed |
-| `/<inbox>/author/<substring>/feed.atom` | Author Atom feed |
+| `/<inbox>/feed.atom` | Inbox Atom feed, newest 1,000 messages from the last five days |
+| `/<inbox>/author/<substring>/feed.atom` | Author Atom feed with the same five-day window and 1,000-entry cap |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
 | `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |
+
+Atom entry links name the canonical thread page containing the message, including
+its page number and message anchor. Entry IDs stay stable when thread links change.
+Unrepaired threads use the message page until their thread membership is complete.
 
 Release history follows the previous-final to final Git reachability range,
 not commit timestamps. Annotated tags supply their tagger date; lightweight

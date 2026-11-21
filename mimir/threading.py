@@ -26,7 +26,19 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
-from sqlalchemy import exists, func, literal, or_, select, text, tuple_
+from sqlalchemy import (
+    DateTime,
+    Integer,
+    column,
+    exists,
+    func,
+    literal,
+    or_,
+    select,
+    text,
+    tuple_,
+    values,
+)
 from sqlalchemy.orm import Session, aliased
 
 from mimir import cache
@@ -440,34 +452,58 @@ def thread_page_of(
     same rule, including the NULL-date and tie-break behaviour. One
     indexed COUNT against the same predicate cannot drift from it.
     """
-    if article.id == root_article_id:
-        return 1
-    # Rank among non-root messages, under the same `(date, id)` order
-    # the page uses. `+ 1` for the root, which always occupies index 0.
-    earlier = session.execute(
-        select(func.count())
-        .select_from(ArticleList)
-        .join(Article, Article.id == ArticleList.article_id)
-        .where(
-            ArticleList.inbox_id == inbox_id,
-            ArticleList.thread_root_id == root_article_id,
-            Article.id != root_article_id,
-            # COALESCE so a dateless row participates in the comparison
-            # instead of evaluating to NULL and being skipped. Without
-            # it the rank undercounted by the number of dateless
-            # replies, which are sorted FIRST by the ORDER BY, so the
-            # claimed page drifted below the real one.
-            tuple_(
-                func.coalesce(Article.date, _DATE_FLOOR),
-                Article.id,
+    return thread_pages_of(session, [(inbox_id, root_article_id, article)], cap)[
+        (inbox_id, article.id)
+    ]
+
+
+def thread_pages_of(
+    session: Session, targets: list[tuple[int, int, Article]], cap: int
+):
+    """Batch the same indexed rank counts used by the singleton page lookup.
+
+    Keep dates and ids in the input so callers can use listing summaries.
+    The count remains in SQLite. No whole thread crosses into Python merely
+    to find a message's page. Batches bound bind parameters for large callers.
+    """
+    pages = {(inbox_id, article.id): 1 for inbox_id, root_id, article in targets}
+    replies = [
+        (inbox_id, root_id, article.id, article.date)
+        for inbox_id, root_id, article in targets
+        if article.id != root_id
+    ]
+    for offset in range(0, len(replies), 500):
+        wanted = (
+            values(
+                column("inbox_id", Integer),
+                column("root_id", Integer),
+                column("article_id", Integer),
+                column("date", DateTime),
             )
-            < tuple_(
-                func.coalesce(literal(article.date), _DATE_FLOOR),
-                literal(article.id),
-            ),
+            .data(replies[offset : offset + 500])
+            .cte("wanted")
         )
-    ).scalar_one()
-    return (earlier + 1) // max(1, cap) + 1
+        earlier = (
+            select(func.count())
+            .select_from(ArticleList)
+            .join(Article, Article.id == ArticleList.article_id)
+            .where(
+                ArticleList.inbox_id == wanted.c.inbox_id,
+                ArticleList.thread_root_id == wanted.c.root_id,
+                Article.id != wanted.c.root_id,
+                tuple_(func.coalesce(Article.date, _DATE_FLOOR), Article.id)
+                < tuple_(
+                    func.coalesce(wanted.c.date, _DATE_FLOOR), wanted.c.article_id
+                ),
+            )
+            .correlate(wanted)
+            .scalar_subquery()
+        )
+        for inbox_id, article_id, count in session.execute(
+            select(wanted.c.inbox_id, wanted.c.article_id, earlier)
+        ):
+            pages[inbox_id, article_id] = (count + 1) // max(1, cap) + 1
+    return pages
 
 
 def thread_by_root_id(

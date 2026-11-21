@@ -1,5 +1,6 @@
 {# Every per-message control is inside the HTMX replacement target. #}
 <article id="msg" data-article-id="{{ article.id }}">
+  <span id="m{{ article.id }}"></span>
   <nav class="message-context" aria-label="Message navigation">
     {% if thread_link_url %}<a class="whole-thread" href="{{ thread_link_url }}">Read the whole thread, {{ thread_total|format_count }} message{{ '' if thread_total == 1 else 's' }}</a>{% endif %}
     <span class="message-pager">
