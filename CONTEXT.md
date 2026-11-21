@@ -1572,10 +1572,23 @@ across all dates, for their complete matching counts and previews. A recent
 resend can therefore surface an old posting with its original slot winners and
 undated members intact. If the window yields fewer postings than the limit,
 known-small inboxes (below the existing 100k short-list boundary) enumerate
-inbox membership and probe each article's files. Other inboxes, including
-unknown sizes, use the UNION of path-index seeks across all history. This
-keeps quiet inboxes complete and avoids an open-ended date walk (#1165,
-#1212). Future-dated articles remain eligible in every shape.
+inbox membership and probe each article's files. Medium inboxes (100k to
+below 1M cached members) also use that driver when a bounded raw-path probe
+finds more include rows than the cached inbox membership total. The probe
+counts duplicates and excluded paths, so exclusions cannot hide scan work.
+Narrow paths, large inboxes and unknown sizes retain the UNION of path-index
+seeks across all history. This keeps quiet inboxes complete and avoids an
+open-ended date walk (#1165, #1212, #1215). Future-dated articles remain
+eligible in every shape.
+
+The strategy is a work estimate rather than a fixed path-match threshold.
+Measured on 2026-11-21, NETWORKING had 717,251 global raw include rows versus
+612,831 cached linux-mm members, while ACPI had 58,328 versus 459,308 cached
+kvm members. A fixed 25k budget wrongly switched ACPI to the slower inbox
+scan. The inbox-sized budget retained its path driver and reduced the
+linux-mm/NETWORKING recent section from 1.81 s to 1.15 s in paired three-run
+medians with forced section-cache misses, including the bounded probe. No global boundary or cache lifetime
+changed.
 
 The active-thread, daily-volume and reviewer sections use that same 100k
 boundary for their 7/30-day windows, instead of the 1M boundary retained for
@@ -1585,11 +1598,11 @@ inboxes retain inbox-first, and missing archive-size metadata retains the
 existing conservative fallback. Cache lifetimes and the limited slow-warmer
 fan-out are unchanged.
 
-A deterministic connection-local SQLite function calls the existing subject
-predicates so replies and non-patches cannot consume grouped slots. A CASE
-expression gates that callback on indexed inbox membership, since a plain join
-lets SQLite parse a path-matched subject before rejecting its inbox. Registering
-on the executing session also covers the broker's independent read pool.
+The stored `articles.canonical_patch` flag excludes replies and non-patches
+from grouped slots without a Python SQL callback. Full-history queries test
+that flag directly alongside inbox and path membership. The date-window
+shape retains its CASE around membership and the flag to preserve the measured
+series-member plans (#1221, #1215).
 
 Only selected postings enter the SQL slot-count and preview windows. All
 matching candidates necessarily have a diff, so the shared diff-first,
@@ -2530,9 +2543,10 @@ lkml/PROC FILESYSTEM from 1.252 s to 0.473 s, and netdev/PROC FILESYSTEM
 from 1.107 s to 0.268 s. Dense controls retained their original plans;
 broad linux-mm/NETWORKING still costs about 3 s, mostly its full-history
 recent-posting fallback. No cache lifetime or warm-target changes.
-Recent-posting date/inbox plans guard both inbox and path membership in
-CASE before reading `articles.canonical_patch`. The CASE used to keep a
-Python SQL function off unrelated or excluded paths; the value is stored
+Recent-posting date-window plans guard inbox and path membership in CASE
+before reading `articles.canonical_patch`. Full-history plans read the stored
+flag directly alongside membership predicates (#1215). The CASE used to keep
+a Python SQL function off unrelated or excluded paths; the value is stored
 since #1221, because no mimir SQL may call Python (on free-threaded
 CPython such a call can free another thread's cached statement while
 holding its own connection's mutex, and two threads deadlock). The source

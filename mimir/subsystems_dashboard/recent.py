@@ -14,6 +14,7 @@ from mimir.models import ArticleList, Inbox
 from mimir.patch_series import parse_cover_letter, same_series_sql, series_head_sql
 from mimir.subsystems import SUBSYSTEM_DASHBOARD_CACHE_TTL_SEC
 from mimir.subsystems_dashboard._path_filter import (
+    _path_seek_is_bounded,
     _subsystem_path_filter_exists_sql,
     _subsystem_path_filter_sql,
 )
@@ -60,9 +61,10 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
 
     The date window limits representative selection only. Selected postings
     still collect matching members across all history, including old slot
-    winners and undated children. Without a window, known-small inboxes
-    probe paths per inbox member; otherwise the path index remains the
-    driver. Neither fallback performs an open-ended date walk.
+    winners and undated children. Without a window, small inboxes and
+    sufficiently broad paths on medium inboxes probe each inbox member.
+    Narrow paths and large or unknown inboxes retain the path-index driver.
+    Neither fallback performs an open-ended date walk.
     """
     path_filter = (
         _subsystem_path_filter_sql(subsystem, prefix="rps")
@@ -74,17 +76,21 @@ def recent_postings_sql(subsystem, *, since=None, inbox_first=False):
     path_sql, params = path_filter
     head = series_head_sql("a")
     identity = "series_key, series_head, version, singleton"
-    # The CASE once gated a Python SQL function (#1221). In the date-window
-    # and inbox-first shapes its path test is the only path filter; kept as
-    # a CASE so the plans measured on 2026-11-16 hold.
     path_guard = f" AND {path_sql}" if since is not None or inbox_first else ""
-    eligibility = f"""
-        COALESCE(a.patch_series_position, 1) != 0
-        AND CASE WHEN EXISTS (
+    membership = f"""EXISTS (
             SELECT 1 FROM article_lists al
              WHERE al.article_id = a.id AND al.inbox_id = :inbox_id
-        ){path_guard} THEN a.canonical_patch
-          ELSE 0 END
+        ){path_guard}"""
+    # The stored flag no longer needs a CASE to gate a Python SQL function.
+    # Keep the date-window shape whose series-member plans were measured.
+    eligible_patch = (
+        f"a.canonical_patch AND ({membership})"
+        if since is None
+        else f"CASE WHEN {membership} THEN a.canonical_patch ELSE 0 END"
+    )
+    eligibility = f"""
+        COALESCE(a.patch_series_position, 1) != 0
+        AND {eligible_patch}
     """
     if since is None:
         candidates = "candidates"
@@ -178,14 +184,23 @@ def recent_postings_query(session, inbox, subsystem, limit=30, preview_limit=30)
     """Read the bounded dataset without cache writes or lifecycle work."""
     since = datetime.now(UTC) - timedelta(days=RECENT_POSTINGS_WINDOW_DAYS)
     for start in (since, None):
-        # Broad paths can enumerate years of other inboxes before rejecting
-        # membership. On 2026-11-16 driver-core (9,527 articles) took 1.59 s
-        # path-first versus 0.057 s inbox-first, with identical full postings.
-        # Unknown sizes retain the established all-history path strategy.
+        # Small inboxes avoid global path enumeration. Medium inboxes switch
+        # only when raw path work exceeds their own membership count.
+        # Large and unknown inboxes retain the historical path driver.
         total = dashboard.cached_archive_total(inbox) if start is None else None
         inbox_first = (
             total is not None and total < dashboard.RECENT_INBOX_FIRST_BELOW_ARTICLES
         )
+        if (
+            total is not None
+            and dashboard.RECENT_INBOX_FIRST_BELOW_ARTICLES
+            <= total
+            < dashboard.INBOX_FIRST_BELOW_ARTICLES
+        ):
+            # This is a work estimate, counting duplicate and excluded paths.
+            # On 2026-11-21 NETWORKING had 717,251 raw matches against 612,831
+            # cached linux-mm members, ACPI had 58,328 against 459,308 for kvm.
+            inbox_first = not _path_seek_is_bounded(session, subsystem, total)
         built = recent_postings_sql(subsystem, since=start, inbox_first=inbox_first)
         if built is None:
             return []
