@@ -624,9 +624,8 @@ def test_update_mainline_warms_activity_only_after_a_reload(monkeypatch, reloade
 
 
 def test_update_mainline_keeps_success_when_activity_warm_fails(monkeypatch, caplog):
-    from mimir import mainline, maintainer_activity
+    from mimir import directories, mainline, maintainer_activity
     from mimir.broker.handlers import maintenance
-    from mimir.subsystems_dashboard import activity
 
     monkeypatch.setattr(
         mainline,
@@ -639,7 +638,9 @@ def test_update_mainline_keeps_success_when_activity_warm_fails(monkeypatch, cap
         attempts.append("subsystems")
         raise RuntimeError("activity probe failure")
 
-    monkeypatch.setattr(activity, "most_active_subsystems_global", fail_subsystems)
+    monkeypatch.setattr(
+        directories, "_most_active_subsystems_global_full", fail_subsystems
+    )
     monkeypatch.setattr(
         maintainer_activity,
         "maintainer_activity_rows",

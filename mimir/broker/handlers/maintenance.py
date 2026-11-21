@@ -80,14 +80,14 @@ def _warm_activity_after_reload() -> None:
     warm (92 minutes after the 2026-11-15 reload). The global aggregator
     computes each inbox's missing ranking on the way."""
     from mimir.broker.handlers.warm import _log_slow_breakdown, _run_targets
+    from mimir.directories import warm_subsystem_targets
     from mimir.maintainer_activity import maintainer_activity_rows
-    from mimir.subsystems_dashboard.activity import most_active_subsystems_global
 
     _, errors, elapsed_ms, per_target = _run_targets(
         [
             (
                 "most_active_subsystems_global (7d)",
-                lambda s: most_active_subsystems_global(s, days=7),
+                warm_subsystem_targets,
             ),
             ("most_active_maintainers (7d)", maintainer_activity_rows),
         ]

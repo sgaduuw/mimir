@@ -10,6 +10,7 @@ as falsy (no inbox nav links rendered, no atom-feed `<link>`).
 
 from flask import abort, redirect, render_template
 
+from mimir.directories import cached_subsystem_targets
 from mimir.extensions import SessionLocal
 from mimir.mailmap import canonical_address
 from mimir.maintainer_directory import (
@@ -72,6 +73,7 @@ def maintainer_view(address: str):
                 return redirect(maintainer_path(mapped), code=301)
             abort(404)
         review_counts = cached_maintainer_review_counts(session, address_normalized)
+        subsystem_targets = cached_subsystem_targets(session)
 
     # Missing profiles above either redirect to a live address or abort with 404.
     assert profile is not None
@@ -88,6 +90,7 @@ def maintainer_view(address: str):
     return render_template(
         "maintainer.html",
         profile=profile,
+        subsystem_targets=subsystem_targets,
         review_counts=review_counts,
         review_inboxes=review_inboxes,
         canonical_url=canonical_url,

@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Maintainer profile subsystem labels link to the same dashboard selected by the directory and sitemap when warmed targets are available. Missing or expired activity keeps labels as plain text (#1227).
+
 ## [5.3.0] - 2026-11-21
 
 ### Changed
