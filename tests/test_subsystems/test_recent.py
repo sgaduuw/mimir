@@ -542,16 +542,39 @@ def test_recent_window_short_of_limit_falls_back_to_history(seeded_db):
     ]
 
 
-@pytest.mark.parametrize("total", [None, 99_999, 100_000])
-def test_history_fallback_uses_known_small_inbox_without_changing_postings(
-    seeded_db, monkeypatch, total
+@pytest.mark.parametrize(
+    ("total", "small_cutoff", "large_cutoff", "inbox_first", "probe_count"),
+    [
+        (None, 100_000, 1_000_000, False, 0),
+        (99_999, 100_000, 1_000_000, True, 0),
+        (100_000, 100_000, 1_000_000, False, 1),
+        (999_999, 100_000, 1_000_000, False, 1),
+        (1_000_000, 100_000, 1_000_000, False, 0),
+        (6_682_984, 100_000, 1_000_000, False, 0),
+        (6, 4, 10, True, 1),
+        (7, 4, 10, False, 1),
+    ],
+)
+def test_history_fallback_selects_driver_without_changing_postings(
+    seeded_db,
+    frozen_clock,
+    monkeypatch,
+    total,
+    small_cutoff,
+    large_cutoff,
+    inbox_first,
+    probe_count,
 ):
     from dataclasses import asdict
 
+    from sqlalchemy import event, func
+
     from mimir import dashboard
-    from mimir.models import Subsystem
+    from mimir.models import ArticleFile, Subsystem
     from tests._helpers import PRODUCTION_STATS, plan_of, planner_stats
 
+    monkeypatch.setattr(dashboard, "RECENT_INBOX_FIRST_BELOW_ARTICLES", small_cutoff)
+    monkeypatch.setattr(dashboard, "INBOX_FIRST_BELOW_ARTICLES", large_cutoff)
     with seeded_db() as session:
         sub = _add_subsystem(
             session, "SMALL HISTORY", None, ["drivers/demo/"], ["drivers/demo/no/"]
@@ -567,7 +590,17 @@ def test_history_fallback_uses_known_small_inbox_without_changing_postings(
         _patch(session, "different-version@x", version="rfc")
         _patch(session, "other-inbox@x", position=3, inbox="beta")
         _patch(session, "excluded@x", position=4, paths=("drivers/demo/no/a.c",))
+        _patch(session, "cover@x", position=0, paths=(), inbox="beta")
         session.commit()
+        # Excluded and other-inbox files still consume raw probe work.
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(ArticleFile)
+                .where(ArticleFile.path.like("drivers/demo/%"))
+            )
+            == 7
+        )
     with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as session:
         sub = session.get(Subsystem, sid)
         inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
@@ -579,20 +612,49 @@ def test_history_fallback_uses_known_small_inbox_without_changing_postings(
             "old-slot@x",
             "undated-slot@x",
         ]
+        assert series.cover.message_id == "cover@x"
+        assert series.cover.inbox_name == "beta"
         monkeypatch.setattr(dashboard, "cached_archive_total", lambda inbox: total)
         observed = []
-        plan = plan_of(
-            session,
-            lambda: observed.extend(recent_postings_query(session, inbox, sub)),
-            "WITH candidates AS MATERIALIZED",
-        )
+        statements = []
+        probe_limits = []
+
+        def capture(conn, cursor, statement, parameters, context, executemany):
+            statements.append(statement)
+            if "SELECT count(*) FROM (SELECT 1 FROM (" in statement:
+                compiled = getattr(context, "compiled_parameters", None)
+                assert compiled
+                probe_limits.append(compiled[0]["path_budget_limit"])
+
+        engine = session.get_bind()
+        event.listen(engine, "before_cursor_execute", capture)
+        try:
+            plan = plan_of(
+                session,
+                lambda: observed.extend(recent_postings_query(session, inbox, sub)),
+                "WITH candidates AS MATERIALIZED",
+            )
+        finally:
+            event.remove(engine, "before_cursor_execute", capture)
     assert [asdict(row) for row in observed] == [asdict(row) for row in expected]
-    if total is not None and total < 100_000:
+    history = [sql for sql in statements if "WITH candidates AS MATERIALIZED" in sql]
+    window = [
+        sql for sql in statements if "WITH recent_candidates AS MATERIALIZED" in sql
+    ]
+    assert len(history) == len(window) == 1
+    if inbox_first:
         assert "ix_article_lists_inbox_id" in plan, plan
         assert "ix_article_files_path" not in plan, plan
+        assert "article_lists al INDEXED BY ix_article_lists_inbox_id" in history[0]
     else:
         assert "ix_article_files_path" in plan, plan
+        assert "article_files INDEXED BY ix_article_files_path" in history[0]
         assert "ix_article_lists_inbox_id" not in plan, plan
+
+    assert len(probe_limits) == probe_count
+    assert probe_limits == ([total + 1] if probe_count else [])
+    assert "THEN a.canonical_patch" not in history[0]
+    assert "THEN a.canonical_patch" in window[0]
 
 
 @pytest.mark.parametrize("limit", [1, 30], ids=["date-window", "inbox-history"])
@@ -627,3 +689,19 @@ def test_path_membership_excludes_unmatched_paths(seeded_db, monkeypatch, limit)
         inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
         output = recent_postings_query(session, inbox, sub, limit=limit)
     assert [row.representative.message_id for row in output] == ["eligible@x"]
+
+
+def test_fulfilled_recent_window_does_not_read_inbox_size(seeded_db, monkeypatch):
+    from mimir import dashboard
+
+    def unexpected(inbox):
+        pytest.fail("A fulfilled recent window must not choose a history driver")
+
+    monkeypatch.setattr(dashboard, "cached_archive_total", unexpected)
+    with seeded_db() as session:
+        sub = _add_subsystem(session, "RECENT ONLY", None, ["drivers/demo/"])
+        inbox = session.scalar(select(Inbox).where(Inbox.name == "alpha"))
+        _patch(session, "recent-only@x").date = datetime.now(UTC)
+        session.commit()
+        rows = recent_postings_query(session, inbox, sub, limit=1)
+        assert [row.representative.message_id for row in rows] == ["recent-only@x"]
