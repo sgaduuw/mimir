@@ -20,9 +20,9 @@ from mimir.patch_state import (
     PatchState,
     StateSeriesEntry,
     StateTrailerCount,
-    _is_patch_subject,
     patch_state_for_article,
 )
+from mimir.patch_subjects import _is_patch_subject
 
 
 def _seed_article(session, message_id):

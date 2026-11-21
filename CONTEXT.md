@@ -2535,7 +2535,15 @@ CASE before reading `articles.canonical_patch`. The CASE used to keep a
 Python SQL function off unrelated or excluded paths; the value is stored
 since #1221, because no mimir SQL may call Python (on free-threaded
 CPython such a call can free another thread's cached statement while
-holding its own connection's mutex, and two threads deadlock).
+holding its own connection's mutex, and two threads deadlock). The source
+guard also rejects SQLAlchemy regexp/floor calls and raw SQL
+using those functions or the REGEXP operator (#1224): the SQLite dialect
+registers Python implementations even when mimir registers none. A test-only
+Engine listener also checks statements before the driver executes them,
+including SQLAlchemy operators such as non-integer `//` that emit FLOOR.
+Patch
+classification itself is shared by stored values, listings and state cards
+through `patch_subjects.is_canonical_patch(row)`.
 
 The same shape serves the dashboard listings in `mimir/dashboard.py`
 (#791, #796), built once by `_inbox_first_sql`. Search and
