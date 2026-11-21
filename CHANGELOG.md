@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Inbox and author Atom feeds contain the newest 1,000 messages from the last five days. Each entry links directly to the canonical thread page holding that message, with its message anchor. Entry IDs remain unchanged (#1226).
+
 ## [5.2.0] - 2026-11-19
 
 ### Fixed

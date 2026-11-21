@@ -16,12 +16,13 @@ import click
 
 from mimir.config import settings
 from mimir.dashboard import (
+    FEED_ENTRY_LIMIT,
     archive_stats,
     author_recent,
     daily_volume,
+    feed_articles,
     latest_pull_requests,
     latest_stable_releases,
-    recent_articles,
     recent_message_total,
     this_day_in_history,
 )
@@ -57,7 +58,6 @@ from mimir.web import (
     sitemap_index_xml,
     warm_latest_archive_sitemaps,
 )
-from mimir.web.routes.feeds import FEED_ENTRY_LIMIT
 
 # Number of top-active subsystems whose per-subsystem dashboard
 # caches are pre-warmed per inbox. The full per-subsystem dashboard
@@ -80,8 +80,7 @@ def _build_fast_inbox_targets(inbox: Inbox) -> list[tuple[str, object]]:
     tier's per-hour cadence.
 
     Includes: archive_stats, latest_pull_requests,
-    latest_stable_releases, recent_articles (FEED_ENTRY_LIMIT),
-    and recent_articles (FEED_ENTRY_LIMIT).
+    latest_stable_releases, and feed_articles (FEED_ENTRY_LIMIT).
 
     Sitemaps are deliberately NOT here; they moved to the slow tier.
     A sitemap's finest freshness signal is `<lastmod>`, which is a
@@ -98,13 +97,11 @@ def _build_fast_inbox_targets(inbox: Inbox) -> list[tuple[str, object]]:
             f"{inbox.name} latest_stable_releases",
             lambda s, ib=inbox: latest_stable_releases(s, ib, limit=5),
         ),
-        # Atom feed source. Different cache key from the
-        # dashboard "Recent messages" loader because the limit
-        # is the cache key, feeds need 50, the dashboard's
-        # initial paint uses 10.
+        # The rolling feed window has its own key. Dashboard listings
+        # deliberately retain their all-history contract.
         (
-            f"{inbox.name} recent_articles ({FEED_ENTRY_LIMIT})",
-            lambda s, ib=inbox: recent_articles(s, ib, limit=FEED_ENTRY_LIMIT),
+            f"{inbox.name} feed_articles ({FEED_ENTRY_LIMIT})",
+            lambda s, ib=inbox: feed_articles(s, ib),
         ),
     ]
     return targets
@@ -199,12 +196,7 @@ def _build_slow_inbox_targets(
         targets.append(
             (
                 f"{inbox.name} tracker:{label} (feed)",
-                lambda s, ib=inbox, sub=substr: author_recent(
-                    s,
-                    ib,
-                    sub,
-                    FEED_ENTRY_LIMIT,
-                ),
+                lambda s, ib=inbox, sub=substr: feed_articles(s, ib, author=sub),
             )
         )
     if sitemap_base:
