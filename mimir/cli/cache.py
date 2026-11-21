@@ -26,6 +26,7 @@ from mimir.dashboard import (
     recent_message_total,
     this_day_in_history,
 )
+from mimir.directories import warm_subsystem_targets
 from mimir.extensions import SessionLocal
 from mimir.inboxes import list_inboxes, pinned_first
 from mimir.listings import listing_for_day as threads_for_day
@@ -39,7 +40,6 @@ from mimir.subsystems_dashboard import (
     active_threads_in_subsystem,
     articles_reviewed_by,
     daily_volume_in_subsystem,
-    most_active_subsystems_global,
     most_active_subsystems_in_inbox,
     needs_attention_patches_in_subsystem,
     quiet_patches_in_subsystem,
@@ -307,7 +307,7 @@ def _build_slow_global_targets(
     targets.append(
         (
             "most_active_subsystems_global (7d)",
-            lambda s: most_active_subsystems_global(s, days=7),
+            warm_subsystem_targets,
         )
     )
     targets.append(("most_active_maintainers (7d)", maintainer_activity_rows))

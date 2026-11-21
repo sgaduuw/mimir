@@ -22,8 +22,8 @@
   {% if profile.subsystems %}
   <ul class="maintainer-subsystems">
     {% for subsystem_name, status in profile.subsystems %}
-    {# These cards have no inbox context; selecting a dashboard is deferred. #}
-    <li><strong>{{ subsystem_name|subsystem_label }}</strong>{{ status_pill(status) }}</li>
+    {% set target = subsystem_targets.get(subsystem_name) %}
+    <li><strong>{% if target %}<a href="{{ target }}">{{ subsystem_name|subsystem_label }}</a>{% else %}{{ subsystem_name|subsystem_label }}{% endif %}</strong>{{ status_pill(status) }}</li>
     {% endfor %}
   </ul>
   {% else %}
