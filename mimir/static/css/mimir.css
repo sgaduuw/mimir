@@ -1247,8 +1247,9 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
 .inbox-meta { font-size: .85rem; color: var(--pico-muted-color); white-space: nowrap; font-variant-numeric: tabular-nums; align-self: center; }
 
 /* Directory rows stay on one line, with the identity yielding to the count. */
-.directory-letters { display: flex; flex-wrap: wrap; gap: .25rem; margin-bottom: 1rem; }
-.directory-letters a { display: inline-block; min-width: 2.75rem; min-height: 2.75rem; text-align: center; align-content: center; }
+.directory-letters { display: grid; grid-template-columns: repeat(auto-fill, minmax(2.75rem, 1fr)); gap: .25rem; margin-bottom: 1rem; }
+.directory-letters > a, .directory-letters > span { display: grid; place-items: center; min-width: 2.75rem; min-height: 2.75rem; margin: 0; padding: 0; }
+.directory-letters > span { color: var(--pico-muted-color); }
 .directory-letters a[aria-current] { font-weight: 700; }
 .directory-note, .directory-more { color: var(--pico-muted-color); font-size: .85rem; }
 .directory-more { text-align: right; }

@@ -13,7 +13,12 @@
     {% call search_field('directory-query', 'Search all ' ~ kind, 'Search') %}<input id="directory-query" type="search" name="q" value="{{ query }}">{% endcall %}
   </form>
   {% if searching %}<p>{{ search_total|format_count }} result{{ '' if search_total == 1 else 's' }} for “{{ query }}”.{% if search_truncated %} Showing the first {{ rows|length|format_count }}; refine your search to see fewer results.{% endif %}</p>{% endif %}
-  {% if letters %}<nav class="directory-letters" aria-label="{{ title }} by initial">{% for item in letters %}<a href="{{ item.path }}"{% if item.letter == 'other' %} aria-label="Numbers and other"{% endif %}{% if item.letter == letter %} aria-current="page"{% endif %}>{{ item.label }}</a>{% endfor %}</nav>{% endif %}
+  <nav class="directory-letters" aria-label="{{ title }} by initial">
+    {% for item in letters %}
+    {% if item.occupied %}<a href="{{ item.path }}"{% if item.letter == 'other' %} aria-label="Numbers and other"{% endif %}{% if item.letter == letter %} aria-current="page"{% endif %}>{{ item.label }}</a>
+    {% else %}<span aria-disabled="true"{% if item.letter == 'other' %} aria-label="Numbers and other"{% endif %}>{{ item.label }}</span>{% endif %}
+    {% endfor %}
+  </nav>
   {% if show_rows and not activity_available %}<p class="directory-note">Activity not available yet</p>{% elif show_rows and kind == 'maintainers' %}<p class="directory-note">Reviewed-by, Acked-by and Tested-by trailers in the last seven days, with mail aliases grouped.</p>{% elif show_rows %}<p class="directory-note">Messages in the last seven days, summed across inboxes; cross-posts may count more than once. Quiet subsystems link to a mirrored mailing list where available.</p>{% endif %}
   {% if show_rows %}
   {% if not rows %}<p>No matching {{ kind }}.</p>{% endif %}

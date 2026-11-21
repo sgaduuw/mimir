@@ -11,6 +11,11 @@ def test_directory_roots_are_pages_even_without_entries(client):
         response = client.get(path)
         assert response.status_code == 200
         assert response.headers["Cache-Control"] == "public, max-age=300"
+        strip = parse(response.get_data(as_text=True)).find(
+            "nav", cls="directory-letters"
+        )
+        assert len(strip.find_all("span", **{"aria-disabled": "true"})) == 27
+        assert strip.find_all("a") == []
         assert (
             "ETag" not in response.headers and "Last-Modified" not in response.headers
         )
@@ -308,3 +313,76 @@ def test_directory_rows_memo_pins_only_warmed_rows_per_rules_version(monkeypatch
     version[0] = "v3"
     rows(), rows()
     assert len(built) == 6  # the mid-reload empty sentinel is never pinned
+
+
+@pytest.mark.parametrize("with_other", [False, True])
+def test_directory_strip_matches_routes_and_sitemap(
+    client, session, subsystem, with_other
+):
+    import xml.etree.ElementTree as ET
+
+    from mimir.directory_paths import DIRECTORY_LETTERS, directory_letter
+
+    names = [subsystem.name]
+    if with_other:
+        other = Subsystem(name="7 OTHER DRIVER", status="Maintained")
+        session.add(other)
+        session.flush()
+        session.add(
+            SubsystemMaintainer(
+                subsystem_id=other.id,
+                role="M",
+                name="7 Alice",
+                address="other@kernel.org",
+            )
+        )
+        session.commit()
+        names.append(other.name)
+    occupied = {directory_letter(name) for name in names}
+    empty = set(DIRECTORY_LETTERS) - occupied
+    assert occupied == ({"a", "other"} if with_other else {"a"})
+    assert empty
+    sitemap = client.get("/meta-sitemap.xml")
+    assert sitemap.status_code == 200
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    locs = {
+        node.text for node in ET.fromstring(sitemap.data).findall("s:url/s:loc", ns)
+    }
+    for kind in ("subsystems", "maintainers"):
+        for current in (
+            None,
+            *[value for value in DIRECTORY_LETTERS if value in occupied],
+        ):
+            path = f"/{kind}/" + (f"{current}/" if current else "")
+            response = client.get(path)
+            assert response.status_code == 200
+            strip = parse(response.get_data(as_text=True)).find(
+                "nav", cls="directory-letters"
+            )
+            items = [node for node in strip.children if not isinstance(node, str)]
+            assert len(items) == len(DIRECTORY_LETTERS) == 27
+            assert [item.text() for item in items] == [
+                "#" if value == "other" else value.upper()
+                for value in DIRECTORY_LETTERS
+            ]
+            for value, item in zip(DIRECTORY_LETTERS, items, strict=True):
+                assert item.attrs.get("aria-label") == (
+                    "Numbers and other" if value == "other" else None
+                )
+                if value in occupied:
+                    assert item.tag == "a"
+                    assert item.attrs["href"] == f"/{kind}/{value}/"
+                    assert item.attrs.get("aria-current") == (
+                        "page" if value == current else None
+                    )
+                    assert "aria-disabled" not in item.attrs
+                    assert "http://localhost" + item.attrs["href"] in locs
+                else:
+                    assert item.tag == "span"
+                    assert item.attrs["aria-disabled"] == "true"
+                    assert "href" not in item.attrs and "tabindex" not in item.attrs
+                    assert "aria-current" not in item.attrs
+        for value in empty:
+            path = f"/{kind}/{value}/"
+            assert client.get(path).status_code == 404
+            assert "http://localhost" + path not in locs
