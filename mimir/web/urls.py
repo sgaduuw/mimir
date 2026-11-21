@@ -13,17 +13,18 @@ to repeat per call.
 """
 
 import re
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from urllib.parse import urlencode
 
 from flask import Response, abort, g, request
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from mimir.canonical import fallback_canonical_name
 from mimir.config import settings
 from mimir.models import Article, ArticleList, Inbox
-from mimir.threading import thread_page_of, unmaterialised_roots
+from mimir.threading import thread_pages_of, unmaterialised_roots
 
 _REVIEWER_ADDR_RE = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\Z")
 
@@ -371,160 +372,100 @@ def _canonical_inbox_names_for(
     return out
 
 
+@dataclass(frozen=True)
+class CanonicalDestination:
+    url: str
+    inbox_name: str
+    page: int | None = None
+
+
 def _advertised_urls_for(
+    session: Session, articles: list[Article], base: str = ""
+) -> dict[int, str]:
+    return {
+        aid: destination.url
+        for aid, destination in _canonical_destinations_for(
+            session, articles, base
+        ).items()
+    }
+
+
+def _canonical_destinations_for(
     session: Session,
     articles: list[Article],
     base: str = "",
-) -> dict[int, str]:
-    """`article_id -> the URL to ADVERTISE for that article's conversation.`
+) -> dict[int, CanonicalDestination]:
+    """Resolve the message canonical and advertised URL with one predicate.
 
-    For surfaces that push or publish URLs to machines: the IndexNow
-    push today. Returns the thread view page holding the article in its
-    canonical inbox, single-message threads included (#1003), and the
-    plain message URL when there is no thread page to name.
-
-    Deliberately a DIFFERENT question from the one
-    `mimir.web.routes.message` answers when it decides what a page
-    claims as its own `<link rel="canonical">`:
-
-    - A *page* cedes its canonical to the thread PAGE that contains it.
-      Since 3.8.0 the view paginates, so every message is rendered
-      somewhere and the old "past the cap keeps its own canonical" rule
-      is gone.
-    - An *advertising* surface used not to need containment. It does
-      now, for the same reason: a reply lands on the LAST page, so
-      announcing page 1 named a URL that had not changed while the page
-      that grew went unannounced. It matches what the
-      sitemap already does: list one URL per conversation and no
-      individual replies at all.
-
-    Everything here is keyed on the `(article, inbox)` PAIR, never on
-    the article or the root alone. Threading is inbox-scoped, so the
-    same root can head a different thread in each inbox; deciding on the
-    root alone let an article inherit a sibling inbox's thread URL and
-    advertise a page that no other surface lists.
-
-    There is no "has it any replies" test. A mid-backfill thread whose
-    replies are not yet rooted is caught by `unmaterialised_roots`, the
-    same predicate the sitemap and the message page use, and keeps its
-    message URL.
-
-    Mid-backfill safety: an article whose own `thread_root_id` is still
-    NULL falls back to its message URL, because without a root there is
-    no thread URL to name. Less consolidated, never dangling.
-
-    Five queries, two `unmaterialised_roots` statements per canonical
-    inbox, and one `thread_page_of` COUNT per article, all on indexed
-    columns. It was batch-independent until 3.8.0 made the
-    advertised URL page-aware; see `indexnow.py` for the cost.
+    A rankable thread in the article's canonical inbox names its containing
+    page. Incomplete or missing roots retain the plain message URL. Root
+    validity is inbox-scoped, including when a thread is cross-posted.
+    Canonical selection, materialisation and page ranks are batched.
     """
     if not articles:
         return {}
     by_id = {a.id: a for a in articles}
-    canonical_names = _canonical_inbox_names_for(session, list(by_id))
-    if not canonical_names:
-        return {}
-
-    inbox_ids = {
-        name: ix_id
-        for ix_id, name in session.execute(
-            select(Inbox.id, Inbox.name).where(
-                Inbox.name.in_(set(canonical_names.values()))
-            )
-        ).all()
-    }
-    wanted = {
-        (art_id, inbox_ids[name])
-        for art_id, name in canonical_names.items()
-        if name in inbox_ids
-    }
-    if not wanted:
-        return {}
-
-    # The article's root IN ITS CANONICAL INBOX. Reading it from any
-    # other inbox's row would be a different thread, so pairs are
-    # matched explicitly rather than filtering on article_id alone.
-    # A row whose root is gone from the inbox (a partial `reindex
-    # --from-scratch`, a hand repair) would name a page that is not
-    # servable here; `unmaterialised_roots` condition (1), below, covers
-    # it. Pinned by
-    # `test_build_urls_does_not_advertise_a_thread_whose_root_is_gone_from_the_inbox`.
-    consolidated: dict[int, int] = {}
-    for art_id, ix_id, root_id in session.execute(
+    root = aliased(Article, name="canonical_root")
+    memberships: dict[int, list] = {}
+    for row in session.execute(
         select(
-            ArticleList.article_id, ArticleList.inbox_id, ArticleList.thread_root_id
-        ).where(
-            ArticleList.article_id.in_({a for a, _ix in wanted}),
-            ArticleList.inbox_id.in_({ix for _a, ix in wanted}),
-            ArticleList.thread_root_id.is_not(None),
+            Article.id.label("article_id"),
+            Article.canonical_inbox_id,
+            Inbox.id.label("inbox_id"),
+            Inbox.name,
+            root.id.label("root_id"),
+            root.date.label("root_date"),
         )
-    ).all():
-        if (art_id, ix_id) in wanted:
-            consolidated[art_id] = root_id
-    root_articles = {
-        a.id: a
-        for a in session.execute(
-            select(Article).where(Article.id.in_(set(consolidated.values())))
-        ).scalars()
-    }
+        .select_from(Article)
+        .join(ArticleList, ArticleList.article_id == Article.id)
+        .join(Inbox, Inbox.id == ArticleList.inbox_id)
+        .outerjoin(root, root.id == ArticleList.thread_root_id)
+        .where(Article.id.in_(by_id))
+    ):
+        memberships.setdefault(row.article_id, []).append(row)
 
-    # Which roots the column cannot fully rank, batched per inbox
-    # rather than asked per article. A thread with unrooted members is
-    # rendered from the walk, so any page number derived from the
-    # column is too low for every message after the gap.
+    canonical_rows = {}
     roots_by_inbox: dict[int, set[int]] = {}
-    for art_id, name in canonical_names.items():
-        ix_id = inbox_ids.get(name)
-        root = root_articles.get(consolidated.get(art_id))
-        if ix_id is not None and root is not None:
-            roots_by_inbox.setdefault(ix_id, set()).add(root.id)
-    # Keyed on the `(inbox, root)` PAIR. Root ids are global
-    # `articles.id`, so a flat set of them made a root flagged in one
-    # inbox match in every other, and a single unrepaired row anywhere
-    # dropped a healthy cross-posted thread's whole page-aware
-    # advertising. That contradicted this function's own docstring
-    # three paragraphs up, which is the shape that keeps hiding these.
-    unrankable: set[tuple[int, int]] = set()
-    for ix_id, roots in roots_by_inbox.items():
-        unrankable |= {
-            (ix_id, r) for r in unmaterialised_roots(session, ix_id, list(roots))
-        }
+    for art_id, rows in memberships.items():
+        # Elect from every membership before inspecting its root. Filtering
+        # missing roots first would silently choose a different canonical inbox.
+        name = fallback_canonical_name(
+            rows[0].canonical_inbox_id, [(r.inbox_id, r.name) for r in rows]
+        )
+        row = next(r for r in rows if r.name == name)
+        canonical_rows[art_id] = row
+        if row.root_id is not None:
+            roots_by_inbox.setdefault(row.inbox_id, set()).add(row.root_id)
 
-    out: dict[int, str] = {}
-    for art_id, name in canonical_names.items():
-        article = by_id.get(art_id)
-        if article is None or article.date is None:
-            continue
-        root = root_articles.get(consolidated.get(art_id))
-        if root is not None and root.date is not None:
-            # The PAGE holding this message, not page 1. A new reply
-            # lands on the LAST page, so announcing the first one
-            # reported a URL that had not changed while the page that
-            # actually grew was never announced at all. Same helper the
-            # thread view and the message canonical use, so this cannot
-            # become a third opinion about where a message lives.
-            ix_id = inbox_ids.get(name)
-            if ix_id is not None and (ix_id, root.id) in unrankable:
-                # The thread has members the column cannot see, so any
-                # page number computed from it would be too low. Announce
-                # the message's own URL instead of a page that may not
-                # contain it: less consolidated, never dangling, which
-                # is this function's existing posture for the NULL-root
-                # case one branch down.
-                out[art_id] = base + _msg_url(article, name)
-                continue
-            page_no = 1
-            if ix_id is not None:
-                page_no = thread_page_of(
-                    session,
-                    ix_id,
-                    root.id,
-                    article,
-                    settings.thread_view_render_cap,
-                )
-            out[art_id] = base + thread_page_url(root.id, root.date, name, page_no)
-        else:
-            out[art_id] = base + _msg_url(article, name)
+    # A root can be healthy in one inbox and incomplete in another.
+    # Keep the validity decision scoped to the same pair as the thread view.
+    unrankable = {
+        (inbox_id, root_id)
+        for inbox_id, roots in roots_by_inbox.items()
+        for root_id in unmaterialised_roots(session, inbox_id, list(roots))
+    }
+    targets = [
+        (row.inbox_id, row.root_id, by_id[art_id])
+        for art_id, row in canonical_rows.items()
+        if row.root_id is not None
+        and row.root_date is not None
+        and (row.inbox_id, row.root_id) not in unrankable
+        and by_id[art_id].date is not None
+    ]
+    pages = thread_pages_of(session, targets, settings.thread_view_render_cap)
+    out = {
+        art_id: CanonicalDestination(base + _msg_url(by_id[art_id], row.name), row.name)
+        for art_id, row in canonical_rows.items()
+        if by_id[art_id].date is not None
+    }
+    for inbox_id, root_id, article in targets:
+        row = canonical_rows[article.id]
+        page = pages[inbox_id, article.id]
+        out[article.id] = CanonicalDestination(
+            base + thread_page_url(root_id, row.root_date, row.name, page),
+            row.name,
+            page,
+        )
     return out
 
 

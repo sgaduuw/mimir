@@ -2552,7 +2552,7 @@ so a date walk reads
 the whole archive for a rare term or sender. The pull-request and
 stable-release listings follow `_inbox_first` (the 180-day floor
 bounds their date walk on the biggest lists). The unfiltered recent
-listing (`recent_page`: feed, inbox page, load-more) has its own,
+listing (`recent_page`: inbox page, load-more) has its own,
 lower `RECENT_INBOX_FIRST_BELOW_ARTICLES` (100k), because every
 article matches and a busy mid-size list's date walk is a few ms
 where inbox-first costs hundreds; only dormant lists need it. Unlike

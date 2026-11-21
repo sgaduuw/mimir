@@ -40,6 +40,7 @@ def atom_response(
     inbox_name: str,
     base_url: str,
     canonical_inbox_by_article: dict[int, str] | None = None,
+    entry_urls: dict[int, str],
 ) -> Response:
     """Render an Atom 1.0 feed from a list of `ArticleSummary`. Uses
     stdlib ElementTree, no extra dep. Emits redacted authors via the
@@ -47,15 +48,18 @@ def atom_response(
     addresses don't leak via feed readers either.
 
     `canonical_inbox_by_article` maps article.id → canonical inbox name.
-    Cross-posts get their `<id>` and `<link>` set to the canonical URL
+    Cross-posts keep their `<id>` in the canonical inbox. `<link>` names
+    the resolved thread page and message anchor
     so feed readers that key on `<id>` deduplicate across feeds (the
     same article appearing in lkml's and linux-fsdevel's feeds renders
     as one entry, not two)."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
     from mimir.web.filters import _allowlisted_email, _usable_display_name
-    from mimir.web.urls import _msg_url
 
+    # A reindex can remove memberships while the listing cache remains live.
+    # Unaddressable entries must not produce stale links or fail the whole feed.
+    entries = [a for a in entries if a.id in entry_urls]
     feed_updated = max(
         (e.date for e in entries if e.date), default=None
     ) or datetime.now(UTC)
@@ -90,7 +94,7 @@ def atom_response(
             "link",
             rel="alternate",
             type="text/html",
-            href=msg_base + _msg_url(a, canonical_inbox_name),
+            href=f"{msg_base}{entry_urls[a.id]}#m{a.id}",
         )
         # Same rule as JSON-LD `_person`: display name, else the
         # allowlisted address, else no <author> (never an invented
