@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Reduced historical subsystem-posting query work by testing the stored patch flag directly and choosing between path and inbox reads using bounded work estimates (#1215).
+
 ### Changed
 
 - Inbox and author feeds reuse their canonical links for up to five minutes, including when warmed by the scheduler. New listing entries and thread page-size changes refresh the links immediately, while expired entries still leave the five-day window on each request. HTTP caches receive only that snapshot's remaining lifetime (#1230).
