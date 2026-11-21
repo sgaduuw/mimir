@@ -330,8 +330,8 @@ def test_warm_cache_warms_reviewer_pages_from_per_subsystem_dashboards(
 
 
 def test_warm_cache_includes_atom_feed_sources(seeded_db, _active_broker_context):
-    """The atom routes use `recent_articles(limit=FEED_ENTRY_LIMIT)`
-    and `author_recent(..., limit=FEED_ENTRY_LIMIT)`, a different
+    """The atom routes use `feed_articles(limit=FEED_ENTRY_LIMIT)`
+    for inboxes and tracked authors, a different
     cache key from the dashboard's `limit=5/10` calls. Warm both so
     the first feed poll per hour returns a cache-hit too."""
     from mimir import cache
@@ -347,11 +347,11 @@ def test_warm_cache_includes_atom_feed_sources(seeded_db, _active_broker_context
     _drain_writer()
     # Feed-flavour and tracker rows must actually land in the cache
     # (the legacy per-target verbose echo went into broker logs).
-    assert cache.get("recent_articles:alpha:50") is not None
-    assert cache.get("recent_articles:beta:50") is not None
+    assert cache.get("feed_articles:alpha:5:1000:") is not None
+    assert cache.get("feed_articles:beta:5:1000:") is not None
     # author_recent key uses the email substring directly, not the label.
     assert cache.get("author_recent:alpha:example.com:5") is not None
-    assert cache.get("author_recent:alpha:example.com:50") is not None
+    assert cache.get("feed_articles:alpha:5:1000:example.com") is not None
 
 
 def test_warm_cache_skips_sitemap_when_site_base_url_unset(
@@ -692,7 +692,7 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
 ):
     """`warm-cache --tier fast` ends up dispatching each warm_inbox
     RPC with only fast-tier target labels (sitemap + archive_stats
-    + latest_pull_requests + latest_stable_releases + recent_articles).
+    + latest_pull_requests + latest_stable_releases + feed_articles).
     Slow-tier labels (subsystem dashboards, threads_for_day, etc.)
     don't appear."""
     from mimir.broker import client as _client_module
@@ -740,7 +740,7 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
                     "archive_stats",
                     "latest_pull_requests",
                     "latest_stable_releases",
-                    "recent_articles",
+                    "feed_articles",
                 )
             ), f"non-fast label leaked into tier=fast dispatch: {label!r}"
         # No slow-tier label appears.
@@ -820,7 +820,7 @@ def test_warm_cache_command_tier_slow_dispatches_slow_targets_only(
                 "archive_stats",
                 "latest_pull_requests",
                 "latest_stable_releases",
-                "recent_articles",
+                "feed_articles",
             )
             for label in targets
         ), f"fast label leaked into tier=slow dispatch for {inbox_name}: {targets}"

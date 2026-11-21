@@ -19,7 +19,7 @@ from sqlalchemy import DateTime, bindparam, func, select, text
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.datetime_utils import coerce_dt
+from mimir.datetime_utils import aware_utc, coerce_dt
 from mimir.models import Article, ArticleList, Inbox
 from mimir.pull_requests import PULL_LIKE
 from mimir.threading import articles_in_inbox_from
@@ -29,6 +29,8 @@ DAILY_VOLUME_CACHE_TTL_SEC = 3600  # 1 hour
 INDEX_VOLUME_RETENTION_SEC = 2 * 3600  # Two hourly slow warm intervals
 RECENT_TOTAL_CACHE_KEY = "recent_message_total:30"
 LISTING_CACHE_TTL_SEC = 300  # 5 minutes, trackers, pulls, stable, history
+FEED_ENTRY_LIMIT = 1000
+FEED_WINDOW_DAYS = 5
 
 # Recency floor for `latest_pull_requests` / `latest_stable_releases`.
 # Without it, an inbox that has fewer than `limit` matches forces SQLite
@@ -426,31 +428,43 @@ def recent_page(
     )
 
 
-def recent_articles(
+def feed_articles(
     session: Session,
     inbox: Inbox,
-    limit: int = 50,
-    force: bool = False,
+    *,
+    author: str = "",
+    days: int = FEED_WINDOW_DAYS,
+    limit: int = FEED_ENTRY_LIMIT,
 ) -> list[ArticleSummary]:
-    """Most-recent `limit` articles in `inbox`, ordered by date desc.
-    Cached at the listing TTL, feeds polling on 30 min+ intervals
-    always pay zero compute, since warm-cache keeps it hot.
+    """Newest feed entries inside a rolling window, including on cache hits.
 
-    No offset, pagination lives in `web._fetch_recent` which serves
-    the dashboard's "Load more" pattern; this helper is the
-    feed/Atom data source.
+    Unlike the all-history tracker helpers, this never falls back before the
+    floor. Filter cached entries again as time advances. Older replacements
+    cannot qualify once a cached entry has aged out of the window.
     """
+    floor = datetime.now(UTC) - timedelta(days=days)
 
-    def compute() -> list[ArticleSummary]:
-        return recent_page(session, inbox, 0, limit)
+    def compute():
+        # As with recent_page, a known-small inbox is cheaper to seek than
+        # the shared date window. Unknown sizes keep the bounded date walk.
+        total = cached_archive_total(inbox)
+        return _listing_rows(
+            session,
+            inbox,
+            "a.author LIKE :pattern" if author else "1",
+            {"pattern": f"%{author}%"} if author else {},
+            limit,
+            floor=floor,
+            inbox_first=total is not None and total < RECENT_INBOX_FIRST_BELOW_ARTICLES,
+        )
 
-    return cache.get_or_compute(
+    rows = cache.get_or_compute(
         session,
-        f"recent_articles:{inbox.name}:{limit}",
+        f"feed_articles:{inbox.name}:{days}:{limit}:{author}",
         LISTING_CACHE_TTL_SEC,
         compute,
-        force=force,
     )
+    return [a for a in rows if a.date is not None and aware_utc(a.date) >= floor]
 
 
 # Inbox-first: seek this inbox's `article_lists` rows, fetch each article

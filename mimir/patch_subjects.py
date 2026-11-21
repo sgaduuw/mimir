@@ -1,7 +1,6 @@
 """Shared patch identity predicates independent of web state aggregation."""
 
 from collections.abc import Iterator
-from types import SimpleNamespace
 
 from sqlalchemy import text
 
@@ -35,7 +34,7 @@ def _is_reply_to_patch(article) -> bool:
     )
 
 
-def canonical_patch(subject: str | None, position: int | None, key: str | None) -> bool:
+def is_canonical_patch(row) -> bool:
     """True when an article counts as a patch in recent postings: a patch
     subject that is not a reply whose series fields were cleared. Stored
     as `articles.canonical_patch` at every write of these three inputs,
@@ -43,10 +42,7 @@ def canonical_patch(subject: str | None, position: int | None, key: str | None) 
     `patch_bracket`, `parse_cover_letter` or
     `parse_in_series_patch_subject` therefore needs a
     `backfill-patch-series` run to refresh stored rows."""
-    row = SimpleNamespace(
-        subject=subject, patch_series_position=position, patch_series_key=key
-    )
-    return _is_patch_subject(subject) and not _is_reply_to_patch(row)
+    return _is_patch_subject(row.subject) and not _is_reply_to_patch(row)
 
 
 def canonical_patch_batches(conn, batch_size: int = 50_000) -> Iterator[list[int]]:
@@ -70,5 +66,5 @@ def canonical_patch_batches(conn, batch_size: int = 50_000) -> Iterator[list[int
         ).all()
         if not rows:
             return
-        last = rows[-1][0]
-        yield [row[0] for row in rows if canonical_patch(*row[1:])]
+        last = rows[-1].id
+        yield [row.id for row in rows if is_canonical_patch(row)]

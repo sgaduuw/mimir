@@ -2,6 +2,8 @@
 and per-reviewer Atom feeds plus autodiscovery `<link>`
 tags wired into base.html."""
 
+from freezegun import freeze_time
+
 from tests.test_routes._helpers import _ingest_one_article, _seed_author_article
 
 
@@ -47,6 +49,7 @@ def test_inbox_tracker_tile_links_to_atom(client, inbox_name):
     assert f"/{inbox_name}/author/example.com/feed.atom" in body
 
 
+@freeze_time("2024-03-02")
 def test_atom_feed_well_formed(client, inbox_name):
     """The Atom feed must:
     - parse as XML with the Atom namespace,
@@ -197,6 +200,7 @@ def test_atom_feed_author_omits_email_when_not_allowlisted(
     assert entry.find("a:author/a:email", namespaces=ns) is None
 
 
+@freeze_time("2024-06-02")
 def test_atom_feed_nameless_senders_never_named_unknown_sender(
     client,
     monkeypatch,
@@ -261,6 +265,7 @@ def test_atom_feed_nameless_senders_never_named_unknown_sender(
 # robots.txt / security.txt / sitemap.xml
 
 
+@freeze_time("2024-03-02")
 def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
     """The same cross-posted article surfaces in both /alpha/feed.atom
     and /beta/feed.atom. With canonical resolution, both feeds' entries
@@ -285,7 +290,7 @@ def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
         root = ET.fromstring(feed_xml)
         for entry in root.findall("a:entry", ns):
             link = entry.find("a:link[@rel='alternate']", ns)
-            if link is not None and link.get("href", "").endswith(f"/{art_id}"):
+            if link is not None and link.get("href", "").endswith(f"#m{art_id}"):
                 id_el = entry.find("a:id", ns)
                 return id_el.text if id_el is not None else None
         return None
@@ -306,6 +311,7 @@ def test_atom_feed_cross_post_id_is_canonical_in_either_feed(client):
 # Per-page title tags + sitemap <lastmod>
 
 
+@freeze_time("2024-06-02")
 def test_author_feed_is_well_formed_atom_with_matching_entry(
     client,
     inbox_name,

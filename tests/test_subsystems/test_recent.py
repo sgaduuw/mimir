@@ -43,11 +43,18 @@ def test_group_before_limit_and_bound_matching_preview(seeded_db):
 
 def test_hostile_numeric_subject_cannot_abort_dashboard():
     from time import monotonic
+    from types import SimpleNamespace
 
-    from mimir.patch_subjects import canonical_patch
+    from mimir.patch_subjects import is_canonical_patch
 
     start = monotonic()
-    assert not canonical_patch("[RFC " + "9" * 5000 + "/6] title", None, None)
+    assert not is_canonical_patch(
+        SimpleNamespace(
+            subject="[RFC " + "9" * 5000 + "/6] title",
+            patch_series_position=None,
+            patch_series_key=None,
+        )
+    )
     assert monotonic() - start < 2
 
 
