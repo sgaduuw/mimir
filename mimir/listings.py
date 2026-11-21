@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from mimir import cache
 from mimir.datetime_utils import coerce_dt
 from mimir.models import Inbox
-from mimir.patch_subjects import _is_patch_subject, _is_reply_to_patch
+from mimir.patch_subjects import is_canonical_patch
 from mimir.pull_requests import is_pull_subject
 from mimir.threading import (
     ACTIVE_THREADS_CACHE_TTL_SEC,
@@ -165,11 +165,7 @@ def filter_threads(rows: list[ListingThread], selected: str) -> list[ListingThre
     if selected == "all":
         return rows
     if selected == "patches":
-        return [
-            r
-            for r in rows
-            if _is_patch_subject(r.subject) and not _is_reply_to_patch(r)
-        ]
+        return [r for r in rows if is_canonical_patch(r)]
     if selected == "unanswered":
         return [r for r in rows if r.reply_count == 0]
     if selected == "pulls":

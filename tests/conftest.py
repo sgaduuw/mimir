@@ -63,7 +63,24 @@ TEST_INBOX_SECONDARY = "beta"
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _migrate_db():
+def _reject_python_sql_callbacks():
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+
+    from tests._helpers import PYTHON_SQL_CALLBACK
+
+    def reject(conn, cursor, statement, parameters, context, executemany):
+        assert not PYTHON_SQL_CALLBACK.search(statement), (
+            f"Python SQL callback: {statement}"
+        )
+
+    event.listen(Engine, "before_cursor_execute", reject)
+    yield
+    event.remove(Engine, "before_cursor_execute", reject)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _migrate_db(_reject_python_sql_callbacks):
     """alembic upgrade head once for the whole test session."""
     from alembic.config import Config
 
