@@ -17,6 +17,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- Subsystem and maintainer directories show all 27 initial buckets in a stable grid. Empty buckets are muted text, while occupied buckets remain links (#1208).
+
 - Inbox and author feeds reuse their canonical links for up to five minutes, including when warmed by the scheduler. New listing entries and thread page-size changes refresh the links immediately, while expired entries still leave the five-day window on each request. HTTP caches receive only that snapshot's remaining lifetime (#1230).
 
 ### Added

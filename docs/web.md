@@ -89,7 +89,9 @@ with seven-day message counts, proportional bars, maintainer summaries and
 last-activity dates. Its columns stack on phones. It can be empty before a
 slow cache-warming pass; a request never runs the activity aggregation.
 The global `/subsystems/` and `/maintainers/` directories include quiet entries
-and split by initial. Both landing pages offer search across all letters by
+and split by initial. Every directory page shows A to Z plus # in a stable grid.
+Occupied initials are links; empty initials are muted text and have no page.
+Both landing pages offer search across all letters by
 name or visible maintainer address. Search results show up to 200 matches and
 ask readers to refine larger searches. They are noindex with the directory root
 as canonical. Search queries on letter URLs redirect to the directory-wide

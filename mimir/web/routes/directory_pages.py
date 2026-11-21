@@ -140,9 +140,9 @@ def _directory(kind: str, letter: str | None):
                 "letter": value,
                 "label": "#" if value == "other" else value.upper(),
                 "path": path_for(value),
+                "occupied": value in occupied,
             }
             for value in DIRECTORY_LETTERS
-            if value in occupied
         ],
         show_rows=letter is not None or searching,
         query=query,

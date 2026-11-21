@@ -760,6 +760,8 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
             }
         )
     session.commit()
+    assert {name[0] for name in names} == {"A"}
+    assert {row["name"][0] for row in maintainers} == {"A"}
     subsystem_rows = [
         {
             "name": name,
@@ -783,6 +785,39 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
+
+    def check_strip(page):
+        strip = page.locator(".directory-letters")
+        expect(strip.locator(":scope > *")).to_have_count(27)
+        expect(strip.get_by_role("link")).to_have_count(1)
+        expect(strip.locator('span[aria-disabled="true"]')).to_have_count(26)
+        assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        boxes = strip.evaluate("""nav => {
+          const muted = document.createElement('span');
+          muted.style.color = 'var(--pico-muted-color)';
+          nav.append(muted);
+          const expectedColor = getComputedStyle(muted).color;
+          muted.remove();
+          const origin = nav.getBoundingClientRect();
+          return Array.from(nav.children, el => {
+            const box = el.getBoundingClientRect();
+            return {x:box.x-origin.x, y:box.y-origin.y, width:box.width, height:box.height,
+              muted:el.tagName !== 'SPAN' || getComputedStyle(el).color === expectedColor};
+          });
+        }""")
+        assert all(b["width"] >= 44 and b["height"] >= 44 and b["muted"] for b in boxes)
+        assert max(b["width"] for b in boxes) - min(b["width"] for b in boxes) < 1
+        assert max(b["height"] for b in boxes) - min(b["height"] for b in boxes) < 1
+        rows = {}
+        for box in boxes:
+            rows.setdefault(round(box["y"]), []).append(round(box["x"]))
+        first = next(iter(rows.values()))
+        assert all(row == first[: len(row)] for row in rows.values()), rows
+        return [
+            (round(b["x"]), round(b["y"]), round(b["width"]), round(b["height"]))
+            for b in boxes
+        ]
+
     try:
         with playwright.sync_playwright() as p, p.chromium.launch() as browser:
             for kind, query, active_name in (
@@ -796,6 +831,7 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
                         )
                         blocked = block_external_requests(page, base)
                         page.goto(base + f"/{kind}/")
+                        landing_boxes = check_strip(page)
                         search = page.get_by_role(
                             "searchbox", name="Search all " + kind
                         )
@@ -815,6 +851,10 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
                         page.goto(base + f"/{kind}/")
                         page.get_by_role("link", name="A", exact=True).click()
                         expect(page).to_have_url(base + f"/{kind}/a/")
+                        assert check_strip(page) == landing_boxes
+                        expect(
+                            page.locator('.directory-letters a[aria-current="page"]')
+                        ).to_have_text("A")
                         table = page.locator(".directory-table")
                         rows = table.locator("tbody tr")
                         expect(rows).to_have_count(3)
