@@ -11,7 +11,11 @@ from sqlalchemy import delete, event, select
 
 from mimir import cache
 from mimir.config import settings
-from mimir.dashboard import RECENT_INBOX_FIRST_BELOW_ARTICLES, feed_articles
+from mimir.dashboard import (
+    LISTING_CACHE_TTL_SEC,
+    RECENT_INBOX_FIRST_BELOW_ARTICLES,
+    feed_articles,
+)
 from mimir.extensions import SessionLocal
 from mimir.models import Article, ArticleList, Inbox
 from mimir.web.urls import _canonical_destinations_for
@@ -66,13 +70,17 @@ def test_feed_link_matches_message_canonical_and_real_anchor(
     assert checked == 7
 
 
-@freeze_time("2024-01-02 12:00:00")
-def test_warm_feed_tracks_root_and_page_changes(client, tmp_path, monkeypatch):
+@pytest.mark.parametrize("change_cap", [False, True])
+def test_warm_feed_tracks_root_and_page_changes(
+    client, tmp_path, monkeypatch, frozen_clock, change_cap
+):
+    frozen_clock.move_to("2024-01-02 12:00:00")
     monkeypatch.setattr(settings, "thread_view_render_cap", 2)
     seeded = build_thread(tmp_path, "alpha", size=7)
     aid, message_url = seeded["m6"]
     assert client.get(message_url).status_code == 200
-    first_response = client.get("/alpha/feed.atom")
+    with cache.warm_window(7200):
+        first_response = client.get("/alpha/feed.atom")
     first = entries(first_response)[aid]
     assert cache.get("feed_articles:alpha:5:1000:") is not None
     assert link(first).endswith(f"/t/4#m{aid}")
@@ -88,7 +96,12 @@ def test_warm_feed_tracks_root_and_page_changes(client, tmp_path, monkeypatch):
             if member.article_id in {row[0] for row in seeded.values()}:
                 member.thread_root_id = new_root.id
         session.commit()
-    monkeypatch.setattr(settings, "thread_view_render_cap", 3)
+    if change_cap:
+        monkeypatch.setattr(settings, "thread_view_render_cap", 3)
+    else:
+        assert link(entries(client.get("/alpha/feed.atom"))[aid]) == link(first)
+        frozen_clock.tick(timedelta(seconds=LISTING_CACHE_TTL_SEC + 1))
+        assert cache.get("feed_articles:alpha:5:1000:") is not None
     # Leave listing and message caches warm. There are no feed validators.
     # conditional headers must not hide the changed destination behind 304.
     response = client.get(
@@ -100,7 +113,8 @@ def test_warm_feed_tracks_root_and_page_changes(client, tmp_path, monkeypatch):
     )
     second = entries(response)[aid]
     assert link(second) != link(first)
-    assert link(second).endswith(f"/{seeded['m1'][0]}/t/3#m{aid}")
+    page = 3 if change_cap else 4
+    assert link(second).endswith(f"/{seeded['m1'][0]}/t/{page}#m{aid}")
     assert second.findtext("a:id", namespaces=NS) == first.findtext(
         "a:id", namespaces=NS
     )
@@ -199,15 +213,19 @@ def test_feed_caps_at_newest_thousand(client, frozen_clock, suffix, one_thread):
 
 
 @pytest.mark.parametrize("suffix", ["", "/author/feed@example"])
-def test_warm_feed_omits_entry_removed_by_reindex_reset(client, frozen_clock, suffix):
+def test_warm_feed_omits_reindexed_entry_after_link_ttl(client, frozen_clock, suffix):
     ids = seed_dates([datetime.now(UTC), datetime.now(UTC) - timedelta(seconds=1)])
     path = f"/alpha{suffix}/feed.atom"
-    assert list(entries(client.get(path))) == ids
+    with cache.warm_window(7200):
+        assert list(entries(client.get(path))) == ids
     key = f"feed_articles:alpha:5:1000:{'feed@example' if suffix else ''}"
     assert cache.get(key) is not None
     with SessionLocal() as session:
         session.execute(delete(ArticleList).where(ArticleList.article_id == ids[0]))
         session.commit()
+    assert list(entries(client.get(path))) == ids
+    frozen_clock.tick(timedelta(seconds=LISTING_CACHE_TTL_SEC + 1))
+    assert cache.get(key) is not None
     response = client.get(path)
     assert list(entries(response)) == [ids[1]]
 

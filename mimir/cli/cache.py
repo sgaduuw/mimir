@@ -20,7 +20,6 @@ from mimir.dashboard import (
     archive_stats,
     author_recent,
     daily_volume,
-    feed_articles,
     latest_pull_requests,
     latest_stable_releases,
     recent_message_total,
@@ -87,6 +86,8 @@ def _build_fast_inbox_targets(inbox: Inbox) -> list[tuple[str, object]]:
     DATE, and edges cache the response for 300 s, so warming one on a
     per-minute tick cannot make the output any fresher than warming it
     hourly. It only decided which minute paid the rebuild."""
+    from mimir.seo.feed_data import feed_data
+
     targets: list[tuple[str, object]] = [
         (f"{inbox.name} archive_stats", lambda s, ib=inbox: archive_stats(s, ib)),
         (
@@ -101,7 +102,7 @@ def _build_fast_inbox_targets(inbox: Inbox) -> list[tuple[str, object]]:
         # deliberately retain their all-history contract.
         (
             f"{inbox.name} feed_articles ({FEED_ENTRY_LIMIT})",
-            lambda s, ib=inbox: feed_articles(s, ib),
+            lambda s, ib=inbox: feed_data(s, ib),
         ),
     ]
     return targets
@@ -132,6 +133,8 @@ def _build_slow_inbox_targets(
     for `threads_for_day` includes the date; the scheduler computes
     them once per cycle to keep both inbox-level calls aligned.
     """
+    from mimir.seo.feed_data import feed_data
+
     targets: list[tuple[str, object]] = [
         (
             f"{inbox.name} active_threads (7d, 10)",
@@ -196,7 +199,7 @@ def _build_slow_inbox_targets(
         targets.append(
             (
                 f"{inbox.name} tracker:{label} (feed)",
-                lambda s, ib=inbox, sub=substr: feed_articles(s, ib, author=sub),
+                lambda s, ib=inbox, sub=substr: feed_data(s, ib, author=sub),
             )
         )
     if sitemap_base:

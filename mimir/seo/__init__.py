@@ -1,4 +1,4 @@
-"""SEO output, split across three submodules:
+"""SEO output, split across submodules:
 
 - `sitemaps`: `/sitemap.xml`, `/meta-sitemap.xml`, `/<inbox>/sitemap.xml`,
   `/sitemap-maintainers.xml`, `/sitemap-series-diffs-<h>.xml` and the
@@ -6,6 +6,8 @@
 - `json_ld`: schema.org payload builders, one per page shape (index,
   inbox, message, search, author).
 - `atom`: Atom 1.0 feed renderer used by per-inbox and per-author feeds.
+- `feed_data`: bounded listings and cached canonical destinations shared by
+  feeds and their warm targets.
 
 A few JSON-LD / Atom helpers reach back into `mimir.web` for the
 shared display filters (`_msg_url`, `_usable_display_name`,

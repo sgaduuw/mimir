@@ -11,13 +11,12 @@ from flask import abort
 
 from mimir._inbox_name import inbox_path
 from mimir.config import settings
-from mimir.dashboard import feed_articles
 from mimir.extensions import SessionLocal
 from mimir.seo import atom_response
+from mimir.seo.feed_data import feed_data
 from mimir.web._blueprint import bp_web
 from mimir.web.routes.search import SEARCH_QUERY_MAX_LEN, SEARCH_QUERY_MIN_LEN
 from mimir.web.urls import (
-    _canonical_destinations_for,
     _get_inbox_or_404,
     _site_base,
 )
@@ -28,8 +27,7 @@ def inbox_feed(inbox_name: str):
     """Atom feed of the most-recent messages in an inbox."""
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        entries = feed_articles(session, inbox)
-        destinations = _canonical_destinations_for(session, entries)
+        entries, entry_urls, canonical_names, expires_at = feed_data(session, inbox)
 
     base = _site_base() + "/"
     return atom_response(
@@ -40,10 +38,9 @@ def inbox_feed(inbox_name: str):
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
-        canonical_inbox_by_article={
-            aid: d.inbox_name for aid, d in destinations.items()
-        },
-        entry_urls={aid: d.url for aid, d in destinations.items()},
+        canonical_inbox_by_article=canonical_names,
+        entry_urls=entry_urls,
+        link_expires_at=expires_at,
     )
 
 
@@ -57,8 +54,9 @@ def author_feed(inbox_name: str, sub: str):
         abort(404)
     with SessionLocal() as session:
         inbox = _get_inbox_or_404(session, inbox_name)
-        entries = feed_articles(session, inbox, author=sub)
-        destinations = _canonical_destinations_for(session, entries)
+        entries, entry_urls, canonical_names, expires_at = feed_data(
+            session, inbox, author=sub
+        )
 
     base = _site_base() + "/"
     sub_quoted = quote(sub, safe="")
@@ -70,8 +68,7 @@ def author_feed(inbox_name: str, sub: str):
         entries=entries,
         inbox_name=inbox.name,
         base_url=base,
-        canonical_inbox_by_article={
-            aid: d.inbox_name for aid, d in destinations.items()
-        },
-        entry_urls={aid: d.url for aid, d in destinations.items()},
+        canonical_inbox_by_article=canonical_names,
+        entry_urls=entry_urls,
+        link_expires_at=expires_at,
     )

@@ -17,6 +17,7 @@ avoid an import-time cycle.
 """
 
 from datetime import UTC, datetime
+from time import time
 from xml.etree.ElementTree import Element, SubElement, tostring
 
 from flask import Response
@@ -41,6 +42,7 @@ def atom_response(
     base_url: str,
     canonical_inbox_by_article: dict[int, str] | None = None,
     entry_urls: dict[int, str],
+    link_expires_at: int,
 ) -> Response:
     """Render an Atom 1.0 feed from a list of `ArticleSummary`. Uses
     stdlib ElementTree, no extra dep. Emits redacted authors via the
@@ -114,4 +116,8 @@ def atom_response(
     body = '<?xml version="1.0" encoding="utf-8"?>\n' + tostring(
         feed, encoding="unicode"
     )
-    return Response(body, mimetype="application/atom+xml; charset=utf-8")
+    response = Response(body, mimetype="application/atom+xml; charset=utf-8")
+    # Downstream caches get only the link snapshot's remaining lifetime.
+    response.cache_control.public = True
+    response.cache_control.max_age = max(0, int(link_expires_at - time()))
+    return response

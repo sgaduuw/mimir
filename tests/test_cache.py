@@ -1342,19 +1342,65 @@ def test_cache_set_in_broker_drops_oversized_value(
     assert row is None
 
 
-def test_only_broker_warm_handlers_enter_the_warm_window():
-    """`get_or_compute`'s probabilistic-refresh branch is guarded by a
-    comment saying it "is never reached outside the warm-cache cycle
-    (window is None by default)". That is a claim about who enters
-    `cache.warm_window`, not about `get_or_compute`, so pin it where
-    it can be violated.
+def _enables_warm_window(source: str) -> bool:
+    import ast
 
-    If a request-path module ever wraps work in `warm_window`, hot
-    reads start recomputing still-fresh rows inline (the exact cost the
-    warm cycle exists to keep off the request path), and the comment
-    goes quietly wrong."""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        name = (
+            node.func.id
+            if isinstance(node.func, ast.Name)
+            else node.func.attr
+            if isinstance(node.func, ast.Attribute)
+            else None
+        )
+        if name != "warm_window":
+            continue
+        clears_window = (
+            len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value is None
+            and not node.keywords
+        )
+        if not clears_window:
+            return True
+    return False
+
+
+@pytest.mark.parametrize(
+    ("source", "enabled"),
+    [
+        ("cache.warm_window(None)", False),
+        ("warm_window(None)", False),
+        ("# cache.warm_window(600)", False),
+        ('"cache.warm_window(600)"', False),
+        ("other_warm_window(600)", False),
+        ("cache.warm_window(600)", True),
+        ("cache.warm_window(False)", True),
+        ("cache.warm_window(0)", True),
+        ("warm_window(value)", True),
+        ("cache.warm_window(None or 600)", True),
+        ("cache.warm_window(*args)", True),
+        ("cache.warm_window(**kwargs)", True),
+        ("cache.warm_window(None, **kwargs)", True),
+        ("cache.warm_window()", True),
+        ("cache.warm_window(seconds=600)", True),
+        ("cache.warm_window(None)\ncache.warm_window(600)", True),
+    ],
+)
+def test_warm_window_guard_distinguishes_clearing_from_activation(source, enabled):
+    assert _enables_warm_window(source) is enabled
+
+
+def test_only_broker_warm_handlers_enter_the_warm_window():
+    """Only broker warm cycles may activate probabilistic inline refresh.
+
+    A request path enabling a non-None warm window could recompute still-fresh
+    rows inline. Explicitly clearing the window with None does not activate
+    refresh and is safe for values with a hard expiry.
+    """
     import pathlib
-    import re
 
     root = pathlib.Path(__file__).resolve().parent.parent / "mimir"
     allowed = {root / "cache.py", root / "broker" / "handlers" / "warm.py"}
@@ -1362,15 +1408,12 @@ def test_only_broker_warm_handlers_enter_the_warm_window():
     for path in root.rglob("*.py"):
         if path in allowed:
             continue
-        # Match the context call, not an unrelated longer helper name.
-        if re.search(
-            r"(?<![A-Za-z0-9_])warm_window\(", path.read_text(encoding="utf-8")
-        ):
+        if _enables_warm_window(path.read_text(encoding="utf-8")):
             offenders.append(str(path))
     assert not offenders, (
-        "cache.warm_window may only be entered by the broker's warm "
-        "handlers; anywhere else makes get_or_compute's "
-        f"'window is None outside the warm cycle' comment false: {offenders}"
+        "cache.warm_window may only be enabled by the broker's warm "
+        "handlers. Other callers must explicitly clear it with None: "
+        f"{offenders}"
     )
 
 

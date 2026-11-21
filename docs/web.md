@@ -160,6 +160,11 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 Atom entry links name the canonical thread page containing the message, including
 its page number and message anchor. Entry IDs stay stable when thread links change.
 Unrepaired threads use the message page until their thread membership is complete.
+Feed destinations are cached for at most five minutes. Root repairs or removed
+inbox memberships can remain visible for that interval. Newly listed entries
+and thread page-size changes trigger a fresh link snapshot. The HTTP max-age is
+limited to the link snapshot's remaining lifetime, so downstream caching cannot
+add another five-minute window.
 
 Release history follows the previous-final to final Git reachability range,
 not commit timestamps. Annotated tags supply their tagger date; lightweight
