@@ -11,13 +11,15 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
-### Fixed
-
-- Cyclic message parents no longer expand the thread tree through the recursion limit or corrupt reply indentation. Ingest and replay ignore self-parent references, and a one-off broker startup migration clears existing exact self-parent edges without changing inbox membership or thread roots (#1238).
+## [5.5.0] - 2026-11-22
 
 ### Added
 
 - Cross-inbox Atom feeds for current maintainers include mailmap sender aliases and are advertised on their profiles. Feeds contain up to 1,000 messages sent in the last five days, with cross-posts shown once (#1237).
+
+### Fixed
+
+- Cyclic message parents no longer expand the thread tree through the recursion limit or corrupt reply indentation. Ingest and replay ignore self-parent references, and a one-off broker startup migration clears existing exact self-parent edges without changing inbox membership or thread roots (#1238).
 
 ## [5.4.0] - 2026-11-21
 
@@ -6923,7 +6925,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.4.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.5.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
