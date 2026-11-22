@@ -5,7 +5,7 @@
   archive pages (XML rendering + per-inbox-latest helper).
 - `json_ld`: schema.org payload builders, one per page shape (index,
   inbox, message, search, author).
-- `atom`: Atom 1.0 feed renderer used by per-inbox and per-author feeds.
+- `atom`: Atom 1.0 feed renderer used by inbox, author and maintainer feeds.
 - `feed_data`: bounded listings and cached canonical destinations shared by
   feeds and their warm targets.
 

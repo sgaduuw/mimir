@@ -5,6 +5,9 @@
 {% from "_breadcrumb.html" import breadcrumb %}
 {% set crumbs = [(site_name, url_for('web.index')), ('Maintainers', maintainer_directory_path()), (display_name, none)] %}
 {% block title %}{{ display_name }} | Maintainers | {{ site_name }}{% endblock %}
+{% block extra_atom_feeds %}
+<link rel="alternate" type="application/atom+xml" title="{{ display_name }}" href="{{ maintainer_feed_url }}">
+{% endblock %}
 {% block meta_description %}MAINTAINERS entry and cross-inbox review activity for {{ display_name }}.{% endblock %}
 {% block content %}
 <section class="maintainer-profile">
@@ -14,7 +17,7 @@
     <span class="avatar maintainer-initials" aria-hidden="true">{{ (words[0][0] ~ (words[-1][0] if words|length > 1 else ''))|upper }}</span>
     <div>
       <h1>{{ display_name }}</h1>
-      <p><code>{{ profile.address }}</code> · Maintainer of {{ profile.subsystems|length }} subsystem{{ '' if profile.subsystems|length == 1 else 's' }} · Reviews seen in {{ review_inboxes|length }} inbox{{ '' if review_inboxes|length == 1 else 'es' }}</p>
+      <p><code>{{ profile.address }}</code> · Maintainer of {{ profile.subsystems|length }} subsystem{{ '' if profile.subsystems|length == 1 else 's' }} · Reviews seen in {{ review_inboxes|length }} inbox{{ '' if review_inboxes|length == 1 else 'es' }} · <a href="{{ maintainer_feed_url }}">Atom feed</a></p>
     </div>
   </header>
 
