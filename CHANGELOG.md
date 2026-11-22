@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Cross-inbox Atom feeds for current maintainers include mailmap sender aliases and are advertised on their profiles. Feeds contain up to 1,000 messages sent in the last five days, with cross-posts shown once (#1237).
+
 ## [5.4.0] - 2026-11-21
 
 No migration, no backfill and no cache version bump.
