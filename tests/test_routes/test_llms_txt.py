@@ -97,9 +97,9 @@ def test_llms_txt_urls_use_the_configured_site_base_verbatim(client, monkeypatch
     body = client.get("/llms.txt").get_data(as_text=True)
     assert body.startswith("# Lists & <Co>\n"), body[:40]
     urls = re.findall(r"https?://[^\s)`]+", body)
-    # Three shapes in two forms, the subsystem and maintainer shapes, two
+    # Three shapes in two forms, the subsystem, maintainer and feed shapes, two
     # inboxes, home, merge window, the sitemap and privacy.
-    assert len(urls) == 6 + 2 + 2 + 1 + 1 + 1 + 1, urls
+    assert len(urls) == 6 + 3 + 2 + 1 + 1 + 1 + 1, urls
     assert all(u.startswith("https://lists.example.org/a&b/") for u in urls), urls
     assert "localhost" not in body and "&amp;" not in body
 
@@ -217,12 +217,18 @@ def test_llms_txt_page_links_answer_200_and_shapes_have_routes(client):
         for line in lines
         if not line.startswith("- [")
     ]
-    assert shapes == ["/<inbox>/subsystems/", "/maintainers/<address>"]
+    assert shapes == [
+        "/<inbox>/subsystems/",
+        "/maintainers/<address>",
+        "/maintainers/<address>/feed.atom",
+    ]
     adapter = client.application.url_map.bind("localhost")
     for shape in shapes:
         path = shape.replace("<inbox>", "alpha").replace("<address>", "a@b.example")
         # The route exists; the page behind a made-up address may still 404.
-        adapter.match(path)
+        endpoint, _ = adapter.match(path)
+        if shape.endswith("/feed.atom"):
+            assert endpoint == "web.maintainer_feed"
 
 
 def test_llms_txt_optional_section_holds_sitemap_and_privacy(client):

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.orm import Session
 
@@ -15,6 +16,8 @@ from mimir.dashboard import (
     feed_articles,
 )
 from mimir.datetime_utils import aware_utc
+from mimir.mailmap import identity_addresses, rules_version
+from mimir.maintainer_feed import maintainer_feed_articles
 from mimir.models import Inbox
 
 
@@ -33,14 +36,53 @@ def feed_data(
     cache rows, so root repairs and removed memberships age out predictably.
     """
     entries = feed_articles(session, inbox, author=author, days=days, limit=limit)
+    return _feed_link_snapshot(
+        session, entries, f"feed_links:v1:{inbox.name}:{days}:{limit}", author
+    )
+
+
+def maintainer_feed_data(
+    session: Session,
+    address: str,
+    *,
+    days: int = FEED_WINDOW_DAYS,
+    limit: int = FEED_ENTRY_LIMIT,
+) -> tuple[list[ArticleSummary], dict[int, str], dict[int, str], int]:
+    """Cache exact sender identities and destinations under the loaded rules."""
+    address = address.lower()
+    version = rules_version(session)
+    floor = datetime.now(UTC) - timedelta(days=days)
+
+    def compute() -> list[ArticleSummary]:
+        return maintainer_feed_articles(
+            session, identity_addresses(session, address), floor, limit
+        )
+
+    rows = cache.get_or_compute(
+        session,
+        f"maintainer_feed_articles:v1:{days}:{limit}:{version}:{address}",
+        LISTING_CACHE_TTL_SEC,
+        compute,
+    )
+    entries = [
+        article
+        for article in rows
+        if article.date is not None and aware_utc(article.date) >= floor
+    ]
+    return _feed_link_snapshot(
+        session, entries, f"maintainer_feed_links:v1:{days}:{limit}:{version}", address
+    )
+
+
+def _feed_link_snapshot(
+    session: Session, entries: list[ArticleSummary], key_prefix: str, identity: str
+) -> tuple[list[ArticleSummary], dict[int, str], dict[int, str], int]:
+    """Keep link staleness bounded independently of generic cache warming."""
     signature = [(a.id, aware_utc(a.date).isoformat()) for a in entries]
     policy = hashlib.sha256(
         json.dumps(sorted(settings.canonical_demoted_inboxes)).encode()
     ).hexdigest()
-    key = (
-        f"feed_links:v1:{inbox.name}:{days}:{limit}:"
-        f"{settings.thread_view_render_cap}:{policy}:{author}"
-    )
+    key = f"{key_prefix}:{settings.thread_view_render_cap}:{policy}:{identity}"
     saved = cache.get(key)
     if (
         saved is None

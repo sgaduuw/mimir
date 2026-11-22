@@ -28,6 +28,7 @@ Every message and thread page has a Markdown version at the same URL plus `.md`,
 - [Merge window]({{ site_base }}{{ merge_window_path }}): patches in linux-next that Linus's tree does not have yet, grouped by subsystem.
 - `{{ site_base }}{{ subsystem_index_shape }}`: the subsystems active in one list, each with its own dashboard of recent patches, threads and reviewers.
 - `{{ site_base }}/maintainers/<address>`: a maintainer's profile, with what they maintain and the lists where they review.
+- `{{ site_base }}/maintainers/<address>/feed.atom`: messages sent by a maintainer across inboxes, including mailmap aliases, up to 1,000 entries from five days.
 
 ## Optional
 
