@@ -28,7 +28,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from mimir import cache
-from mimir.mailmap import identity_addresses, rules_version
+from mimir.mailmap import canonical_address, identity_addresses, rules_version
 from mimir.models import (
     ArticleList,
     ArticleTrailer,
@@ -235,6 +235,22 @@ def maintainer_profile(
         compute,
         force=force,
     )
+
+
+def resolve_maintainer_profile(
+    session: Session, address: str
+) -> MaintainerProfile | None:
+    """Resolve a supported live M: profile, then a retired mailmap alias."""
+    if not is_addressable_maintainer_address(address):
+        return None
+    address = address.lower()
+    profile = maintainer_profile(session, address)
+    if profile is not None:
+        return profile
+    mapped = canonical_address(session, address)
+    if mapped is not None and is_addressable_maintainer_address(mapped):
+        return maintainer_profile(session, mapped)
+    return None
 
 
 def maintainer_review_counts_query(session: Session, address: str) -> dict[str, int]:

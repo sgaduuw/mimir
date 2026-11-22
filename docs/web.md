@@ -114,6 +114,13 @@ Counts cover all indexed review-trailer events: multiple roles on one message
 count separately, and cross-posts contribute to each inbox. They are not counts
 of unique patches or people.
 
+Profiles also advertise an Atom feed of messages sent by that maintainer across
+configured inboxes. Exact parsed From addresses include kernel mailmap aliases;
+cross-posts appear once. Review trailers are excluded. Feed entries and canonical
+links share the existing listing cache lifetime, and HTTP caches receive the
+link snapshot's remaining lifetime. Retired aliases redirect to the live profile's
+feed. Feeds stay outside the sitemaps.
+
 ## Page and feed reference
 
 All entries below are GET routes. `<inbox>` is its configured name; `<id>` is
@@ -155,6 +162,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page; page 1 first shows the release's pull requests to Linus and groups the messages by primary subsystem |
 | `/<inbox>/feed.atom` | Inbox Atom feed, newest 1,000 messages from the last five days |
 | `/<inbox>/author/<substring>/feed.atom` | Author Atom feed with the same five-day window and 1,000-entry cap |
+| `/maintainers/<address>/feed.atom` | Cross-inbox maintainer Atom feed, exact sender address and mailmap aliases, newest 1,000 messages from the last five days |
 | `/api/<inbox>/recent?offset=N` | HTML partial for loading more recent messages; offset capped at 1,000 |
 | `/api/<inbox>/metadata/<id>` | HTML partial: per-message status, subsystem attribution, revisions and related content, reached from thread cards; `noindex`, `no-store` |
 | `/api/<inbox>/related/<id>` | HTML partial: other recent patches touching the same files, loaded when a patch is opened in a thread page's Patches tab; `noindex` |

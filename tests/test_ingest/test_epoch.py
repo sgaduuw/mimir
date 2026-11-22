@@ -2115,7 +2115,7 @@ def test_commit_cadence_time_cap_fires_on_steady_state_hot_inbox(
 
 
 # ---------------------------------------------------------------------------
-# thread_parent fallback to References[-1] when In-Reply-To absent
+# thread_parent fallback to the last non-self reference
 # (CONTEXT.md "Threading via recursive CTE")
 # ---------------------------------------------------------------------------
 
@@ -2147,9 +2147,7 @@ def test_thread_parent_falls_back_to_references_last_when_in_reply_to_missing(
     seeded_db, tmp_path, broker_active
 ):
     """`Article.thread_parent` is computed at ingest as
-    `in_reply_to OR references[-1]` (mimir/ingest/epoch.py:230). The
-    fallback to `references[-1]` recovers ~67k orphans on the lkml
-    corpus per CONTEXT.md "Threading via recursive CTE": some
+    non-self In-Reply-To or the last non-self reference. Some
     mailing-list software strips `In-Reply-To:` but keeps
     `References:`. Without the fallback `find_thread_root` would walk
     no further than the message itself and threads would fragment.
@@ -2712,3 +2710,35 @@ def test_ingest_handles_dash_zero_zero_zero_zero_date_alongside_aware(
     assert obs_count == 2, (
         f"observation tally must accumulate across both messages; got {obs_count}"
     )
+
+
+@pytest.mark.parametrize(
+    "in_reply_to,references,expected",
+    [
+        ("self@x", [], None),
+        (None, ["self@x"], None),
+        ("self@x", ["ancestor@x", "self@x"], "ancestor@x"),
+        (None, ["ancestor@x", "self@x", "self@x"], "ancestor@x"),
+        ("parent@x", ["ancestor@x", "self@x"], "parent@x"),
+        (None, ["self@x", "parent@x"], "parent@x"),
+    ],
+)
+def test_article_insert_ignores_own_message_id_as_parent(
+    in_reply_to, references, expected
+):
+    from mimir.ingest.epoch import _to_article_insert
+    from mimir.parser import parse_message
+
+    parsed = parse_message(
+        _rfc5322(
+            "self@x",
+            in_reply_to=in_reply_to,
+            references="> <".join(references) if references else None,
+        )
+    )
+    assert parsed.in_reply_to == in_reply_to
+    assert parsed.references == references
+    article = _to_article_insert(parsed, datetime(2024, 1, 1, tzinfo=UTC))
+    assert article.thread_parent == expected
+    assert parsed.in_reply_to == in_reply_to
+    assert parsed.references == references

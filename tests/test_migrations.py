@@ -807,3 +807,61 @@ def test_canonical_patch_fill_commits_per_batch_and_a_rerun_completes(tmp_path):
     result = _alembic(db, "head")
     assert result.returncode == 0, result.stderr[-2000:]
     assert _canonical_column(db) == want
+
+
+def test_self_parent_repair_preserves_other_edges_and_memberships(tmp_path):
+    db = tmp_path / "self-parents.db"
+    parent = "b7e41d0c9a26"
+    result = _alembic(db, parent)
+    assert result.returncode == 0, result.stderr
+    _seed(db, rows=5)
+    with sqlite3.connect(db) as conn:
+        conn.executemany(
+            "UPDATE articles SET thread_parent=? WHERE id=?",
+            [("m1@x", 1), ("m1@x", 2), (None, 3), ("m5@x", 4), ("m4@x", 5)],
+        )
+        conn.executemany(
+            "UPDATE article_lists SET thread_root_id=? WHERE article_id=?",
+            [(1, 1), (1, 2), (3, 3), (4, 4), (4, 5)],
+        )
+        memberships = conn.execute(
+            "SELECT * FROM article_lists ORDER BY article_id"
+        ).fetchall()
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM articles WHERE thread_parent=message_id"
+            ).fetchone()[0]
+            == 1
+        )
+    result = _alembic(db, "head")
+    assert result.returncode == 0, result.stderr
+    expected = [(1, None), (2, "m1@x"), (3, None), (4, "m5@x"), (5, "m4@x")]
+    with sqlite3.connect(db) as conn:
+        assert (
+            conn.execute("SELECT id,thread_parent FROM articles ORDER BY id").fetchall()
+            == expected
+        )
+        assert (
+            conn.execute("SELECT * FROM article_lists ORDER BY article_id").fetchall()
+            == memberships
+        )
+    for target, command in [
+        ("head", "upgrade"),
+        (parent, "downgrade"),
+        ("head", "upgrade"),
+    ]:
+        result = _alembic(db, target, command)
+        assert result.returncode == 0, result.stderr
+        with sqlite3.connect(db) as conn:
+            assert (
+                conn.execute(
+                    "SELECT id,thread_parent FROM articles ORDER BY id"
+                ).fetchall()
+                == expected
+            )
+            assert (
+                conn.execute(
+                    "SELECT * FROM article_lists ORDER BY article_id"
+                ).fetchall()
+                == memberships
+            )
