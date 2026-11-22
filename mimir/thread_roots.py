@@ -264,8 +264,8 @@ def find_incoherent_roots(session: Session, inbox, limit: int = 20) -> list[dict
     `find_thread_root` (which is why the sampling verifier has to treat
     cycles specially and this one does not).
 
-    Nor do self-parents, of which production had 1,360 when last
-    measured. `p.id != a.id` is belt-and-braces there rather than
+    Nor do stored legacy self-parents. `p.id != a.id` is belt-and-braces
+    there rather than
     load-bearing: a self-referential `In-Reply-To` resolves `p` to `a`
     and therefore `pal` to `al`, so the comparison is a row against
     itself and is false whatever the root is. The guard is kept for

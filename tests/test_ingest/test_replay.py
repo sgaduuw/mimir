@@ -522,6 +522,30 @@ _PATCH_BODY = (
             ),
             id="patch-with-diff-and-review-trailers",
         ),
+        pytest.param(
+            b"Re: thread title",
+            "{self}",
+            None,
+            b"x",
+            lambda st: st["thread_parent"] is None,
+            id="self-in-reply-to",
+        ),
+        pytest.param(
+            b"Re: thread title",
+            None,
+            "{self}",
+            b"x",
+            lambda st: st["thread_parent"] is None,
+            id="self-references",
+        ),
+        pytest.param(
+            b"Re: thread title",
+            "{self}",
+            _PARENT + "> <{self}",
+            b"x",
+            lambda st: st["thread_parent"] == _PARENT,
+            id="self-parent-with-real-reference",
+        ),
     ],
 )
 def test_replay_derives_the_same_fields_as_real_ingest(
@@ -545,7 +569,10 @@ def test_replay_derives_the_same_fields_as_real_ingest(
 
     def raw(msgid: str) -> bytes:
         return _rfc5322(
-            msgid, body=body, in_reply_to=in_reply_to, references=references
+            msgid,
+            body=body,
+            in_reply_to=in_reply_to.replace("{self}", msgid) if in_reply_to else None,
+            references=references.replace("{self}", msgid) if references else None,
         ).replace(b"Subject: t\r\n", b"Subject: " + subject + b"\r\n")
 
     ingest_id, replay_id = "via-ingest@example.com", "via-replay@example.com"

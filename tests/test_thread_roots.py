@@ -69,7 +69,7 @@ SHAPES = {
 # keeps the cycle a single thread rather than fragmenting it. Demanding
 # self-rooting instead would need a cycle detector on the write path
 # for no gain a reader could observe.
-CYCLIC = {"self-parent", "cycle-2"}
+CYCLIC = {"cycle-2"}
 
 ORDERS = {
     "in-order": lambda edges: edges,
@@ -112,6 +112,9 @@ def _assert_invariant(inbox_name: str, shape: str) -> None:
     with SessionLocal() as s:
         inbox = s.execute(select(Inbox).where(Inbox.name == inbox_name)).scalar_one()
         for mid, (root_id, art_id) in materialised.items():
+            if shape == "self-parent":
+                # This matrix tests ingest, which drops the invalid header edge.
+                assert s.get(Article, art_id).thread_parent is None
             if shape in CYCLIC:
                 # Carve-out: coherence, not agreement with the CTE.
                 assert root_id is not None, f"{shape}/{inbox_name}: {mid} unrooted"
@@ -1548,9 +1551,6 @@ def test_find_incoherent_roots_does_not_report_another_inbox(client, tmp_path):
 def test_find_incoherent_roots_ignores_self_parents(client, tmp_path):
     """A self-referential In-Reply-To must not read as a split.
 
-    Production had 1,360 of these when last measured, so a false positive
-    on this shape would bury the real signal under noise on every start.
-
     Note this deliberately does NOT kill the `p.id != a.id` guard in the
     query: a self-parent resolves the parent row to the child row, so the
     root comparison is a row against itself and is false with or without
@@ -1559,9 +1559,13 @@ def test_find_incoherent_roots_ignores_self_parents(client, tmp_path):
     """
     from mimir.thread_roots import find_incoherent_roots
 
-    seed_thread_shape(tmp_path, "alpha", [("sp1@x", "sp1@x")])
+    seeded = seed_thread_shape(tmp_path, "alpha", [("sp1@x", "sp1@x")])
 
     with SessionLocal() as s:
+        article = s.get(Article, seeded["sp1@x"][0])
+        article.thread_parent = article.message_id
+        s.commit()
+        assert article.thread_parent == article.message_id
         alpha = s.execute(select(Inbox).where(Inbox.name == "alpha")).scalar_one()
         assert find_incoherent_roots(s, alpha) == [], (
             "a self-parent was reported as an incoherent root"

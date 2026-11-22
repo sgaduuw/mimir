@@ -3463,3 +3463,57 @@ def test_message_page_names_its_related_list_once(client, tmp_path):
     body = client.get(_metadata_url(second_url)).get_data(as_text=True)
     assert "related-patch-list" in body  # precondition: the list rendered
     assert body.count("Other recent patches touching these files") == 1
+
+
+@pytest.mark.parametrize("materialised", [True, False])
+def test_message_tree_depths_survive_legacy_self_parent(
+    client, tmp_path, monkeypatch, materialised
+):
+    from sqlalchemy import update
+
+    from mimir import threading
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article, ArticleList
+    from tests._dom import parse
+    from tests.test_routes._helpers import seed_thread_shape
+
+    monkeypatch.setattr(threading, "MAX_DEPTH", 24)
+    seeded = seed_thread_shape(
+        tmp_path,
+        "alpha",
+        [
+            ("legacy-r@x", None),
+            ("legacy-a@x", "legacy-r@x"),
+            ("legacy-b@x", "legacy-r@x"),
+            ("legacy-c@x", "legacy-b@x"),
+        ],
+    )
+    with SessionLocal() as session:
+        root = session.get(Article, seeded["legacy-r@x"][0])
+        root.thread_parent = root.message_id
+        if not materialised:
+            session.execute(
+                update(ArticleList)
+                .where(
+                    ArticleList.article_id.in_([aid for aid, _url in seeded.values()])
+                )
+                .values(thread_root_id=None)
+            )
+        session.commit()
+        assert root.thread_parent == root.message_id
+    response = client.get(seeded["legacy-b@x"][1])
+    assert response.status_code == 200
+    tree = parse(response.get_data(as_text=True)).find("ul", cls="thread-list")
+    rows = [row for row in tree.find_all("li") if "data-article-id" in row.attrs]
+    assert [
+        (int(row.attrs["data-article-id"]), int(row.attrs["data-depth"]))
+        for row in rows
+    ] == [
+        (seeded[mid][0], depth)
+        for mid, depth in [
+            ("legacy-r@x", 0),
+            ("legacy-a@x", 1),
+            ("legacy-b@x", 1),
+            ("legacy-c@x", 2),
+        ]
+    ]

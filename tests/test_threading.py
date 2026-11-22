@@ -16,6 +16,7 @@ Tests that need richer shapes add extra Articles inline.
 
 from datetime import UTC, datetime
 
+import pytest
 from sqlalchemy import select
 
 from mimir.listings import listing_for_day as threads_for_day
@@ -993,3 +994,55 @@ def test_thread_ordering_places_dateless_messages_first_consistently(seeded_db):
                 f"(page {expected_page}) but ranks to page "
                 f"{thread_page_of(s, inbox.id, base_id, article, cap)}"
             )
+
+
+@pytest.mark.parametrize(
+    "edges,expected",
+    [
+        (
+            [("r", "r", 2), ("early", "r", 1), ("late", "r", 3), ("leaf", "late", 4)],
+            [("r", 0), ("early", 1), ("late", 1), ("leaf", 2)],
+        ),
+        (
+            [("r", "b", 1), ("b", "r", 2), ("leaf", "b", 3)],
+            [("r", 0), ("b", 1), ("leaf", 2)],
+        ),
+    ],
+)
+def test_get_thread_cuts_reentry_to_start_without_losing_descendants(
+    seeded_db, monkeypatch, edges, expected
+):
+    from mimir import threading
+
+    monkeypatch.setattr(threading, "MAX_DEPTH", 12)
+    inbox = _inbox(seeded_db, "alpha")
+    with seeded_db() as session:
+        articles = [
+            Article(
+                message_id=f"cycle-1238-{mid}@x",
+                thread_parent=f"cycle-1238-{parent}@x",
+                date=datetime(2024, 1, day, tzinfo=UTC),
+            )
+            for mid, parent, day in edges
+        ]
+        session.add_all(articles)
+        session.flush()
+        session.add_all(
+            [
+                ArticleList(
+                    article_id=a.id,
+                    inbox_id=inbox.id,
+                    epoch="0.git",
+                    commit_sha=f"{a.id:040x}",
+                )
+                for a in articles
+            ]
+        )
+        session.commit()
+        assert articles[0].thread_parent == f"cycle-1238-{edges[0][1]}@x"
+        nodes = get_thread(session, inbox, "cycle-1238-r@x")
+    assert len(nodes) == len(edges)
+    assert len({node.id for node in nodes}) == len(edges)
+    assert [(node.message_id, node.depth) for node in nodes] == [
+        (f"cycle-1238-{mid}@x", depth) for mid, depth in expected
+    ]

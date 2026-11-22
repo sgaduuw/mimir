@@ -226,9 +226,12 @@ def _to_article_insert(
     """
     from mimir.ingest._pending import _ArticleInsert
 
-    thread_parent = parsed.in_reply_to or (
-        parsed.references[-1] if parsed.references else None
-    )
+    thread_parent = parsed.in_reply_to
+    if not thread_parent or thread_parent == parsed.message_id:
+        thread_parent = next(
+            (mid for mid in reversed(parsed.references) if mid != parsed.message_id),
+            None,
+        )
     series_key_val: str | None = None
     series_version: str | None = None
     series_position: int | None = None
