@@ -151,12 +151,16 @@ def test_revision_group_validator_seeks_actual_series_and_files_queries(seeded_d
 
 def test_an_inbox_parent_is_not_an_off_list_orphan(client, tmp_path):
     from mimir.extensions import SessionLocal
-    from mimir.models import ArticleFile
+    from mimir.models import Article, ArticleFile
 
     seeded = seed_thread_shape(
         tmp_path, "alpha", [("self@x", "self@x"), ("other@x", None)]
     )
     with SessionLocal() as session:
+        article = session.get(Article, seeded["self@x"][0])
+        article.thread_parent = article.message_id
+        session.commit()
+        assert article.thread_parent == article.message_id
         session.add(ArticleFile(article_id=seeded["self@x"][0], path="mm/slab.c"))
         session.commit()
     response = client.get(f"/api/alpha/metadata/{seeded['self@x'][0]}")

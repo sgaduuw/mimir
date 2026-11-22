@@ -391,8 +391,8 @@ def thread_view(
             # this article's own subtree rather than 404, so the page
             # still works for a reader.
             # Only redirect to a FIXED POINT. `thread_parent` comes
-            # straight from sender-controlled `In-Reply-To` with no
-            # cycle guard at ingest, so a cyclic thread can yield a
+            # from sender-controlled headers; multi-message cycles remain
+            # possible, so a cyclic thread can yield a
             # root whose own root is a different node again, and
             # redirecting blindly makes `/t` an infinite 301 loop on a
             # no-cache endpoint the sitemap advertises.
@@ -507,11 +507,8 @@ def thread_view(
                     )
                 )
         else:
-            # `dedupe_thread` is only needed on the walk: a cyclic
-            # `thread_parent` makes the CTE re-emit an article once per
-            # level. The indexed query cannot repeat a row, because
-            # `article_lists` is keyed `(article_id, inbox_id)` and the
-            # query pins one inbox.
+            # Keep the walk's defensive uniqueness before counting rows.
+            # The indexed query is unique by its inbox-scoped membership key.
             all_nodes = dedupe_thread(get_thread(session, inbox, root_msgid))
             if not all_nodes:
                 abort(404)

@@ -531,11 +531,10 @@ def seed_thread_shape(tmp_path, inbox_name, edges, *, date_for=None, epoch="0.gi
     """Build an ARBITRARY thread shape in one bare repo and ingest it.
 
     `edges` is an ordered list of `(message_id, parent_message_id|None)`.
-    Cycles, self-parents, branches, and forward references are all
-    expressible, because the point of this helper is to exercise the
-    shapes real ingest can produce from attacker- or
-    accident-controlled `In-Reply-To` headers, not just the tidy linear
-    thread `_seed_three_message_thread` builds.
+    Cycles, branches and forward references exercise shapes real ingest
+    can produce from sender-controlled `In-Reply-To` headers. Self-parent
+    headers can also be submitted, but ingest normalizes them away. Tests
+    of stored legacy self edges must explicitly restore and assert them.
 
     `date_for` optionally maps message_id -> RFC 5322 Date string, for
     month/year-boundary shapes. `epoch` places the messages in a
