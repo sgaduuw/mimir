@@ -1,20 +1,22 @@
-"""Atom feeds: per-inbox and per-author.
+"""Atom feeds: per-inbox, per-author and cross-inbox per-maintainer.
 
-Both share the same `atom_response` builder from `mimir.seo`; the
+All share the same `atom_response` builder from `mimir.seo`; the
 author-feed clamping reuses the search-route bounds via the
 `mimir.web.routes.search` constants.
 """
 
 from urllib.parse import quote
 
-from flask import abort
+from flask import abort, redirect
 
 from mimir._inbox_name import inbox_path
 from mimir.config import settings
 from mimir.extensions import SessionLocal
+from mimir.maintainer_directory import maintainer_path, resolve_maintainer_profile
 from mimir.seo import atom_response
-from mimir.seo.feed_data import feed_data
+from mimir.seo.feed_data import feed_data, maintainer_feed_data
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _listing_name_filter
 from mimir.web.routes.search import SEARCH_QUERY_MAX_LEN, SEARCH_QUERY_MIN_LEN
 from mimir.web.urls import (
     _get_inbox_or_404,
@@ -67,6 +69,40 @@ def author_feed(inbox_name: str, sub: str):
         alternate_url=base.rstrip("/") + inbox_path(inbox.name),
         entries=entries,
         inbox_name=inbox.name,
+        base_url=base,
+        canonical_inbox_by_article=canonical_names,
+        entry_urls=entry_urls,
+        link_expires_at=expires_at,
+    )
+
+
+# A string converter ties the directory's letter converter in Werkzeug.
+# The profile's path converter plus this suffix gives an unambiguous match.
+@bp_web.route("/maintainers/<path:address>/feed.atom")
+def maintainer_feed(address: str):
+    """Recent exact From identities for a current maintainer across inboxes."""
+    with SessionLocal() as session:
+        profile = resolve_maintainer_profile(session, address)
+        if profile is None:
+            abort(404)
+        path = maintainer_path(profile.address)
+        if profile.address != address.lower():
+            return redirect(path + "/feed.atom", code=301)
+        entries, entry_urls, canonical_names, expires_at = maintainer_feed_data(
+            session, profile.address
+        )
+    name = _listing_name_filter(profile.name)
+    if name == "unknown sender":
+        name = profile.address
+    base = _site_base()
+    feed_url = base + path + "/feed.atom"
+    return atom_response(
+        feed_id=feed_url,
+        feed_title=f"{name} | Maintainers | {settings.site_name}",
+        self_url=feed_url,
+        alternate_url=base + path,
+        entries=entries,
+        inbox_name="",
         base_url=base,
         canonical_inbox_by_article=canonical_names,
         entry_urls=entry_urls,

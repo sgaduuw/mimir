@@ -1,24 +1,22 @@
 """Global (cross-inbox) maintainer profile page.
 
-Unlike every other route in this package, `/maintainers/<address>` has
+`/maintainers/<address>` has
 no `<inbox_name>` segment: a maintainer's MAINTAINERS entry and their
 review-trailer activity both span every configured inbox, so the page
 is a site-level surface, not a per-inbox one. `current_inbox` is
 passed as `None` to `render_template`, which base.html already treats
-as falsy (no inbox nav links rendered, no atom-feed `<link>`).
+as falsy (no inbox nav links). The profile advertises its cross-inbox feed.
 """
 
 from flask import abort, redirect, render_template
 
 from mimir.directories import cached_subsystem_targets
 from mimir.extensions import SessionLocal
-from mimir.mailmap import canonical_address
 from mimir.maintainer_directory import (
     MaintainerProfile,
     cached_maintainer_review_counts,
-    is_addressable_maintainer_address,
     maintainer_path,
-    maintainer_profile,
+    resolve_maintainer_profile,
 )
 from mimir.web._blueprint import bp_web
 from mimir.web.urls import _site_base
@@ -55,23 +53,13 @@ def maintainer_view(address: str):
     more round-trip for a case that's already cheap to normalize
     server-side.
     """
-    if not is_addressable_maintainer_address(address):
-        abort(404)
     address_normalized = address.lower()
     with SessionLocal() as session:
-        profile = maintainer_profile(session, address_normalized)
+        profile = resolve_maintainer_profile(session, address)
         if profile is None:
-            # A retired address that the kernel's `.mailmap` maps to a
-            # current `M:` address keeps its indexed URL alive. One hop,
-            # and only on this path, so live profiles pay nothing.
-            mapped = canonical_address(session, address_normalized)
-            if (
-                mapped is not None
-                and is_addressable_maintainer_address(mapped)
-                and maintainer_profile(session, mapped) is not None
-            ):
-                return redirect(maintainer_path(mapped), code=301)
             abort(404)
+        if profile.address != address_normalized:
+            return redirect(maintainer_path(profile.address), code=301)
         review_counts = cached_maintainer_review_counts(session, address_normalized)
         subsystem_targets = cached_subsystem_targets(session)
 
@@ -90,6 +78,7 @@ def maintainer_view(address: str):
     return render_template(
         "maintainer.html",
         profile=profile,
+        maintainer_feed_url=maintainer_path(profile.address) + "/feed.atom",
         subsystem_targets=subsystem_targets,
         review_counts=review_counts,
         review_inboxes=review_inboxes,
