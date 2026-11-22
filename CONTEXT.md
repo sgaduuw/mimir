@@ -1085,13 +1085,12 @@ is ALSO materialised, per inbox, in `article_lists.thread_root_id`
 definition of correctness and the fallback for rows the column has
 not reached.
 
-`Article.thread_parent` is a best-guess "effective parent" computed at
-ingest time as `in_reply_to OR references[-1]`. Some mailing-list
-software strips `In-Reply-To:` but keeps `References:`; falling back to
-the last entry of References recovers many otherwise-orphaned threads.
-On the lkml corpus, this recovers ~67k messages (~1.3% of the archive)
-that have no `In-Reply-To` but do have `References`. The raw
-`in_reply_to` column is preserved for completeness.
+`Article.thread_parent` is a best-guess effective parent computed at ingest.
+A non-self `In-Reply-To` takes precedence, otherwise the last non-self
+`References` entry is used. Some mailing-list software strips `In-Reply-To`
+but retains `References`, so that fallback preserves otherwise-orphaned
+threads. The original headers remain unchanged in the Git message. Ingest
+and replay share this derivation in `_to_article_insert`.
 
 - `find_thread_root(session, message_id)` walks **up** via
   `thread_parent`, picking the deepest ancestor present in the DB. A
@@ -1105,8 +1104,29 @@ that have no `In-Reply-To` but do have `References`. The raw
   a clean depth-first traversal with siblings ordered by date, no
   post-processing needed in Python. ~2 ms for a 71-message thread.
 
-Both CTEs cap recursion at depth 1000 to defend against pathological
-cycles in the data (real lkml threads rarely exceed ~50 deep).
+Both CTEs retain a depth-1000 safety bound. The downward walk also excludes
+re-entry to its starting root. Each article has one parent, so any cycle
+reachable while descending must include that root. This cuts both self and
+multi-message cycles without storing an expanding visited path or changing
+healthy depth-first ordering (#1238).
+
+Measured read-only on production 5.4.0, 2026-11-22: 1,420 articles had exact
+self-parent edges across 1,482 inbox memberships. Every affected membership
+was already rooted to its own article, with none NULL or rooted elsewhere.
+The reported 45-message linux-sh thread expanded to 44,917 traversal rows in
+3.76 s, and 38 surviving rows had depth 1,000. Excluding root re-entry returned
+45 rows in a median 0.45 ms, with maximum depth 6 and direct patches at depth 1.
+No separate materialised message-tree renderer was needed.
+
+The broker-owned data migration clears only `thread_parent = message_id`.
+It leaves memberships and root IDs unchanged, and downgrade retains the
+repair. On an isolated 18,873,393,152-byte production database copy, actual
+broker `prepare_database` took 14.47 s: migration 2.37 s, forced post-migration
+ANALYZE 12.06 s, and the existing bootstrap/root checks. Background verification
+was excluded because it runs outside readiness. The copy took 53.89 s and was
+removed afterward; that diagnostic copy is not part of deployment. Production's
+systemd `TimeoutStartSec` was 600 s, distinct from the example Compose file's
+1,200 s budget. This is a dated measurement, not a future startup ceiling.
 
 ### Series chains (#816)
 

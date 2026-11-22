@@ -20,6 +20,16 @@ from tests.test_routes._helpers import (
 )
 
 
+def _restore_legacy_self_parent(article_id):
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as session:
+        root = session.get(Article, article_id)
+        root.thread_parent = root.message_id
+        session.commit()
+        assert root.thread_parent == root.message_id
+
+
 def _canonical_of(html: str) -> str | None:
     m = re.search(r'<link rel="canonical" href="([^"]+)"', html)
     return m.group(1) if m else None
@@ -583,8 +593,8 @@ THREAD_SHAPES = {
     "deep-6": [(f"d{i}@x", None if i == 1 else f"d{i - 1}@x") for i in range(1, 7)],
     "single": [("solo1@x", None)],
     "off-list-parent": [("o1@x", "missing@elsewhere"), ("o2@x", "o1@x")],
-    # Pathological, and reachable: `thread_parent` has no cycle guard
-    # and its value comes straight from sender-controlled headers.
+    # Multi-message cycles remain possible from sender-controlled headers.
+    # The self-parent fixture explicitly restores legacy corruption below.
     "self-parent": [("c0@x", "c0@x")],
     "cycle-3": [("y1@x", "y3@x"), ("y2@x", "y1@x"), ("y3@x", "y2@x")],
 }
@@ -603,6 +613,8 @@ def test_canonical_invariants_hold_across_thread_shapes(client, tmp_path, shape)
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(tmp_path, "alpha", THREAD_SHAPES[shape])
+    if shape == "self-parent":
+        _restore_legacy_self_parent(seeded["c0@x"][0])
     urls = [url for _id, url in seeded.values()]
     _assert_no_redirect_loop(client, urls, shape)
     _assert_canonical_invariants(client, urls, shape)
@@ -659,15 +671,13 @@ def test_sitemap_lists_the_canonical_url_for_every_thread_shape(client, tmp_path
 
 
 def test_thread_view_never_renders_the_same_message_twice(client, tmp_path):
-    """A self-referential `In-Reply-To` (sender-controlled, and the
-    likeliest ACCIDENTAL cycle) makes `get_thread`'s recursive CTE
-    re-emit one article once per level to MAX_DEPTH, so the page
-    rendered the same body dozens of times and emitted hundreds of
-    identical overflow links from a single message."""
+    """Persisted legacy self-parent edges must not duplicate rendered bodies
+    or leak repeated nodes into overflow links."""
     from tests.test_routes._helpers import seed_thread_shape
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("dup1@x", "dup1@x")])
     _aid, url = seeded["dup1@x"]
+    _restore_legacy_self_parent(_aid)
 
     html = client.get(url + "/t").get_data(as_text=True)
     assert html.count('class="thread-message"') == 1, "duplicate nodes rendered"
@@ -1708,9 +1718,9 @@ def test_a_self_parented_message_names_a_thread_view_that_holds_it_once(
     client,
     tmp_path,
 ):
-    """A self-referential In-Reply-To makes the recursive CTE re-emit one
-    article per level, so `thread.py` de-duplicates nodes and renders ONE
-    message. Since #1003 a one-message thread canonicalises to its `/t`
+    """A stored legacy self-parent must render one message, even though
+    new ingest no longer creates that edge.
+    Since #1003 a one-message thread canonicalises to its `/t`
     too, so the claim to check is containment: the canonical names the
     `/t`, and that page renders this message exactly once.
     """
@@ -1718,6 +1728,7 @@ def test_a_self_parented_message_names_a_thread_view_that_holds_it_once(
 
     seeded = seed_thread_shape(tmp_path, "alpha", [("sp1@x", "sp1@x")])
     _aid, url = seeded["sp1@x"]
+    _restore_legacy_self_parent(_aid)
 
     canonical = _canonical_of(client.get(url).get_data(as_text=True))
     rendered = client.get(url + "/t").get_data(as_text=True)

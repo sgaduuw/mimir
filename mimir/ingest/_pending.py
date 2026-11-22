@@ -140,8 +140,8 @@ def _set_subtree_root(conn, inbox_id: int, article_id: int, root_id) -> None:
     this inbox. `root_id=None` invalidates the subtree so the backfill
     recomputes it.
 
-    A cyclic `thread_parent` (sender-controlled, unguarded at ingest)
-    cannot spin this: `thread_parent` is single-valued, so any cycle
+    Multi-message `thread_parent` cycles can still come from sender headers.
+    They cannot spin this: `thread_parent` is single-valued, so any cycle
     reachable from this article must contain it, and the
     `a.id != :aid` guard cuts the walk there.
     """

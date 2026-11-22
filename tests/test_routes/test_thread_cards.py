@@ -158,6 +158,14 @@ def test_no_marker_for_an_unknown_parent_or_a_self_parent(client, tmp_path):
     assert _replied_to(_card(html, off["r@x"][0])) is None
     assert _replied_to(_card(html, off["s@x"][0])) is not None  # precondition
     own = _seed_chat(tmp_path / "two", [("me@x", "me@x")])
+    from mimir.extensions import SessionLocal
+    from mimir.models import Article
+
+    with SessionLocal() as session:
+        article = session.get(Article, own["me@x"][0])
+        article.thread_parent = article.message_id
+        session.commit()
+        assert article.thread_parent == article.message_id
     html = client.get(own["me@x"][1] + "/t").get_data(as_text=True)
     assert _replied_to(_card(html, own["me@x"][0])) is None
 
