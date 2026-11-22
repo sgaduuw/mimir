@@ -1,7 +1,7 @@
 """Thread reconstruction for the message view.
 
 Uses SQLite recursive CTEs against the `thread_parent` graph (best-guess
-parent: In-Reply-To OR last entry of References, computed at ingest):
+parent: non-self In-Reply-To or last non-self reference, computed at ingest):
 - `find_thread_root` walks up to the topmost ancestor that's actually in
   our DB. A message whose parent isn't in the archive is its own root
   (we don't show phantom containers in v1).
@@ -18,8 +18,8 @@ parent: In-Reply-To OR last entry of References, computed at ingest):
   around one message (path, nearest siblings, first replies) without
   walking the thread.
 
-A 1000-deep depth limit guards against pathological cycles in the
-underlying data (real lkml threads rarely exceed ~50 deep).
+Walks retain a 1000-level safety bound. The downward walk also excludes
+re-entry to its starting root, so cycles stop before that bound.
 """
 
 from collections import Counter
@@ -104,14 +104,10 @@ cache.register("ActiveThread", ActiveThread)
 
 
 def dedupe_thread(nodes: list) -> list:
-    """Drop repeated articles from a `get_thread` walk, preserving order.
+    """Defensively keep the first copy of each article, preserving order.
 
-    A cyclic `thread_parent` (sender-controlled `In-Reply-To`, no cycle
-    guard at ingest) makes the recursive CTE re-emit the same article
-    once per level up to MAX_DEPTH. The thread view and the message
-    page must count the SAME thread: the view renders the deduped list,
-    so a message page counting the raw one would report 1001 messages
-    where the view shows 1.
+    Thread and message views must count the same unique rows, even when
+    a caller supplies repeated nodes.
     """
     seen: set[int] = set()
     out = []
@@ -933,6 +929,8 @@ def get_thread(
 ) -> list[ThreadNode]:
     """Return the full thread rooted at `root_message_id` within `inbox`,
     depth-first by date."""
+    # Each article has one parent. A reachable cycle must return to the
+    # starting root, so excluding that edge cuts every cycle in this walk.
     sql = text(
         """
         WITH RECURSIVE thread AS (
@@ -950,6 +948,7 @@ def get_thread(
             JOIN article_lists al ON al.article_id = a.id
             JOIN thread t ON a.thread_parent = t.message_id
             WHERE al.inbox_id = :inbox_id AND t.depth < :max_depth
+              AND a.message_id != :root
         )
         SELECT id, message_id, thread_parent, subject, author, date, depth
         FROM thread

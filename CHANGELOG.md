@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Fixed
+
+- Cyclic message parents no longer expand the thread tree through the recursion limit or corrupt reply indentation. Ingest and replay ignore self-parent references, and a one-off broker startup migration clears existing exact self-parent edges without changing inbox membership or thread roots (#1238).
+
 ### Added
 
 - Cross-inbox Atom feeds for current maintainers include mailmap sender aliases and are advertised on their profiles. Feeds contain up to 1,000 messages sent in the last five days, with cross-posts shown once (#1237).

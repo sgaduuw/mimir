@@ -87,8 +87,8 @@ class Article(Base):
     subject: Mapped[str | None] = mapped_column(Text)
     author: Mapped[str | None] = mapped_column(Text)
     date: Mapped[datetime | None] = mapped_column(index=True)
-    # Best-guess parent for threading: in_reply_to OR last entry of
-    # references, computed at ingest time. The raw headers are read
+    # Best-guess parent: non-self In-Reply-To, else last non-self reference,
+    # computed at ingest time. The raw headers are read
     # back from the git blob on demand.
     thread_parent: Mapped[str | None] = mapped_column(String, index=True)
     # Subject with reply/forward prefixes stripped (lowercased,
