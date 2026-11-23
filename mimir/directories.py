@@ -79,6 +79,9 @@ def _subsystem_directory_rows(session: Session, version: str, activity):
                 "name": sub.name,
                 "inbox_name": inbox_name,
                 "path": path,
+                "last_activity": item.last_activity
+                if item is not None and item.inbox_name == inbox_name
+                else None,
                 "message_count": (item.message_count if item else 0)
                 if activity is not None
                 else None,
@@ -167,7 +170,14 @@ def maintainer_directory_rows(session: Session) -> tuple[list[dict], bool]:
 
 
 def directory_sitemap_paths(session: Session) -> list[str]:
-    """The directory hubs, occupied letter pages and their chosen subsystem targets."""
+    """The directory hubs, occupied letter pages and their subsystem targets."""
+    return [path for path, _lastmod in directory_sitemap_entries(session)]
+
+
+def directory_sitemap_entries(session: Session) -> list[tuple[str, str | None]]:
+    """Choose paths and dates from the same cache-only directory snapshot."""
+    from collections import Counter
+
     from mimir.directory_paths import (
         directory_letter,
         maintainer_directory_path,
@@ -177,22 +187,28 @@ def directory_sitemap_paths(session: Session) -> list[str]:
     version = rules_version(session)
     subsystems, _ = subsystem_directory_rows(session)
     maintainers, _ = maintainer_directory_rows(session)
-    # Each directory is coherent alone; a reload between them must not put
-    # obsolete targets into the combined sitemap. The roots always exist.
+    roots = {subsystem_directory_path(): None, maintainer_directory_path(): None}
+    # A reload between directories must not publish an obsolete generation.
     if rules_version(session) != version:
-        return sorted([subsystem_directory_path(), maintainer_directory_path()])
-    return sorted(
-        {
-            subsystem_directory_path(),
-            maintainer_directory_path(),
-            *(
-                subsystem_directory_path(directory_letter(row["name"]))
-                for row in subsystems
-            ),
-            *(
-                maintainer_directory_path(directory_letter(row["name"]))
-                for row in maintainers
-            ),
-            *(row["path"] for row in subsystems if row["path"] is not None),
-        }
-    )
+        return sorted(roots.items())
+    entries = {
+        **roots,
+        **{
+            subsystem_directory_path(directory_letter(row["name"])): None
+            for row in subsystems
+        },
+        **{
+            maintainer_directory_path(directory_letter(row["name"])): None
+            for row in maintainers
+        },
+    }
+    # Several case variants can resolve to one route. Without that route's
+    # exact activity snapshot, omitting a date is safer than dating another ID.
+    names = Counter(row["name"].lower() for row in subsystems)
+    for row in subsystems:
+        path = row["path"]
+        if path is None:
+            continue
+        when = row["last_activity"] if names[row["name"].lower()] == 1 else None
+        entries[path] = when.strftime("%Y-%m-%d") if when is not None else None
+    return sorted(entries.items())

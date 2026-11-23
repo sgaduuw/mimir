@@ -325,6 +325,20 @@ their membership can be determined.
 `/llms.txt` stays outside search sitemaps. Agents discover it through the
 `LLM-Context:` record in `robots.txt` and its well-known path.
 
+Meta-sitemap subsystem targets use the selected inbox's newest cached activity
+as their date. Missing activity, fallback to another inbox and ambiguous section
+names leave the entry undated. Date changes and cache expiry enter the next
+origin response. Source warming and the normal five-minute HTTP cache lifetime
+still govern freshness. Directory hubs and maintainer profiles remain undated
+because they have no reliable content-change timestamp. A maintainer's feed
+activity does not date the profile itself.
+
+Release-history pages and their index also remain undated. Tagged releases still
+render live archive metadata, subsystem groupings and neighboring release links.
+The tag date therefore does not describe their latest content change, and the
+link-refresh timestamp can advance without a content change. Truthful dates for
+these pages need separate content-change tracking (#1242).
+
 Archive sitemaps can use `sitemap-2.xml` and later pages. The index chooses a
 yearly bucket only when its root count and expanded thread-page count fit the
 limits; otherwise it lists monthly buckets. A root whose thread is still being
