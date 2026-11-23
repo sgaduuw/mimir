@@ -22,10 +22,9 @@ def test_robots_txt(client):
     ]
 
 
-def test_robots_txt_llm_context_matches_meta_sitemap_entry(client):
+def test_robots_txt_llm_context_preserved_outside_search_sitemap(client):
     """One `LLM-Context:` record (#969), after the last group, naming the
-    same absolute `/llms.txt` URL the meta sitemap lists. Both are built
-    from `LLMS_TXT_PATH`, so they cannot drift."""
+    absolute `/llms.txt` URL, which stays outside the search sitemap."""
     import xml.etree.ElementTree as ET
     from urllib.parse import urlparse
 
@@ -52,7 +51,12 @@ def test_robots_txt_llm_context_matches_meta_sitemap_entry(client):
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     meta = ET.fromstring(client.get("/meta-sitemap.xml").get_data())
     locs = [e.text for e in meta.findall("s:url/s:loc", ns)]
-    assert [loc for loc in locs if urlparse(loc).path == "/llms.txt"] == [url]
+    assert [loc for loc in locs if urlparse(loc).path == "/llms.txt"] == []
+    assert url == "http://localhost/llms.txt"
+    assert lines[-1] == f"LLM-Context: {url}"
+    response = client.get(urlparse(url).path)
+    assert response.status_code == 200
+    assert response.mimetype == "text/plain"
 
 
 def test_robots_txt_reflects_admin_added_rule(client):

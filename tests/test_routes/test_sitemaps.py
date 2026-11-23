@@ -154,15 +154,14 @@ def test_meta_sitemap_lastmod_is_global_max(client, monkeypatch):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 6
+    assert len(urls) == 5
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
     assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
     assert urls[1].find("s:lastmod", ns) is None
-    assert urls[2].find("s:loc", ns).text.endswith("/llms.txt")
+    assert all(not u.find("s:loc", ns).text.endswith("/llms.txt") for u in urls)
+    assert urls[2].find("s:loc", ns).text.endswith("/merge-window/history")
     assert urls[2].find("s:lastmod", ns) is None
-    assert urls[3].find("s:loc", ns).text.endswith("/merge-window/history")
-    assert urls[3].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
@@ -2561,7 +2560,7 @@ def _expected_priority(path):
     """The issue's table, keyed by URL shape. Deliberately written from
     the paths, not from the kind tag the emitter uses, so the two cannot
     agree by sharing a bug."""
-    if path in ("/", "/merge-window", "/llms.txt", "/merge-window/history"):
+    if path in ("/", "/merge-window", "/merge-window/history"):
         return "1.0"
     if path.startswith("/merge-window/history/"):
         return "0.7"
@@ -2621,7 +2620,8 @@ def test_every_emitted_priority_matches_the_table(client, tmp_path):
 
     # Every kind in the table was actually crawled, or this proves
     # nothing about the kinds that never showed up.
-    assert {"/", "/merge-window", "/llms.txt"} <= set(seen)
+    assert {"/", "/merge-window"} <= set(seen)
+    assert "/llms.txt" not in seen
     assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.2", "0.1"}
     assert any(p.endswith("/t") for p in seen), "no /t page crawled"
     assert any(p.startswith("/maintainers/") for p in seen)

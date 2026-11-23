@@ -2091,7 +2091,7 @@ afterthought:
   not a cross-inbox maximum. A mirrored fallback after inbox removal has no
   date from the removed inbox, and case-colliding section names stay undated
   because a route can choose a different stored ID. Directory paths and dates
-  share one rules-coherent snapshot. The v3 body key includes both, so date
+  share one rules-coherent snapshot. The versioned body key includes both, so date
   changes, fills and expiries affect the next origin request without an extra
   one-hour sitemap TTL. Existing source warming and HTTP max-age can still
   introduce their normal lag (#1242).
