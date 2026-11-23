@@ -405,7 +405,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
 
     ns = "http://www.sitemaps.org/schemas/sitemap/0.9"
     cap = settings.thread_view_render_cap
-    from mimir.directories import directory_sitemap_paths
+    from mimir.directories import directory_sitemap_entries
     from mimir.mailmap import rules_version
     from mimir.release_history import recorded_history, release_catalog
     from mimir.seo.sitemaps import meta_sitemap_key
@@ -413,7 +413,7 @@ def test_warm_cache_includes_sitemap_when_site_base_url_set(
     with SessionLocal() as session:
         meta_key = meta_sitemap_key(
             [r.tag for r, _f, _l in recorded_history(release_catalog()).listed],
-            directory_sitemap_paths(session),
+            directory_sitemap_entries(session),
             rules_version(session),
         )
     index = cache.get(f"sitemap:index:{cap}")
