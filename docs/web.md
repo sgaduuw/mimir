@@ -315,12 +315,29 @@ their membership can be determined.
 | Path | Contents |
 | --- | --- |
 | `/sitemap.xml` | Index of the following sitemap surfaces |
-| `/meta-sitemap.xml` | Site root, directory hubs and their letter pages, `/merge-window`, `/llms.txt`, release-history index and closed releases with recorded references or pull requests to Linus |
+| `/meta-sitemap.xml` | Site root, directory hubs and their letter pages, `/merge-window`, release-history index and closed releases with recorded references or pull requests to Linus |
 | `/<inbox>/sitemap.xml` | Inbox, archive pages, and active subsystems |
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
 | `/sitemap-maintainers.xml` | Supported maintainer profiles |
 | `/sitemap-series-diffs-<h>.xml` | Cover-letter diffs between adjacent revisions of each series whose key starts with `<h>` (`0` to `f`) |
+
+`/llms.txt` stays outside search sitemaps. Agents discover it through the
+`LLM-Context:` record in `robots.txt` and its well-known path.
+
+Meta-sitemap subsystem targets use the selected inbox's newest cached activity
+as their date. Missing activity, fallback to another inbox and ambiguous section
+names leave the entry undated. Date changes and cache expiry enter the next
+origin response. Source warming and the normal five-minute HTTP cache lifetime
+still govern freshness. Directory hubs and maintainer profiles remain undated
+because they have no reliable content-change timestamp. A maintainer's feed
+activity does not date the profile itself.
+
+Release-history pages and their index also remain undated. Tagged releases still
+render live archive metadata, subsystem groupings and neighboring release links.
+The tag date therefore does not describe their latest content change, and the
+link-refresh timestamp can advance without a content change. Truthful dates for
+these pages need separate content-change tracking (#1242).
 
 Archive sitemaps can use `sitemap-2.xml` and later pages. The index chooses a
 yearly bucket only when its root count and expanded thread-page count fit the

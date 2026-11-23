@@ -205,13 +205,12 @@ class SitemapPayload:
 cache.register("SitemapPayload", SitemapPayload)
 
 
-# The meta sitemap lists `/llms.txt` and robots.txt's `LLM-Context:` names
-# it (#969).
+# Agents discover this through robots.txt rather than the search sitemap.
 LLMS_TXT_PATH = "/llms.txt"
 
 # `<priority>` is our own signal: Google ignores it. Values are the
 # table in #964, ordered by how much a page adds over lore.kernel.org.
-PRIORITY_SITE = 1.0  # `/`, `/merge-window`, `/llms.txt`
+PRIORITY_SITE = 1.0  # `/`, `/merge-window`
 PRIORITY_PAGE = 0.9  # `/t` pages, series diffs, subsystem dashboards
 PRIORITY_HUB = 0.7  # inbox dashboards, maintainer pages
 PRIORITY_MONTH = 0.2
@@ -977,14 +976,16 @@ def sitemap_index_xml(
 
 
 def meta_sitemap_key(
-    release_tags: list[str], directory_paths: list[str], version: str
+    release_tags: list[str],
+    directory_entries: list[tuple[str, str | None]],
+    version: str,
 ) -> str:
     digest = hashlib.sha256(
         json.dumps(
-            [release_tags, directory_paths, version], separators=(",", ":")
+            [release_tags, directory_entries, version], separators=(",", ":")
         ).encode()
     ).hexdigest()[:16]
-    return f"sitemap:meta:v2:{digest}"
+    return f"sitemap:meta:v4:{digest}"
 
 
 def meta_sitemap_xml(
@@ -992,9 +993,7 @@ def meta_sitemap_xml(
 ) -> SitemapPayload:
     """Cached body of `/meta-sitemap.xml`. Urlset covering `/`, with the
     global-max article date as lastmod, `/merge-window`, with the
-    last linux-next walk, and `/llms.txt`, with no lastmod: it is a
-    template whose text moves with deploys and robots rules, so no
-    cheap date for it is truthful. The `last_modified`
+    last linux-next walk. The `last_modified`
     field carries the same global-max date so the route's
     body's `<lastmod>` stays truthful. It does not reach an HTTP
     `Last-Modified` header; sitemap routes set no validator at all (see
@@ -1003,9 +1002,10 @@ def meta_sitemap_xml(
     Release history pages are listed only when
     `mimir.release_history.recorded_history` lists them on the index, read
     from cached history and never calculated here. The cache key carries
-    the listed tags, rules version and directory paths, so newly visible
-    releases, letter pages and subsystem targets enter on the next request
-    rather than after the row's lifetime."""
+    the listed tags, rules version, directory paths and cached target dates.
+    Activity date changes, fills and expiries therefore reach the next origin
+    request without waiting for this body's TTL. Source activity keeps its
+    existing cache cadence, and HTTP caches can lag by their normal max-age."""
     # Late import: `mimir.merge_window` reaches the web layer's URL
     # helpers, which import this module's package at load time.
     from mimir.release_history import (
@@ -1017,12 +1017,12 @@ def meta_sitemap_xml(
     release_tags = [
         release.tag for release, _f, _l in recorded_history(release_catalog()).listed
     ]
-    from mimir.directories import directory_sitemap_paths
+    from mimir.directories import directory_sitemap_entries
 
     # Path membership versions this body, including a changed busiest inbox,
     # mirrored L: fallback or newly occupied letter after a rules reload.
     version = rules_version(session)
-    directory_paths = directory_sitemap_paths(session)
+    directory_entries = directory_sitemap_entries(session)
 
     def compute() -> SitemapPayload:
         from mimir.merge_window import MERGE_WINDOW_PATH, QUEUED_TREE
@@ -1047,17 +1047,16 @@ def meta_sitemap_xml(
                         else None,
                         PRIORITY_SITE,
                     ),
-                    SitemapEntry(base + LLMS_TXT_PATH, None, PRIORITY_SITE),
                     SitemapEntry(base + release_history_path(), None, PRIORITY_SITE),
                     *(
                         SitemapEntry(
                             base + path,
-                            None,
+                            lastmod,
                             PRIORITY_HUB
                             if path.startswith(("/subsystems/", "/maintainers/"))
                             else PRIORITY_PAGE,
                         )
-                        for path in directory_paths
+                        for path, lastmod in directory_entries
                     ),
                     *(
                         SitemapEntry(
@@ -1072,7 +1071,7 @@ def meta_sitemap_xml(
 
     return cache.get_or_compute(
         session,
-        meta_sitemap_key(release_tags, directory_paths, version),
+        meta_sitemap_key(release_tags, directory_entries, version),
         SITEMAP_TTL_SEC,
         compute,
         force=force,
@@ -1085,16 +1084,12 @@ def maintainers_sitemap_xml(
     """Cached body of `/sitemap-maintainers.xml`. One-urlset listing
     every addressable maintainer profile (`/maintainers/<address>`).
 
-    Slice-1 decision: no per-url `<lastmod>` and `last_modified=None`
-    on the returned payload. (The route emits a plain 200 either way:
-    no sitemap route sets a `Last-Modified` header, so a non-None value
-    here would NOT produce one, contrary to what this said.)
-    `all_maintainers` doesn't carry a
-    per-maintainer "last active" date, and deriving one would mean a
-    date query per maintainer (2,072 addressable current M identities
-    measured on 2026-11-16) just to populate a freshness hint crawlers treat as
-    secondary to discovery. Revisit if maintainer profile pages ever
-    gain a cheap last-changed signal."""
+    Profiles show ownership and cached review summaries, not the authored
+    message list in their separate Atom feed. A grouped newest-author date
+    would date that feed rather than this page. There is no reliable timestamp
+    for profile content changes, so entries and payload stay undated. No author
+    aggregate is run merely to manufacture a date. Sitemap routes also keep
+    their existing unconditional response behavior."""
 
     def compute() -> SitemapPayload:
         entries = [

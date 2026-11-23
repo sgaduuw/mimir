@@ -239,8 +239,13 @@ def test_sitemap_uses_directory_target_and_versions_changed_target(session):
 def test_sitemap_does_not_mix_directory_generations(session, seeded_db):
     from sqlalchemy import event, update
 
-    from mimir.directories import directory_sitemap_paths
+    from mimir import cache
+    from mimir.directories import directory_sitemap_entries
     from mimir.models import MainlineState, Subsystem
+    from mimir.subsystems_dashboard.activity import (
+        SubsystemActivity,
+        global_subsystem_activity_key,
+    )
 
     session.add(MainlineState(tree_name="linus", last_commit_sha="before"))
     sub = _add_subsystem(
@@ -254,6 +259,15 @@ def test_sitemap_does_not_mix_directory_generations(session, seeded_db):
     alpha.list_address = "alpha@example.com"
     session.add(SubsystemList(subsystem_id=sub.id, address="alpha@example.com"))
     session.commit()
+    cache.set(
+        global_subsystem_activity_key("before"),
+        [
+            SubsystemActivity(
+                sub.id, sub.name, "alpha", 1, datetime(2024, 6, 14, tzinfo=UTC)
+            )
+        ],
+        3600,
+    )
     changed = False
 
     def reload(conn, cursor, statement, parameters, context, executemany):
@@ -270,7 +284,10 @@ def test_sitemap_does_not_mix_directory_generations(session, seeded_db):
     engine = session.get_bind()
     event.listen(engine, "after_cursor_execute", reload)
     try:
-        assert directory_sitemap_paths(session) == ["/maintainers/", "/subsystems/"]
+        assert directory_sitemap_entries(session) == [
+            ("/maintainers/", None),
+            ("/subsystems/", None),
+        ]
     finally:
         event.remove(engine, "after_cursor_execute", reload)
     assert changed

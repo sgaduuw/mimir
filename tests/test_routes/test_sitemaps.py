@@ -154,15 +154,14 @@ def test_meta_sitemap_lastmod_is_global_max(client, monkeypatch):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 6
+    assert len(urls) == 5
     assert urls[0].find("s:loc", ns).text.endswith("/")
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
     assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
     assert urls[1].find("s:lastmod", ns) is None
-    assert urls[2].find("s:loc", ns).text.endswith("/llms.txt")
+    assert all(not u.find("s:loc", ns).text.endswith("/llms.txt") for u in urls)
+    assert urls[2].find("s:loc", ns).text.endswith("/merge-window/history")
     assert urls[2].find("s:lastmod", ns) is None
-    assert urls[3].find("s:loc", ns).text.endswith("/merge-window/history")
-    assert urls[3].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
@@ -2561,7 +2560,7 @@ def _expected_priority(path):
     """The issue's table, keyed by URL shape. Deliberately written from
     the paths, not from the kind tag the emitter uses, so the two cannot
     agree by sharing a bug."""
-    if path in ("/", "/merge-window", "/llms.txt", "/merge-window/history"):
+    if path in ("/", "/merge-window", "/merge-window/history"):
         return "1.0"
     if path.startswith("/merge-window/history/"):
         return "0.7"
@@ -2621,7 +2620,8 @@ def test_every_emitted_priority_matches_the_table(client, tmp_path):
 
     # Every kind in the table was actually crawled, or this proves
     # nothing about the kinds that never showed up.
-    assert {"/", "/merge-window", "/llms.txt"} <= set(seen)
+    assert {"/", "/merge-window"} <= set(seen)
+    assert "/llms.txt" not in seen
     assert set(seen.values()) == {"1.0", "0.9", "0.7", "0.2", "0.1"}
     assert any(p.endswith("/t") for p in seen), "no /t page crawled"
     assert any(p.startswith("/maintainers/") for p in seen)
@@ -3667,3 +3667,174 @@ def test_directory_hub_letter_loc_link_and_canonical_are_identical(client, sessi
             r'href="([^"]+)"', client.get(builder()).get_data(as_text=True)
         )
         assert builder("a") in root_links
+
+
+def _meta_lastmods(client):
+    import xml.etree.ElementTree as ET
+    from urllib.parse import urlsplit
+
+    response = client.get("/meta-sitemap.xml")
+    assert response.status_code == 200
+    ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
+    return {
+        urlsplit(node.findtext("s:loc", namespaces=ns)).path: node.findtext(
+            "s:lastmod", namespaces=ns
+        )
+        for node in ET.fromstring(response.data).findall("s:url", ns)
+    }
+
+
+def _meta_activity_fixture(session, monkeypatch):
+    from sqlalchemy import select
+
+    from mimir import release_history
+    from mimir.models import Inbox, SubsystemList
+    from mimir.subsystems_dashboard import activity
+    from tests.test_subsystems._helpers import _add_subsystem
+
+    sub = _add_subsystem(
+        session,
+        "CACHE DATE",
+        "Maintained",
+        files=["demo/"],
+        maintainers=[("M", "Alice", "alice@example.com")],
+    )
+    beta = session.scalar(select(Inbox).where(Inbox.name == "beta"))
+    beta.list_address = "beta@example.com"
+    session.add(SubsystemList(subsystem_id=sub.id, address=beta.list_address))
+    session.commit()
+    monkeypatch.setattr(release_history, "release_catalog", lambda: [])
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Sitemap entered an expensive aggregate or Git computation")
+
+    original = activity._most_active_subsystems_in_inbox_full
+
+    def cached_only(*args, **kwargs):
+        assert kwargs.get("compute_on_miss") is False
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(activity, "_most_active_subsystems_in_inbox_full", cached_only)
+    monkeypatch.setattr(release_history, "calculate_git", forbidden)
+    monkeypatch.setattr(release_history, "calculate_links", forbidden)
+    return sub
+
+
+def test_meta_subsystem_lastmod_refreshes_without_path_change(
+    client, session, monkeypatch, frozen_clock
+):
+    from datetime import datetime, timedelta
+
+    from mimir import cache
+    from mimir.mailmap import rules_version
+    from mimir.subsystems_dashboard.activity import (
+        SubsystemActivity,
+        global_subsystem_activity_key,
+    )
+
+    sub = _meta_activity_fixture(session, monkeypatch)
+    key = global_subsystem_activity_key(rules_version(session))
+    first = datetime.now(UTC) - timedelta(days=2)
+    row = SubsystemActivity(sub.id, sub.name, "beta", 3, first)
+    cache.set(key, [row], 3600)
+    path = "/beta/subsystems/cache%20date/"
+    assert _meta_lastmods(client)[path] == first.strftime("%Y-%m-%d")
+    row.last_activity = first + timedelta(days=1)
+    cache.set(key, [row], 3600)
+    assert _meta_lastmods(client)[path] == row.last_activity.strftime("%Y-%m-%d")
+    cache.delete(key)
+    cold = _meta_lastmods(client)
+    assert path in cold and cold[path] is None
+    assert all(
+        cold[path] is None
+        for path in (
+            "/subsystems/",
+            "/subsystems/c/",
+            "/maintainers/",
+            "/maintainers/a/",
+        )
+    )
+
+
+def test_meta_cold_subsystem_date_appears_on_cache_fill(
+    client, session, monkeypatch, frozen_clock
+):
+    from datetime import datetime
+
+    from mimir import cache
+    from mimir.mailmap import rules_version
+    from mimir.subsystems_dashboard.activity import (
+        SubsystemActivity,
+        global_subsystem_activity_key,
+    )
+
+    sub = _meta_activity_fixture(session, monkeypatch)
+    path = "/beta/subsystems/cache%20date/"
+    assert _meta_lastmods(client)[path] is None
+    when = datetime.now(UTC)
+    cache.set(
+        global_subsystem_activity_key(rules_version(session)),
+        [SubsystemActivity(sub.id, sub.name, "beta", 3, when)],
+        1,
+    )
+    assert _meta_lastmods(client)[path] == when.strftime("%Y-%m-%d")
+    frozen_clock.tick(2)
+    assert _meta_lastmods(client)[path] is None
+
+
+def test_meta_subsystem_fallback_never_borrows_removed_inbox_date(
+    client, session, monkeypatch, frozen_clock
+):
+    from datetime import datetime
+
+    from mimir import cache
+    from mimir.mailmap import rules_version
+    from mimir.subsystems_dashboard.activity import (
+        SubsystemActivity,
+        global_subsystem_activity_key,
+    )
+
+    sub = _meta_activity_fixture(session, monkeypatch)
+    cache.set(
+        global_subsystem_activity_key(rules_version(session)),
+        [SubsystemActivity(sub.id, sub.name, "removed-inbox", 3, datetime.now(UTC))],
+        3600,
+    )
+    values = _meta_lastmods(client)
+    assert "/beta/subsystems/cache%20date/" in values
+    assert values["/beta/subsystems/cache%20date/"] is None
+    assert not any(path.startswith("/removed-inbox/") for path in values)
+
+
+def test_meta_ambiguous_subsystem_names_omit_dates_even_across_different_targets(
+    client, session, monkeypatch, frozen_clock
+):
+    from datetime import datetime, timedelta
+
+    from mimir import cache
+    from mimir.mailmap import rules_version
+    from mimir.subsystems_dashboard.activity import (
+        SubsystemActivity,
+        global_subsystem_activity_key,
+    )
+    from tests.test_subsystems._helpers import _add_subsystem
+
+    first = _meta_activity_fixture(session, monkeypatch)
+    second = _add_subsystem(session, "cache date", "Maintained", files=["other/"])
+    session.commit()
+    assert first.id < second.id
+    when = datetime.now(UTC)
+    cache.set(
+        global_subsystem_activity_key(rules_version(session)),
+        [
+            SubsystemActivity(
+                first.id, first.name, "beta", 3, when - timedelta(days=1)
+            ),
+            SubsystemActivity(second.id, second.name, "alpha", 5, when),
+        ],
+        3600,
+    )
+    values = _meta_lastmods(client)
+    paths = ["/alpha/subsystems/cache%20date/", "/beta/subsystems/cache%20date/"]
+    assert all(path in values for path in paths)
+    assert all(values[path] is None for path in paths)
