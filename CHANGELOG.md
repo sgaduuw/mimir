@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Meta-sitemap subsystem targets use cached activity dates from their selected inbox. Activity date changes, cache fills and expiry update the origin sitemap immediately, while missing or ambiguous activity stays undated (#1242).
+
 ## [5.5.0] - 2026-11-22
 
 ### Added

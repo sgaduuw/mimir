@@ -2080,10 +2080,28 @@ afterthought:
   copy of this claim in the tree credited sitemaps.org until
   2026-08-04, which is the propagation the "grep the repo for the same
   claim in prose" rule exists to catch.
-  The maintainers urlset carries no per-url `<lastmod>` (deriving a
-  per-maintainer date is ~4000 queries for a hint crawlers treat as
-  secondary); the index entry reuses the already-computed
-  `global_latest`. **Sitemap responses send no HTTP conditional-GET
+  The maintainers urlset carries no per-profile `<lastmod>`: profiles show
+  ownership and review summaries without a content-change timestamp. A newest
+  authored-message date describes the linked feed rather than the profile,
+  so even a cheap grouped author query would supply the wrong signal. The
+  index entry retains the already-computed `global_latest`.
+
+  Meta-sitemap subsystem target dates come from the complete cached global
+  ranking's selected-inbox activity. The ranking stores that inbox's date,
+  not a cross-inbox maximum. A mirrored fallback after inbox removal has no
+  date from the removed inbox, and case-colliding section names stay undated
+  because a route can choose a different stored ID. Directory paths and dates
+  share one rules-coherent snapshot. The v3 body key includes both, so date
+  changes, fills and expiries affect the next origin request without an extra
+  one-hour sitemap TTL. Existing source warming and HTTP max-age can still
+  introduce their normal lag (#1242).
+
+  Release-history details and their index remain undated. Tagged pages still
+  render live archive metadata, subsystem groupings and neighboring release
+  links. Neither tag dates nor link-refresh timestamps reliably date content
+  changes. Content-change tracking is deferred (#1242).
+
+  **Sitemap responses send no HTTP conditional-GET
   validator (no `Last-Modified` / `ETag`, always 200; 3.6.1).** They
   used to set `Last-Modified` to the newest article date and 304 on
   `If-Modified-Since`, but that validator is a lie about *structural*
