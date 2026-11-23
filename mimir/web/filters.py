@@ -19,15 +19,16 @@ import re
 from datetime import UTC, datetime
 from email.utils import parseaddr
 
-from flask import g
+from flask import g, has_request_context
 from markupsafe import Markup, escape
 from pygments.lexers import get_lexer_for_filename, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 
-from mimir import maintainer_allowlist
+from mimir import maintainer_allowlist, maintainer_directory
 from mimir.config import _resolve_tree_label, settings
 from mimir.datetime_utils import aware_utc
+from mimir.extensions import SessionLocal
 from mimir.lifecycle_status import LifecycleStatus
 from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
@@ -702,3 +703,21 @@ def _release_label(subject: str | None) -> str:
     ):
         return parts[1]
     return subject or "(no subject)"
+
+
+@bp_web.app_template_filter("sender_maintainer_url")
+def _sender_maintainer_url_filter(author: str | None) -> str:
+    """Link exact current M senders without changing their displayed identity."""
+    address = parseaddr(author or "")[1].lower()
+    if not (is_addressable_maintainer_address(address) and _is_allowlisted(address)):
+        return ""
+    if has_request_context() and "_sender_maintainer_addresses" in g:
+        addresses = g._sender_maintainer_addresses
+    else:
+        with SessionLocal() as session:
+            addresses = frozenset(
+                addr for addr, _name in maintainer_directory.all_maintainers(session)
+            )
+        if has_request_context():
+            g._sender_maintainer_addresses = addresses
+    return maintainer_path(address) if address in addresses else ""

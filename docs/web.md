@@ -103,6 +103,12 @@ busiest mirrored inbox, otherwise a mirrored MAINTAINERS `L:` contact; entries
 without either target remain unlinked. Maintainer activity counts weekly review
 trailers even for maintainers who authored no messages.
 
+Message From values and thread bylines link exact current `M:` sender addresses
+to their profiles. Reviewer-only senders and other authors retain their visible
+text. Membership is loaded once per request from the rules-versioned directory
+cache, and the existing sender redaction still applies. Sender links do not
+expand mailmap aliases or match display names.
+
 Maintainer profiles collect activity across inboxes for each MAINTAINERS `M:`
 address. Their header shows initials and subsystem/inbox totals. Lowercase
 subsystem cards retain status pills and stack on phones. When warmed targets

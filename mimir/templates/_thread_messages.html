@@ -27,7 +27,8 @@
     {% set who = node.author|display_name %}
     <p class="card-byline">
       <span class="avatar" aria-hidden="true">{{ '?' if who == 'unknown sender' else who[:1]|upper }}</span>
-      <strong>{{ who }}</strong>
+      {% set sender_profile = node.author|sender_maintainer_url %}
+      <strong>{% if sender_profile %}<a href="{{ sender_profile }}">{{ who }}</a>{% else %}{{ who }}{% endif %}</strong>
       {%- if node.id in reply_to %}
       <span class="replied-to">replied to <a href="{{ reply_to[node.id][1] }}">{{ reply_to[node.id][0]|display_name }}</a></span>
       {%- endif %}
