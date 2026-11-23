@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Maintainer profiles show up to 15 recent messages from the cached cross-inbox feed, with richer titles, descriptions and activity dates in structured data. Cold profiles keep their existing metadata without running the feed query (#1250).
+
 ## [5.5.1], 2026-11-23
 
 ### Changed

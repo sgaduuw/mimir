@@ -114,6 +114,17 @@ Counts cover all indexed review-trailer events: multiple roles on one message
 count separately, and cross-posts contribute to each inbox. They are not counts
 of unique patches or people.
 
+Profiles show up to 15 recent messages from the last five days when both the
+maintainer feed listing and its canonical link snapshot are cached. They share
+the feed's identities and destinations. A cached empty window shows an empty
+state, while a missing or expired snapshot leaves the section out. Requests
+never run the feed query to fill this section. Feed requests populate these
+snapshots. Slow warming still covers profile metadata, review counts and
+subsystem targets, without adding a bulk maintainer-feed warm. Structured data
+uses the newest displayed message date as its activity `dateModified`, not a
+complete modification history for ownership and review summaries. Profile HTTP
+cache policy is unchanged.
+
 Profiles also advertise an Atom feed of messages sent by that maintainer across
 configured inboxes. Exact parsed From addresses include kernel mailmap aliases;
 cross-posts appear once. Review trailers are excluded. Feed entries and canonical
@@ -330,8 +341,9 @@ as their date. Missing activity, fallback to another inbox and ambiguous section
 names leave the entry undated. Date changes and cache expiry enter the next
 origin response. Source warming and the normal five-minute HTTP cache lifetime
 still govern freshness. Directory hubs and maintainer profiles remain undated
-because they have no reliable content-change timestamp. A maintainer's feed
-activity does not date the profile itself.
+because they have no reliable timestamp for every content change. The profile's
+structured activity date covers its recent-messages section, while ownership and
+review summaries can change independently.
 
 Release-history pages and their index also remain undated. Tagged releases still
 render live archive metadata, subsystem groupings and neighboring release links.
