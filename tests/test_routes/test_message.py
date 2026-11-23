@@ -1074,10 +1074,16 @@ def test_maintainer_listed_address_surfaces_in_from_line(
     )
     response = client.get(url)
     assert response.status_code == 200
-    assert (
-        "<dt>From</dt><dd>Outside Contributor &lt;contrib@somecorp.example&gt;</dd>"
-        in response.get_data(as_text=True)
+    from tests._dom import parse
+
+    sender = (
+        parse(response.get_data(as_text=True))
+        .find("header", cls="mail-header")
+        .find("dl")
+        .find_all("dd")[0]
     )
+    assert sender.text() == "Outside Contributor <contrib@somecorp.example>"
+    assert sender.find("a").attrs["href"] == "/maintainers/contrib@somecorp.example"
     dashboard = client.get("/alpha/").get_data(as_text=True)
     assert '<span class="recent-sender">Outside Contributor</span>' in dashboard
 

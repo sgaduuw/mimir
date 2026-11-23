@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Message and thread sender names link to servable profiles for exact current maintainer addresses, preserving display redaction and keeping reviewer-only senders unlinked (#1249).
+
 - Maintainer profiles show up to 15 recent messages from the cached cross-inbox feed, with richer titles, descriptions and activity dates in structured data. Cold profiles keep their existing metadata without running the feed query (#1250).
 
 ## [5.5.1], 2026-11-23
