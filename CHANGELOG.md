@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Remove `/llms.txt` from the search sitemap. Its route and `robots.txt` discovery remain available to agents (#1243).
+
 ## [5.5.0] - 2026-11-22
 
 ### Added

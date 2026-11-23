@@ -205,13 +205,12 @@ class SitemapPayload:
 cache.register("SitemapPayload", SitemapPayload)
 
 
-# The meta sitemap lists `/llms.txt` and robots.txt's `LLM-Context:` names
-# it (#969).
+# Agents discover this through robots.txt rather than the search sitemap.
 LLMS_TXT_PATH = "/llms.txt"
 
 # `<priority>` is our own signal: Google ignores it. Values are the
 # table in #964, ordered by how much a page adds over lore.kernel.org.
-PRIORITY_SITE = 1.0  # `/`, `/merge-window`, `/llms.txt`
+PRIORITY_SITE = 1.0  # `/`, `/merge-window`
 PRIORITY_PAGE = 0.9  # `/t` pages, series diffs, subsystem dashboards
 PRIORITY_HUB = 0.7  # inbox dashboards, maintainer pages
 PRIORITY_MONTH = 0.2
@@ -984,7 +983,7 @@ def meta_sitemap_key(
             [release_tags, directory_paths, version], separators=(",", ":")
         ).encode()
     ).hexdigest()[:16]
-    return f"sitemap:meta:v2:{digest}"
+    return f"sitemap:meta:v4:{digest}"
 
 
 def meta_sitemap_xml(
@@ -992,9 +991,7 @@ def meta_sitemap_xml(
 ) -> SitemapPayload:
     """Cached body of `/meta-sitemap.xml`. Urlset covering `/`, with the
     global-max article date as lastmod, `/merge-window`, with the
-    last linux-next walk, and `/llms.txt`, with no lastmod: it is a
-    template whose text moves with deploys and robots rules, so no
-    cheap date for it is truthful. The `last_modified`
+    last linux-next walk. The `last_modified`
     field carries the same global-max date so the route's
     body's `<lastmod>` stays truthful. It does not reach an HTTP
     `Last-Modified` header; sitemap routes set no validator at all (see
@@ -1047,7 +1044,6 @@ def meta_sitemap_xml(
                         else None,
                         PRIORITY_SITE,
                     ),
-                    SitemapEntry(base + LLMS_TXT_PATH, None, PRIORITY_SITE),
                     SitemapEntry(base + release_history_path(), None, PRIORITY_SITE),
                     *(
                         SitemapEntry(
