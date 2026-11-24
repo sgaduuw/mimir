@@ -832,6 +832,36 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
                         blocked = block_external_requests(page, base)
                         page.goto(base + f"/{kind}/")
                         landing_boxes = check_strip(page)
+                        root_rows = page.locator(".directory-table tbody tr")
+                        expect(root_rows).to_have_count(2)
+                        expect(page.locator("#directory-active")).to_have_text(
+                            f"Most active {kind} in the last seven days"
+                        )
+                        expect(
+                            page.get_by_role("button", name="Most active", exact=True)
+                        ).to_have_attribute("aria-pressed", "true")
+                        assert (
+                            root_rows.first.locator(".directory-name").inner_text()
+                            == active_name
+                        )
+                        page.get_by_role("button", name="A to Z", exact=True).click()
+                        orders = root_rows.evaluate_all(
+                            "rows => rows.map(r => Number(r.dataset.order))"
+                        )
+                        assert orders == sorted(orders)
+                        page.get_by_role(
+                            "button", name="Most active", exact=True
+                        ).click()
+                        assert (
+                            root_rows.first.locator(".directory-name").inner_text()
+                            == active_name
+                        )
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= innerWidth"
+                        )
+                        shot = tmp_path / f"directory-root-{kind}-{width}-{theme}.png"
+                        page.screenshot(path=str(shot), full_page=True)
+                        print(shot)
                         search = page.get_by_role(
                             "searchbox", name="Search all " + kind
                         )
@@ -915,4 +945,59 @@ def test_directory_filter_sort_and_layout(client, session, tmp_path, monkeypatch
     finally:
         server.shutdown()
         thread.join(timeout=5)
+        server.server_close()
+
+
+def test_profile_recent_messages_layout_and_links(
+    client, session, frozen_clock, tmp_path
+):
+    from xml.etree import ElementTree as ET
+
+    from tests.test_routes.test_maintainer_feeds import (
+        ADDRESS,
+        NS,
+        PATH,
+        _maintainer,
+        _message,
+    )
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    _maintainer(session)
+    subject = "A long patch subject " * 16
+    _message(session, subject, ADDRESS, inboxes=("beta",))
+    feed = client.get(PATH)
+    assert feed.status_code == 200
+    entry = ET.fromstring(feed.data).find("a:entry", NS)
+    destination = (
+        entry.find("a:link", NS).attrib["href"].removeprefix("http://localhost")
+    )
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            for width in (390, 1280):
+                for theme in ("light", "dark"):
+                    page = browser.new_page(
+                        viewport={"width": width, "height": 900}, color_scheme=theme
+                    )
+                    block_external_requests(page, base)
+                    page.goto(base + "/maintainers/" + ADDRESS)
+                    section = page.locator("#recent-messages")
+                    expect(section).to_be_visible()
+                    expect(section.locator("a")).to_have_text(subject.strip())
+                    expect(section.locator("a")).to_have_attribute("href", destination)
+                    expect(section.locator("time")).to_be_visible()
+                    assert page.evaluate(
+                        "document.documentElement.scrollWidth <= innerWidth"
+                    )
+                    screenshot = tmp_path / f"profile-recent-{width}-{theme}.png"
+                    page.screenshot(path=str(screenshot), full_page=True)
+                    print(screenshot)
+                    page.close()
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
         server.server_close()

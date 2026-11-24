@@ -91,6 +91,11 @@ slow cache-warming pass; a request never runs the activity aggregation.
 The global `/subsystems/` and `/maintainers/` directories include quiet entries
 and split by initial. Every directory page shows A to Z plus # in a stable grid.
 Occupied initials are links; empty initials are muted text and have no page.
+When cached activity is available, directory roots also show up to 50 linked
+entries with positive counts from the last seven days, ranked by maintainer
+review trailers or subsystem messages. Ties sort by name. Unavailable or empty
+activity leaves the root as a letter index. The root list supports filtering and
+A to Z sorting without changing letter pages or directory-wide searches.
 Both landing pages offer search across all letters by
 name or visible maintainer address. Search results show up to 200 matches and
 ask readers to refine larger searches. They are noindex with the directory root
