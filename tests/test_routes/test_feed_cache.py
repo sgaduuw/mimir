@@ -273,7 +273,7 @@ def test_http_cache_uses_only_remaining_link_lifetime(
     assert len(entries(expired)) == 1
     assert len(calls) == 1
     assert expired.cache_control.max_age == LISTING_CACHE_TTL_SEC
-    assert "ETag" not in expired.headers
+    assert expired.headers["ETag"] == first.headers["ETag"]
     assert "Last-Modified" not in expired.headers
 
 

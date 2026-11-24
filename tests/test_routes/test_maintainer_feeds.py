@@ -110,7 +110,7 @@ def test_maintainer_feed_exact_alias_identity_crossposts_and_links(
     assert entries[0].findtext("a:id", namespaces=NS).endswith(f":beta/{cross.id}")
     assert response.cache_control.public
     assert 0 < response.cache_control.max_age <= 300
-    assert "ETag" not in response.headers and "Last-Modified" not in response.headers
+    assert response.headers.get("ETag") and "Last-Modified" not in response.headers
 
 
 def test_maintainer_feed_filters_cached_age_out_and_http_deadline(

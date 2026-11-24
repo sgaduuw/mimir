@@ -199,8 +199,7 @@ def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):
 
 def test_maintainers_sitemap_xml_has_no_lastmod(client):
     """Slice-1 contract: no per-url `<lastmod>` in the body, and no
-    `Last-Modified` response header (sitemaps are unconditional; no
-    surface sets the header, see `_sitemap_response`)."""
+    `Last-Modified` response header (HTTP validation uses the XML bytes)."""
     import xml.etree.ElementTree as ET
 
     _seed_subsystem(
@@ -213,10 +212,8 @@ def test_maintainers_sitemap_xml_has_no_lastmod(client):
     r = client.get("/sitemap-maintainers.xml")
     assert r.status_code == 200
     assert r.headers.get("Last-Modified") is None
-    # Now that no sitemap surface carries a conditional validator, an
-    # explicit Cache-Control is the only thing keeping this one off CDN
-    # heuristic caching. Guards the `web.maintainers_sitemap` entry in
-    # hooks.py against being dropped.
+    # Explicit freshness remains necessary alongside conditional validation.
+    # Guard the web.maintainers_sitemap entry in hooks.py.
     assert r.headers.get("Cache-Control") == "public, max-age=300"
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
@@ -355,44 +352,36 @@ def test_inbox_sitemap_articles_scoped_to_that_inbox(client):
 
 
 # ---------------------------------------------------------------------------
-# Unconditional-response contract. Sitemaps carry NO `Last-Modified` /
-# `ETag` and never 304. The earlier date-based conditional GET pinned
-# stale STRUCTURAL versions in downstream caches (Cloudflare's edge,
-# crawlers): the `Last-Modified` was the max article date, which does
-# not advance when a deploy changes the sitemap's shape (e.g. adding
-# `/sitemap-maintainers.xml` in 3.6.0), so `If-Modified-Since` kept
-# returning 304 and every edge served the pre-deploy body until the
-# next day's first article bumped the date. See sitemaps.py module
-# docstring.
+# Sitemap ETags validate the served XML. Date-only requests stay unconditional:
+# mail dates cannot track structural changes, membership or cache fills.
 # ---------------------------------------------------------------------------
 
 
-def test_sitemap_xml_has_no_conditional_validator(client):
-    """The sitemap index carries no `Last-Modified` / `ETag`, so no
-    downstream cache can revalidate-and-pin a stale body."""
+def test_sitemap_xml_has_etag_but_no_date_validator(client):
+    """The index validates bytes rather than a content date."""
     _clear_sitemap_cache()
     r = client.get("/sitemap.xml")
     assert r.status_code == 200
     assert r.headers.get("Last-Modified") is None
-    assert r.headers.get("ETag") is None
+    assert r.headers.get("ETag")
 
 
-def test_meta_sitemap_xml_has_no_conditional_validator(client):
-    """`/meta-sitemap.xml` carries no conditional-GET validator."""
+def test_meta_sitemap_xml_has_etag_but_no_date_validator(client):
+    """The meta-sitemap carries a byte-based ETag without a date validator."""
     _clear_sitemap_cache()
     r = client.get("/meta-sitemap.xml")
     assert r.status_code == 200
     assert r.headers.get("Last-Modified") is None
-    assert r.headers.get("ETag") is None
+    assert r.headers.get("ETag")
 
 
-def test_inbox_sitemap_xml_has_no_conditional_validator(client):
-    """Per-inbox sitemap carries no conditional-GET validator."""
+def test_inbox_sitemap_xml_has_etag_but_no_date_validator(client):
+    """The inbox sitemap carries a byte-based ETag without a date validator."""
     _clear_sitemap_cache()
     r = client.get("/alpha/sitemap.xml")
     assert r.status_code == 200
     assert r.headers.get("Last-Modified") is None
-    assert r.headers.get("ETag") is None
+    assert r.headers.get("ETag")
 
 
 def test_sitemap_xml_ignores_if_modified_since_returns_full_body(client):

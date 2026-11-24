@@ -196,7 +196,12 @@ Feed destinations are cached for at most five minutes. Root repairs or removed
 inbox memberships can remain visible for that interval. Newly listed entries
 and thread page-size changes trigger a fresh link snapshot. The HTTP max-age is
 limited to the link snapshot's remaining lifetime, so downstream caching cannot
-add another five-minute window.
+add another five-minute window. Feeds use a strong ETag of their rendered XML:
+matching `If-None-Match` requests, including weak tags, return an empty 304.
+The response still uses the link snapshot's remaining lifetime. An empty feed
+retains its existing current-time `<updated>` value, so its bytes and ETag
+change as time advances. No origin `Last-Modified` is sent; date-only conditions
+still return 200.
 
 Release history follows the previous-final to final Git reachability range,
 not commit timestamps. Annotated tags supply their tagger date; lightweight
@@ -376,9 +381,19 @@ cover: one hour for the open and previous period, then a week, two weeks, and
 30 days once the period ended over a year ago. They also send
 `Cloudflare-CDN-Cache-Control` with that TTL capped at a week. Other sitemap
 origin caches last one hour. Keys include the thread render cap where
-pagination depends on it. Responses have no ETag or Last-Modified validator and
-send `Cache-Control: public, max-age=300` downstream. Message and thread pages
-instead use ETags with revalidation.
+pagination depends on it. Every sitemap response carries an ETag derived from
+its actual XML bytes. Matching `If-None-Match` requests return 304 with no body,
+while changed XML returns 200 with a different ETag. This validates the selected
+cached representation without bypassing its existing freshness lifetime.
+Responses retain `Cache-Control: public, max-age=300` downstream and archive
+edge TTLs. An unchanged rebuild retains the same ETag.
+
+Sitemaps send no origin `Last-Modified` header. A bare `If-Modified-Since`
+request still returns a full 200: membership, rules, backfills and cache fills
+can change the body without a newer article or release date. Durable tracking
+of body-change timestamps, including index child dates, remains deferred under
+#1254. This ETag change does not remove CDN-synthesized modification dates or
+save transfers for crawlers that send only date-based conditions.
 
 ## Site metadata and probes
 
@@ -411,7 +426,12 @@ Successful month archive pages send `Cloudflare-CDN-Cache-Control` with
 previous month, and `max-age=604800` for older months, using the UTC date.
 Browser caching stays `Cache-Control: public, max-age=600`. Year archives
 do not send this edge header. Filters keep their own query-string URLs;
-month pages have no separate HTMX representation.
+month pages have no separate HTMX representation. Both year and month archives
+use strong ETags of their rendered HTML for GET and HEAD. Matching tags return
+304 with the current cache headers. Body changes, including display settings,
+change the ETag. These validators save transfer after rendering and do not
+shorten freshness lifetimes. Neither route sets `Last-Modified`, and date-only
+conditions remain 200.
 
 HTML needs an explicit Cloudflare Cache Rule before the edge caches it.
 See [month archive cache settings](operations.md#cache-month-archives-at-the-edge)

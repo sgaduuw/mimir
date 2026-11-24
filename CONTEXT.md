@@ -2106,30 +2106,31 @@ afterthought:
   links. Neither tag dates nor link-refresh timestamps reliably date content
   changes. Content-change tracking is deferred (#1242).
 
-  **Sitemap responses send no HTTP conditional-GET
-  validator (no `Last-Modified` / `ETag`, always 200; 3.6.1).** They
-  used to set `Last-Modified` to the newest article date and 304 on
-  `If-Modified-Since`, but that validator is a lie about *structural*
-  changes: it advances only when a newer article lands, not when a
-  deploy changes the sitemap's shape. 3.6.0 added the
-  `/sitemap-maintainers.xml` entry to the index without moving the
-  date, so Cloudflare's edge (revalidating after `max-age=300`) got a
-  304 and served the pre-deploy index for hours; crawlers doing
-  `If-Modified-Since` were pinned the same way. Freshness now rides the
-  in-XML `<lastmod>` (the SEO-relevant signal) plus `Cache-Control:
-  max-age=300` (set per-endpoint in `hooks.py` for every sitemap
-  surface, including maintainers), so edges cache briefly then
-  re-fetch a full 200. The lost HTTP-304 bandwidth on a small,
-  origin-cached, edge-cached XML doc is negligible against silently
-  serving a stale structure. Reason a `<lastmod>`-plus-max-age policy
-  is correct where a conditional-GET one isn't: the former can't pin,
-  it only delays, bounded by `max-age`. (Note when smoke-testing prod:
-  Cloudflare *synthesizes* a `Last-Modified: <fetch-time>` on the MISS
-  response because the origin sets none, so `curl` against ratatoskr.run
-  shows a `Last-Modified` that equals the `Date` header and advances on
-  every fetch. That is the CDN's, not mimir's, and it's harmless, a
-  fetch-time stamp can't pin the way a content-date could. The decisive
-  check is that a conditional GET returns **200, never 304**.)
+  **Sitemap responses use content-based ETags (#1254).** The shared response
+  helper hashes the XML bytes actually served. A matching `If-None-Match`
+  returns 304 without a body. Changed membership, serialization or cached
+  activity changes that tag even when the newest article date stays fixed.
+  An identical rebuild retains it. This saves transfer bytes after obtaining
+  the selected body, without bypassing the existing origin or edge cache TTLs.
+
+  Sitemaps still send no origin `Last-Modified`. The historical 3.6.0
+  content-date validator pinned a pre-deploy index after a new child was added.
+  Adding a release-time floor would fix that case but miss same-release rules
+  reloads, historical backfills, removals and cache fills. Bare
+  `If-Modified-Since` therefore stays 200. A mismatching `If-None-Match`
+  cannot be overridden by a future date condition. Durable body revision
+  timestamps and corresponding index child dates remain deferred under #1254.
+  ETags do not themselves remove CDN-synthesized modification dates or save
+  transfers for clients using only date conditions. Smoke tests must
+  distinguish those from ETag conditional requests.
+  Atom feeds and year/month archive HTML use the same byte-based validator
+  pattern (#1256), applied after rendering. Matching `If-None-Match`, including
+  weak tags, returns an empty 304 for GET or HEAD with the current cache policy.
+  Feed max-age still counts down to the link snapshot's expiry, while archive
+  client and month CDN lifetimes remain unchanged. Empty feeds retain their
+  existing current-time `<updated>` fallback, so their body and ETag change as
+  time advances. These responses have no origin `Last-Modified`; date-only
+  conditions stay 200. The benefit is reduced transfer, not skipped rendering.
 - **301, not 302**, on Message-ID lookup redirects (`/m/<id>` and
   `/<inbox>/m/<id>`). Cache-Control headers are also set on the
   redirect responses.

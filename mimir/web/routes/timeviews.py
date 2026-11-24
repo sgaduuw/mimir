@@ -176,17 +176,21 @@ def year_archive(inbox_name: str, year: int):
         has_next = year + 1 <= _max_archive_year() and (
             monthly_volume(session, inbox, year + 1).total > 0
         )
-    return render_template(
-        "year.html",
-        inbox_name=inbox.name,
-        current_inbox=inbox.name,
-        year=year,
-        volume=volume,
-        prev_year=year - 1 if year - 1 >= _MIN_ARCHIVE_YEAR else None,
-        next_year=year + 1 if has_next else None,
-        is_current_year=year == now.year,
-        current_month=now.month,
+    response = make_response(
+        render_template(
+            "year.html",
+            inbox_name=inbox.name,
+            current_inbox=inbox.name,
+            year=year,
+            volume=volume,
+            prev_year=year - 1 if year - 1 >= _MIN_ARCHIVE_YEAR else None,
+            next_year=year + 1 if has_next else None,
+            is_current_year=year == now.year,
+            current_month=now.month,
+        )
     )
+    response.add_etag()
+    return response.make_conditional(request)
 
 
 @bp_web.route("/<inbox_name>/<int:year>/<int:month>/")
@@ -258,7 +262,8 @@ def month_archive(inbox_name: str, year: int, month: int):
         else min(archive_sitemap_ttl(year, month, today), WEEK_SEC)
     )
     response.headers["Cloudflare-CDN-Cache-Control"] = f"max-age={edge}"
-    return response
+    response.add_etag()
+    return response.make_conditional(request)
 
 
 def _filter_context(selected, unanswered_label):
