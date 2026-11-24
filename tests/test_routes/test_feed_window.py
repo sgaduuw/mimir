@@ -102,12 +102,12 @@ def test_warm_feed_tracks_root_and_page_changes(
         assert link(entries(client.get("/alpha/feed.atom"))[aid]) == link(first)
         frozen_clock.tick(timedelta(seconds=LISTING_CACHE_TTL_SEC + 1))
         assert cache.get("feed_articles:alpha:5:1000:") is not None
-    # Leave listing and message caches warm. There are no feed validators.
-    # conditional headers must not hide the changed destination behind 304.
+    # Warm listing and message caches must not hide changed destinations
+    # behind a matching validator for the previous XML.
     response = client.get(
         "/alpha/feed.atom",
         headers={
-            "If-None-Match": '"old"',
+            "If-None-Match": first_response.headers["ETag"],
             "If-Modified-Since": "Tue, 02 Jan 2024 12:00:00 GMT",
         },
     )
@@ -123,7 +123,7 @@ def test_warm_feed_tracks_root_and_page_changes(
         client.get(message_url).get_data(as_text=True),
     ).group(1)
     assert link(second) == f"{canonical}#m{aid}"
-    assert "ETag" not in response.headers
+    assert response.headers["ETag"] != first_response.headers["ETag"]
     assert "Last-Modified" not in response.headers
 
 

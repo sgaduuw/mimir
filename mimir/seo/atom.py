@@ -20,7 +20,7 @@ from datetime import UTC, datetime
 from time import time
 from xml.etree.ElementTree import Element, SubElement, tostring
 
-from flask import Response
+from flask import Response, request
 
 from mimir.config import settings
 from mimir.dashboard import ArticleSummary
@@ -54,7 +54,8 @@ def atom_response(
     the resolved thread page and message anchor
     so feed readers that key on `<id>` deduplicate across feeds (the
     same article appearing in lkml's and linux-fsdevel's feeds renders
-    as one entry, not two)."""
+    as one entry, not two). The ETag covers the rendered bytes, saving
+    transfer without extending the link snapshot's lifetime."""
     # Lazy imports break the `web → seo → web` cycle (see module
     # docstring).
     from mimir.web.filters import _allowlisted_email, _usable_display_name
@@ -120,4 +121,5 @@ def atom_response(
     # Downstream caches get only the link snapshot's remaining lifetime.
     response.cache_control.public = True
     response.cache_control.max_age = max(0, int(link_expires_at - time()))
-    return response
+    response.add_etag()
+    return response.make_conditional(request)

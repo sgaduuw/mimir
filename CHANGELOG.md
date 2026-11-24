@@ -13,6 +13,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Added
 
+- Atom feeds and year/month archive pages use content-based ETags for conditional GET and HEAD responses, preserving feed link deadlines and archive cache lifetimes (#1256).
+
 - Sitemap responses carry content-based ETags and return empty 304 responses for matching `If-None-Match` requests. Date-only conditional requests remain full responses because content and release dates do not track every sitemap change (#1254).
 
 ## [5.6.0], 2026-11-24
