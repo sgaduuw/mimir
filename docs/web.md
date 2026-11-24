@@ -196,7 +196,12 @@ Feed destinations are cached for at most five minutes. Root repairs or removed
 inbox memberships can remain visible for that interval. Newly listed entries
 and thread page-size changes trigger a fresh link snapshot. The HTTP max-age is
 limited to the link snapshot's remaining lifetime, so downstream caching cannot
-add another five-minute window.
+add another five-minute window. Feeds use a strong ETag of their rendered XML:
+matching `If-None-Match` requests, including weak tags, return an empty 304.
+The response still uses the link snapshot's remaining lifetime. An empty feed
+retains its existing current-time `<updated>` value, so its bytes and ETag
+change as time advances. No origin `Last-Modified` is sent; date-only conditions
+still return 200.
 
 Release history follows the previous-final to final Git reachability range,
 not commit timestamps. Annotated tags supply their tagger date; lightweight
@@ -421,7 +426,12 @@ Successful month archive pages send `Cloudflare-CDN-Cache-Control` with
 previous month, and `max-age=604800` for older months, using the UTC date.
 Browser caching stays `Cache-Control: public, max-age=600`. Year archives
 do not send this edge header. Filters keep their own query-string URLs;
-month pages have no separate HTMX representation.
+month pages have no separate HTMX representation. Both year and month archives
+use strong ETags of their rendered HTML for GET and HEAD. Matching tags return
+304 with the current cache headers. Body changes, including display settings,
+change the ETag. These validators save transfer after rendering and do not
+shorten freshness lifetimes. Neither route sets `Last-Modified`, and date-only
+conditions remain 200.
 
 HTML needs an explicit Cloudflare Cache Rule before the edge caches it.
 See [month archive cache settings](operations.md#cache-month-archives-at-the-edge)
