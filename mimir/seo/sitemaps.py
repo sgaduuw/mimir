@@ -11,16 +11,12 @@ Each archive year or month file lists `/t` URLs, and `/sitemap.xml`
 indexes them with the pages mimir adds over lore.kernel.org. A root the
 column cannot rank yet is in no sitemap until its backfill reaches it.
 
-Each surface returns a `SitemapPayload` carrying both the XML body and
-the most-recent `<lastmod>` date represented in that body. That date is
-an in-body signal only: it goes into `<lastmod>` elements, NOT into an
-HTTP `Last-Modified` header. Sitemap responses deliberately carry no
-conditional-GET validator and always answer 200, because a content-date
-validator lies about structural changes (adding a urlset to the index
-moves no article date) and 3.6.0 pinned Cloudflare's edge on a stale
-index for hours that way. Freshness rides `<lastmod>` plus
-`Cache-Control: max-age`, which can delay but never pin. See CONTEXT.md
-"SEO posture" before reintroducing a validator here.
+Each surface returns a SitemapPayload carrying the XML body and its
+newest content date. Content dates remain in-XML signals, not HTTP
+Last-Modified values. Routes use an ETag of the served bytes for conditional
+GET and HEAD. Membership changes, cache fills and structural changes can
+alter the body without moving its newest content date. Date-only requests
+remain unconditional until durable body-change timestamps are available.
 """
 
 import hashlib
@@ -893,11 +889,9 @@ def sitemap_index_xml(
     per configured inbox with its archive `/t` files,
     `/sitemap-maintainers.xml`, and the sixteen series diff pages.
     Cached under `sitemap:index:<render-cap>`, the key `warm-cache`
-    pre-populates. The `last_modified` field is the global-max article date. It
-    is NOT projected into a `Last-Modified` response header: this is the
-    surface whose date validator 304-pinned Cloudflare's edge on a
-    pre-deploy index in 3.6.0, which is why no sitemap route sets one.
-    See the module docstring."""
+    pre-populates. The `last_modified` field is the global-max article date, retained for
+    content metadata. The route derives its HTTP ETag from the XML bytes
+    rather than this date."""
 
     def compute() -> SitemapPayload:
         per_inbox_latest = _per_inbox_latest_date(session)
@@ -991,13 +985,10 @@ def meta_sitemap_key(
 def meta_sitemap_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
-    """Cached body of `/meta-sitemap.xml`. Urlset covering `/`, with the
-    global-max article date as lastmod, `/merge-window`, with the
-    last linux-next walk. The `last_modified`
-    field carries the same global-max date so the route's
-    body's `<lastmod>` stays truthful. It does not reach an HTTP
-    `Last-Modified` header; sitemap routes set no validator at all (see
-    the module docstring).
+    """Cached body of `/meta-sitemap.xml`. The root entry carries the
+    global-max article date and `/merge-window` carries the last linux-next
+    walk. The payload's `last_modified` retains the global-max content date.
+    The route derives its HTTP ETag from the XML bytes, not that date.
 
     Release history pages are listed only when
     `mimir.release_history.recorded_history` lists them on the index, read
@@ -1088,8 +1079,8 @@ def maintainers_sitemap_xml(
     The newest displayed message dates that activity, while ownership and
     reviews can change independently. There is no reliable timestamp covering
     every profile change, so entries and payload stay undated. No author
-    aggregate is run merely to manufacture a date. Sitemap routes keep their
-    existing unconditional response behavior."""
+    aggregate is run merely to manufacture a date. The response ETag tracks changes
+    to the URLset bytes independently of profile dates."""
 
     def compute() -> SitemapPayload:
         entries = [
