@@ -11,7 +11,8 @@
   <header class="mail-header">
     <h1>{{ parsed.subject|clean_subject or '(no subject)' }}</h1>
     <dl>
-      <dt>From</dt><dd>{{ parsed.author|safe_from }}</dd>
+      {% set sender_profile = parsed.author|sender_maintainer_url %}
+      <dt>From</dt><dd>{% if sender_profile %}<a href="{{ sender_profile }}">{{ parsed.author|safe_from }}</a>{% else %}{{ parsed.author|safe_from }}{% endif %}</dd>
       <dt>Date</dt><dd>{{ article.date.strftime('%Y-%m-%d %H:%M:%S %z') if article.date else '?' }}</dd>
       {% if cross_post_inboxes %}<dt>Also in</dt><dd>{% for other in cross_post_inboxes %}<a href="{{ article|msg_url(other) }}">{{ other }}</a>{% if not loop.last %}, {% endif %}{% endfor %}</dd>{% endif %}
       {% if parent and parent_url %}<dt>Reply to</dt><dd class="reply-to"><a href="{{ parent_url }}">{{ parent.author|display_name }}{% if parent.date %}, {{ parent.date.strftime('%Y-%m-%d') }}{% endif %}</a></dd>{% endif %}
