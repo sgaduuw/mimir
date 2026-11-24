@@ -15,27 +15,23 @@ cross-posted articles now appear in each linked inbox's sitemap
 (every one is a real URL, and the page's own `<link rel="canonical">`
 tells search engines which to keep).
 
-Responses are deliberately unconditional: they carry no
-`Last-Modified` / `ETag` validator and always return 200 with the
-current body. An earlier version set `Last-Modified` to the sitemap's
-newest content date and honoured `If-Modified-Since` (304 Not
-Modified), but that date only advances when a newer article lands,
-not when the sitemap's *structure* changes via a deploy (e.g. adding
-the `/sitemap-maintainers.xml` entry in 3.6.0). Conditional GET then
-pinned every downstream cache (Cloudflare's edge, and any crawler
-issuing `If-Modified-Since`) to the pre-deploy body until the next
-day's first article happened to bump the date past the cached value.
-Dropping the HTTP validator makes each fetch a full 200; the per-URL
-`<lastmod>` inside the XML stays the crawler-facing freshness signal,
-and the per-endpoint `Cache-Control: max-age=300` (set in hooks.py)
-still lets edges, browsers and crawlers cache briefly and re-fetch fresh. The
-archive files also send `Cloudflare-CDN-Cache-Control`, so Cloudflare's
-edge keeps them for up to a week (#1088).
+Responses carry an ETag of the exact XML bytes and honour If-None-Match
+for GET and HEAD. The tag changes whenever the served body changes,
+including structural changes, membership removals and cache fills that
+leave the newest mail date unchanged. It stays stable when an unchanged
+body is rebuilt after cache expiry.
+
+There is no Last-Modified header, and date-only conditional requests return
+200. The newest content date plus a release timestamp cannot date every
+same-release change. Durable body-change timestamps are deferred. Per-URL
+<lastmod> values remain content signals inside the XML. Cache-Control and
+the archive-specific Cloudflare-CDN-Cache-Control retain their existing
+lifetimes, so this validator does not shorten cache freshness periods.
 """
 
 from datetime import UTC, datetime
 
-from flask import Response, abort
+from flask import Response, abort, request
 
 from mimir.extensions import SessionLocal
 from mimir.seo import (
@@ -57,16 +53,10 @@ from mimir.web.urls import _get_inbox_or_404, _site_base
 
 
 def _sitemap_response(payload: SitemapPayload) -> Response:
-    """Build a 200 Response for one sitemap surface.
-
-    Deliberately unconditional (no `Last-Modified` / `ETag`, no
-    `make_conditional`): a date-based validator pinned stale
-    structural versions in downstream caches. See the module
-    docstring for the full why. `payload.last_modified` is retained
-    on the dataclass as the sitemap's newest-content-date, it just no
-    longer drives an HTTP conditional-GET header.
-    """
-    return Response(payload.body, mimetype="application/xml; charset=utf-8")
+    """Validate the served XML bytes, including changes unrelated to mail dates."""
+    response = Response(payload.body, mimetype="application/xml; charset=utf-8")
+    response.add_etag()
+    return response.make_conditional(request)
 
 
 @bp_web.route("/sitemap.xml")
@@ -97,7 +87,7 @@ def maintainers_sitemap() -> Response:
     """Urlset listing every maintainer's profile page
     (`/maintainers/<address>`). No per-url `<lastmod>` (slice-1
     decision, see `maintainers_sitemap_xml`'s docstring), so this
-    response never carries `Last-Modified`."""
+    response has a byte-based ETag but no `Last-Modified` header."""
     with SessionLocal() as session:
         payload = maintainers_sitemap_xml(session, _site_base())
     return _sitemap_response(payload)
