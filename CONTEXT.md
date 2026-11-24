@@ -2811,7 +2811,10 @@ rule replacement commits before snapshot invalidation. Maintainer directory
 membership stays literal current `M:` addresses; weekly author/reviewer activity
 folds one-hop mailmap aliases into an eligible current maintainer, retaining a
 listed address when its mailmap target is not eligible. The front page still
-ranks only positive authored-message counts.
+ranks only positive authored-message counts. Directory roots (#1251) select
+the top50 linked entries from these complete cached rows, using seven-day
+review trailers for maintainers and messages for subsystems. This adds no
+activity query or warm target and does not change letter or search membership.
 
 The index is also omitted from the sitemap when it would be empty
 (~45 of 203 inboxes see no MAINTAINERS-claimed path in a week). It

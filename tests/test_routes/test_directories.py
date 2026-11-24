@@ -386,3 +386,125 @@ def test_directory_strip_matches_routes_and_sitemap(
             path = f"/{kind}/{value}/"
             assert client.get(path).status_code == 404
             assert "http://localhost" + path not in locs
+
+
+@pytest.mark.parametrize("kind", ["maintainers", "subsystems"])
+def test_directory_root_shows_top_fifty_with_stable_ties(client, monkeypatch, kind):
+    from mimir.web import filters
+    from mimir.web.routes import directory_pages
+
+    rows = []
+    for i in range(60):
+        row = {
+            "name": f"Person {i:02d}",
+            "path": f"/maintainers/p{i}@kernel.org",
+            "address": f"p{i}@kernel.org",
+            "subsystem_count": 1,
+            "review_count": i // 2 + 1,
+        }
+        if kind == "subsystems":
+            row = {
+                "name": f"DRIVER {i:02d}",
+                "path": f"/alpha/subsystems/driver%20{i:02d}/",
+                "inbox_name": "alpha",
+                "message_count": i // 2 + 1,
+            }
+        rows.append(row)
+    metric = "review_count" if kind == "maintainers" else "message_count"
+    for value, label in [(0, "Zero"), (None, "Unknown")]:
+        rows.append({**rows[0], "name": label, metric: value})
+    rows.append({**rows[0], "name": "Unlinked", "path": None, metric: 999})
+    if kind == "maintainers":
+        rows.append(
+            {
+                **rows[0],
+                "name": "Hidden",
+                "address": "secret@private.test",
+                "path": "/maintainers/secret@private.test",
+                metric: 1000,
+            }
+        )
+    monkeypatch.setattr(
+        filters, "_is_allowlisted", lambda address: address != "secret@private.test"
+    )
+    monkeypatch.setattr(
+        directory_pages, f"{kind[:-1]}_directory_rows", lambda session: (rows, True)
+    )
+    response = client.get(f"/{kind}/")
+    page = parse(response.get_data(as_text=True))
+    assert (
+        page.find("h2", id="directory-active").text()
+        == f"Most active {kind} in the last seven days"
+    )
+    rendered = page.find("tbody", id="directory-list").find_all("tr")
+    assert len(rendered) == 50
+    indexes = sorted(range(60), key=lambda i: (-(i // 2 + 1), i))[:50]
+    expected = [
+        (f"Person {i:02d}" if kind == "maintainers" else f"driver {i:02d}")
+        for i in indexes
+    ]
+    assert [row.find("td", cls="directory-name").text() for row in rendered] == expected
+    assert [int(row.attrs["data-active"]) for row in rendered] == [
+        i // 2 + 1 for i in indexes
+    ]
+    assert [
+        int(row.attrs["data-order"])
+        for row in sorted(
+            rendered, key=lambda row: row.find("td", cls="directory-name").text()
+        )
+    ] == sorted(int(row.attrs["data-order"]) for row in rendered)
+    assert (
+        page.find("button", **{"data-sort-button": "active"}).attrs["aria-pressed"]
+        == "true"
+    )
+    assert (
+        page.find("button", **{"data-sort-button": "default"}).attrs["aria-pressed"]
+        == "false"
+    )
+    assert (
+        page.find("link", rel="canonical").attrs["href"] == f"http://localhost/{kind}/"
+    )
+    assert "secret@private.test" not in response.get_data(as_text=True)
+    letter = "p" if kind == "maintainers" else "d"
+    other = parse(client.get(f"/{kind}/{letter}/").get_data(as_text=True))
+    assert not other.find_all("h2", id="directory-active")
+    assert len(other.find("tbody", id="directory-list").find_all("tr")) == 60
+    query = "Person" if kind == "maintainers" else "DRIVER"
+    search = parse(client.get(f"/{kind}/?q={query}").get_data(as_text=True))
+    assert not search.find_all("h2", id="directory-active")
+    assert len(search.find("tbody", id="directory-list").find_all("tr")) == 60
+    assert search.find("meta", name="robots").attrs["content"] == "noindex"
+
+
+@pytest.mark.parametrize("available,count", [(False, 8), (True, None), (True, 0)])
+@pytest.mark.parametrize("kind", ["maintainers", "subsystems"])
+def test_directory_root_omits_unavailable_or_empty_top_list(
+    client, monkeypatch, kind, available, count
+):
+    from mimir.web import filters
+    from mimir.web.routes import directory_pages
+
+    row = {
+        "name": "Alpha",
+        "path": "/maintainers/a@kernel.org",
+        "address": "a@kernel.org",
+        "subsystem_count": 1,
+        "review_count": count,
+    }
+    if kind == "subsystems":
+        row = {
+            "name": "ALPHA",
+            "path": "/alpha/subsystems/alpha/",
+            "inbox_name": "alpha",
+            "message_count": count,
+        }
+    monkeypatch.setattr(filters, "_is_allowlisted", lambda address: True)
+    monkeypatch.setattr(
+        directory_pages,
+        f"{kind[:-1]}_directory_rows",
+        lambda session: ([row], available),
+    )
+    page = parse(client.get(f"/{kind}/").get_data(as_text=True))
+    assert not page.find_all("h2", id="directory-active")
+    assert not page.find_all("tbody", id="directory-list")
+    assert page.find("nav", cls="directory-letters").find_all("a")
