@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Added
+
+- Sitemap responses carry content-based ETags and return empty 304 responses for matching `If-None-Match` requests. Date-only conditional requests remain full responses because content and release dates do not track every sitemap change (#1254).
+
 ## [5.6.0], 2026-11-24
 
 ### Added

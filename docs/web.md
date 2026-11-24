@@ -376,9 +376,19 @@ cover: one hour for the open and previous period, then a week, two weeks, and
 30 days once the period ended over a year ago. They also send
 `Cloudflare-CDN-Cache-Control` with that TTL capped at a week. Other sitemap
 origin caches last one hour. Keys include the thread render cap where
-pagination depends on it. Responses have no ETag or Last-Modified validator and
-send `Cache-Control: public, max-age=300` downstream. Message and thread pages
-instead use ETags with revalidation.
+pagination depends on it. Every sitemap response carries an ETag derived from
+its actual XML bytes. Matching `If-None-Match` requests return 304 with no body,
+while changed XML returns 200 with a different ETag. This validates the selected
+cached representation without bypassing its existing freshness lifetime.
+Responses retain `Cache-Control: public, max-age=300` downstream and archive
+edge TTLs. An unchanged rebuild retains the same ETag.
+
+Sitemaps send no origin `Last-Modified` header. A bare `If-Modified-Since`
+request still returns a full 200: membership, rules, backfills and cache fills
+can change the body without a newer article or release date. Durable tracking
+of body-change timestamps, including index child dates, remains deferred under
+#1254. This ETag change does not remove CDN-synthesized modification dates or
+save transfers for crawlers that send only date-based conditions.
 
 ## Site metadata and probes
 
