@@ -4,11 +4,11 @@
 {% set display_name = safe_name if safe_name != 'unknown sender' else profile.address %}
 {% from "_breadcrumb.html" import breadcrumb %}
 {% set crumbs = [(site_name, url_for('web.index')), ('Maintainers', maintainer_directory_path()), (display_name, none)] %}
-{% block title %}{{ display_name }} | Maintainers | {{ site_name }}{% endblock %}
+{% block title %}{% if safe_name != 'unknown sender' %}{{ safe_name }} · {% endif %}Linux kernel maintainer | {{ site_name }}{% endblock %}
 {% block extra_atom_feeds %}
 <link rel="alternate" type="application/atom+xml" title="{{ display_name }}" href="{{ maintainer_feed_url }}">
 {% endblock %}
-{% block meta_description %}MAINTAINERS entry and cross-inbox review activity for {{ display_name }}.{% endblock %}
+{% block meta_description %}{{ profile_description }}{% endblock %}
 {% block content %}
 <section class="maintainer-profile">
   {{ breadcrumb(crumbs) }}
@@ -31,6 +31,26 @@
   </ul>
   {% else %}
   <p><em>No indexed subsystems.</em></p>
+  {% endif %}
+
+  {% if recent_messages is not none %}
+  <section id="recent-messages" aria-labelledby="recent-messages-heading">
+    <h2 id="recent-messages-heading">Recent messages</h2>
+    <p class="muted">From the last {{ feed_window_days }} days, across mailing lists.</p>
+    {% if recent_messages %}
+    <ul class="recent-list">
+      {% for row in recent_messages %}
+      <li class="recent-row">
+        <time datetime="{{ row.date.isoformat() }}">{{ row.date.strftime('%Y-%m-%d %H:%M') }}</time>
+        <a href="{{ row.url }}">{{ row.article.subject|clean_subject or '(no subject)' }}</a>
+        <span class="recent-sender">{{ row.article.author|listing_sender }} · {{ row.inbox }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p><em>No messages in the last {{ feed_window_days }} days.</em></p>
+    {% endif %}
+  </section>
   {% endif %}
 
   <h2>Review activity</h2>

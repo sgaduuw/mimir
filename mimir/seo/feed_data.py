@@ -47,7 +47,8 @@ def maintainer_feed_data(
     *,
     days: int = FEED_WINDOW_DAYS,
     limit: int = FEED_ENTRY_LIMIT,
-) -> tuple[list[ArticleSummary], dict[int, str], dict[int, str], int]:
+    compute_on_miss: bool = True,
+) -> tuple[list[ArticleSummary], dict[int, str], dict[int, str], int] | None:
     """Cache exact sender identities and destinations under the loaded rules."""
     address = address.lower()
     version = rules_version(session)
@@ -58,25 +59,36 @@ def maintainer_feed_data(
             session, identity_addresses(session, address), floor, limit
         )
 
-    rows = cache.get_or_compute(
-        session,
-        f"maintainer_feed_articles:v1:{days}:{limit}:{version}:{address}",
-        LISTING_CACHE_TTL_SEC,
-        compute,
+    key = f"maintainer_feed_articles:v1:{days}:{limit}:{version}:{address}"
+    rows = (
+        cache.get_or_compute(session, key, LISTING_CACHE_TTL_SEC, compute)
+        if compute_on_miss
+        else cache.get(key)
     )
+    if rows is None:
+        return None
     entries = [
         article
         for article in rows
         if article.date is not None and aware_utc(article.date) >= floor
     ]
     return _feed_link_snapshot(
-        session, entries, f"maintainer_feed_links:v1:{days}:{limit}:{version}", address
+        session,
+        entries,
+        f"maintainer_feed_links:v1:{days}:{limit}:{version}",
+        address,
+        compute_on_miss=compute_on_miss,
     )
 
 
 def _feed_link_snapshot(
-    session: Session, entries: list[ArticleSummary], key_prefix: str, identity: str
-) -> tuple[list[ArticleSummary], dict[int, str], dict[int, str], int]:
+    session: Session,
+    entries: list[ArticleSummary],
+    key_prefix: str,
+    identity: str,
+    *,
+    compute_on_miss: bool = True,
+) -> tuple[list[ArticleSummary], dict[int, str], dict[int, str], int] | None:
     """Keep link staleness bounded independently of generic cache warming."""
     signature = [(a.id, aware_utc(a.date).isoformat()) for a in entries]
     policy = hashlib.sha256(
@@ -89,6 +101,8 @@ def _feed_link_snapshot(
         or saved["expires_at"] <= cache._now()
         or not set(signature).issubset(saved["entries"])
     ):
+        if not compute_on_miss:
+            return None
         # The web package imports SEO while registering routes.
         from mimir.web.urls import _canonical_destinations_for
 

@@ -19,16 +19,17 @@
     {% else %}<span aria-disabled="true"{% if item.letter == 'other' %} aria-label="Numbers and other"{% endif %}>{{ item.label }}</span>{% endif %}
     {% endfor %}
   </nav>
+  {% if activity_root and rows %}<h2 id="directory-active">Most active {{ kind }} in the last seven days</h2>{% endif %}
   {% if show_rows and not activity_available %}<p class="directory-note">Activity not available yet</p>{% elif show_rows and kind == 'maintainers' %}<p class="directory-note">Reviewed-by, Acked-by and Tested-by trailers in the last seven days, with mail aliases grouped.</p>{% elif show_rows %}<p class="directory-note">Messages in the last seven days, summed across inboxes; cross-posts may count more than once. Quiet subsystems link to a mirrored mailing list where available.</p>{% endif %}
   {% if show_rows %}
   {% if not rows %}<p>No matching {{ kind }}.</p>{% endif %}
   {% if rows %}
   <div class="front-controls" data-filter-controls hidden>
     {% call search_field('directory-find', 'Filter these results' if searching else 'Find a ' ~ singular) %}<input id="directory-find" type="search" data-filter-input="directory-list" autocomplete="off">{% endcall %}
-    <span class="front-sort"><button type="button" class="outline secondary" data-sort-button="default" data-sort-list="directory-list" aria-pressed="true">A to Z</button>{% if activity_available %}<button type="button" class="outline secondary" data-sort-button="active" data-sort-list="directory-list" aria-pressed="false">Most active</button>{% endif %}</span>
+    <span class="front-sort"><button type="button" class="outline secondary" data-sort-button="default" data-sort-list="directory-list" aria-pressed="{{ 'false' if activity_root else 'true' }}">A to Z</button>{% if activity_available %}<button type="button" class="outline secondary" data-sort-button="active" data-sort-list="directory-list" aria-pressed="{{ 'true' if activity_root else 'false' }}">Most active</button>{% endif %}</span>
   </div>
   <table class="listing-table directory-table"><thead><tr><th scope="col">{{ singular|capitalize }}</th><th scope="col"{% if kind == 'maintainers' %} class="directory-number"{% endif %}>{{ 'Discussed on' if kind == 'subsystems' else 'Subsystems' }}</th>{% if activity_available %}<th scope="col" class="listing-count">{{ 'Messages' if kind == 'subsystems' else 'Review trailers' }}</th>{% endif %}</tr></thead><tbody id="directory-list">
-    {% for row in rows %}{% if kind == 'subsystems' %}{{ subsystem_row(row, maximum, true, activity_available, loop.index0) }}{% else %}{{ maintainer_row(row, maximum, true, activity_available, loop.index0) }}{% endif %}{% endfor %}
+    {% for row in rows %}{% if kind == 'subsystems' %}{{ subsystem_row(row, maximum, true, activity_available, row.directory_order) }}{% else %}{{ maintainer_row(row, maximum, true, activity_available, row.directory_order) }}{% endif %}{% endfor %}
   </tbody></table>
   {% endif %}
   {% endif %}
