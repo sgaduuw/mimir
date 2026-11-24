@@ -91,6 +91,11 @@ slow cache-warming pass; a request never runs the activity aggregation.
 The global `/subsystems/` and `/maintainers/` directories include quiet entries
 and split by initial. Every directory page shows A to Z plus # in a stable grid.
 Occupied initials are links; empty initials are muted text and have no page.
+When cached activity is available, directory roots also show up to 50 linked
+entries with positive counts from the last seven days, ranked by maintainer
+review trailers or subsystem messages. Ties sort by name. Unavailable or empty
+activity leaves the root as a letter index. The root list supports filtering and
+A to Z sorting without changing letter pages or directory-wide searches.
 Both landing pages offer search across all letters by
 name or visible maintainer address. Search results show up to 200 matches and
 ask readers to refine larger searches. They are noindex with the directory root
@@ -103,6 +108,12 @@ busiest mirrored inbox, otherwise a mirrored MAINTAINERS `L:` contact; entries
 without either target remain unlinked. Maintainer activity counts weekly review
 trailers even for maintainers who authored no messages.
 
+Message From values and thread bylines link exact current `M:` sender addresses
+to their profiles. Reviewer-only senders and other authors retain their visible
+text. Membership is loaded once per request from the rules-versioned directory
+cache, and the existing sender redaction still applies. Sender links do not
+expand mailmap aliases or match display names.
+
 Maintainer profiles collect activity across inboxes for each MAINTAINERS `M:`
 address. Their header shows initials and subsystem/inbox totals. Lowercase
 subsystem cards retain status pills and stack on phones. When warmed targets
@@ -113,6 +124,17 @@ count with alphabetical ties; otherwise they stay alphabetical without counts.
 Counts cover all indexed review-trailer events: multiple roles on one message
 count separately, and cross-posts contribute to each inbox. They are not counts
 of unique patches or people.
+
+Profiles show up to 15 recent messages from the last five days when both the
+maintainer feed listing and its canonical link snapshot are cached. They share
+the feed's identities and destinations. A cached empty window shows an empty
+state, while a missing or expired snapshot leaves the section out. Requests
+never run the feed query to fill this section. Feed requests populate these
+snapshots. Slow warming still covers profile metadata, review counts and
+subsystem targets, without adding a bulk maintainer-feed warm. Structured data
+uses the newest displayed message date as its activity `dateModified`, not a
+complete modification history for ownership and review summaries. Profile HTTP
+cache policy is unchanged.
 
 Profiles also advertise an Atom feed of messages sent by that maintainer across
 configured inboxes. Exact parsed From addresses include kernel mailmap aliases;
@@ -330,8 +352,9 @@ as their date. Missing activity, fallback to another inbox and ambiguous section
 names leave the entry undated. Date changes and cache expiry enter the next
 origin response. Source warming and the normal five-minute HTTP cache lifetime
 still govern freshness. Directory hubs and maintainer profiles remain undated
-because they have no reliable content-change timestamp. A maintainer's feed
-activity does not date the profile itself.
+because they have no reliable timestamp for every content change. The profile's
+structured activity date covers its recent-messages section, while ownership and
+review summaries can change independently.
 
 Release-history pages and their index also remain undated. Tagged releases still
 render live archive metadata, subsystem groupings and neighboring release links.

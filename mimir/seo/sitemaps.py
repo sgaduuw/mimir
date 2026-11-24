@@ -1084,12 +1084,12 @@ def maintainers_sitemap_xml(
     """Cached body of `/sitemap-maintainers.xml`. One-urlset listing
     every addressable maintainer profile (`/maintainers/<address>`).
 
-    Profiles show ownership and cached review summaries, not the authored
-    message list in their separate Atom feed. A grouped newest-author date
-    would date that feed rather than this page. There is no reliable timestamp
-    for profile content changes, so entries and payload stay undated. No author
-    aggregate is run merely to manufacture a date. Sitemap routes also keep
-    their existing unconditional response behavior."""
+    Profiles show ownership, review summaries and cached recent messages.
+    The newest displayed message dates that activity, while ownership and
+    reviews can change independently. There is no reliable timestamp covering
+    every profile change, so entries and payload stay undated. No author
+    aggregate is run merely to manufacture a date. Sitemap routes keep their
+    existing unconditional response behavior."""
 
     def compute() -> SitemapPayload:
         entries = [

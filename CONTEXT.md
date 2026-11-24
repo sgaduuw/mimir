@@ -2081,10 +2081,15 @@ afterthought:
   2026-08-04, which is the propagation the "grep the repo for the same
   claim in prose" rule exists to catch.
   The maintainers urlset carries no per-profile `<lastmod>`: profiles show
-  ownership and review summaries without a content-change timestamp. A newest
-  authored-message date describes the linked feed rather than the profile,
-  so even a cheap grouped author query would supply the wrong signal. The
-  index entry retains the already-computed `global_latest`.
+  ownership, review summaries and cached recent messages without a timestamp
+  covering every content change. Since #1250 the newest displayed message
+  supplies the profile's structured activity date, but ownership and review
+  summaries can change independently. This does not establish a complete sitemap
+  modification signal. The index retains the already-computed `global_latest`.
+  Recent messages reuse the existing feed listing and canonical link snapshots
+  without computing either on cold profile requests. Feed requests populate
+  them. The slow warmer continues warming metadata and review counts without
+  a separate per-maintainer feed fan-out.
 
   Meta-sitemap subsystem target dates come from the complete cached global
   ranking's selected-inbox activity. The ranking stores that inbox's date,
@@ -2806,7 +2811,10 @@ rule replacement commits before snapshot invalidation. Maintainer directory
 membership stays literal current `M:` addresses; weekly author/reviewer activity
 folds one-hop mailmap aliases into an eligible current maintainer, retaining a
 listed address when its mailmap target is not eligible. The front page still
-ranks only positive authored-message counts.
+ranks only positive authored-message counts. Directory roots (#1251) select
+the top50 linked entries from these complete cached rows, using seven-day
+review trailers for maintainers and messages for subsystems. This adds no
+activity query or warm target and does not change letter or search membership.
 
 The index is also omitted from the sitemap when it would be empty
 (~45 of 203 inboxes see no MAINTAINERS-claimed path in a week). It

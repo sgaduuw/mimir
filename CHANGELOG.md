@@ -11,6 +11,20 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.6.0], 2026-11-24
+
+### Added
+
+- Directory roots show up to 50 linked maintainers or subsystems with positive seven-day activity, ranked by review trailers or messages. Unavailable activity leaves the roots as letter indexes (#1251).
+
+- Message and thread sender names link to servable profiles for exact current maintainer addresses, preserving display redaction and keeping reviewer-only senders unlinked (#1249).
+
+- Maintainer profiles show up to 15 recent messages from the cached cross-inbox feed, with richer titles, descriptions and activity dates in structured data. Cold profiles keep their existing metadata without running the feed query (#1250).
+
+### Changed
+
+- Runtime dependency refresh: SQLAlchemy 2.1.8 to 2.1.9 and pydantic 2.14.3 to 2.14.4 (pydantic-core 2.50.5), both patch releases (#1248).
+
 ## [5.5.1], 2026-11-23
 
 ### Changed
@@ -6932,7 +6946,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.5.1...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.6.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

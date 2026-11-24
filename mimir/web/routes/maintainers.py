@@ -10,6 +10,8 @@ as falsy (no inbox nav links). The profile advertises its cross-inbox feed.
 
 from flask import abort, redirect, render_template
 
+from mimir.dashboard import FEED_WINDOW_DAYS
+from mimir.datetime_utils import aware_utc
 from mimir.directories import cached_subsystem_targets
 from mimir.extensions import SessionLocal
 from mimir.maintainer_directory import (
@@ -18,27 +20,29 @@ from mimir.maintainer_directory import (
     maintainer_path,
     resolve_maintainer_profile,
 )
+from mimir.seo.feed_data import maintainer_feed_data
 from mimir.web._blueprint import bp_web
+from mimir.web.filters import _listing_name_filter, _subsystem_label_filter
 from mimir.web.urls import _site_base
 
 
-def _json_ld_maintainer(profile: MaintainerProfile, canonical_url: str) -> dict:
-    """schema.org `ProfilePage` for `/maintainers/<address>`. Minimal
-    by design (name + url only): maintainers are allowlisted by
-    construction (every address here came from the kernel tree's
-    MAINTAINERS file), so there's no redaction posture to thread
-    through the way `_json_ld_message`'s author handling has to."""
-    return {
+def _json_ld_maintainer(
+    profile: MaintainerProfile, canonical_url: str, date_modified=None
+) -> dict:
+    """Date the newest rendered message, without claiming full change tracking."""
+    name = _listing_name_filter(profile.name)
+    if name == "unknown sender":
+        name = "Linux kernel maintainer"
+    payload = {
         "@context": "https://schema.org",
         "@type": "ProfilePage",
-        "name": f"{profile.name or profile.address} | Maintainers",
+        "name": name,
         "url": canonical_url,
-        "mainEntity": {
-            "@type": "Person",
-            "name": profile.name or profile.address,
-            "url": canonical_url,
-        },
+        "mainEntity": {"@type": "Person", "name": name, "url": canonical_url},
     }
+    if date_modified is not None:
+        payload["dateModified"] = date_modified.isoformat()
+    return payload
 
 
 @bp_web.route("/maintainers/<path:address>")
@@ -62,6 +66,20 @@ def maintainer_view(address: str):
             return redirect(maintainer_path(profile.address), code=301)
         review_counts = cached_maintainer_review_counts(session, address_normalized)
         subsystem_targets = cached_subsystem_targets(session)
+        feed = maintainer_feed_data(session, profile.address, compute_on_miss=False)
+        recent_messages = None
+        if feed is not None:
+            entries, urls, names, _expires_at = feed
+            recent_messages = [
+                {
+                    "article": article,
+                    "url": f"{urls[article.id]}#m{article.id}",
+                    "inbox": names[article.id],
+                    "date": aware_utc(article.date),
+                }
+                for article in entries
+                if article.id in urls and article.id in names
+            ][:15]
 
     # Missing profiles above either redirect to a live address or abort with 404.
     assert profile is not None
@@ -73,6 +91,23 @@ def maintainer_view(address: str):
         if review_counts is None
         else sorted(review_counts, key=lambda name: (-review_counts[name], name))
     )
+    labels = [_subsystem_label_filter(name) for name, _status in profile.subsystems]
+    ownership = ", ".join(labels[:2])
+    if len(labels) > 2:
+        ownership += f" and {len(labels) - 2} more"
+    description = "Linux kernel maintainer"
+    if ownership:
+        description += f" of {ownership}"
+    description += ". Recent messages and review activity"
+    activity_inboxes = set(review_inboxes) | {
+        row["inbox"] for row in recent_messages or []
+    }
+    if activity_inboxes:
+        description += f" across {len(activity_inboxes)} mailing lists"
+    description += "."
+    if len(description) > 160:
+        description = description[:157].rsplit(" ", 1)[0] + "..."
+    modified = max((row["date"] for row in recent_messages or []), default=None)
     base = _site_base()
     canonical_url = base + maintainer_path(address_normalized)
     return render_template(
@@ -83,6 +118,9 @@ def maintainer_view(address: str):
         review_counts=review_counts,
         review_inboxes=review_inboxes,
         canonical_url=canonical_url,
-        page_json_ld=_json_ld_maintainer(profile, canonical_url),
+        recent_messages=recent_messages,
+        feed_window_days=FEED_WINDOW_DAYS,
+        profile_description=description,
+        page_json_ld=_json_ld_maintainer(profile, canonical_url, modified),
         current_inbox=None,
     )

@@ -81,9 +81,10 @@ def _directory(kind: str, letter: str | None):
         )
         return redirect(canonical_path + query, code=301)
     searching = letter is None and bool(query)
+    activity_root = letter is None and not searching
     selected = (
         rows
-        if searching
+        if searching or activity_root
         else [row for row in rows if directory_letter(row["name"]) == letter]
     )
     if kind == "maintainers":
@@ -119,6 +120,17 @@ def _directory(kind: str, letter: str | None):
     if searching:
         selected = selected[:_SEARCH_LIMIT]
     metric = "message_count" if kind == "subsystems" else "review_count"
+    for order, row in enumerate(selected):
+        row["directory_order"] = order
+    if activity_root:
+        selected = (
+            sorted(
+                (row for row in selected if row["path"] and (row[metric] or 0) > 0),
+                key=lambda row: -row[metric],
+            )[:50]
+            if available
+            else []
+        )
     maximum = max((row[metric] or 0 for row in selected), default=0)
     return render_template(
         "directory.html",
@@ -144,7 +156,8 @@ def _directory(kind: str, letter: str | None):
             }
             for value in DIRECTORY_LETTERS
         ],
-        show_rows=letter is not None or searching,
+        activity_root=activity_root,
+        show_rows=letter is not None or searching or (activity_root and bool(selected)),
         query=query,
         searching=searching,
         search_total=search_total,
