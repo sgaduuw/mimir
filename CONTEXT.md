@@ -2123,6 +2123,14 @@ afterthought:
   ETags do not themselves remove CDN-synthesized modification dates or save
   transfers for clients using only date conditions. Smoke tests must
   distinguish those from ETag conditional requests.
+  Atom feeds and year/month archive HTML use the same byte-based validator
+  pattern (#1256), applied after rendering. Matching `If-None-Match`, including
+  weak tags, returns an empty 304 for GET or HEAD with the current cache policy.
+  Feed max-age still counts down to the link snapshot's expiry, while archive
+  client and month CDN lifetimes remain unchanged. Empty feeds retain their
+  existing current-time `<updated>` fallback, so their body and ETag change as
+  time advances. These responses have no origin `Last-Modified`; date-only
+  conditions stay 200. The benefit is reduced transfer, not skipped rendering.
 - **301, not 302**, on Message-ID lookup redirects (`/m/<id>` and
   `/<inbox>/m/<id>`). Cache-Control headers are also set on the
   redirect responses.
