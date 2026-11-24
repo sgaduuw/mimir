@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.7.0], 2026-11-24
+
 ### Added
 
 - Atom feeds and year/month archive pages use content-based ETags for conditional GET and HEAD responses, preserving feed link deadlines and archive cache lifetimes (#1256).
@@ -6952,7 +6954,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.6.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.7.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
