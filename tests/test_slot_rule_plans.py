@@ -73,23 +73,6 @@ def test_the_revisions_fold_query_seeks_both_indexes(seeded_db):
     _assert_seeks(plan)
 
 
-def test_the_sitemap_bucket_query_seeks_both_indexes(seeded_db):
-    from mimir.seo.sitemaps import series_diff_sitemap_xml
-
-    with planner_stats(seeded_db, PRODUCTION_STATS), seeded_db() as s:
-        _seed_slot(s)
-        plan = plan_of(
-            s,
-            lambda: series_diff_sitemap_xml(s, "p", "", force=True),
-            "patch_series_version",
-        )
-    assert (
-        "ix_articles_patch_series_key (patch_series_key>? AND patch_series_key<?)"
-        in plan
-    ), plan
-    assert FILES_SEEK in plan, plan
-
-
 def test_the_validator_series_query_seeks_both_indexes(seeded_db):
     from mimir.web.routes._validators import render_state_tag
 

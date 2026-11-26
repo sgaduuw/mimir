@@ -1249,8 +1249,8 @@ advertised-URL resolver supplies its canonical conversation page and safe
 message fallback. No body fetch or heuristic patch match runs on this path.
 Invalid supplied values remain errors rather than becoming redirects. The
 robots bare-diff disallow ends in `$`: matching includes the query string,
-so actual sitemap comparison URLs remain crawlable. Its data migration
-appends only the missing rule and preserves operator settings.
+so the complete comparison URLs mimir links to remain crawlable. Its data
+migration appends only the missing rule and preserves operator settings.
 
 `web/series_diff_navigation.py` resolves the selected comparison and its links
 from one batch of indexed slots for the exact series key/head. `slot_winner`
@@ -1264,7 +1264,7 @@ No navigation step reads a mail body or compares every patch.
 Canonical inbox names are fetched in bulk for indexed destination winners.
 Heuristic destinations stay in the requesting inbox, because that is the
 inbox whose children were matched. The shared URL spelling supplies links,
-canonicals and the native form's path; the sitemap remains cover-only.
+canonicals and the native form's path; no sitemap lists diff pages (#1260).
 
 Metadata stays outside the 24-hour rendered-diff cache, so a new patch or a
 canonical reassignment is visible on a warm page. `revision_diff:render2`
@@ -2009,12 +2009,12 @@ afterthought:
   via `cache.get_or_compute`. The index is a single-level
   `<sitemapindex>` referencing urlsets only: `/meta-sitemap.xml`,
   the per-inbox `/<inbox>/sitemap.xml`, `/sitemap-maintainers.xml`
-  (one urlset of every `/maintainers/<address>` page), and sixteen
-  `/sitemap-series-diffs-<h>.xml` (#846). Those list the cover-letter
-  diff between adjacent revisions only, paged by the key's first hex
-  character: 193,557 such diffs and 12,478 in the largest page, where
-  every position would be 1.47M (production, 2026-10-24). The
-  maintainers layer is deliberately ONE urlset, not a nested index
+  (one urlset of every `/maintainers/<address>` page). The series
+  diff pages (#846) are in no sitemap (#1260): about 200,000 generated
+  pages with query strings would outweigh the thread pages the index
+  exists to promote. They stay served, self-canonical and linked from
+  the revisions fold, and `/sitemap-series-diffs-<h>.xml` is a 404.
+  The maintainers layer is deliberately ONE urlset, not a nested index
   and not per-maintainer files: Google rejects a nested sitemap index
   ("Incorrect sitemap index format: Nested sitemap indexes"), so the
   "group inboxes vs maintainers" tree can't be expressed as nested
@@ -2039,7 +2039,7 @@ afterthought:
 
   **One index; the message sitemaps are retired (#1089).** `/sitemap.xml`
   lists the pages mimir adds over lore.kernel.org: meta, inbox files,
-  maintainers, series diffs, and the archive files, which hold `/t`
+  maintainers, and the archive files, which hold `/t`
   URLs only. #964 split a second index, `/messages-sitemap.xml`, off it
   for the message URLs of threads the backfill had not reached; once the
   backfill completed, all 3,339 of its files were empty. Its routes now

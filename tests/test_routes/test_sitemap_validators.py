@@ -11,7 +11,6 @@ _SITEMAPS = [
     "/meta-sitemap.xml",
     "/alpha/sitemap.xml",
     "/sitemap-maintainers.xml",
-    "/sitemap-series-diffs-a.xml",
     "/alpha/2024/sitemap.xml",
     "/alpha/2024/01/sitemap.xml",
 ]

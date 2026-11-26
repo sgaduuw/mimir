@@ -12,13 +12,44 @@ The global budget (`CRAWLER_BUDGET_PER_MINUTE`) is the master switch:
 listed name (case-insensitive substring, first listed wins) or carries
 a product token such as `Googlebot/2.1`, `GPTBot/1.0` or `curl/8.5.0`: a
 name ending in one of the configured markers (by default `bot`,
-`crawler`, `spider`, `curl`, `wget`, `python-requests`) followed by a
-slash. A token that is just the marker (`bot/1.0`, `curl/8.5.0`) counts
+`crawler`, `spider`, `curl`, `wget`, `python-requests`, `lightpanda`,
+`search`, `crawl`) followed by a slash. A token that is just the marker
+(`bot/1.0`, `curl/8.5.0`) counts
 too, on purpose. The slash is required so a browser on a device called
 `CUBOT X30` is never gated. Script tools are markers, so an operator's
 curl smoke check is a crawler once the global budget is set.
 
-`CRAWLER_UA_EXEMPT` takes precedence over those UA checks, defaulting to
+#1263 adds three signs of a crawler: `search` and `crawl` join the default
+markers, and, when no listed name or token matched:
+ * a contact URL, `+http://` or `+https://`, is how a crawler declares
+   itself and a browser never sends one. The key is the nearest
+   `Name/version` token before the `+`, lowercased (`epochal-search`, for
+   a Chrome string ending `Epochal-Search/1.0; +https://crawler.epochal.com`).
+   The name is any run of letters, digits, `_`, `.` and `-`, so `008/0.83`
+   keys as `008`; each such key lands in the default share like any other.
+ * a bare `bot`, `crawl` or `search` anywhere in a UA that does not start
+   with `Mozilla/` (`Brightbot 1.0`, `research-client`). The key is the
+   first token, lowercased, without a `/version`. The `Mozilla/` exclusion
+   is the browser guarantee once more: every browser UA, a phone sold as
+   `CUBOT X30` included, starts with it, so a bare-word match there would
+   gate readers. The cost is a miss on `Mozilla/5.0 (compatible;
+   FirecrawlSearchEval/1.0)`, left alone on purpose. A non-browser app UA
+   that lacks the prefix, such as a Dalvik one from that phone, is gated
+   when it contains one of the words: a known edge, accepted because the
+   gate refuses only above the default share. A contact URL whose nearest
+   `Name/` token is `Mozilla/` keys as `mozilla`: browsers never send
+   `+http`, so that bucket holds only unnamed crawlers. With no `Name/`
+   token at all, only this rule can match. `search` also matches
+   "research"; in access logs that was only scripts. A misclassified
+   client gets a 429 only above its bucket's rate, while a miss can take
+   the site's capacity, so these lean broad.
+Every rule scans attacker-chosen text, so none may take more than linear
+time: the new rules use one fixed regex search, `in` and a backwards walk,
+the product-token match cuts out one run of name characters per slash
+before it applies the regex, and only the first `UA_CLASSIFY_MAX` (512)
+characters are classified.
+
+`CRAWLER_UA_EXEMPT` takes precedence over all of those UA checks, defaulting to
 `The Lounge IRC Client`, whose user-triggered link previews include Facebook
 and Twitter crawler tokens. These case-insensitive substrings exempt the UA
 classification only; the separate impossible-headers check still applies.
@@ -130,7 +161,6 @@ EXEMPT_ENDPOINTS = frozenset(
         "web.sitemap",
         "web.meta_sitemap",
         "web.maintainers_sitemap",
-        "web.series_diff_sitemap",
         "web.inbox_sitemap",
         "web.archive_sitemap",
         "web.messages_sitemap_gone",
@@ -140,6 +170,17 @@ EXEMPT_ENDPOINTS = frozenset(
 )
 
 _LOG_EVERY_SEC = 60
+
+# `+http://` or `+https://` is how a crawler gives its contact page; a
+# browser never sends it (#1263).
+_CONTACT_URL = re.compile(r"\+https?://")
+_BARE_WORDS = ("bot", "crawl", "search")
+
+# crawler_key classifies only this many leading characters of a User-Agent.
+# It bounds the work of every rule, and no real UA comes near it. A crawler
+# that pads its UA to push a marker past it could as easily send a plain
+# browser UA, which is out of scope here.
+UA_CLASSIFY_MAX = 512
 
 # A bucket holds this many seconds of its rate. A full minute (the
 # textbook choice) lets a bucket admit a whole minute's budget at once
@@ -162,6 +203,29 @@ _SLOT = struct.Struct("dd")
 _READY = 1026.0
 # Which bucket refused a request, in the order they are checked.
 REFUSALS = ("own", "global", "pool")
+
+
+def _self_described_key(ua: str) -> str | None:
+    """The key for a UA that names itself without a marker token (#1263),
+    given the lowercased UA. Built from one fixed regex search and a
+    backwards walk, with no regex that can backtrack, so attacker-chosen
+    text cannot make it slow."""
+    contact = _CONTACT_URL.search(ua)
+    if contact:
+        # The nearest Name/version token before the `+`: a non-empty run of
+        # letters, digits, `_`, `.` and `-`, so it can never equal a reserved
+        # key (those hold spaces and brackets) and a digit-led name keys too.
+        slash = ua.rfind("/", 0, contact.start())
+        end = start = slash
+        while start > 0 and (ua[start - 1].isalnum() or ua[start - 1] in "_.-"):
+            start -= 1
+        if slash > 0 and start < end:
+            return ua[start:end]
+    # Every browser UA starts with Mozilla/, `CUBOT X30` included, so
+    # the bare words only count outside that prefix.
+    if not ua.startswith("mozilla/") and any(w in ua for w in _BARE_WORDS):
+        return re.split(r"[\s/]", ua.lstrip(), maxsplit=1)[0] or None
+    return None
 
 
 def impossible_headers(sec_fetch_site: str | None, referer: str | None) -> bool:
@@ -375,6 +439,7 @@ class CrawlerBudget:
         if ua_exempt is None:
             ua_exempt = Settings.model_fields["crawler_ua_exempt"].default
         self._ua_exempt = tuple(value.lower() for value in ua_exempt)
+        self._markers = tuple(m.lower() for m in markers)
         alternatives = "|".join(re.escape(m) for m in markers)
         self._token = (
             re.compile(rf"\b((?:[A-Za-z][\w.-]*)?(?:{alternatives}))/", re.IGNORECASE)
@@ -464,14 +529,43 @@ class CrawlerBudget:
         token. Total 0 is the master switch, so nothing is a crawler."""
         if self._total <= 0 or not user_agent:
             return None
+        user_agent = user_agent[:UA_CLASSIFY_MAX]
         ua = user_agent.lower()
         if any(needle in ua for needle in self._ua_exempt):
             return None
         for name, (needle, _, _) in self._listed.items():
             if needle in ua:
                 return name
-        match = self._token.search(user_agent) if self._token else None
-        return match.group(1).lower() if match else None
+        return self._token_key(user_agent) or _self_described_key(ua)
+
+    def _token_key(self, user_agent: str) -> str | None:
+        """The first `name<marker>/` product token. Searching the whole UA
+        with the regex rescans the rest of a long `a.-a.-` run from every
+        word boundary (quadratic), so cut out each run of name characters
+        before a slash, keep only those ending in a marker, and run the
+        regex on that one window. Runs never overlap, so the total is linear."""
+        if not self._token:
+            return None
+        slash = user_agent.find("/")
+        while slash != -1:
+            # A marker may hold any character, but the name before it is
+            # word characters, dots and hyphens.
+            start = slash
+            for marker in self._markers:
+                begin = slash - len(marker)
+                if begin >= 0 and user_agent[begin:slash].lower() == marker:
+                    while begin > 0 and (
+                        user_agent[begin - 1].isalnum()
+                        or user_agent[begin - 1] in "_.-"
+                    ):
+                        begin -= 1
+                    start = min(start, begin)
+            if start < slash:
+                match = self._token.search(user_agent[start : slash + 1])
+                if match:
+                    return match.group(1).lower()
+            slash = user_agent.find("/", slash + 1)
+        return None
 
     def check(
         self,

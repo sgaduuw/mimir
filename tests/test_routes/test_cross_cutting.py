@@ -910,9 +910,12 @@ def test_nav_links_the_merge_window_from_every_page(client, tmp_path, inbox_name
         path: re.findall(r'<a href="/merge-window"[^>]*>([^<]*)</a>', b)
         for path, b in bodies.items()
     }
-    assert labels["/"] == ["Releases"]
-    # The nav link replaced the front page's own prose link.
-    assert len(re.findall(r'href="/merge-window"', bodies["/"])) == 1
+    # The nav link, then the front page's described heading link: #891
+    # dropped a bare prose line as redundant with the nav; #1259 brought
+    # back a link that says what the page holds, since the nav label
+    # ("Releases") does not.
+    assert labels["/"] == ["Releases", "Linux merge window"]
+    assert len(re.findall(r'href="/merge-window"', bodies["/"])) == 2
 
 
 def test_keyboard_nav_data_nav_up_meta_index_has_no_parent(client):

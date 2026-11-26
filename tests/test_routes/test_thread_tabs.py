@@ -534,8 +534,7 @@ def _timeline(html: str, start: int) -> str:
 def test_each_patch_disclosure_matches_its_message_page_s_timeline(client, tmp_path):
     """Each in-series patch's revisions on `/t` are the ones its own message
     page renders (one builder, `_series_timeline`), and every diff link
-    resolves. Per-position diffs are not in the series diff sitemap (covers
-    only), so the message page is the reference. Only the revision links
+    resolves. The message page is the reference. Only the revision links
     differ: on `/t` they name thread pages (pinned below)."""
     import html as htmllib
     import re
