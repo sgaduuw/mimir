@@ -971,7 +971,7 @@ def meta_sitemap_key(
             [release_tags, directory_entries, version], separators=(",", ":")
         ).encode()
     ).hexdigest()[:16]
-    return f"sitemap:meta:v4:{digest}"
+    return f"sitemap:meta:v5:{digest}"
 
 
 def meta_sitemap_xml(

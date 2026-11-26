@@ -47,7 +47,7 @@ def test_every_404_offers_the_front_page_and_the_lookup_form(client):
     main = page.find("section", cls="error-page")
     assert main.find("h1").text() == "Page not found"
     assert main.find("p", cls="error-code").text() == "404"
-    assert _links(html)["All inboxes"] == "/"
+    assert _links(html)["All inboxes"] == "/inboxes/"
     forms = main.find_all("form", cls="message-id-form")
     assert len(forms) == 1
     assert forms[0].attrs["action"] == "/m/" and forms[0].attrs["method"] == "get"
@@ -65,7 +65,7 @@ def test_links_appear_for_a_valid_inbox_and_month(client):
     assert links == {
         "March 2024 in alpha": "/alpha/2024/03/",
         "The alpha dashboard": "/alpha/",
-        "All inboxes": "/",
+        "All inboxes": "/inboxes/",
     }
 
 
@@ -73,11 +73,20 @@ def test_links_appear_for_a_valid_inbox_and_month(client):
     ("path", "expected"),
     [
         # An inbox that does not exist: nothing built from the URL.
-        ("/nosuch/2024/03/1", {"All inboxes": "/"}),
+        ("/nosuch/2024/03/1", {"All inboxes": "/inboxes/"}),
         # The inbox exists, the month is out of range: dashboard only.
-        ("/alpha/1900/03/1", {"The alpha dashboard": "/alpha/", "All inboxes": "/"}),
-        ("/alpha/2024/13/1", {"The alpha dashboard": "/alpha/", "All inboxes": "/"}),
-        ("/alpha/2024/00/1", {"The alpha dashboard": "/alpha/", "All inboxes": "/"}),
+        (
+            "/alpha/1900/03/1",
+            {"The alpha dashboard": "/alpha/", "All inboxes": "/inboxes/"},
+        ),
+        (
+            "/alpha/2024/13/1",
+            {"The alpha dashboard": "/alpha/", "All inboxes": "/inboxes/"},
+        ),
+        (
+            "/alpha/2024/00/1",
+            {"The alpha dashboard": "/alpha/", "All inboxes": "/inboxes/"},
+        ),
     ],
 )
 def test_links_only_to_pages_that_exist(client, path, expected):
@@ -129,7 +138,7 @@ def test_a_failing_lookup_still_renders_the_404(client, monkeypatch):
     assert response.status_code == 404
     page = parse(response.get_data(as_text=True))
     # Nothing built from the URL, but the page and the form are there.
-    assert _links(response.get_data(as_text=True)) == {"All inboxes": "/"}
+    assert _links(response.get_data(as_text=True)) == {"All inboxes": "/inboxes/"}
     assert page.find("form", cls="message-id-form")
 
 
@@ -220,3 +229,18 @@ def test_500_renders_plain_with_no_lookup(client):
     assert "Back to" in html
     assert [s for s in seen if "FROM inboxes" in s] == []
     assert "Cache-Control" not in r.headers
+
+
+def test_404_all_inboxes_link_reaches_every_inbox(client):
+    """#1267 moved the full list to /inboxes/. The 404 page's
+    "All inboxes" link must land on a page that lists them all."""
+    response = client.get("/no/such/route/exists/here")
+    assert response.status_code == 404
+    main = parse(response.get_data(as_text=True)).find("section", cls="error-page")
+    href = {a.text(): a.attrs["href"] for a in main.find_all("a")}["All inboxes"]
+    listing = parse(client.get(href).get_data(as_text=True)).find_all(
+        "ul", id="inbox-list"
+    )
+    assert listing, f"'All inboxes' points at {href}, which lists no inboxes"
+    links = [a.attrs["href"] for a in listing[0].find_all("a", cls="inbox-link")]
+    assert links == ["/alpha/", "/beta/"]

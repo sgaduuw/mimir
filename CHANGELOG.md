@@ -11,11 +11,14 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.9.0], 2026-11-26
+
 ### Changed
 
-- The front page shows cached Linux merge-window status, queued patches and subsystem totals, merged and waiting pull requests to Linus, and linux-next freshness. Cold cache rows omit their figures without running computations on a request; a per-minute background step fills them within a minute of each tree walk or new pull-request mail (#1266, #1270).
+- Before upgrading, check inbox names. An inbox called `inboxes`, configured or stored, stops 5.9.0 from starting. Run `tools/check_inbox_namespace.py` from the new checkout as described in docs/operations.md (Check inbox names before upgrading directory routes). Rename any conflict on 5.8.0, before upgrading, with `mimir admin inbox update inboxes --rename <name>` and change the matching `INBOXES` key; 5.9.0 will not start with that name, and its admin commands refuse it even as a rename source. The inbox's old URLs are not redirected (#1267).
+- The front page shows cached Linux merge-window status, queued patches and subsystem totals, merged and waiting pull requests to Linus, and linux-next freshness. Cold cache rows omit their figures without running computations on a request; a per-minute background step fills them within about a minute of each tree walk or new pull-request mail (#1266, #1270).
 
-- The front page no longer lists every inbox: the list, with its find and sort controls, moved to the new `/inboxes/`, linked from the front page's inbox count and from a line under the busiest cards. At 203 inboxes it was 203 of the front page's 243 links, and with the inbox `ItemList` in its JSON-LD (which moves to `/inboxes/` too) about 60% of its 115 KB (measured 2026-11-26). Busiest this month shows 8 inboxes instead of 6, laid out one, two or four to a row by width (four from 1024px), so they always fill whole rows; before, a 1024px to 1535px window showed six as 3+3. `/inboxes/` is in `/meta-sitemap.xml`. `inboxes` is now a reserved root name, so an inbox can no longer be called that (#1267).
+- The front page no longer lists every inbox: the list, with its find and sort controls, moved to the new `/inboxes/`, linked from the front page's inbox count and from a line under the busiest cards. At 203 inboxes it was 203 of the front page's 243 links, and with the inbox `ItemList` in its JSON-LD (which moves to `/inboxes/` too) about 60% of its 115 KB (measured 2026-11-26). Busiest this month shows 8 inboxes instead of 6, laid out one, two or four to a row by width (four from 1024px), so eight cards fill whole rows; before, a 1024px to 1535px window showed six as 3+3. `/inboxes/` is in `/meta-sitemap.xml`. `inboxes` is now a reserved root name, so an inbox can no longer be called that (#1267).
 
 ## [5.8.0], 2026-11-26
 
@@ -6975,7 +6978,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.8.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.9.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
