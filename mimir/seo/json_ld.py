@@ -1,6 +1,6 @@
 """schema.org JSON-LD payloads, one builder per page shape.
 
-`_json_ld_index` (`/`), `_json_ld_inbox` (`/<inbox>/`),
+`_json_ld_index` (`/`), `_json_ld_inboxes` (`/inboxes/`), `_json_ld_inbox` (`/<inbox>/`),
 `_json_ld_message` (message page, the only one with a `@graph`:
 `DiscussionForumPosting` + `BreadcrumbList`), `_json_ld_search`
 (rendered `?q=…` results page), and `_json_ld_author`
@@ -36,35 +36,42 @@ DEFAULT_SITE_DESCRIPTION = (
 )
 
 
-def _json_ld_index(base: str, inboxes=()) -> dict:
-    """schema.org WebSite for the meta-index `/`, paired with an
-    `ItemList` of configured inboxes so search engines can treat the
-    page as a topical hub rather than a flat link list. Sitelinks-
-    search-box is intentionally omitted (mimir's search is per-inbox,
-    not site-wide)."""
-    payload: dict = {
+def _json_ld_index(base: str) -> dict:
+    """schema.org WebSite for the meta-index `/`. Sitelinks-search-box is
+    intentionally omitted (mimir's search is per-inbox, not site-wide).
+    The inbox `ItemList` lives on `/inboxes/` (#1267)."""
+    return {
         "@context": "https://schema.org",
         "@type": "WebSite",
         "name": settings.site_name,
         "url": base + "/",
         "description": DEFAULT_SITE_DESCRIPTION,
     }
-    if inboxes:
-        payload["mainEntity"] = {
+
+
+def _json_ld_inboxes(base: str, inbox_names: Sequence[str]) -> dict:
+    """schema.org CollectionPage for `/inboxes/` with an `ItemList` of
+    every configured inbox, so search engines read it as the hub of
+    inbox dashboards."""
+    return {
+        "@context": "https://schema.org",
+        "@type": "CollectionPage",
+        "name": f"Inboxes indexed by {settings.site_name}",
+        "url": base + "/inboxes/",
+        "mainEntity": {
             "@type": "ItemList",
-            "name": f"Inboxes indexed by {settings.site_name}",
-            "numberOfItems": len(inboxes),
+            "numberOfItems": len(inbox_names),
             "itemListElement": [
                 {
                     "@type": "ListItem",
                     "position": i + 1,
-                    "url": base + inbox_path(inbox.name),
-                    "name": inbox.name,
+                    "url": base + inbox_path(name),
+                    "name": name,
                 }
-                for i, inbox in enumerate(inboxes)
+                for i, name in enumerate(inbox_names)
             ],
-        }
-    return payload
+        },
+    }
 
 
 def _json_ld_inbox(session, base: str, inbox, active_threads=()) -> dict:
