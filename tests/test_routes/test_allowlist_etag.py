@@ -36,7 +36,8 @@ def _merge_window(client, tmp_path, inbox_name):
         _article(s, "al-mw@x").author = ADDRESS
         _commit(s, "al-mw@x", "linux-next")
         s.commit()
-    return MERGE_WINDOW_PATH
+    # A one-patch subsystem is listed on its own view, not the main page (#1259).
+    return f"{MERGE_WINDOW_PATH}/subsystems/no-subsystem"
 
 
 @pytest.mark.parametrize(
