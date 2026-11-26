@@ -252,7 +252,7 @@ over its budget, with no database or render work. It is off by default.
 | `CRAWLER_UA_EXEMPT` | `["The Lounge IRC Client"]` | JSON array of case-insensitive UA substrings exempt from crawler classification; replaces the default, and `[]` disables UA exemptions |
 | `CRAWLER_DEFAULT_UA_PCT` | `10` | Share for a recognised crawler with no entry in `CRAWLER_UA_BUDGETS` |
 | `CRAWLER_UNLISTED_POOL_PCT` | `30` | Percentage of the global budget that all unlisted crawlers share between them, on top of their own share |
-| `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests", "lightpanda"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
+| `CRAWLER_UA_MARKERS` | `["bot", "crawler", "spider", "curl", "wget", "python-requests", "lightpanda", "search", "crawl"]` | JSON array; a product token ending in one of these plus a slash marks a crawler |
 | `CRAWLER_IMPOSSIBLE_HEADERS_PCT` | `1` | Percentage of the global budget for the one shared bucket of requests with `Sec-Fetch-Site: none` and a `Referer`; `0` turns it off |
 | `CRAWLER_RETRY_AFTER_SEC` | `120` | Seconds sent in `Retry-After` |
 
@@ -292,10 +292,17 @@ the impossible-headers bucket at its own percentage.
 
 A crawler you did not list is still recognised by a product token: a name
 ending in a marker, followed by a slash, such as `GPTBot/1.0`,
-`AhrefsBot/7.0` or `curl/8.5.0`. A token that is just a marker (`bot/1.0`)
-counts too. It gets the default share, so **with the global budget set, every
-recognised crawler is held to 10% unless you give it its own percentage**. The
-slash is required, so a browser on a device called `CUBOT X30` is never gated. Unlisted crawlers
+`AhrefsBot/7.0`, `Epochal-Search/1.0` or `curl/8.5.0`. A token that is just a
+marker (`bot/1.0`) counts too. Two more signs mark a crawler when no listed
+name or token matched: a contact URL (`+http://` or `+https://`) after a
+`Name/` token, keyed by the nearest such token before it, and a bare `bot`, `crawl` or `search` anywhere
+in a `User-Agent` that does not start with `Mozilla/`, keyed by its first word.
+Only the first 512 characters of a `User-Agent` are classified. Each gets the
+default share, so **with the global budget set, every recognised crawler is
+held to 10% unless you give it its own percentage**. The marker token needs its
+slash and the bare-word rule skips `Mozilla/`, so a browser on a device called
+`CUBOT X30` is never gated; an app `User-Agent` that does not start with
+`Mozilla/` (a `Dalvik/` one, for example) can be. Unlisted crawlers
 also share one pool at `CRAWLER_UNLISTED_POOL_PCT` of the global budget
 (default 30%), so invented names cannot together starve real crawlers; listed
 crawlers never draw on the pool. The flip side: unlisted real crawlers
@@ -307,14 +314,15 @@ the default share. Never gated: robots, sitemaps, `/healthz`, `/readyz`,
 static files, and requests that are not a recognised crawler by their
 `User-Agent` (the impossible-headers bucket below still applies). The Markdown
 pages (`.md`) draw on the same buckets as the HTML pages. An agent fetching a
-page on a user's behalf, such as `Claude-User (claude-code/...)`, carries no
-marker token, so it is not a recognised crawler and is not gated by its
-`User-Agent` on either.
+page on a user's behalf, such as `Claude-User (claude-code/...; +https://...)`,
+carries a contact URL, so it is gated as `claude-code` in the default share. At
+today's volume it stays well below that share; if a burst ever draws `429`s,
+add it to `CRAWLER_UA_EXEMPT` together with The Lounge.
 
 The default markers include `curl`, `wget` and `python-requests`, so your own
 scripts and smoke checks that use those tools count as a crawler once the
 global budget is set. Give them their own percentage in `CRAWLER_UA_BUDGETS`
-(for example `{"curl": 20}`) or send a different `User-Agent`.
+(for example `{"curl/": 20}`; a key equal to a marker is refused) or send a different `User-Agent`.
 
 A request that did not name a crawler in its `User-Agent` but sends
 `Sec-Fetch-Site: none` together with a `Referer` (#903) is held to
