@@ -2396,8 +2396,7 @@ def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(
     NULL version are not revisions the route can diff, so they neither
     get a link nor count as the previous one. A second v2 is a resend of
     the first and is not a step: it is no entry of its own (#861) but is
-    listed under the first v2, which links v1 to v2. v3 links v2 to v3. Every emitted link is served. The sitemap's query
-    drops the bare and NULL versions itself, so only this test holds
+    listed under the first v2, which links v1 to v2. v3 links v2 to v3. Every emitted link is served. Only this test holds
     `adjacent_versions` to dropping them."""
     import html as htmllib
     from urllib.parse import parse_qs, urlparse

@@ -3,8 +3,8 @@
 Cached surfaces feeding `/sitemap.xml`,
 `/meta-sitemap.xml`, `/sitemap-maintainers.xml`,
 `/<inbox>/sitemap.xml` and the archive pages. Cache keys are stable;
-bumping `cache.NAMESPACE_VERSION` invalidates everything if a payload shape changes, so per-route expiry
-is purely about freshness.
+bumping `cache.NAMESPACE_VERSION` invalidates everything if a payload shape
+changes, so per-route expiry is purely about freshness.
 
 Each archive year or month file lists `/t` URLs, and `/sitemap.xml`
 indexes them with the pages mimir adds over lore.kernel.org. A root the

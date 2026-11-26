@@ -1,7 +1,8 @@
 """SEO output, split across submodules:
 
 - `sitemaps`: `/sitemap.xml`, `/meta-sitemap.xml`, `/<inbox>/sitemap.xml`,
-  `/sitemap-maintainers.xml` and the archive pages (XML rendering + per-inbox-latest helper).
+  `/sitemap-maintainers.xml` and the archive pages (XML rendering +
+  per-inbox-latest helper).
 - `json_ld`: schema.org payload builders, one per page shape (index,
   inbox, message, search, author).
 - `atom`: Atom 1.0 feed renderer used by inbox, author and maintainer feeds.
