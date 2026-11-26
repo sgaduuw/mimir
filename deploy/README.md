@@ -322,7 +322,7 @@ a burst ever draws `429`s.
 The default markers include `curl`, `wget` and `python-requests`, so your own
 scripts and smoke checks that use those tools count as a crawler once the
 global budget is set. Give them their own percentage in `CRAWLER_UA_BUDGETS`
-(for example `{"curl": 20}`) or send a different `User-Agent`.
+(for example `{"curl/": 20}`; a key equal to a marker is refused) or send a different `User-Agent`.
 
 A request that did not name a crawler in its `User-Agent` but sends
 `Sec-Fetch-Site: none` together with a `Referer` (#903) is held to

@@ -747,7 +747,10 @@ class Settings(BaseSettings):
     # as `CUBOT X30` from being gated. Script tools (curl, wget,
     # python-requests) are markers too, so operator scripts and smoke
     # checks using them are gated once the global budget is set.
-    # Case-insensitive. JSON array in env (CRAWLER_UA_MARKERS).
+    # Case-insensitive. JSON array in env (CRAWLER_UA_MARKERS); it replaces
+    # this default, so a custom list must name search and crawl itself.
+    # The contact-URL and bare-word rules in crawler_budget apply whatever
+    # this lists, even []; only crawler_ua_exempt excludes a UA from them.
     crawler_ua_markers: list[str] = [
         "bot",
         "crawler",
