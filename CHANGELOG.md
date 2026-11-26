@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.8.0] - 2026-11-26
+
 ### Changed
 
 - The crawler budget now gates a User-Agent that carries a contact URL (`+http://` or `+https://`), that has a product token ending in `search` or `crawl` (`Epochal-Search/1.0`), or that has a bare `bot`, `crawl` or `search` and does not start with `Mozilla/`. A Chrome-looking crawler with `+https://crawler.epochal.com` sent about 52,000 requests a day, all answered, and was missed before. Each gets its own bucket in the default share and the unlisted pool; browsers, `CUBOT X30` included, stay ungated, and `CRAWLER_UA_EXEMPT` still wins. Client-triggered fetchers such as `Claude-User` and `ChatGPT-User` are gated now too, well below one share at today's volume (#1263).
@@ -6967,7 +6969,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.7.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.8.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
