@@ -6,11 +6,12 @@ from tests._dom import parse
 
 
 @pytest.mark.parametrize(
-    "surface", ["front", "404", "inbox", "search", "merge", "diff"]
+    "surface", ["front", "inboxes", "404", "inbox", "search", "merge", "diff"]
 )
 def test_every_search_field_uses_the_shared_label_and_group(client, tmp_path, surface):
     ids = {
-        "front": ["message-id-input", "inbox-find"],
+        "front": ["message-id-input"],
+        "inboxes": ["inbox-find"],
         "404": ["message-id-input"],
         "inbox": ["inbox-query"],
         "search": ["search-query"],
@@ -19,6 +20,7 @@ def test_every_search_field_uses_the_shared_label_and_group(client, tmp_path, su
     }[surface]
     path = {
         "front": "/",
+        "inboxes": "/inboxes/",
         "404": "/not-a-route",
         "inbox": "/alpha/",
         "search": "/alpha/search",

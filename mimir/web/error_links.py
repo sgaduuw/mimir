@@ -56,7 +56,7 @@ def not_found_help(path: str, args) -> NotFoundHelp:
                     (f"{label} in {inbox_name}", _month_path(inbox_name, year, month))
                 )
         links.append((f"The {inbox_name} dashboard", inbox_path(inbox_name)))
-    links.append(("All inboxes", "/"))
+    links.append(("All inboxes", "/inboxes/"))
     shown = path if len(path) <= SHOWN_PATH_MAX else path[:SHOWN_PATH_MAX] + "…"
     return NotFoundHelp(
         heading=(

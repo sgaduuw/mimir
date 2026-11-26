@@ -45,15 +45,18 @@ uv run mimir warm-cache
 ```
 
 The fast tier covers cheap per-inbox helpers, the front page's 30-day message
-total (a count of `articles`, so a cross-post counts once; refreshed hourly) and
-the sitemap index, `/sitemap.xml`. The front page leaves that total out until the first warm run fills it. The slow
+total (a count of `articles`, so a cross-post counts once; refreshed hourly), the
+`/merge-window` data and pull-request rows behind the front page's merge-window
+figures (refilled within a minute of each walk, about every 25 minutes, and of each new
+pull-request mail) and the sitemap index,
+`/sitemap.xml`. The front page leaves that total out until the first warm run fills it. The slow
 tier covers the other sitemaps, subsystem dashboards, trackers, release history, and other expensive queries. The unqualified
 command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 
 The slow tier warms the per-inbox 30-day volumes used by the front page.
 Those rows survive for two hours past their refresh deadline so the page
 can show the previous counts during a refresh. An inbox without a retained
-value stays in the inbox list and enters the busiest-inbox ranking once
+value stays in the `/inboxes/` list and enters the busiest-inbox ranking once
 it has a warmed count and recent activity.
 
 The container scheduler runs fast warming every minute and slow warming hourly.

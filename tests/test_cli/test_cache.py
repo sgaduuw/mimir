@@ -632,10 +632,17 @@ def test_sitemap_index_is_fast_tier_other_sitemap_globals_slow(seeded_db):
 
     base = "https://example.test"
     fast = [label for label, _fn in _build_fast_global_targets(base)]
-    assert fast == ["recent_message_total (30d)", "sitemap:index"], fast
-    # The total needs no SITE_BASE_URL, so it survives without one.
+    assert fast == [
+        "recent_message_total (30d)",
+        "merge_window",
+        "linus_pulls",
+        "sitemap:index",
+    ], fast
+    # The total and the merge-window rows need no SITE_BASE_URL.
     assert [label for label, _ in _build_fast_global_targets("")] == [
-        "recent_message_total (30d)"
+        "recent_message_total (30d)",
+        "merge_window",
+        "linus_pulls",
     ]
 
     slow = [label for label, _fn in _build_slow_global_targets(sitemap_base=base)]
@@ -765,7 +772,12 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
             f"tier=fast warm_global must pass priority=0; got {priority}"
         )
     assert [targets for targets, _ in global_captured] == [
-        ["recent_message_total (30d)", "sitemap:index"]
+        [
+            "recent_message_total (30d)",
+            "merge_window",
+            "linus_pulls",
+            "sitemap:index",
+        ]
     ]
     # Option A (2026-06-01): per-(inbox, subsystem) warm_subsystem RPCs
     # are slow-tier-only; fast tier must NOT dispatch them.
@@ -1081,7 +1093,7 @@ def test_warm_cache_order_unchanged_without_pins(seeded_db, monkeypatch):
 
 
 def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, client):
-    """`pinned` means the same thing on the front page and in warm-cache:
+    """`pinned` means the same thing on `/inboxes/` and in warm-cache:
     both come from `mimir.inboxes.pinned_first`."""
     import re
 
@@ -1089,7 +1101,7 @@ def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, clien
 
     _add_late_inboxes(seeded_db)
     monkeypatch.setattr(settings, "pinned_inboxes", ["zz-pin", "yy-pin"])
-    page = client.get("/").get_data(as_text=True)
+    page = client.get("/inboxes/").get_data(as_text=True)
     names = re.findall(r'<a class="inbox-link" href="/([^/"]+)/"', page)
     assert names[:2] == ["zz-pin", "yy-pin"]
     assert names == _warm_order(monkeypatch)

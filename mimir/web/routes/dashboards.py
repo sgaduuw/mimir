@@ -30,13 +30,15 @@ from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.linus_pulls import linus_pulls
 from mimir.maintainer_activity import most_active_maintainers
 from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
+from mimir.merge_window import merge_window
 from mimir.models import Inbox, Subsystem
-from mimir.seo import _json_ld_inbox, _json_ld_index
+from mimir.seo import _json_ld_inbox, _json_ld_inboxes, _json_ld_index
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -81,52 +83,62 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
 
 
 # Inboxes shown as "Busiest this month", by messages in the last 30 days.
-FRONT_PAGE_BUSIEST = 6
+# Eight: two rows of four cards, the grid's column cap (#1267).
+FRONT_PAGE_BUSIEST = 8
+
+
+def _inbox_summaries(session: Session) -> list[dict]:
+    """One summary per configured inbox, for the front page (cards and
+    header figures) and `/inboxes/`. Pinned inboxes
+    (settings.pinned_inboxes) stay first in config order; the rest follow
+    alphabetically. Volumes come from warmed cache rows; on a miss `spark`
+    and `messages_30d` are None."""
+    pinned = set(settings.pinned_inboxes)
+    now = datetime.now(UTC)
+    inboxes = pinned_first(session.execute(select(Inbox)).scalars().all())
+    volumes = cached_inbox_volumes(inboxes)
+    summaries = []
+    for inbox in inboxes:
+        stats = archive_stats(session, inbox)
+        # 30 UTC days, today included: the window `recent_message_total`
+        # shares, so the cards and the header figure agree.
+        spark = volumes.get(inbox.name)
+        summaries.append(
+            {
+                "name": inbox.name,
+                "stats": stats,
+                "pinned": inbox.name in pinned,
+                # None when the inbox has no messages yet.
+                "last_activity_rel": (
+                    _relative_time(stats.last_date) if stats.last_date else None
+                ),
+                "spark": spark,
+                "messages_30d": (
+                    sum(count for _, count in spark.days) if spark is not None else None
+                ),
+                "active_24h": bool(
+                    stats.last_date
+                    and aware_utc(stats.last_date) >= now - timedelta(hours=24)
+                ),
+            }
+        )
+    return summaries
 
 
 @bp_web.route("/")
 def index():
-    """Front page: header figures, the busiest inboxes this month, the
-    active subsystems and maintainer activity this week, and one line per inbox.
-    Pinned inboxes
-    (settings.pinned_inboxes) stay first in config order; the rest follow
-    alphabetically.
+    """Front page: header figures, the busiest inboxes this month, and the
+    active subsystems and maintainer activity this week. Every inbox is
+    listed on `/inboxes/` instead (#1267): at 203 inboxes the list was
+    most of this page's bytes and links.
 
     Inbox volumes and the 30-day total come from warmed cache rows.
     On a miss, the page omits the corresponding figure.
     """
-    pinned = set(settings.pinned_inboxes)
-    now = datetime.now(UTC)
     with SessionLocal() as session:
-        inboxes = pinned_first(session.execute(select(Inbox)).scalars().all())
-        volumes = cached_inbox_volumes(inboxes)
-        inbox_summaries = []
-        for inbox in inboxes:
-            stats = archive_stats(session, inbox)
-            # 30 UTC days, today included: the window `recent_message_total`
-            # shares, so the cards and the header figure agree.
-            spark = volumes.get(inbox.name)
-            inbox_summaries.append(
-                {
-                    "name": inbox.name,
-                    "stats": stats,
-                    "pinned": inbox.name in pinned,
-                    # None when the inbox has no messages yet.
-                    "last_activity_rel": (
-                        _relative_time(stats.last_date) if stats.last_date else None
-                    ),
-                    "spark": spark,
-                    "messages_30d": (
-                        sum(count for _, count in spark.days)
-                        if spark is not None
-                        else None
-                    ),
-                    "active_24h": bool(
-                        stats.last_date
-                        and aware_utc(stats.last_date) >= now - timedelta(hours=24)
-                    ),
-                }
-            )
+        inbox_summaries = _inbox_summaries(session)
+        mw = merge_window(session, compute_on_miss=False)
+        pulls = linus_pulls(session, compute_on_miss=False)
         # Cross-inbox subsystem teaser. Surfaces the most active
         # subsystems across every configured inbox so a reader on
         # `/` can drill into a hot subsystem without first picking
@@ -177,11 +189,31 @@ def index():
         busiest=busiest,
         active_24h=sum(1 for s in inbox_summaries if s["active_24h"]),
         recent_total=cached_recent_message_total(),
+        mw=mw,
+        pulls=pulls,
+        merge_window_updated=aware_utc(mw.queued_walked_at).astimezone(UTC)
+        if mw and mw.queued_walked_at
+        else None,
         active_subsystems=active_subsystems,
         maintainer_activity=maintainer_activity,
         current_inbox=None,
         canonical_url=base + "/",
-        page_json_ld=_json_ld_index(base, inboxes),
+        page_json_ld=_json_ld_index(base),
+    )
+
+
+@bp_web.route("/inboxes/", strict_slashes=False)
+def inboxes_page():
+    """Every configured inbox, one line each, with find and sort controls."""
+    with SessionLocal() as session:
+        inbox_summaries = _inbox_summaries(session)
+    base = _site_base()
+    return render_template(
+        "inboxes.html",
+        inbox_summaries=inbox_summaries,
+        current_inbox=None,
+        canonical_url=base + "/inboxes/",
+        page_json_ld=_json_ld_inboxes(base, [s["name"] for s in inbox_summaries]),
     )
 
 

@@ -1,5 +1,5 @@
-"""The front page `/` (#994): header figures, busiest inboxes, active
-subsystems, and one line per inbox.
+"""The front page `/` (#994): header figures, busiest inboxes and active
+subsystems; and `/inboxes/` (#1267), one line per inbox.
 
 The 30-day message total is a deduplicated count of `articles`, cached and
 warmed (never computed on the request), so the tests seed a cross-post on
@@ -57,6 +57,10 @@ def _warm_volumes():
 
 def _page(client):
     return parse(client.get("/").get_data(as_text=True))
+
+
+def _inboxes(client):
+    return parse(client.get("/inboxes/").get_data(as_text=True))
 
 
 def _figures(page):
@@ -156,44 +160,44 @@ def test_busiest_cards_lead_with_the_thirty_day_count(client, recent):
     assert "since 2024" in cards[0].text()
 
 
-def test_only_six_inboxes_are_busiest(client, seeded_db):
+def test_only_eight_inboxes_are_busiest(client, seeded_db):
     with seeded_db() as s:
-        for n in range(8):
+        for n in range(10):
             s.add(
                 Inbox(name=f"list-{n}", mirror_path="/x", upstream_url=f"https://x/{n}")
             )
         s.flush()
-        for n in range(8):
+        for n in range(10):
             for m in range(n + 1):
                 _post(s, f"l{n}m{m}@x", [f"list-{n}"], hours_ago=5)
         s.commit()
     _warm_volumes()
     cards = _page(client).find_all("a", cls="front-card")
     assert [c.attrs["href"] for c in cards] == [
-        f"/list-{n}/" for n in (7, 6, 5, 4, 3, 2)
+        f"/list-{n}/" for n in (9, 8, 7, 6, 5, 4, 3, 2)
     ]
 
 
 def test_the_inbox_list_has_every_inbox_once_and_no_sparklines(client, recent):
     _warm_total()
     _warm_volumes()
-    page = _page(client)
+    page = _inboxes(client)
     listing = page.find("ul", id="inbox-list")
     rows = listing.find_all("li")
     links = [li.find("a", cls="inbox-link").attrs["href"] for li in rows]
     assert links == ["/alpha/", "/beta/"]
     assert [li.attrs["data-active"] for li in rows] == ["2", "1"]
     assert [li.attrs["data-order"] for li in rows] == ["0", "1"]
-    assert listing.find_all("svg") == []
+    assert page.find_all("svg") == []
     # Sparklines are only the busiest cards': nothing per inbox in the list.
-    assert len(page.find_all("svg", cls="front-card-spark")) == 2
+    assert len(_page(client).find_all("svg", cls="front-card-spark")) == 2
 
 
 def test_pinned_inboxes_stay_first_and_are_marked(client, recent, monkeypatch):
     from mimir.config import settings
 
     monkeypatch.setattr(settings, "pinned_inboxes", ["beta"])
-    rows = _page(client).find("ul", id="inbox-list").find_all("li")
+    rows = _inboxes(client).find("ul", id="inbox-list").find_all("li")
     assert [li.find("a", cls="inbox-link").attrs["href"] for li in rows] == [
         "/beta/",
         "/alpha/",
@@ -203,12 +207,12 @@ def test_pinned_inboxes_stay_first_and_are_marked(client, recent, monkeypatch):
     assert marks[0][0].text() == "pinned"
     # No pin, no mark.
     monkeypatch.setattr(settings, "pinned_inboxes", [])
-    rows = _page(client).find("ul", id="inbox-list").find_all("li")
+    rows = _inboxes(client).find("ul", id="inbox-list").find_all("li")
     assert all(not li.find_all("span", cls="inbox-pinned") for li in rows)
 
 
 def test_each_row_shows_a_short_total_and_when_it_last_moved(client, recent):
-    rows = _page(client).find("ul", id="inbox-list").find_all("li")
+    rows = _inboxes(client).find("ul", id="inbox-list").find_all("li")
     alpha = rows[0].find("span", cls="inbox-meta").text()
     beta = rows[1].find("span", cls="inbox-meta").text()
     assert alpha.endswith("2h ago")
@@ -231,7 +235,7 @@ def test_controls_ship_hidden_and_the_script_is_versioned(client, seeded_db):
 
     from mimir import __version__
 
-    page = _page(client)
+    page = _inboxes(client)
     controls = page.find("div", cls="front-controls")
     assert "hidden" in controls.attrs and "data-filter-controls" in controls.attrs
     assert controls.find("input").attrs["data-filter-input"] == "inbox-list"
@@ -331,7 +335,7 @@ def test_index_uses_retained_volume_until_the_warmer_refreshes_it(
     cards = page.find_all("a", cls="front-card")
     assert [card.attrs["href"] for card in cards] == ["/alpha/"]
     assert cards[0].find("p", cls="count").text() == "2"
-    rows = page.find("ul", id="inbox-list").find_all("li")
+    rows = _inboxes(client).find("ul", id="inbox-list").find_all("li")
     assert "data-active" not in rows[1].attrs
 
     with seeded_db() as s, cache.warm_window(warm_window):
@@ -440,11 +444,7 @@ def test_maintainer_activity_has_distinct_counts_and_working_profile_links(
         assert row.find("svg", cls="bar-meter") is not None
     assert listing.find_all("kernel") == []
     headings = [h.attrs.get("id") for h in page.find_all("h2")]
-    assert (
-        headings.index("subsystems")
-        < headings.index("maintainer-activity")
-        < headings.index("inboxes")
-    )
+    assert headings.index("subsystems") < headings.index("maintainer-activity")
     explanation = page.find("p", cls="front-maintainer-note").text()
     for phrase in (
         "once across lists",
@@ -550,11 +550,20 @@ def test_cold_maintainer_activity_omits_section_without_activity_scans(client, s
         event.remove(engine, "before_cursor_execute", capture)
     assert statements
     assert page.find_all("h2", id="maintainer-activity") == []
+    # The merge-window teaser checks the newest matching pull-request row.
+    # It adds one bounded state lookup, never a maintainer activity aggregate.
+    author_lookups = [sql for sql in statements if re.search(r"\bauthor\b", sql)]
+    assert len(author_lookups) == 1
+    lookup = author_lookups[0]
+    assert lookup.startswith("select articles.id")
+    assert "order by articles.id desc" in lookup and "limit" in lookup
+    assert "group by" not in lookup and "count(" not in lookup
     for sql in statements:
         assert "article_trailers" not in sql
         assert "subsystem_maintainers" not in sql
         assert re.search(r"\bmailmap\b", sql) is None
-        assert re.search(r"\bauthor\b", sql) is None
+        if sql != lookup:
+            assert re.search(r"\bauthor\b", sql) is None
     assert most_active_maintainers(session, force=True) == []
     assert _page(client).find_all("h2", id="maintainer-activity") == []
 
@@ -584,3 +593,33 @@ def test_maintainer_activity_omits_the_whole_section_when_empty(
     page = _page(client)
     assert page.find_all("h2", id="maintainer-activity") == []
     assert page.find_all("ul", cls="front-maintainers") == []
+
+
+def test_the_front_page_links_every_inbox_through_one_page(client, recent):
+    """#1267: `/` carries no per-inbox list, its controls or their script,
+    and both the header figure and the line under the cards reach
+    `/inboxes/`, which lists them all."""
+    page = _page(client)
+    assert page.find_all("ul", id="inbox-list") == []
+    assert page.find_all("div", cls="front-controls") == []
+    assert not any(
+        "list-tools.js" in s.attrs.get("src", "") for s in page.find_all("script")
+    )
+    figure = [d for d in page.find_all("dd") if d.attrs.get("data-figure") == "inboxes"]
+    assert [a.attrs["href"] for a in figure[0].find_all("a")] == ["/inboxes/"]
+    more = [a for a in page.find_all("a") if a.text() == "All 2 inboxes"]
+    assert [a.attrs["href"] for a in more] == ["/inboxes/"]
+    # Precondition for the cold-cache case below: no warmed volumes, no cards.
+    assert page.find_all("a", cls="front-card") == []
+
+    r = client.get("/inboxes/")
+    assert r.status_code == 200
+    assert r.headers["Cache-Control"] == "public, max-age=300"
+    inboxes = parse(r.get_data(as_text=True))
+    assert inboxes.find("h1").text() == "All 2 inboxes"
+    canonical = [
+        link.attrs["href"]
+        for link in inboxes.find_all("link")
+        if link.attrs.get("rel") == "canonical"
+    ]
+    assert canonical == ["http://localhost/inboxes/"]

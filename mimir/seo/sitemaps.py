@@ -971,14 +971,14 @@ def meta_sitemap_key(
             [release_tags, directory_entries, version], separators=(",", ":")
         ).encode()
     ).hexdigest()[:16]
-    return f"sitemap:meta:v4:{digest}"
+    return f"sitemap:meta:v5:{digest}"
 
 
 def meta_sitemap_xml(
     session: Session, base: str, *, force: bool = False
 ) -> SitemapPayload:
-    """Cached body of `/meta-sitemap.xml`. The root entry carries the
-    global-max article date and `/merge-window` carries the last linux-next
+    """Cached body of `/meta-sitemap.xml`. The root and `/inboxes/` entries
+    carry the global-max article date and `/merge-window` carries the last linux-next
     walk. The payload's `last_modified` retains the global-max content date.
     The route derives its HTTP ETag from the XML bytes, not that date.
 
@@ -1023,6 +1023,8 @@ def meta_sitemap_xml(
             body=_build_sitemap_xml(
                 [
                     SitemapEntry(base + "/", global_latest, PRIORITY_SITE),
+                    # The inbox hub (#1267) changes when any inbox does.
+                    SitemapEntry(base + "/inboxes/", global_latest, PRIORITY_HUB),
                     SitemapEntry(
                         base + MERGE_WINDOW_PATH,
                         queued_walked_at.strftime("%Y-%m-%d")

@@ -54,14 +54,6 @@ def _warm_active_subsystems(inbox_name: str | None = None) -> None:
             )
 
 
-def test_meta_index_has_inboxes_anchor(client):
-    """`/` carries the `id="inboxes"` structural anchor. The content
-    and pin-aware ordering are checked in test_front_page.py."""
-    r = client.get("/")
-    assert r.status_code == 200
-    assert 'id="inboxes"' in r.data.decode()
-
-
 def test_meta_index_hero_image_has_substantive_alt(client):
     """The Ratatoskr hero image identifies the brand and isn't pure
     decoration; an empty alt leaves a screen-reader user without
@@ -110,7 +102,7 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
         }
 
     # First request warms the archive_stats cache row for both inboxes.
-    before = metas(client.get("/").data.decode())
+    before = metas(client.get("/inboxes/").data.decode())
     # The conftest seed of 2024-03-01 is over 30 days old, so it shows as
     # an absolute date (`_relative_time`), not a recent stamp.
     assert before["alpha"].endswith("2024-03-01")
@@ -122,7 +114,7 @@ def test_meta_index_last_activity_reads_from_inbox_column(client):
         ix.last_article_date = five_min_ago
         s.commit()
 
-    after = metas(client.get("/").data.decode())
+    after = metas(client.get("/inboxes/").data.decode())
     assert after["alpha"].endswith("5m ago")
     assert after["beta"] == before["beta"]
 
@@ -655,18 +647,26 @@ def test_inbox_dashboard_renders_subsystem_list_with_activity(
     assert "/alpha/subsystems/bcachefs/" in text
 
 
-def test_index_json_ld_includes_inbox_item_list(client):
-    """`/` ships ItemList of configured inboxes so search engines can
-    treat it as a topical hub rather than a flat link list."""
-    blocks = _json_ld_blocks(client.get("/").data.decode())
+def test_inboxes_json_ld_lists_every_inbox(client):
+    """`/inboxes/` ships the ItemList of configured inboxes so search
+    engines read it as the hub of inbox dashboards; `/` no longer
+    carries it (#1267)."""
+    blocks = _json_ld_blocks(client.get("/inboxes/").data.decode())
     assert len(blocks) == 1
     payload = blocks[0]
-    assert payload["@type"] == "WebSite"
-    assert "mainEntity" in payload
+    assert payload["@type"] == "CollectionPage"
+    assert payload["url"] == "http://localhost/inboxes/"
     ml = payload["mainEntity"]
     assert ml["@type"] == "ItemList"
-    assert ml["numberOfItems"] >= 1
-    assert all("position" in item for item in ml["itemListElement"])
+    assert ml["numberOfItems"] == len(ml["itemListElement"]) >= 1
+    assert [i["position"] for i in ml["itemListElement"]] == list(
+        range(1, ml["numberOfItems"] + 1)
+    )
+    assert all(
+        i["url"] == f"http://localhost/{i['name']}/" for i in ml["itemListElement"]
+    )
+    (index,) = _json_ld_blocks(client.get("/").data.decode())
+    assert "mainEntity" not in index
 
 
 def test_inbox_dashboard_year_browse_uses_decade_grouping(client, inbox_name):

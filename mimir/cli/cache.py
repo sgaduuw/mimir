@@ -240,11 +240,22 @@ def _build_fast_global_targets(
     sitemap_base: str = "",
 ) -> list[tuple[str, object]]:
     """Fast tier global warm targets: the front page's 30-day message
-    total (6 ms warm on production, 2026-11-03; #994), then `sitemap:index`,
-    which builds `/sitemap.xml`.
-    The total needs no `SITE_BASE_URL`; the sitemap does.
+    total (6 ms warm on production, 2026-11-03; #994), the two
+    `/merge-window` rows the front page's figures read (#1266, #1270),
+    then `sitemap:index`, which builds `/sitemap.xml`.
+    The total and the merge-window rows need no `SITE_BASE_URL`; the
+    sitemap does.
 
-    It is the most expensive warm target there is (41 s cold in
+    The merge-window rows are keyed by state: each Linus or linux-next
+    walk (about every 25 minutes) makes a new key, and so does each new
+    pull-request, pr-tracker-bot or Linus mail for `linus_pulls`. The
+    front page never computes (`compute_on_miss=False`), so this tick
+    fills the new key. Called WITHOUT `force`, a warm row costs only the
+    state lookup. A cold compute of either is unmeasured (no production
+    figure is recorded); it runs once per key change, not per tick, and
+    sits before the sitemap so it does not wait behind that rebuild.
+
+    `sitemap:index` is the most expensive measured warm target (41 s cold in
     production on 2026-10-07, about 10 s after #640), so it looks out of place
     next to targets budgeted at 100 ms. It is here for freshness, not
     speed. The target calls `sitemap_index_xml` WITHOUT `force=True`,
@@ -256,8 +267,14 @@ def _build_fast_global_targets(
     against a 60 s worker timeout. The fast tier also warms it within
     a minute of boot, of a `cache.NAMESPACE_VERSION` bump and of a
     render-cap change (#589)."""
+    # Function-local: both modules reach the web layer, which imports this one.
+    from mimir.linus_pulls import linus_pulls
+    from mimir.merge_window import merge_window
+
     targets: list[tuple[str, object]] = [
-        ("recent_message_total (30d)", recent_message_total)
+        ("recent_message_total (30d)", recent_message_total),
+        ("merge_window", merge_window),
+        ("linus_pulls", linus_pulls),
     ]
     if sitemap_base:
         targets.append(

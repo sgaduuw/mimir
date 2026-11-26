@@ -15,11 +15,21 @@ subsystems the current message touches, the list's active subsystems, and the
 site-wide directory. On a phone the sections take a line of their own; nothing
 hides behind a menu. The Releases pages share a Merge window and History tab
 bar, and a release's page links the neighbouring releases the history lists.
-The directories, maintainer profiles, release pages and subsystem dashboards
+The directories, `/inboxes/`, maintainer profiles, release pages and subsystem dashboards
 carry a breadcrumb, and the `h` key goes to its last linked entry; the merge
 window and release history rely on their tabs, and `h` still goes up a level.
 
-Start at `/` to choose an inbox. Its dashboard shows recent messages, active
+The front page's Linux merge-window section shows the current release status,
+queued patches and subsystem count, merged and waiting pull requests to Linus,
+and the linux-next walk time in UTC. The subsystem count includes both the main
+and smaller sections. Waiting counts only requests classified as waiting, not
+unclear or rejected requests. Figures read the same state-keyed caches as
+`/merge-window`. A missing queue or pull-request cache omits only its own
+figures, without computing either snapshot on a request. The page retains its
+five-minute public cache lifetime and has no ETag, so displayed figures can lag
+by that interval.
+
+Start at `/` or `/inboxes/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and
 archive statistics. Active threads and compact recent messages share the main
 column; pulls, release chips, configured author lists, subsystem activity and
@@ -152,7 +162,8 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 
 | Path | Purpose |
 | --- | --- |
-| `/` | Header figures, a Message-ID lookup form, the busiest inboxes this month, active subsystems this week, and every inbox on one line (filter and sort need JavaScript) |
+| `/` | Header figures, a Message-ID lookup form, the eight busiest inboxes this month, active subsystems and maintainer activity this week, and a link to every inbox |
+| `/inboxes/` | Every inbox on one line, pinned inboxes first (filter and sort need JavaScript) |
 | `/<inbox>/` | Inbox dashboard |
 | `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views, 100 threads per page (`?page=2`) |
 | `/<inbox>/since/<date>` | Activity since an ISO date (`YYYY-MM-DD`), limited to the last 90 days |

@@ -1067,3 +1067,67 @@ def test_merge_window_rows_load_in_place_and_without_javascript(
         server.shutdown()
         thread.join(timeout=5)
         server.server_close()
+
+
+def test_front_merge_window_figures_layout(client, session, monkeypatch, tmp_path):
+    from tests.test_routes.test_front_merge_window import _warm
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    worker = Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            for tag, status in (
+                ("v7.4", "Open since v7.4"),
+                ("v7.4-rc4", "Closed until v7.4 is released"),
+            ):
+                from mimir import cache
+
+                for key in cache.keys():
+                    if key.startswith(("merge_window:", "linus_pulls:")):
+                        cache.delete(key)
+                _warm(session, monkeypatch, tag=tag)
+                for width in (390, 1280):
+                    for theme in ("light", "dark"):
+                        page = browser.new_page(
+                            viewport={"width": width, "height": 900}, color_scheme=theme
+                        )
+                        block_external_requests(page, base)
+                        page.goto(base + "/")
+                        expect(page.locator(".front-merge-window-status")).to_have_text(
+                            status
+                        )
+                        expect(
+                            page.locator('[data-figure="queued-patches"]')
+                        ).to_have_text("12,345")
+                        expect(
+                            page.locator('[data-figure="queued-subsystems"]')
+                        ).to_have_text("5")
+                        expect(
+                            page.locator('[data-figure="pulls-merged"]')
+                        ).to_have_text("3")
+                        expect(
+                            page.locator('[data-figure="pulls-waiting"]')
+                        ).to_have_text("2")
+                        expect(
+                            page.locator(".front-merge-window-updated")
+                        ).to_have_text("09:07 UTC")
+                        assert page.evaluate(
+                            "document.documentElement.scrollWidth <= innerWidth"
+                        )
+                        shot = tmp_path / f"front-merge-{tag}-{width}-{theme}.png"
+                        page.screenshot(path=str(shot), full_page=True)
+                        print(shot)
+                        page.locator("#merge-window a").click()
+                        expect(page).to_have_url(base + "/merge-window")
+                        expect(page.get_by_role("heading", level=1)).to_have_text(
+                            "Linux merge window"
+                        )
+                        page.close()
+    finally:
+        server.shutdown()
+        worker.join(timeout=5)
+        server.server_close()
