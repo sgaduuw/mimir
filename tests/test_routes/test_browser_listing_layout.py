@@ -1001,3 +1001,69 @@ def test_profile_recent_messages_layout_and_links(
         server.shutdown()
         worker.join(timeout=5)
         server.server_close()
+
+
+def test_merge_window_rows_load_in_place_and_without_javascript(
+    client, tmp_path, monkeypatch
+):
+    """#1259: a larger subsystem's "All N postings" link and a smaller
+    subsystem's disclosure fetch the rows from the subsystem page with HTMX
+    and swap them in place; without JavaScript the same links navigate."""
+    import mimir.merge_window as mwmod
+    import mimir.web.routes.merge_window as route
+    from mimir.extensions import SessionLocal
+    from tests.test_merge_window import MERGE_WINDOW_PATH, _seed_postings
+
+    playwright = playwright_api()
+    expect = playwright.expect
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    monkeypatch.setattr(route, "SECTION_ROW_CAP", 2)
+    with SessionLocal() as s:
+        _seed_postings(s, {"BIG": 4, "TINY": 1})
+    server = make_server("127.0.0.1", 0, client.application, threaded=True)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    main = base + MERGE_WINDOW_PATH
+    try:
+        with playwright.sync_playwright() as p, p.chromium.launch() as browser:
+            page = browser.new_page(viewport={"width": 1280, "height": 800})
+            blocked = block_external_requests(page, base)
+            page.goto(main)
+            big = page.locator("details#big")
+            big_rows = big.locator(".mw-rows > ul > li")
+            expect(big_rows).to_have_count(2)
+            more = big.get_by_role("link", name="All 4 postings in big")
+            more.click()
+            expect(big_rows).to_have_count(4)
+            expect(big.locator(".mw-more")).to_have_count(0)
+            expect(page).to_have_url(main)
+            # A smaller subsystem: open the group, then the subsystem.
+            page.locator("details#smaller-subsystems > summary").click()
+            tiny = page.locator("details#tiny")
+            expect(tiny.locator(".mw-rows a")).to_have_text(["1 posting in tiny"])
+            tiny.locator("summary").click()
+            expect(tiny.locator(".mw-rows > ul > li a")).to_have_text(
+                ["[PATCH] tiny0@x"]
+            )
+            expect(page).to_have_url(main)
+            screenshot = tmp_path / "merge-window-htmx.png"
+            page.screenshot(path=str(screenshot), full_page=True)
+            print(screenshot)
+            assert blocked == [], blocked
+            page.close()
+
+            # Without JavaScript the links are plain links to the subsystem page.
+            context = browser.new_context(java_script_enabled=False)
+            page = context.new_page()
+            page.goto(main)
+            page.locator("details#big").get_by_role(
+                "link", name="All 4 postings in big"
+            ).click()
+            expect(page).to_have_url(base + f"{MERGE_WINDOW_PATH}/subsystems/big")
+            expect(page.locator("details#big .mw-rows > ul > li")).to_have_count(4)
+            context.close()
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+        server.server_close()
