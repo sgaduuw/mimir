@@ -294,8 +294,8 @@ A crawler you did not list is still recognised by a product token: a name
 ending in a marker, followed by a slash, such as `GPTBot/1.0`,
 `AhrefsBot/7.0`, `Epochal-Search/1.0` or `curl/8.5.0`. A token that is just a
 marker (`bot/1.0`) counts too. Two more signs mark a crawler when no listed
-name or token matched: a contact URL (`+http://` or `+https://`), keyed by the
-nearest `Name/` token before it, and a bare `bot`, `crawl` or `search` anywhere
+name or token matched: a contact URL (`+http://` or `+https://`) after a
+`Name/` token, keyed by the nearest such token before it, and a bare `bot`, `crawl` or `search` anywhere
 in a `User-Agent` that does not start with `Mozilla/`, keyed by its first word.
 Only the first 512 characters of a `User-Agent` are classified. Each gets the
 default share, so **with the global budget set, every recognised crawler is
@@ -316,8 +316,8 @@ static files, and requests that are not a recognised crawler by their
 pages (`.md`) draw on the same buckets as the HTML pages. An agent fetching a
 page on a user's behalf, such as `Claude-User (claude-code/...; +https://...)`,
 carries a contact URL, so it is gated as `claude-code` in the default share. At
-today's volume it stays well below that share; add it to `CRAWLER_UA_EXEMPT` if
-a burst ever draws `429`s.
+today's volume it stays well below that share; if a burst ever draws `429`s,
+add it to `CRAWLER_UA_EXEMPT` together with The Lounge.
 
 The default markers include `curl`, `wget` and `python-requests`, so your own
 scripts and smoke checks that use those tools count as a crawler once the
