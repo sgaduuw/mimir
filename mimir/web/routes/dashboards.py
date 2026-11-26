@@ -30,11 +30,13 @@ from mimir.datetime_utils import aware_utc
 from mimir.extensions import SessionLocal
 from mimir.inboxes import pinned_first
 from mimir.lifecycle_status import lifecycle_status_for_articles
+from mimir.linus_pulls import linus_pulls
 from mimir.maintainer_activity import most_active_maintainers
 from mimir.maintainer_directory import (
     is_addressable_maintainer_address,
     maintainer_path,
 )
+from mimir.merge_window import merge_window
 from mimir.models import Inbox, Subsystem
 from mimir.seo import _json_ld_inbox, _json_ld_inboxes, _json_ld_index
 from mimir.subsystems import (
@@ -135,6 +137,8 @@ def index():
     """
     with SessionLocal() as session:
         inbox_summaries = _inbox_summaries(session)
+        mw = merge_window(session, compute_on_miss=False)
+        pulls = linus_pulls(session, compute_on_miss=False)
         # Cross-inbox subsystem teaser. Surfaces the most active
         # subsystems across every configured inbox so a reader on
         # `/` can drill into a hot subsystem without first picking
@@ -185,6 +189,11 @@ def index():
         busiest=busiest,
         active_24h=sum(1 for s in inbox_summaries if s["active_24h"]),
         recent_total=cached_recent_message_total(),
+        mw=mw,
+        pulls=pulls,
+        merge_window_updated=aware_utc(mw.queued_walked_at).astimezone(UTC)
+        if mw and mw.queued_walked_at
+        else None,
         active_subsystems=active_subsystems,
         maintainer_activity=maintainer_activity,
         current_inbox=None,

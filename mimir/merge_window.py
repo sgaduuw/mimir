@@ -181,13 +181,21 @@ def merge_window_state(session: Session) -> str:
     )
 
 
-def merge_window(session: Session, state: str | None = None) -> MergeWindow:
-    """The page's data, cached under `merge_window_state`."""
+def merge_window(
+    session: Session, state: str | None = None, *, compute_on_miss: bool = True
+) -> MergeWindow | None:
+    """The page's data, cached under `merge_window_state`.
+
+    Cache-only callers omit unavailable data rather than computing it.
+    """
     state = state if state is not None else merge_window_state(session)
     key = hashlib.blake2s(state.encode(), digest_size=8).hexdigest()
+    cache_key = f"merge_window:{key}"
+    if not compute_on_miss:
+        return cache.get(cache_key)
     return cache.get_or_compute(
         session,
-        f"merge_window:{key}",
+        cache_key,
         MERGE_WINDOW_CACHE_TTL_SEC,
         lambda: _compute(session),
     )

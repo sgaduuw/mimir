@@ -1202,7 +1202,7 @@ td.listing-time, td.listing-date, .listing-detail { color: var(--pico-muted-colo
 .front-figures dd { margin: 0; font-size: 1.75rem; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }
 @media (width >= 64rem) {
   .front-head { grid-template-columns: auto minmax(0, 1fr) auto; }
-  .front-figures { grid-column: auto; flex-direction: column; gap: .75rem; }
+  .front-head .front-figures { grid-column: auto; flex-direction: column; gap: .75rem; }
 }
 @media (width < 40rem) {
   .front-head { grid-template-columns: minmax(0, 1fr); }

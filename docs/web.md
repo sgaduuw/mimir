@@ -19,6 +19,16 @@ The directories, maintainer profiles, release pages and subsystem dashboards
 carry a breadcrumb, and the `h` key goes to its last linked entry; the merge
 window and release history rely on their tabs, and `h` still goes up a level.
 
+The front page's Linux merge-window section shows the current release status,
+queued patches and subsystem count, merged and waiting pull requests to Linus,
+and the linux-next walk time in UTC. The subsystem count includes both the main
+and smaller sections. Waiting counts only requests classified as waiting, not
+unclear or rejected requests. Figures read the same state-keyed caches as
+`/merge-window`. A missing queue or pull-request cache omits only its own
+figures, without computing either snapshot on a request. The page retains its
+five-minute public cache lifetime and has no ETag, so displayed figures can lag
+by that interval.
+
 Start at `/` or `/inboxes/` to choose an inbox. Its dashboard shows recent messages, active
 threads, pull requests, release announcements, configured author trackers, and
 archive statistics. Active threads and compact recent messages share the main
