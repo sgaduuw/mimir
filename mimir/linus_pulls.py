@@ -147,13 +147,21 @@ def linus_pulls_state(session: Session) -> str:
     )
 
 
-def linus_pulls(session: Session, state: str | None = None) -> LinusPulls:
-    """The section's data, cached under `linus_pulls_state`."""
+def linus_pulls(
+    session: Session, state: str | None = None, *, compute_on_miss: bool = True
+) -> LinusPulls | None:
+    """The section's data, cached under `linus_pulls_state`.
+
+    Cache-only callers omit unavailable data rather than computing it.
+    """
     state = state if state is not None else linus_pulls_state(session)
     key = hashlib.blake2s(state.encode(), digest_size=8).hexdigest()
+    cache_key = f"linus_pulls:{key}"
+    if not compute_on_miss:
+        return cache.get(cache_key)
     return cache.get_or_compute(
         session,
-        f"linus_pulls:{key}",
+        cache_key,
         LINUS_PULLS_CACHE_TTL_SEC,
         lambda: _compute(session),
     )

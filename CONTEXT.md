@@ -2812,7 +2812,12 @@ rule replacement commits before snapshot invalidation. Maintainer directory
 membership stays literal current `M:` addresses; weekly author/reviewer activity
 folds one-hop mailmap aliases into an eligible current maintainer, retaining a
 listed address when its mailmap target is not eligible. The front page still
-ranks only positive authored-message counts. Directory roots (#1251) select
+ranks only positive authored-message counts. Its merge-window teaser (#1266)
+reads the existing queue and Linus pull-request caches under their state-derived
+keys, without falling back to computation. Missing rows omit their own figures.
+Status uses the current Linus release rather than inferring the next version,
+subsystem totals include smaller sections, and Waiting counts pending requests
+only. The existing five-minute front-page cache policy bounds downstream lag. Directory roots (#1251) select
 the top50 linked entries from these complete cached rows, using seven-day
 review trailers for maintainers and messages for subsystems. This adds no
 activity query or warm target and does not change letter or search membership.

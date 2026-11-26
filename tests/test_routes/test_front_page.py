@@ -550,11 +550,20 @@ def test_cold_maintainer_activity_omits_section_without_activity_scans(client, s
         event.remove(engine, "before_cursor_execute", capture)
     assert statements
     assert page.find_all("h2", id="maintainer-activity") == []
+    # The merge-window teaser checks the newest matching pull-request row.
+    # It adds one bounded state lookup, never a maintainer activity aggregate.
+    author_lookups = [sql for sql in statements if re.search(r"\bauthor\b", sql)]
+    assert len(author_lookups) == 1
+    lookup = author_lookups[0]
+    assert lookup.startswith("select articles.id")
+    assert "order by articles.id desc" in lookup and "limit" in lookup
+    assert "group by" not in lookup and "count(" not in lookup
     for sql in statements:
         assert "article_trailers" not in sql
         assert "subsystem_maintainers" not in sql
         assert re.search(r"\bmailmap\b", sql) is None
-        assert re.search(r"\bauthor\b", sql) is None
+        if sql != lookup:
+            assert re.search(r"\bauthor\b", sql) is None
     assert most_active_maintainers(session, force=True) == []
     assert _page(client).find_all("h2", id="maintainer-activity") == []
 
