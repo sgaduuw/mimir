@@ -1249,7 +1249,7 @@ advertised-URL resolver supplies its canonical conversation page and safe
 message fallback. No body fetch or heuristic patch match runs on this path.
 Invalid supplied values remain errors rather than becoming redirects. The
 robots bare-diff disallow ends in `$`: matching includes the query string,
-so actual sitemap comparison URLs remain crawlable. Its data migration
+so the complete comparison URLs mimir links to remain crawlable. Its data migration
 appends only the missing rule and preserves operator settings.
 
 `web/series_diff_navigation.py` resolves the selected comparison and its links
@@ -1264,7 +1264,7 @@ No navigation step reads a mail body or compares every patch.
 Canonical inbox names are fetched in bulk for indexed destination winners.
 Heuristic destinations stay in the requesting inbox, because that is the
 inbox whose children were matched. The shared URL spelling supplies links,
-canonicals and the native form's path; the sitemap remains cover-only.
+canonicals and the native form's path; no sitemap lists diff pages (#1260).
 
 Metadata stays outside the 24-hour rendered-diff cache, so a new patch or a
 canonical reassignment is visible on a warm page. `revision_diff:render2`
@@ -2039,7 +2039,7 @@ afterthought:
 
   **One index; the message sitemaps are retired (#1089).** `/sitemap.xml`
   lists the pages mimir adds over lore.kernel.org: meta, inbox files,
-  maintainers, series diffs, and the archive files, which hold `/t`
+  maintainers, and the archive files, which hold `/t`
   URLs only. #964 split a second index, `/messages-sitemap.xml`, off it
   for the message URLs of threads the backfill had not reached; once the
   backfill completed, all 3,339 of its files were empty. Its routes now
