@@ -3,22 +3,47 @@
    one "N smaller subsystems" row. Takes `sections`, `smaller`,
    `smaller_patches`, `section_min` and `unit` (what the counts count). A
    section with rows opens as a disclosure listing them; one without (a
-   release counts, its messages are listed below) is a plain row. #}
+   release counts, its messages are listed below) is a plain row.
+   `/merge-window` also passes `row_cap` and `smaller_row_cap` (#1259): a
+   section lists at most that many rows, then links to its own page, and a
+   cap of 0 leaves the disclosure holding only that link. Each link is a
+   plain link for crawlers and readers without JavaScript; with HTMX it
+   fetches the rows from the same URL and swaps them in place. A history
+   page passes neither cap and is unchanged. #}
 {% from "_bar_meter.html" import bar_meter %}
 {% from "_search_field.html" import search_field %}
+{% from "_mw_rows.html" import rows %}
 
 {# One subsystem as a row: name, bar, count. A <details> keeps the section's
    fragment id, so a link to it still lands on it. #}
-{% macro subsystem_row(sec, largest, is_open=false) %}
-<li data-filter-item data-filter-text="{{ sec.name|subsystem_label }}">
-  {% if sec.rows %}
-  <details id="{{ sec.anchor }}"{% if is_open %} open{% endif %}>
+{% macro summary(sec, largest) %}
     <summary>
       <span class="mw-name">{{ sec.name|subsystem_label }}</span>
       {{ bar_meter(sec.patches, largest) }}
       <span class="count">{{ sec.patches }}</span>
     </summary>
-    {{ rows(sec.rows) }}
+{%- endmacro %}
+
+{% macro subsystem_row(sec, largest, is_open=false, cap=none) %}
+<li data-filter-item data-filter-text="{{ sec.name|subsystem_label }}">
+  {% if sec.rows and cap == 0 %}
+  {# Rows load when the disclosure first opens; until then (and without
+     JavaScript) it holds a link to the subsystem's own page. #}
+  {% set url = url_for('web.merge_window_subsystem', anchor=sec.anchor) %}
+  <details id="{{ sec.anchor }}" hx-get="{{ url }}" hx-trigger="toggle once" hx-target="find .mw-rows" hx-swap="innerHTML">
+    {{ summary(sec, largest) }}
+    <div class="mw-rows"><p class="mw-more"><a href="{{ url }}">{{ sec.rows|length|format_count }} posting{{ '' if sec.rows|length == 1 else 's' }} in {{ sec.name|subsystem_label }}</a></p></div>
+  </details>
+  {% elif sec.rows %}
+  <details id="{{ sec.anchor }}"{% if is_open %} open{% endif %}>
+    {{ summary(sec, largest) }}
+    <div class="mw-rows">
+    {{ rows(sec.rows if cap is none else sec.rows[:cap]) }}
+    {% if cap is not none and sec.rows|length > cap %}
+    {% set url = url_for('web.merge_window_subsystem', anchor=sec.anchor) %}
+    <p class="mw-more"><a href="{{ url }}" hx-get="{{ url }}" hx-target="closest .mw-rows" hx-swap="innerHTML">All {{ sec.rows|length|format_count }} postings in {{ sec.name|subsystem_label }}</a></p>
+    {% endif %}
+    </div>
   </details>
   {% else %}
   <div class="mw-flat" id="{{ sec.anchor }}">
@@ -30,21 +55,6 @@
 </li>
 {% endmacro %}
 
-{% macro rows(items) %}
-<ul class="divided">
-  {% for row in items %}
-  <li>
-    <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
-    {%- if row.patches > 1 %} <small>{{ row.patches|format_count }} patches</small>{% endif %}
-    <br><small>{{ row.author|display_name }}
-      {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
-      &middot; {{ row.inbox_name }}
-      {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}
-      {%- if row.also %} &middot; touches {{ row.also|map('subsystem_label')|join(', ') }}{% endif %}</small>
-  </li>
-  {% endfor %}
-</ul>
-{% endmacro %}
 
 <div class="mw-find" data-filter-controls hidden>
   {% call search_field('mw-find-input', 'Find a subsystem') %}
@@ -54,7 +64,7 @@
 <ul class="mw-subsystems" id="mw-subsystems">
   {# One scale for every bar. `(no subsystem)` is always in `smaller` and can be the biggest bucket. #}
   {% set largest = (sections + smaller)|map(attribute='patches')|max %}
-  {% for sec in sections %}{{ subsystem_row(sec, largest, loop.first) }}{% endfor %}
+  {% for sec in sections %}{{ subsystem_row(sec, largest, loop.first, row_cap|default(none)) }}{% endfor %}
   {% if smaller %}
   <li data-filter-item>
     <details id="smaller-subsystems">
@@ -64,7 +74,7 @@
       </summary>
       <p><small>Subsystems with fewer than {{ section_min|format_count }} {{ unit }}.</small></p>
       <ul class="mw-subsystems mw-subsystems-nested">
-        {% for sec in smaller %}{{ subsystem_row(sec, largest) }}{% endfor %}
+        {% for sec in smaller %}{{ subsystem_row(sec, largest, cap=smaller_row_cap|default(none)) }}{% endfor %}
       </ul>
     </details>
   </li>

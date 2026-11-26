@@ -180,6 +180,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 | `/maintainers/<letter>/` | Current maintainers in that display-name bucket, with subsystem totals and weekly review trailers |
 | `/maintainers/<address>` | Cross-inbox maintainer profile |
 | `/merge-window` | Patches in linux-next not yet in Linus's tree, by kernel subsystem; linked commits only |
+| `/merge-window/subsystems/<anchor>` | One subsystem's queued patches, every posting; noindex, no canonical. The main page lists a larger subsystem's newest 10 postings and links here for the rest; a smaller subsystem's disclosure holds only a link here. Under HTMX the same URL answers with the rows alone, which those links swap in place (`Vary: HX-Request`) |
 | `/merge-window/history` | Closed Linux releases, dates, release-candidate phases and recorded mailing-list references; lists releases with references or pull requests to Linus |
 | `/merge-window/history/<tag>?page=N` | Deduplicated archived messages referenced by commits in that release's Git range, 50 per page; page 1 first shows the release's pull requests to Linus and groups the messages by primary subsystem |
 | `/<inbox>/feed.atom` | Inbox Atom feed, newest 1,000 messages from the last five days |

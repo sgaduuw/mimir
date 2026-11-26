@@ -38,6 +38,11 @@
     </dl>
   </header>
 
+  {# A described link to the merge-window view (#1259): the nav links it
+     as "Releases", which says nothing about what is there. #}
+  <h2 id="merge-window"><a href="{{ url_for('web.merge_window_page') }}">Linux merge window</a></h2>
+  <p>What the next merge window is likely to bring: patches already in linux-next but not yet in Linus's tree, grouped by MAINTAINERS subsystem and linked to their review threads, with the pull requests sent to Linus this cycle.</p>
+
   {% if busiest %}
   <h2 id="busiest">Busiest this month</h2>
   <ul class="front-cards">
