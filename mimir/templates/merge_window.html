@@ -4,7 +4,7 @@
    the `h` key, which base.html derives from it. #}
 {% set crumbs = [(site_name, url_for('web.index')), ('Releases', none)] %}
 
-{% block title %}Linux merge window: patches queued in linux-next | {{ site_name }}{% endblock %}
+{% block title %}{% if focus %}{{ focus.name|subsystem_label }}: {% endif %}Linux merge window: patches queued in linux-next | {{ site_name }}{% endblock %}
 {% block meta_description %}Patches in linux-next that are not yet in Linus's tree, grouped by kernel subsystem, each linked to its review thread: what the next Linux merge window is likely to bring.{% endblock %}
 
 {% block content %}
@@ -41,6 +41,7 @@
 </ol>
 {% endif %}
 
+<p>Patches accepted into linux-next, the kernel's integration tree, that Linus's tree does not have yet: what the next merge window is likely to bring, each linked to its review thread.</p>
 <p>
   {%- if mw.linus_release and mw.window_open %}<strong>The merge window after {{ mw.linus_release }} is open.</strong> {% elif mw.linus_release %}The next merge window opens when {{ mw.linus_release }} is released. {% endif -%}
   {%- if mw.linus_tag %}Linus's tree is at <strong>{{ mw.linus_tag }}</strong>. {% endif -%}
@@ -54,38 +55,43 @@
 {% set _pulls_jump = [('pull-requests-to-linus', 'Pull requests to Linus')] %}
 {% set _queue_jump = [('queued', 'Queued in linux-next'), ('how-counted', 'How these are counted')] if mw.queued else [] %}
 {% set _jumps = _pulls_jump + _queue_jump if mw.window_open else _queue_jump + _pulls_jump %}
-{% if _jumps|length >= 2 %}
+{% if _jumps|length >= 2 and not focus %}
 <nav class="page-jump" aria-label="On this page"><ul>
   {%- for anchor, label in _jumps %}
   <li><a href="#{{ anchor }}">{{ label }}</a></li>
   {%- endfor %}
 </ul></nav>
 {% endif %}
-{% if mw.window_open %}{{ pull_requests() }}{% endif %}
+{% if mw.window_open and not focus %}{{ pull_requests() }}{% endif %}
 
-{% if mw.queued %}
+{% if focus %}
+<p><a href="{{ url_for('web.merge_window_page') }}#queued">All subsystems</a></p>
+<h2 id="queued">{{ focus.patches|format_count }} patch{{ '' if focus.patches == 1 else 'es' }} queued in linux-next for {{ focus.name|subsystem_label }}</h2>
+{% with sections=[focus], smaller=[], smaller_patches=0, section_min=section_min, unit='queued patches', row_cap=none, smaller_row_cap=none %}{% include "_subsystem_sections.html" %}{% endwith %}
+{% elif mw.queued %}
 <h2 id="queued">{{ mw.queued|format_count }} patch{{ '' if mw.queued == 1 else 'es' }} queued in linux-next</h2>
-<p>Not in Linus's tree yet, grouped by MAINTAINERS subsystem. <a href="#how-counted">How these are counted</a></p>
-
-{% if mw.sections or mw.smaller %}
-{% with sections=mw.sections, smaller=mw.smaller, smaller_patches=mw.smaller_patches, section_min=section_min, unit='queued patches' %}{% include "_subsystem_sections.html" %}{% endwith %}
-{% endif %}
-
-<p id="how-counted"><small>{{ mw.queued|format_count }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
+{# The counting note comes before the list (#1259): it is the page's only
+   prose, and a crawler that stops partway through the list still reads it. #}
+<p id="how-counted">{{ mw.queued|format_count }} patch{{ '' if mw.queued == 1 else 'es' }} in linux-next
   {{ 'is' if mw.queued == 1 else 'are' }} not in Linus's tree yet, grouped by MAINTAINERS subsystem: each series
   goes under the most specific subsystem that covers at least half as many of
   its files as the subsystem covering the most.
   {%- if mw.walked_commits %} {{ mw.walked_linked|format_count }} of {{ mw.walked_commits|format_count }} commits in linux-next link their mailing-list patch; the rest cannot be shown here.{% endif %}
   Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted.
   {%- if mw.not_archived %} {{ mw.not_archived|format_count }} of them link to messages not archived here.{% endif %}
-  A series shows once, by its cover letter.</small></p>
+  A series shows once, by its cover letter.
+  {%- if mw.sections or mw.smaller %} A larger subsystem lists its newest {{ row_cap|format_count }} postings here; every subsystem has its own page listing all of them.{% endif %}</p>
+
+{% if mw.sections or mw.smaller %}
+{% with sections=mw.sections, smaller=mw.smaller, smaller_patches=mw.smaller_patches, section_min=section_min, unit='queued patches', row_cap=row_cap, smaller_row_cap=0 %}{% include "_subsystem_sections.html" %}{% endwith %}
+{% endif %}
 {% else %}
 {# Empty is a real state: right after a merge window closes, or before
    linux-next has been walked at all. #}
 <p>Nothing is queued: every linked patch in linux-next is already in Linus's tree, or linux-next has not been indexed yet.</p>
 {% endif %}
 
-{% if not mw.window_open %}{{ pull_requests() }}{% endif %}
+{% if not mw.window_open and not focus %}{{ pull_requests() }}{% endif %}
 </section>
 <script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>
 {% endblock %}

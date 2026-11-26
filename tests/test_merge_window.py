@@ -348,7 +348,12 @@ def test_page_lists_queued_patch_and_links_its_thread(client):
         _commit(s, "page@x", "net-next")
         s.commit()
         url = f"/alpha/{art.date:%Y}/{art.date:%m}/{art.id}"
-    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    # A one-patch subsystem is a smaller one: the main page links its
+    # own view, which lists the posting (#1259).
+    main = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    view = f"{MERGE_WINDOW_PATH}/subsystems/no-subsystem"
+    assert f'href="{view}"' in main
+    html = client.get(view).get_data(as_text=True)
     assert f'<a href="{url}">' in html
     assert re.search(r"also in net-next\b", html)
 
@@ -557,20 +562,30 @@ def test_the_queue_is_one_list_of_disclosures(client, monkeypatch):
     assert rows[0].find_all("details")[0].attrs["id"] == "kernel-foo-bar"
     group = rows[2].find_all("details")[0]
     assert group.attrs["id"] == "smaller-subsystems"
-    nested = [
-        li.find_all("span", cls="mw-name")[0].text()
-        for li in group.find_all("li")
-        if "data-filter-item" in li.attrs
-    ]
-    assert sorted(nested) == ["tinyone", "tinytwo"]
+    # A smaller subsystem's disclosure holds only a link to its own page,
+    # and fetches its rows from that URL on first open (#1259).
+    nested = {}
+    for li in group.find_all("li"):
+        if "data-filter-item" not in li.attrs:
+            continue
+        details = li.find_all("details")[0]
+        link = details.find("div", cls="mw-rows").find_all("a")[0]
+        assert details.attrs["hx-get"] == link.attrs["href"]
+        assert details.attrs["hx-trigger"] == "toggle once"
+        nested[details.attrs["id"]] = link.attrs["href"]
+    assert nested == {
+        "tinyone": f"{MERGE_WINDOW_PATH}/subsystems/tinyone",
+        "tinytwo": f"{MERGE_WINDOW_PATH}/subsystems/tinytwo",
+    }
     # The count column and the bars agree with the data.
     counts = [r.find_all("span", cls="count")[0].text() for r in rows]
     assert counts == ["3", "2", "2"]
     widths = [r.find_all("rect")[0].attrs["width"] for r in rows[:2]]
     assert widths == ["100.0", "66.7"]
-    # Every queued posting is still a link (crawlers see the closed rows).
+    # The sections' postings are links (crawlers see the closed rows); the
+    # smaller subsystems' postings are on their own views.
     links = [a for a in page.find_all("a") if a.attrs["href"].startswith("/alpha/")]
-    assert len(links) == 7
+    assert len(links) == 5
     # No fold boxes any more.
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
     assert "data-fold" not in html
@@ -617,7 +632,7 @@ def test_the_filter_ships_hidden_and_points_at_the_list(client, monkeypatch):
     assert not [x for x in scripts if "fold-box" in x]
 
 
-def test_the_counting_note_follows_the_list_and_is_linked(client, monkeypatch):
+def test_the_counting_note_precedes_the_list_and_is_linked(client, monkeypatch):
     import mimir.merge_window as mwmod
     from mimir.extensions import SessionLocal
 
@@ -637,7 +652,9 @@ def test_the_counting_note_follows_the_list_and_is_linked(client, monkeypatch):
     page = _page(client)
     assert any(a.attrs["href"] == "#how-counted" for a in page.find_all("a"))
     note = page.find("p", id="how-counted")
-    assert html.index('id="how-counted"') > html.index('id="mw-subsystems"')
+    # Before the list (#1259): a fetch cut off partway through the list
+    # still has the page's only prose.
+    assert html.index('id="how-counted"') < html.index('id="mw-subsystems"')
     text = note.text()
     for sentence in (
         "2 patches in linux-next are not in Linus's tree yet, grouped by MAINTAINERS subsystem: each series goes under the most specific subsystem that covers at least half as many of its files as the subsystem covering the most.",
@@ -729,12 +746,12 @@ def test_linux_next_mirror_path_moves_the_etag(
         _commit(s, "bare@x", "linux-next", sha=shas["p"])
         s.commit()
     monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "missing.git")
-    first = client.get(MERGE_WINDOW_PATH)
+    # The one posting is in a smaller subsystem, listed on its own view.
+    view = f"{MERGE_WINDOW_PATH}/subsystems/no-subsystem"
+    first = client.get(view)
     assert "Jane Doe" not in first.get_data(as_text=True)
     monkeypatch.setattr(settings.trees["linux-next"], "path", tmp_path / "next.git")
-    again = client.get(
-        MERGE_WINDOW_PATH, headers={"If-None-Match": first.headers["ETag"]}
-    )
+    again = client.get(view, headers={"If-None-Match": first.headers["ETag"]})
     assert again.status_code == 200
     assert "Jane Doe" in again.get_data(as_text=True)
 
@@ -1150,13 +1167,13 @@ def _seed_for_the_pinned_section(s):
 def _live_section_html(client):
     html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
     start = html.index('<h2 id="queued">')
-    end = html.index('<p id="how-counted">')
+    end = html.index('<h2 id="pull-requests-to-linus">')
     return " ".join(html[start:end].split())
 
 
 PINNED_LIVE_SECTION = (
     '<h2 id="queued">5 patches queued in linux-next</h2> '
-    '<p>Not in Linus\'s tree yet, grouped by MAINTAINERS subsystem. <a href="#how-counted">How these are counted</a></p> '
+    '<p id="how-counted">5 patches in linux-next are not in Linus\'s tree yet, grouped by MAINTAINERS subsystem: each series goes under the most specific subsystem that covers at least half as many of its files as the subsystem covering the most. Only commits that link their mailing-list message (a <code>Link:</code> trailer) are counted. A series shows once, by its cover letter. A larger subsystem lists its newest 10 postings here; every subsystem has its own page listing all of them.</p> '
     '<div class="mw-find" data-filter-controls hidden> '
     '<div class="search-field"> '
     '<label for="mw-find-input">Find a subsystem</label> '
@@ -1170,6 +1187,7 @@ PINNED_LIVE_SECTION = (
     '<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="100.0" height="6"/></svg> '
     '<span class="count">3</span> '
     "</summary> "
+    '<div class="mw-rows"> '
     '<ul class="divided"> '
     "<li> "
     '<a href="/alpha/2026/09/8">[PATCH] single@x</a> '
@@ -1181,6 +1199,7 @@ PINNED_LIVE_SECTION = (
     "<br><small>Ann Author &middot; 2026-09-04 &middot; alpha &middot; touches foo helpers</small> "
     "</li> "
     "</ul> "
+    "</div> "
     "</details> "
     "</li> "
     "<li data-filter-item> "
@@ -1192,33 +1211,23 @@ PINNED_LIVE_SECTION = (
     "<p><small>Subsystems with fewer than 25 queued patches.</small></p> "
     '<ul class="mw-subsystems mw-subsystems-nested"> '
     '<li data-filter-item data-filter-text="tiny"> '
-    '<details id="tiny"> '
+    '<details id="tiny" hx-get="/merge-window/subsystems/tiny" hx-trigger="toggle once" hx-target="find .mw-rows" hx-swap="innerHTML"> '
     "<summary> "
     '<span class="mw-name">tiny</span> '
     '<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="33.3" height="6"/></svg> '
     '<span class="count">1</span> '
     "</summary> "
-    '<ul class="divided"> '
-    "<li> "
-    '<a href="/alpha/2026/09/9">[PATCH] tiny@x</a> '
-    "<br><small>Ann Author &middot; 2026-09-02 &middot; alpha</small> "
-    "</li> "
-    "</ul> "
+    '<div class="mw-rows"><p class="mw-more"><a href="/merge-window/subsystems/tiny">1 posting in tiny</a></p></div> '
     "</details> "
     "</li> "
     '<li data-filter-item data-filter-text="(no subsystem)"> '
-    '<details id="no-subsystem"> '
+    '<details id="no-subsystem" hx-get="/merge-window/subsystems/no-subsystem" hx-trigger="toggle once" hx-target="find .mw-rows" hx-swap="innerHTML"> '
     "<summary> "
     '<span class="mw-name">(no subsystem)</span> '
     '<svg class="bar-meter" viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="bar-added" width="33.3" height="6"/></svg> '
     '<span class="count">1</span> '
     "</summary> "
-    '<ul class="divided"> '
-    "<li> "
-    '<a href="/alpha/2026/09/10">[PATCH] loose@x</a> '
-    "<br><small>Ann Author &middot; 2026-09-03 &middot; alpha</small> "
-    "</li> "
-    "</ul> "
+    '<div class="mw-rows"><p class="mw-more"><a href="/merge-window/subsystems/no-subsystem">1 posting in (no subsystem)</a></p></div> '
     "</details> "
     "</li> "
     "</ul> "
@@ -1299,3 +1308,117 @@ def test_the_no_subsystem_bucket_never_gets_a_section_of_its_own(
             ("NAMED", 1),
             (NO_SUBSYSTEM, 3),
         ]
+
+
+def test_a_section_lists_its_newest_rows_then_links_its_view(client, monkeypatch):
+    """#1259: a section lists `SECTION_ROW_CAP` rows on the main page and
+    links its own view, which lists every row. Keeps the page under
+    Googlebot's 2 MB HTML cutoff."""
+    import mimir.merge_window as mwmod
+    import mimir.web.routes.merge_window as route
+    from mimir.extensions import SessionLocal
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    monkeypatch.setattr(route, "SECTION_ROW_CAP", 2)
+    with SessionLocal() as s:
+        _seed_postings(s, {"BIG": 4})
+    html = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    section = _page(client).find("details", id="big")
+    rows = [a.text() for a in section.find_all("a") if "/alpha/" in a.attrs["href"]]
+    # `_seed_postings` dates posting n `days=n` later; newest first.
+    assert rows == ["[PATCH] big3@x", "[PATCH] big2@x"]
+    view = f"{MERGE_WINDOW_PATH}/subsystems/big"
+    more = section.find("p", cls="mw-more").find_all("a")[0]
+    assert more.attrs["href"] == view
+    assert more.text() == "All 4 postings in big"
+    assert "big0@x" not in html
+    full = client.get(view)
+    assert full.status_code == 200
+    body = full.get_data(as_text=True)
+    for n in range(4):
+        assert f"[PATCH] big{n}@x" in body, n
+    assert 'class="mw-more"' not in body
+
+
+def test_a_section_under_the_cap_has_no_more_link(client, monkeypatch):
+    import mimir.merge_window as mwmod
+    import mimir.web.routes.merge_window as route
+    from mimir.extensions import SessionLocal
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    monkeypatch.setattr(route, "SECTION_ROW_CAP", 2)
+    with SessionLocal() as s:
+        _seed_postings(s, {"BIG": 2})
+    section = _page(client).find("details", id="big")
+    assert len([a for a in section.find_all("a") if "/alpha/" in a.attrs["href"]]) == 2
+    assert section.find_all("p", cls="mw-more") == []
+
+
+def test_the_subsystem_view_is_noindex_with_no_canonical(client):
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        _seed_postings(s, {"TINY": 1})
+    html = client.get(f"{MERGE_WINDOW_PATH}/subsystems/tiny").get_data(as_text=True)
+    assert '<meta name="robots" content="noindex">' in html
+    assert 'rel="canonical"' not in html
+    assert "<title>tiny: Linux merge window" in html
+    assert f'href="{MERGE_WINDOW_PATH}#queued"' in html
+    main = client.get(MERGE_WINDOW_PATH).get_data(as_text=True)
+    assert 'name="robots"' not in main
+    assert 'rel="canonical"' in main
+
+
+def test_an_unknown_subsystem_view_is_404(client):
+    from mimir.extensions import SessionLocal
+
+    with SessionLocal() as s:
+        _seed_postings(s, {"TINY": 1})
+    assert client.get(f"{MERGE_WINDOW_PATH}/subsystems/tiny").status_code == 200
+    assert client.get(f"{MERGE_WINDOW_PATH}/subsystems/nope").status_code == 404
+
+
+def test_front_page_describes_the_merge_window(client):
+    """#1259: a described link, not only the nav entry labelled Releases."""
+    from tests._dom import parse
+
+    page = parse(client.get("/").get_data(as_text=True))
+    heading = page.find("h2", id="merge-window")
+    assert heading.find_all("a")[0].attrs["href"] == MERGE_WINDOW_PATH
+    html = client.get("/").get_data(as_text=True)
+    after = html[html.index('id="merge-window"') :]
+    assert "patches already in linux-next but not yet in Linus's tree" in after
+
+
+def test_the_subsystem_page_answers_htmx_with_its_rows_alone(client, monkeypatch):
+    """The disclosure and the "All N postings" link swap these rows in
+    place. Same URL as the full page, so the two need distinct ETags and
+    `Vary: HX-Request` (the step `web.thread_view` once missed)."""
+    import mimir.merge_window as mwmod
+    import mimir.web.routes.merge_window as route
+    from mimir.extensions import SessionLocal
+
+    monkeypatch.setattr(mwmod, "SECTION_MIN_PATCHES", 2)
+    monkeypatch.setattr(route, "SECTION_ROW_CAP", 2)
+    with SessionLocal() as s:
+        _seed_postings(s, {"BIG": 4})
+    view = f"{MERGE_WINDOW_PATH}/subsystems/big"
+    link = _page(client).find("p", cls="mw-more").find_all("a")[0]
+    assert link.attrs["hx-get"] == view
+    assert link.attrs["hx-target"] == "closest .mw-rows"
+    full = client.get(view)
+    rows = client.get(view, headers={"HX-Request": "true"})
+    assert rows.status_code == 200
+    body = rows.get_data(as_text=True)
+    assert body.lstrip().startswith('<ul class="divided">')
+    assert "<html" not in body
+    for n in range(4):
+        assert f"[PATCH] big{n}@x" in body, n
+    assert full.headers["Vary"] == rows.headers["Vary"] == "HX-Request"
+    assert full.headers["Cache-Control"] == "public, no-cache"
+    main = client.get(MERGE_WINDOW_PATH).headers["ETag"]
+    assert len({main, full.headers["ETag"], rows.headers["ETag"]}) == 3
+    again = client.get(
+        view, headers={"HX-Request": "true", "If-None-Match": full.headers["ETag"]}
+    )
+    assert again.status_code == 200
