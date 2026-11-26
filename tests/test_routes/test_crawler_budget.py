@@ -506,6 +506,56 @@ def test_the_contact_url_rule_runs_in_linear_time_on_hostile_input():
     assert time.perf_counter() - start < 5
 
 
+@pytest.mark.parametrize("n", [8190, 60_000])
+def test_the_token_match_is_linear_in_the_length_of_a_name_run(n):
+    """`a.-` repeated has a word boundary every few characters, and the
+    old regex rescanned the rest of the run from each one. Called on the
+    matcher itself, so the 512 cap cannot be what makes it fast."""
+    gate = _gate(Clock())
+    start = time.perf_counter()
+    for ua in ("a.-" * (n // 3), "a.-" * (n // 3) + "/", "a.-" * (n // 3) + "bot/"):
+        gate._token_key(ua)
+    assert time.perf_counter() - start < 2
+
+
+@pytest.mark.parametrize(
+    "ua, key",
+    [
+        ("a.-" * 100 + "bot/1.0", ("a.-" * 100 + "bot")),
+        ("1foo-bot/1.0", "bot"),  # digit-led name: the old regex found `bot`
+        ("-bot/1.0", "bot"),
+        ("x/ y.crawler/2 z", "y.crawler"),
+        ("bot/1 curl/2", "bot"),
+        ("Foo ./bot/1", "bot"),
+        ("a.-/ b/ x.-spider/2", "x.-spider"),
+    ],
+)
+def test_token_match_keys_do_not_move(ua, key):
+    assert _gate(Clock())._token_key(ua) == key
+
+
+def test_only_the_first_512_characters_are_classified():
+    gate = _gate(Clock())
+    pad = "x " * 255  # 510 characters
+    assert gate.crawler_key(pad + "foo/1.0 (+https://a.example)") is None
+    assert gate.crawler_key("foo/1.0 (+https://a.example) " + pad) == "foo"
+    assert gate.crawler_key(pad + "Brightbot") is None
+    assert gate.crawler_key("Brightbot " + pad) == "brightbot"
+    assert gate.crawler_key(pad[:250] + "Googlebot/2.1") == "googlebot"
+    assert gate.crawler_key(pad + "Googlebot/2.1") is None
+
+
+def test_the_cap_applies_before_the_exemption_check():
+    gate = _gate(Clock(), ua_exempt=["lounge"])
+    ua = "Brightbot " + "x " * 300 + "lounge"
+    assert gate.crawler_key(ua) == "brightbot"  # `lounge` is past the cap
+
+
+def test_every_evidence_ua_is_well_under_the_cap():
+    uas = [EPOCHAL, GOOGLEBOT, GPTBOT, AHREFS, LOUNGE, APPLEBOT, CUBOT_BROWSER]
+    assert max(map(len, uas)) < crawler_budget.UA_CLASSIFY_MAX // 1.5
+
+
 def test_markers_are_configurable_and_escaped():
     gate = CrawlerBudget(100, {}, 1, 120, Clock(), markers=("scraper", "c++"))
     assert gate.crawler_key("FooScraper/1.0") == "fooscraper"
