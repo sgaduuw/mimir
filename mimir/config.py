@@ -756,6 +756,8 @@ class Settings(BaseSettings):
         "wget",
         "python-requests",
         "lightpanda",
+        "search",
+        "crawl",
     ]
 
     @property
