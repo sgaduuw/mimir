@@ -1249,8 +1249,8 @@ advertised-URL resolver supplies its canonical conversation page and safe
 message fallback. No body fetch or heuristic patch match runs on this path.
 Invalid supplied values remain errors rather than becoming redirects. The
 robots bare-diff disallow ends in `$`: matching includes the query string,
-so the complete comparison URLs mimir links to remain crawlable. Its data migration
-appends only the missing rule and preserves operator settings.
+so the complete comparison URLs mimir links to remain crawlable. Its data
+migration appends only the missing rule and preserves operator settings.
 
 `web/series_diff_navigation.py` resolves the selected comparison and its links
 from one batch of indexed slots for the exact series key/head. `slot_winner`
