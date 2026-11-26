@@ -388,9 +388,12 @@ def test_ua_match_is_a_case_insensitive_substring():
         (CUBOT_BROWSER, None),
         (BROWSER, None),
         ("Lynx/2.9.0 libwww-FM/2.14", None),
-        # A user-initiated agent fetch (#884): no marker token, so it is
-        # not a crawler and is ungated on HTML and Markdown alike.
-        ("Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)", None),
+        # A user-initiated agent fetch (#884) was ungated until #1263 made a
+        # contact URL a crawler signal; its volume is far below one share.
+        (
+            "Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)",
+            "claude-code",
+        ),
         ("", None),
         (None, None),
     ],
@@ -399,10 +402,188 @@ def test_crawler_key_classification(ua, key):
     assert _gate(Clock()).crawler_key(ua) == key
 
 
+EPOCHAL = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 (compatible; Epochal-Search/1.0; +https://crawler.epochal.com)"
+DESKTOP_CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+
+
+@pytest.mark.parametrize(
+    "ua, key",
+    [
+        # Rule 1: a contact URL, keyed by the nearest Name/version token.
+        (EPOCHAL, "epochal-search"),
+        (
+            "Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)",
+            "claude-code",
+        ),
+        ("firecrawl-search/1.0 (+https://www.firecrawl.dev)", "firecrawl-search"),
+        (
+            "Mozilla/5.0 (compatible; ExaUser/1.0; +https://exauser.crawler.exa.ai)",
+            "exauser",
+        ),
+        (
+            "NotebookLM-Backend/1.0 (+https://lgai.exaone.ai/notebook/; source crawler)",
+            "notebooklm-backend",
+        ),
+        (
+            "Mozilla/5.0 AppleWebKit/537.36 (compatible; MistralAI-User/1.0; +https://docs.mistral.ai/robots)",
+            "mistralai-user",
+        ),
+        (
+            "Mozilla/5.0 AppleWebKit/537.36 (compatible; ChatGPT-User/1.0; +https://openai.com/bot)",
+            "chatgpt-user",
+        ),
+        ("Iframely/1.3.1 (+https://iframely.com/docs/about) Atlassian", "iframely"),
+        (
+            "ModelContextProtocol/1.0 (Autonomous; +https://github.com/modelcontextprotocol/servers)",
+            "modelcontextprotocol",
+        ),
+        ("Scrapy/2.17.0 (+https://scrapy.org)", "scrapy"),
+        ("Foo/1.0 (+http://foo.example)", "foo"),  # plain http too
+        # The nearest token keys, digit-led or punctuation-only included.
+        ("Mozilla/5.0 (compatible; 008/0.83; +http://x.example)", "008"),
+        ("x -/1 (+http://y)", "-"),
+        ("v 1.0/2 (+http://y)", "1.0"),
+        # Rule 2: search and crawl are markers, with the slash rule.
+        ("Epochal-Search/1.0", "epochal-search"),
+        ("websearch/0.1", "websearch"),
+        ("web-search-mcp/1.0", "web-search-mcp"),
+        ("PHP-Version-Research/1.0", "php-version-research"),
+        # Under a Mozilla/ prefix only the marker rule can see these.
+        ("Mozilla/5.0 (compatible; Foo-Search/1.0)", "foo-search"),
+        ("Mozilla/5.0 (compatible; FooCrawl/1.0)", "foocrawl"),
+        ("research-reader/1.0 crawl/2", "crawl"),
+        # Rule 3: bare bot, crawl or search outside a Mozilla/ UA.
+        ("Brightbot 1.0", "brightbot"),
+        ("TelegramBot (like TwitterBot)", "telegrambot"),
+        ("h9p3r.fr bot", "h9p3r.fr"),
+        ("research-bot", "research-bot"),
+        ("search.marginalia.nu", "search.marginalia.nu"),
+        ("research", "research"),
+        ("research-client/1.0 (x)", "research-client"),  # key drops the version
+        # Kept from before: listed names and existing marker tokens.
+        (GOOGLEBOT, "googlebot"),
+        (AHREFS, "ahrefsbot"),
+        ("curl/8.5.0", "curl"),
+        # Still ungated.
+        (DESKTOP_CHROME, None),
+        (SAFARI, None),
+        (CUBOT_BROWSER, None),
+        (BROWSER, None),
+        # Mozilla/ prefix with the word mid-token: left alone on purpose (#1263).
+        ("Mozilla/5.0 (compatible; FirecrawlSearchEval/1.0)", None),
+    ],
+)
+def test_contact_url_and_search_crawl_bot_names_are_crawlers(ua, key):
+    assert _gate(Clock()).crawler_key(ua) == key
+
+
+@pytest.mark.parametrize(
+    "ua",
+    [
+        EPOCHAL,
+        "Brightbot 1.0",
+        "websearch/0.1",
+        "Scrapy/2.17.0 (+https://scrapy.org)",
+    ],
+)
+def test_ua_exemption_beats_the_contact_url_and_bare_word_rules(ua):
+    gate = _gate(Clock(), ua_exempt=[ua[:8].lower()])
+    assert gate.crawler_key(ua) is None
+
+
+def test_the_new_rules_are_linear_without_the_cap():
+    """The rules scan attacker-chosen text (AGENTS.md, hostile input). Called
+    on the rule itself, so the 512 cap cannot be what makes it fast."""
+    n = 100_000
+    start = time.perf_counter()
+    for ua in (
+        "a" * n + "+http://x",
+        "a/" * n + "+https://x",
+        "+http://" * n,
+        "a/b." * n + "+http://",
+        "(+http://" * n,
+        "x " * n + "bot",
+        "bot" * n,
+    ):
+        crawler_budget._self_described_key(ua)
+    assert time.perf_counter() - start < 5
+
+
+def test_the_token_match_is_linear_in_the_length_of_a_name_run():
+    """`a.-` repeated has a word boundary every few characters, and the
+    old regex rescanned the rest of the run from each one. Called on the
+    matcher itself, so the 512 cap cannot be what makes it fast. 60k:
+    8190 characters ran in 0.6 s on the old code, too fast to guard."""
+    n = 60_000
+    gate = _gate(Clock())
+    start = time.perf_counter()
+    for ua in (
+        "a.-" * (n // 3),
+        "a.-" * (n // 3) + "/",
+        "a.-" * (n // 3) + "bot/",
+        # A window that fails (no letter at a word boundary) must not
+        # rescan the run after it.
+        "1bot/" + "a.-" * (n // 3),
+    ):
+        gate._token_key(ua)
+    assert time.perf_counter() - start < 2
+
+
+def test_the_widest_marker_window_wins():
+    # The old regex keys this `gc++`; only the `c++` window reaches the `g`.
+    gate = CrawlerBudget(100, {}, 1, 120, Clock(), markers=("c++", "+"))
+    assert gate._token_key("gc++/1") == "gc++"
+
+
+def test_token_key_indexes_the_ua_it_searches():
+    # `İ`.lower() is two characters; slicing the UA with indices from its
+    # lowercase copy shifts the window. Unreachable over HTTP (latin-1).
+    assert _gate(Clock())._token_key("İ bot/1") == "bot"
+
+
+@pytest.mark.parametrize(
+    "ua, key",
+    [
+        ("a.-" * 100 + "bot/1.0", ("a.-" * 100 + "bot")),
+        ("1foo-bot/1.0", "bot"),  # digit-led name: the old regex found `bot`
+        ("-bot/1.0", "bot"),
+        ("x/ y.crawler/2 z", "y.crawler"),
+        ("bot/1 curl/2", "bot"),
+        ("Foo ./bot/1", "bot"),
+        ("a.-/ b/ x.-spider/2", "x.-spider"),
+    ],
+)
+def test_token_match_keys_do_not_move(ua, key):
+    assert _gate(Clock())._token_key(ua) == key
+
+
+def test_only_the_first_512_characters_are_classified():
+    gate = _gate(Clock())
+    pad = "x " * 255  # 510 characters
+    assert gate.crawler_key(pad + "foo/1.0 (+https://a.example)") is None
+    assert gate.crawler_key("foo/1.0 (+https://a.example) " + pad) == "foo"
+    assert gate.crawler_key(pad + "Brightbot") is None
+    assert gate.crawler_key("Brightbot " + pad) == "brightbot"
+    assert gate.crawler_key(pad[:250] + "Googlebot/2.1") == "googlebot"
+    assert gate.crawler_key(pad + "Googlebot/2.1") is None
+
+
+def test_the_cap_applies_before_the_exemption_check():
+    gate = _gate(Clock(), ua_exempt=["lounge"])
+    ua = "Brightbot " + "x " * 300 + "lounge"
+    assert gate.crawler_key(ua) == "brightbot"  # `lounge` is past the cap
+
+
+def test_every_evidence_ua_is_well_under_the_cap():
+    uas = [EPOCHAL, GOOGLEBOT, GPTBOT, AHREFS, LOUNGE, APPLEBOT, CUBOT_BROWSER]
+    assert max(map(len, uas)) < crawler_budget.UA_CLASSIFY_MAX // 1.5
+
+
 def test_markers_are_configurable_and_escaped():
     gate = CrawlerBudget(100, {}, 1, 120, Clock(), markers=("scraper", "c++"))
     assert gate.crawler_key("FooScraper/1.0") == "fooscraper"
-    assert gate.crawler_key("Mozilla (Googlebot/2.1)") is None
+    assert gate.crawler_key("Mozilla/5.0 (Googlebot/2.1)") is None
 
 
 def test_listed_crawler_wins_over_marker_token():
@@ -525,6 +706,8 @@ def test_marker_and_default_pct_settings(monkeypatch):
         "wget",
         "python-requests",
         "lightpanda",
+        "search",
+        "crawl",
     ]
     monkeypatch.setenv("CRAWLER_UA_MARKERS", '["bot", "scraper"]')
     assert Settings().crawler_ua_markers == ["bot", "scraper"]
