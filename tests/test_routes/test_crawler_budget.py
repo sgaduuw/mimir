@@ -388,9 +388,12 @@ def test_ua_match_is_a_case_insensitive_substring():
         (CUBOT_BROWSER, None),
         (BROWSER, None),
         ("Lynx/2.9.0 libwww-FM/2.14", None),
-        # A user-initiated agent fetch (#884): no marker token, so it is
-        # not a crawler and is ungated on HTML and Markdown alike.
-        ("Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)", None),
+        # A user-initiated agent fetch (#884) was ungated until #1263 made a
+        # contact URL a crawler signal; its volume is far below one share.
+        (
+            "Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)",
+            "claude-code",
+        ),
         ("", None),
         (None, None),
     ],
@@ -399,10 +402,114 @@ def test_crawler_key_classification(ua, key):
     assert _gate(Clock()).crawler_key(ua) == key
 
 
+EPOCHAL = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36 (compatible; Epochal-Search/1.0; +https://crawler.epochal.com)"
+DESKTOP_CHROME = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36"
+SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15"
+
+
+@pytest.mark.parametrize(
+    "ua, key",
+    [
+        # Rule 1: a contact URL, keyed by the nearest Name/version token.
+        (EPOCHAL, "epochal-search"),
+        (
+            "Claude-User (claude-code/2.1.0; +https://support.anthropic.com/)",
+            "claude-code",
+        ),
+        ("firecrawl-search/1.0 (+https://www.firecrawl.dev)", "firecrawl-search"),
+        (
+            "Mozilla/5.0 (compatible; ExaUser/1.0; +https://exauser.crawler.exa.ai)",
+            "exauser",
+        ),
+        (
+            "NotebookLM-Backend/1.0 (+https://lgai.exaone.ai/notebook/; source crawler)",
+            "notebooklm-backend",
+        ),
+        (
+            "Mozilla/5.0 AppleWebKit/537.36 (compatible; MistralAI-User/1.0; +https://docs.mistral.ai/robots)",
+            "mistralai-user",
+        ),
+        (
+            "Mozilla/5.0 AppleWebKit/537.36 (compatible; ChatGPT-User/1.0; +https://openai.com/bot)",
+            "chatgpt-user",
+        ),
+        ("Iframely/1.3.1 (+https://iframely.com/docs/about) Atlassian", "iframely"),
+        (
+            "ModelContextProtocol/1.0 (Autonomous; +https://github.com/modelcontextprotocol/servers)",
+            "modelcontextprotocol",
+        ),
+        ("Scrapy/2.17.0 (+https://scrapy.org)", "scrapy"),
+        ("Foo/1.0 (+http://foo.example)", "foo"),  # plain http too
+        # Rule 2: search and crawl are markers, with the slash rule.
+        ("Epochal-Search/1.0", "epochal-search"),
+        ("websearch/0.1", "websearch"),
+        ("web-search-mcp/1.0", "web-search-mcp"),
+        ("PHP-Version-Research/1.0", "php-version-research"),
+        # Under a Mozilla/ prefix only the marker rule can see these.
+        ("Mozilla/5.0 (compatible; Foo-Search/1.0)", "foo-search"),
+        ("Mozilla/5.0 (compatible; FooCrawl/1.0)", "foocrawl"),
+        ("research-reader/1.0 crawl/2", "crawl"),
+        # Rule 3: bare bot, crawl or search outside a Mozilla/ UA.
+        ("Brightbot 1.0", "brightbot"),
+        ("TelegramBot (like TwitterBot)", "telegrambot"),
+        ("h9p3r.fr bot", "h9p3r.fr"),
+        ("research-bot", "research-bot"),
+        ("search.marginalia.nu", "search.marginalia.nu"),
+        ("research", "research"),
+        ("research-client/1.0 (x)", "research-client"),  # key drops the version
+        # Kept from before: listed names and existing marker tokens.
+        (GOOGLEBOT, "googlebot"),
+        (AHREFS, "ahrefsbot"),
+        ("curl/8.5.0", "curl"),
+        # Still ungated.
+        (DESKTOP_CHROME, None),
+        (SAFARI, None),
+        (CUBOT_BROWSER, None),
+        (BROWSER, None),
+        # Mozilla/ prefix with the word mid-token: left alone on purpose (#1263).
+        ("Mozilla/5.0 (compatible; FirecrawlSearchEval/1.0)", None),
+    ],
+)
+def test_contact_url_and_search_crawl_bot_names_are_crawlers(ua, key):
+    assert _gate(Clock()).crawler_key(ua) == key
+
+
+@pytest.mark.parametrize(
+    "ua",
+    [
+        EPOCHAL,
+        "Brightbot 1.0",
+        "websearch/0.1",
+        "Scrapy/2.17.0 (+https://scrapy.org)",
+    ],
+)
+def test_ua_exemption_beats_the_contact_url_and_bare_word_rules(ua):
+    gate = _gate(Clock(), ua_exempt=[ua[:8].lower()])
+    assert gate.crawler_key(ua) is None
+
+
+def test_the_contact_url_rule_runs_in_linear_time_on_hostile_input():
+    """The rule scans attacker-chosen text (AGENTS.md, hostile input)."""
+    n = 300_000
+    gate = _gate(Clock())
+    start = time.perf_counter()
+    for ua in (
+        "a" * n + "+http://x",
+        "a/" * n + "+https://x",
+        "+http://" * n,
+        "a/b." * n + "+http://",
+        "(+http://" * n,
+        "x " * n + "Bot",
+        "bot" * n,
+    ):
+        gate.crawler_key(ua)
+    assert time.perf_counter() - start < 5
+
+
 def test_markers_are_configurable_and_escaped():
     gate = CrawlerBudget(100, {}, 1, 120, Clock(), markers=("scraper", "c++"))
     assert gate.crawler_key("FooScraper/1.0") == "fooscraper"
-    assert gate.crawler_key("Mozilla (Googlebot/2.1)") is None
+    assert gate.crawler_key("Mozilla/5.0 (Googlebot/2.1)") is None
 
 
 def test_listed_crawler_wins_over_marker_token():
@@ -525,6 +632,8 @@ def test_marker_and_default_pct_settings(monkeypatch):
         "wget",
         "python-requests",
         "lightpanda",
+        "search",
+        "crawl",
     ]
     monkeypatch.setenv("CRAWLER_UA_MARKERS", '["bot", "scraper"]')
     assert Settings().crawler_ua_markers == ["bot", "scraper"]

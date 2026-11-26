@@ -18,7 +18,27 @@ too, on purpose. The slash is required so a browser on a device called
 `CUBOT X30` is never gated. Script tools are markers, so an operator's
 curl smoke check is a crawler once the global budget is set.
 
-`CRAWLER_UA_EXEMPT` takes precedence over those UA checks, defaulting to
+Two more signs of a crawler apply when no listed name or token matched
+(#1263), the last two being how a UA like `Epochal-Search/1.0; +https://
+crawler.epochal.com` (a Chrome string with a contact URL) was missed:
+the default markers include `search` and `crawl`, and
+ * a contact URL, `+http://` or `+https://`, is how a crawler declares
+   itself and a browser never sends one. The key is the nearest
+   `Name/version` token before the `+`, lowercased (`epochal-search`).
+ * a bare `bot`, `crawl` or `search` anywhere in a UA that does not start
+   with `Mozilla/` (`Brightbot 1.0`, `research-client`). The key is the
+   first token, lowercased, without a `/version`. The `Mozilla/` exclusion
+   is the browser guarantee once more: every browser UA, a phone sold as
+   `CUBOT X30` included, starts with it, so a bare-word match there would
+   gate readers. The cost is a miss on `Mozilla/5.0 (compatible;
+   FirecrawlSearchEval/1.0)`, left alone on purpose. `search` also matches
+   "research"; in access logs that was only scripts. A misclassified
+   client gets a 429 only above its bucket's rate, while a miss can take
+   the site's capacity, so these lean broad.
+Both scan attacker-chosen text, so they use `str.find` and a backwards
+walk, never a regex that can backtrack.
+
+`CRAWLER_UA_EXEMPT` takes precedence over all of those UA checks, defaulting to
 `The Lounge IRC Client`, whose user-triggered link previews include Facebook
 and Twitter crawler tokens. These case-insensitive substrings exempt the UA
 classification only; the separate impossible-headers check still applies.
@@ -140,6 +160,11 @@ EXEMPT_ENDPOINTS = frozenset(
 
 _LOG_EVERY_SEC = 60
 
+# `+http://` or `+https://` is how a crawler gives its contact page; a
+# browser never sends it (#1263).
+_CONTACT_URL = re.compile(r"\+https?://")
+_BARE_WORDS = ("bot", "crawl", "search")
+
 # A bucket holds this many seconds of its rate. A full minute (the
 # textbook choice) lets a bucket admit a whole minute's budget at once
 # at start and after any idle minute, so a 60 s window could see twice
@@ -161,6 +186,26 @@ _SLOT = struct.Struct("dd")
 _READY = 1026.0
 # Which bucket refused a request, in the order they are checked.
 REFUSALS = ("own", "global", "pool")
+
+
+def _self_described_key(ua: str) -> str | None:
+    """The key for a UA that names itself without a marker token (#1263),
+    given the lowercased UA. Built from str.find and a backwards walk, not
+    a regex, so attacker-chosen text cannot cause backtracking."""
+    contact = _CONTACT_URL.search(ua)
+    if contact:
+        # The nearest Name/version token before the `+`.
+        slash = ua.rfind("/", 0, contact.start())
+        end = start = slash
+        while start > 0 and (ua[start - 1].isalnum() or ua[start - 1] in "_.-"):
+            start -= 1
+        if slash > 0 and start < end and ua[start].isalpha():
+            return ua[start:end]
+    # Every browser UA starts with Mozilla/, `CUBOT X30` included, so
+    # the bare words only count outside that prefix.
+    if not ua.startswith("mozilla/") and any(w in ua for w in _BARE_WORDS):
+        return re.split(r"[\s/]", ua.lstrip(), maxsplit=1)[0] or None
+    return None
 
 
 def impossible_headers(sec_fetch_site: str | None, referer: str | None) -> bool:
@@ -470,7 +515,9 @@ class CrawlerBudget:
             if needle in ua:
                 return name
         match = self._token.search(user_agent) if self._token else None
-        return match.group(1).lower() if match else None
+        if match:
+            return match.group(1).lower()
+        return _self_described_key(ua)
 
     def check(
         self,
