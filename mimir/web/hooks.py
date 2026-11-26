@@ -72,6 +72,7 @@ def _inject_template_globals() -> dict:
 # minute to surface; pagination and 404s/redirects skip caching.
 _CACHE_CONTROL_BY_ENDPOINT = {
     "web.index": "public, max-age=300",
+    "web.inboxes_page": "public, max-age=300",
     "web.subsystem_directory": "public, max-age=300",
     "web.maintainer_directory": "public, max-age=300",
     "web.release_history_index": "public, max-age=300",

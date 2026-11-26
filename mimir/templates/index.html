@@ -1,5 +1,4 @@
 {% extends "base.html" %}
-{% from "_search_field.html" import search_field %}
 {% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
 {% block content %}
 {% from "_sparkline.html" import spark_bars %}
@@ -27,7 +26,7 @@
       {{ message_id_form() }}
     </div>
     <dl class="front-figures">
-      <div><dt>inboxes</dt><dd data-figure="inboxes">{{ inbox_summaries|length }}</dd></div>
+      <div><dt>inboxes</dt><dd data-figure="inboxes"><a href="{{ url_for('web.inboxes_page') }}">{{ inbox_summaries|length }}</a></dd></div>
       <div><dt>with a message in the last 24 hours</dt><dd data-figure="active-24h">{{ active_24h }}</dd></div>
       {# Absent, not zero, while the cache is cold: the count runs in the
          warm-cache tier, never on a request. Each message counts once, a
@@ -62,6 +61,9 @@
     {% endfor %}
   </ul>
   {% endif %}
+  {# The full list moved to its own page (#1267); outside the `if` so a
+     cold volume cache still leaves a way to every inbox. #}
+  <p class="directory-more"><a href="{{ url_for('web.inboxes_page') }}">All {{ inbox_summaries|length }} inboxes</a></p>
 
   {# `active_subsystems` arrives already filtered to names the dashboard
      route can serve (see `dashboards.py`), so no row links to a 404. Each
@@ -94,29 +96,5 @@
   <p class="directory-note">Browse {% if not active_subsystems %}<a href="{{ subsystem_directory_path() }}">all subsystems</a>{% endif %}{% if not active_subsystems and not maintainer_activity %} · {% endif %}{% if not maintainer_activity %}<a href="{{ maintainer_directory_path() }}">all maintainers</a>{% endif %}</p>
   {% endif %}
 
-  <h2 id="inboxes">All {{ inbox_summaries|length }} inboxes</h2>
-  {% if inbox_summaries %}
-  <div class="front-controls" data-filter-controls hidden>
-    {% call search_field('inbox-find', 'Find an inbox') %}
-    <input id="inbox-find" type="search" data-filter-input="inbox-list" autocomplete="off">
-    {% endcall %}
-    <span class="front-sort">
-      <button type="button" class="outline secondary" data-sort-button="default" data-sort-list="inbox-list" aria-pressed="true">A to Z</button>
-      <button type="button" class="outline secondary" data-sort-button="active" data-sort-list="inbox-list" aria-pressed="false">Most active</button>
-    </span>
-  </div>
-  <ul class="front-inboxes" id="inbox-list">
-    {% for ix in inbox_summaries %}
-    <li data-filter-item data-filter-text="{{ ix.name }}" data-order="{{ loop.index0 }}"{% if ix.messages_30d is not none %} data-active="{{ ix.messages_30d }}"{% endif %}>
-      <a class="inbox-link" href="/{{ ix.name }}/">{{ ix.name }}</a>
-      {% if ix.pinned %}<span class="inbox-pinned" title="Pinned via Settings.pinned_inboxes">pinned</span>{% endif %}
-      <span class="inbox-meta">{% if ix.stats.total %}{{ ix.stats.total|short_count }} &middot; {{ ix.last_activity_rel or 'no activity' }}{% else %}not yet ingested{% endif %}</span>
-    </li>
-    {% endfor %}
-  </ul>
-  {% else %}
-  <p><em>No inboxes configured. Add entries to <code>Settings.inboxes</code> in <code>mimir/config.py</code>.</em></p>
-  {% endif %}
 </section>
-<script src="{{ url_for('static', filename='js/list-tools.js') }}?v={{ mimir_version }}" defer></script>
 {% endblock %}
