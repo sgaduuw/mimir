@@ -12,8 +12,9 @@ The global budget (`CRAWLER_BUDGET_PER_MINUTE`) is the master switch:
 listed name (case-insensitive substring, first listed wins) or carries
 a product token such as `Googlebot/2.1`, `GPTBot/1.0` or `curl/8.5.0`: a
 name ending in one of the configured markers (by default `bot`,
-`crawler`, `spider`, `curl`, `wget`, `python-requests`) followed by a
-slash. A token that is just the marker (`bot/1.0`, `curl/8.5.0`) counts
+`crawler`, `spider`, `curl`, `wget`, `python-requests`, `lightpanda`,
+`search`, `crawl`) followed by a slash. A token that is just the marker
+(`bot/1.0`, `curl/8.5.0`) counts
 too, on purpose. The slash is required so a browser on a device called
 `CUBOT X30` is never gated. Script tools are markers, so an operator's
 curl smoke check is a crawler once the global budget is set.
