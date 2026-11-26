@@ -1,0 +1,18 @@
+{# One subsystem's postings as a list. Its own template so
+   `/merge-window/subsystems/<anchor>` can answer an HTMX request with the
+   rows alone (#1259); `_subsystem_sections.html` imports it. #}
+{% macro rows(items) %}
+<ul class="divided">
+  {% for row in items %}
+  <li>
+    <a href="{{ row.url }}">{{ row.subject|clean_subject or '(no subject)' }}</a>
+    {%- if row.patches > 1 %} <small>{{ row.patches|format_count }} patches</small>{% endif %}
+    <br><small>{{ row.author|display_name }}
+      {%- if row.date %} &middot; {{ row.date.strftime('%Y-%m-%d') }}{% endif %}
+      &middot; {{ row.inbox_name }}
+      {%- if row.trees %} &middot; also in {{ row.trees|join(', ') }}{% endif %}
+      {%- if row.also %} &middot; touches {{ row.also|map('subsystem_label')|join(', ') }}{% endif %}</small>
+  </li>
+  {% endfor %}
+</ul>
+{% endmacro %}
