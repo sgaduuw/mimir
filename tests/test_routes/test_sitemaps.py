@@ -3315,9 +3315,7 @@ def test_sitemap_index_lists_site_then_hubs_then_newest_archive_first(
     _seed_archive_order_fixture(tmp_path, monkeypatch)
     paths = _index_paths(client, "/sitemap.xml")
 
-    site = {"/meta-sitemap.xml", "/sitemap-maintainers.xml"} | {
-        f"/sitemap-series-diffs-{h}.xml" for h in "0123456789abcdef"
-    }
+    site = {"/meta-sitemap.xml", "/sitemap-maintainers.xml"}
     hubs = ["/alpha/sitemap.xml", "/beta/sitemap.xml"]
     assert len(paths) == len(site) + len(hubs) + len(_EXPECTED_ARCHIVE_ORDER)
     assert set(paths[: len(site)]) == site

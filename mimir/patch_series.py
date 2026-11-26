@@ -197,9 +197,9 @@ def same_posting(article: Article):
 def adjacent_versions(revisions) -> list[tuple[str, str]]:
     """`(older, newer)` version pairs, one per step between adjacent
     revisions, from `(date, article_id, version)` rows of one series and
-    one position. The revisions fold links each step and the series diff
-    sitemap lists the same steps (#844, #846), so a link and a sitemap
-    entry come out byte-identical.
+    one position. The revisions fold links each step and the diff page's
+    navigation walks the same steps (#844), so a link and the page's own
+    canonical come out byte-identical.
 
     Oldest first, undated last, the id breaking ties. A version posted
     again is a resend, folded into its first appearance. A NULL or bare

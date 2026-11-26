@@ -108,7 +108,6 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # at the edge just like the warmed sitemap surfaces.
     "web.archive_sitemap": "public, max-age=300",
     "web.maintainers_sitemap": "public, max-age=300",
-    "web.series_diff_sitemap": "public, max-age=300",
     # Profiles follow MAINTAINERS, review trailers and warmed subsystem targets.
     # Keep the edge lifetime short enough to pick up refreshed destinations.
     "web.maintainer_view": "public, max-age=600",
