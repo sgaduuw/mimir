@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- `/merge-window` lists a larger subsystem's newest 10 postings, and a smaller subsystem's disclosure holds only a link; both link to the subsystem's new page, `/merge-window/subsystems/<anchor>` (noindex), which lists every posting. With JavaScript the links load the rows in place instead. The page measured 1.28 MB of HTML at v7.4-rc4, close to the 2 MB Googlebot reads; the same data comes to about 650 KB. The counting note now comes before the list, and the front page has a described link to the merge window (#1259).
+
 ### Removed
 
 - `/sitemap.xml` no longer lists the sixteen `/sitemap-series-diffs-<h>.xml` urlsets (#846), and those URLs return 404. About 200,000 generated diff pages were competing with thread pages for crawl attention. The diff pages themselves are unchanged: still served, self-canonical and linked from the revisions fold (#1260).

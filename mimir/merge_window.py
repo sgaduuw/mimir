@@ -64,6 +64,12 @@ MERGE_WINDOW_CACHE_TTL_SEC = 24 * 3600
 # rest share "Smaller subsystems". Chosen 2026-10-12 from a production
 # measurement: ~85 sections holding 60% of patches (#703).
 SECTION_MIN_PATCHES = 25
+# Rows a section lists on `/merge-window` before linking to its own
+# view (#1259). Googlebot reads only the first 2 MB of HTML, and on
+# 2026-11-26 (v7.4-rc4) the uncapped page was 1.28 MB: 3,729 rows over
+# 666 subsystems, 766 KB of it in the 598 smaller subsystems. Those
+# render as a count linking to their view, with no rows.
+SECTION_ROW_CAP = 10
 ALSO_TOUCHES = 3
 NO_SUBSYSTEM = "(no subsystem)"
 

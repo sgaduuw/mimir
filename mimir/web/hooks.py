@@ -142,6 +142,7 @@ _CACHE_CONTROL_BY_ENDPOINT = {
     # Same ETag-revalidation posture: the validator moves with each
     # linux-next or Linus walk.
     "web.merge_window_page": "public, no-cache",
+    "web.merge_window_subsystem": "public, no-cache",
     "web.attachment_download": "public, max-age=3600, immutable",
     "web.attachment_preview": "public, max-age=3600, immutable",
 }
@@ -287,7 +288,7 @@ def _add_cache_headers(response):
         rule = _CACHE_CONTROL_BY_ENDPOINT.get(request.endpoint)
         if rule:
             response.headers["Cache-Control"] = rule
-    # Both of these routes return a partial under `HX-Request: true`
+    # These routes return a partial under `HX-Request: true`
     # and the full page otherwise. Without Vary, caches (browser
     # bfcache, Cloudflare, Chrome's prerender cache for sites with
     # speculation rules) can serve a full-page response to an HTMX
@@ -300,7 +301,11 @@ def _add_cache_headers(response):
     # was being set for it. Divergent ETags rescue any cache that
     # revalidates, which is why nothing failed; the exact cases
     # enumerated above are the ones that do not revalidate.
-    if request.endpoint in ("web.message", "web.thread_view"):
+    if request.endpoint in (
+        "web.message",
+        "web.thread_view",
+        "web.merge_window_subsystem",
+    ):
         response.headers["Vary"] = "HX-Request"
     for k, v in _SECURITY_HEADERS.items():
         response.headers.setdefault(k, v)
