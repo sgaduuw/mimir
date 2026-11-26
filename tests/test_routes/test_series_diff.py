@@ -803,13 +803,10 @@ def test_series_diff_ignores_a_re_post_that_cannot_win(client, tmp_path, monkeyp
     assert calls == [low]
 
 
-def test_series_diff_canonical_and_sitemap_name_the_same_slot_patch(client, tmp_path):
-    """#861: the page's canonical and the sitemap entry are byte for
-    byte one URL on a two-row slot, and both follow the row with a
-    diff. The lower row's canonical inbox is alpha, the higher row,
+def test_series_diff_canonical_names_the_slot_patch_with_a_diff(client, tmp_path):
+    """#861: on a two-row slot the page's canonical follows the row with
+    a diff. The lower row's canonical inbox is alpha, the higher row,
     filed in beta only, nominates beta."""
-    from tests.test_routes._helpers import _clear_sitemap_cache
-
     key, low, high = _two_row_slot(tmp_path)
     with SessionLocal() as s:
         beta = s.execute(select(Inbox).where(Inbox.name == "beta")).scalar_one()
@@ -835,11 +832,6 @@ def test_series_diff_canonical_and_sitemap_name_the_same_slot_patch(client, tmp_
     page = client.get(path.replace("/alpha/", "/beta/"))
     assert page.status_code == 200
     canonical = _canonical(page.get_data(as_text=True))
-    _clear_sitemap_cache()
-    xml = client.get(f"/sitemap-series-diffs-{key[0]}.xml").get_data(as_text=True)
-    locs = [html_lib.unescape(m) for m in re.findall(r"<loc>([^<]+)</loc>", xml)]
-    mine = [loc for loc in locs if f"/series/{key}/" in loc]
-    assert mine == [canonical]
     destinations = [
         html_lib.unescape(value)
         for value in re.findall(r'data-url="([^"]+)"', page.text)

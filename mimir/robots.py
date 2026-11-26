@@ -327,7 +327,7 @@ _DEFAULT_STAR_CRAWL_DELAY = None
 # 7484f4bf925c data migrations. Reset reads the constant below;
 # keep the migration additions and reset defaults in step.
 # The end-anchored series-diff rule blocks only a bare path; query-bearing
-# comparisons emitted by the sitemap remain crawlable (#985). The
+# comparisons the fold and diff navigation emit remain crawlable (#985). The
 # b2cf46f509a8 migration appends it on fresh and existing upgrades.
 # The lore-shaped recovery aliases /r/ and /all/ are also input-only
 # redirects; c471af7e3d22 appends those prefixes without replacing edits.

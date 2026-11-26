@@ -348,7 +348,6 @@ their membership can be determined.
 | `/<inbox>/<YYYY>/sitemap.xml` | A year's thread pages |
 | `/<inbox>/<YYYY>/<MM>/sitemap.xml` | A month's thread pages |
 | `/sitemap-maintainers.xml` | Supported maintainer profiles |
-| `/sitemap-series-diffs-<h>.xml` | Cover-letter diffs between adjacent revisions of each series whose key starts with `<h>` (`0` to `f`) |
 
 `/llms.txt` stays outside search sitemaps. Agents discover it through the
 `LLM-Context:` record in `robots.txt` and its well-known path.

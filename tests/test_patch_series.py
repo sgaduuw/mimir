@@ -1,12 +1,14 @@
 """Unit tests for `mimir.patch_series`. Detection + key stability."""
 
 import time
+from datetime import UTC, datetime
 
 from mimir.patch_revisions import parse_in_series_patch_subject
 from mimir.patch_series import (
     CoverLetter,
     _bracket_version,
     _explicit_version,
+    adjacent_versions,
     parse_cover_letter,
     posting_flags,
     reply_to_cover,
@@ -517,3 +519,10 @@ def test_slot_rank_prefers_a_diff_then_the_lowest_id():
     ranked = sorted(rows, key=lambda r: slot_rank(*r))
     assert ranked == [(7, True), (9, True), (2, False), (5, False)]
     assert min([(8, False), (3, False)], key=lambda r: slot_rank(*r)) == (3, False)
+
+
+def test_adjacent_versions_sorts_an_undated_revision_last():
+    """Oldest first, undated last: an undated v1 comes after a dated v2,
+    so the one step the fold links and the diff page navigates is v2 -> v1."""
+    dated = datetime(2024, 2, 1, tzinfo=UTC)
+    assert adjacent_versions([(None, 1, "v1"), (dated, 2, "v2")]) == [("v2", "v1")]
