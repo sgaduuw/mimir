@@ -1081,7 +1081,7 @@ def test_warm_cache_order_unchanged_without_pins(seeded_db, monkeypatch):
 
 
 def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, client):
-    """`pinned` means the same thing on the front page and in warm-cache:
+    """`pinned` means the same thing on `/inboxes/` and in warm-cache:
     both come from `mimir.inboxes.pinned_first`."""
     import re
 
@@ -1089,7 +1089,7 @@ def test_warm_cache_and_front_page_share_one_order(seeded_db, monkeypatch, clien
 
     _add_late_inboxes(seeded_db)
     monkeypatch.setattr(settings, "pinned_inboxes", ["zz-pin", "yy-pin"])
-    page = client.get("/").get_data(as_text=True)
+    page = client.get("/inboxes/").get_data(as_text=True)
     names = re.findall(r'<a class="inbox-link" href="/([^/"]+)/"', page)
     assert names[:2] == ["zz-pin", "yy-pin"]
     assert names == _warm_order(monkeypatch)

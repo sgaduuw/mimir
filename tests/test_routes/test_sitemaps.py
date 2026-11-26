@@ -137,8 +137,8 @@ def test_sitemap_index_sub_sitemap_lastmods(client):
 
 
 def test_meta_sitemap_lastmod_is_global_max(client, monkeypatch):
-    """`/meta-sitemap.xml` lists `/` with the global max article date as
-    its lastmod, then `/merge-window` (#672), whose lastmod is the last
+    """`/meta-sitemap.xml` lists `/` and `/inboxes/` (#1267) with the global
+    max article date as their lastmod, then `/merge-window` (#672), whose lastmod is the last
     linux-next walk and absent before the first one."""
     import xml.etree.ElementTree as ET
 
@@ -154,14 +154,16 @@ def test_meta_sitemap_lastmod_is_global_max(client, monkeypatch):
     root = ET.fromstring(r.get_data())
     ns = {"s": "http://www.sitemaps.org/schemas/sitemap/0.9"}
     urls = root.findall("s:url", ns)
-    assert len(urls) == 5
-    assert urls[0].find("s:loc", ns).text.endswith("/")
+    assert len(urls) == 6
+    assert urls[0].find("s:loc", ns).text == "http://localhost/"
     assert urls[0].find("s:lastmod", ns).text == "2024-03-01"
-    assert urls[1].find("s:loc", ns).text.endswith("/merge-window")
-    assert urls[1].find("s:lastmod", ns) is None
-    assert all(not u.find("s:loc", ns).text.endswith("/llms.txt") for u in urls)
-    assert urls[2].find("s:loc", ns).text.endswith("/merge-window/history")
+    assert urls[1].find("s:loc", ns).text == "http://localhost/inboxes/"
+    assert urls[1].find("s:lastmod", ns).text == "2024-03-01"
+    assert urls[2].find("s:loc", ns).text.endswith("/merge-window")
     assert urls[2].find("s:lastmod", ns) is None
+    assert all(not u.find("s:loc", ns).text.endswith("/llms.txt") for u in urls)
+    assert urls[3].find("s:loc", ns).text.endswith("/merge-window/history")
+    assert urls[3].find("s:lastmod", ns) is None
 
 
 def test_maintainers_sitemap_xml_lists_seeded_maintainers(client):

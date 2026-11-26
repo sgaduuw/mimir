@@ -24,6 +24,7 @@ RESERVED_ROOT_WORDS = frozenset(
         "favicon.ico",
         "favicon.svg",
         "healthz",
+        "inboxes",
         "llms.txt",
         "m",
         "maintainers",
