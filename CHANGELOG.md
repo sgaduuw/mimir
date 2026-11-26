@@ -11,10 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.8.0], 2026-11-26
+
 ### Changed
 
-- The crawler budget now gates a User-Agent that carries a contact URL (`+http://` or `+https://`), that has a product token ending in `search` or `crawl` (`Epochal-Search/1.0`), or that has a bare `bot`, `crawl` or `search` and does not start with `Mozilla/`. A Chrome-looking crawler with `+https://crawler.epochal.com` sent about 52,000 requests a day, all answered, and was missed before. Each gets its own bucket in the default share and the unlisted pool; browsers, `CUBOT X30` included, stay ungated, and `CRAWLER_UA_EXEMPT` still wins. Client-triggered fetchers such as `Claude-User` and `ChatGPT-User` are gated now too, well below one share at today's volume (#1263).
-- `/merge-window` lists a larger subsystem's newest 10 postings, and a smaller subsystem's disclosure holds only a link; both link to the subsystem's new page, `/merge-window/subsystems/<anchor>` (noindex), which lists every posting. With JavaScript the links load the rows in place instead. The page measured 1.28 MB of HTML at v7.4-rc4, close to the 2 MB Googlebot reads; the same data comes to about 650 KB. The counting note now comes before the list, and the front page has a described link to the merge window (#1259).
+- The crawler budget now gates a User-Agent that carries a contact URL (`+http://` or `+https://`) after a `Name/` token, that has a product token ending in `search` or `crawl` (`Epochal-Search/1.0`), or that has a bare `bot`, `crawl` or `search` and does not start with `Mozilla/`. A Chrome-looking crawler with `+https://crawler.epochal.com` sent about 52,000 requests a day, all answered, and was missed before. Each gets its own bucket in the default share and the unlisted pool; browsers, `CUBOT X30` included, stay ungated, and `CRAWLER_UA_EXEMPT` still wins. Client-triggered fetchers such as `Claude-User` and `ChatGPT-User` are gated now too, well below one share at today's volume. Before upgrading: `search` and `crawl` join the default `CRAWLER_UA_MARKERS`, so a `CRAWLER_UA_BUDGETS` key equal to either is now refused and no service starts; rename such a key (for example to `crawl/`). A custom `CRAWLER_UA_MARKERS` replaces the default, so add `search` and `crawl` to it; the contact-URL and bare-word rules apply whatever it lists, and only `CRAWLER_UA_EXEMPT` excludes a User-Agent from them (#1263).
+- `/merge-window` lists a larger subsystem's newest 10 postings, and a smaller subsystem's disclosure holds only a link; both link to the subsystem's new page, `/merge-window/subsystems/<anchor>` (noindex), which lists every posting. With JavaScript the links load the rows in place instead. The page measured 1.28 MB of HTML at v7.4-rc4, close to the 2 MB Googlebot reads; the same data comes to an estimated 650 KB. The counting note now comes before the list, and the front page has a described link to the merge window (#1259).
 
 ### Fixed
 
@@ -22,7 +24,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Removed
 
-- `/sitemap.xml` no longer lists the sixteen `/sitemap-series-diffs-<h>.xml` urlsets (#846), and those URLs return 404. About 200,000 generated diff pages were competing with thread pages for crawl attention. The diff pages themselves are unchanged: still served, self-canonical and linked from the revisions fold (#1260).
+- `/sitemap.xml` no longer lists the sixteen `/sitemap-series-diffs-<h>.xml` urlsets (#846), and those URLs return 404. The cached index can still list them for up to an hour after the deploy. About 200,000 generated diff pages were competing with thread pages for crawl attention. The diff pages themselves are unchanged: still served, self-canonical and linked from the revisions fold (#1260).
 
 ## [5.7.0], 2026-11-24
 
@@ -6967,7 +6969,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.7.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.8.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
