@@ -246,15 +246,16 @@ def _build_fast_global_targets(
     The total and the merge-window rows need no `SITE_BASE_URL`; the
     sitemap does.
 
-    The merge-window rows are keyed by walk state, so each Linus or
-    linux-next walk (about every 25 minutes) makes a new key, and the
-    front page never computes (`compute_on_miss=False`): this tick fills
-    it. Called WITHOUT `force`, a warm row costs only the state lookup.
-    A cold compute of either is unmeasured (no production figure is
-    recorded); it runs once per walk, not per tick, and sits before the
-    sitemap so it does not wait behind that rebuild.
+    The merge-window rows are keyed by state: each Linus or linux-next
+    walk (about every 25 minutes) makes a new key, and so does each new
+    pull-request, pr-tracker-bot or Linus mail for `linus_pulls`. The
+    front page never computes (`compute_on_miss=False`), so this tick
+    fills the new key. Called WITHOUT `force`, a warm row costs only the
+    state lookup. A cold compute of either is unmeasured (no production
+    figure is recorded); it runs once per key change, not per tick, and
+    sits before the sitemap so it does not wait behind that rebuild.
 
-    It is the most expensive warm target there is (41 s cold in
+    `sitemap:index` is the most expensive measured warm target (41 s cold in
     production on 2026-10-07, about 10 s after #640), so it looks out of place
     next to targets budgeted at 100 ms. It is here for freshness, not
     speed. The target calls `sitemap_index_xml` WITHOUT `force=True`,
