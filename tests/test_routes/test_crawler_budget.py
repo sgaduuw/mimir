@@ -440,6 +440,10 @@ SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (
         ),
         ("Scrapy/2.17.0 (+https://scrapy.org)", "scrapy"),
         ("Foo/1.0 (+http://foo.example)", "foo"),  # plain http too
+        # The nearest token keys, digit-led or punctuation-only included.
+        ("Mozilla/5.0 (compatible; 008/0.83; +http://x.example)", "008"),
+        ("x -/1 (+http://y)", "-"),
+        ("v 1.0/2 (+http://y)", "1.0"),
         # Rule 2: search and crawl are markers, with the slash rule.
         ("Epochal-Search/1.0", "epochal-search"),
         ("websearch/0.1", "websearch"),
@@ -488,10 +492,10 @@ def test_ua_exemption_beats_the_contact_url_and_bare_word_rules(ua):
     assert gate.crawler_key(ua) is None
 
 
-def test_the_contact_url_rule_runs_in_linear_time_on_hostile_input():
-    """The rule scans attacker-chosen text (AGENTS.md, hostile input)."""
-    n = 300_000
-    gate = _gate(Clock())
+def test_the_new_rules_are_linear_without_the_cap():
+    """The rules scan attacker-chosen text (AGENTS.md, hostile input). Called
+    on the rule itself, so the 512 cap cannot be what makes it fast."""
+    n = 100_000
     start = time.perf_counter()
     for ua in (
         "a" * n + "+http://x",
@@ -499,23 +503,43 @@ def test_the_contact_url_rule_runs_in_linear_time_on_hostile_input():
         "+http://" * n,
         "a/b." * n + "+http://",
         "(+http://" * n,
-        "x " * n + "Bot",
+        "x " * n + "bot",
         "bot" * n,
     ):
-        gate.crawler_key(ua)
+        crawler_budget._self_described_key(ua)
     assert time.perf_counter() - start < 5
 
 
-@pytest.mark.parametrize("n", [8190, 60_000])
-def test_the_token_match_is_linear_in_the_length_of_a_name_run(n):
+def test_the_token_match_is_linear_in_the_length_of_a_name_run():
     """`a.-` repeated has a word boundary every few characters, and the
     old regex rescanned the rest of the run from each one. Called on the
-    matcher itself, so the 512 cap cannot be what makes it fast."""
+    matcher itself, so the 512 cap cannot be what makes it fast. 60k:
+    8190 characters ran in 0.6 s on the old code, too fast to guard."""
+    n = 60_000
     gate = _gate(Clock())
     start = time.perf_counter()
-    for ua in ("a.-" * (n // 3), "a.-" * (n // 3) + "/", "a.-" * (n // 3) + "bot/"):
+    for ua in (
+        "a.-" * (n // 3),
+        "a.-" * (n // 3) + "/",
+        "a.-" * (n // 3) + "bot/",
+        # A window that fails (no letter at a word boundary) must not
+        # rescan the run after it.
+        "1bot/" + "a.-" * (n // 3),
+    ):
         gate._token_key(ua)
     assert time.perf_counter() - start < 2
+
+
+def test_the_widest_marker_window_wins():
+    # The old regex keys this `gc++`; only the `c++` window reaches the `g`.
+    gate = CrawlerBudget(100, {}, 1, 120, Clock(), markers=("c++", "+"))
+    assert gate._token_key("gc++/1") == "gc++"
+
+
+def test_token_key_indexes_the_ua_it_searches():
+    # `İ`.lower() is two characters; slicing the UA with indices from its
+    # lowercase copy shifts the window. Unreachable over HTTP (latin-1).
+    assert _gate(Clock())._token_key("İ bot/1") == "bot"
 
 
 @pytest.mark.parametrize(
