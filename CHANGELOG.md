@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
-- The front page shows cached Linux merge-window status, queued patches and subsystem totals, merged and waiting pull requests to Linus, and linux-next freshness. Cold cache rows omit their figures without running computations on a request (#1266).
+- The front page shows cached Linux merge-window status, queued patches and subsystem totals, merged and waiting pull requests to Linus, and linux-next freshness. Cold cache rows omit their figures without running computations on a request, and the per-minute warm-cache tick now fills both rows (`merge_window`, `linus_pulls`) after each walk (#1266, #1270).
 
 - The front page no longer lists every inbox: the list, with its find and sort controls, moved to the new `/inboxes/`, linked from the front page's inbox count and from a line under the busiest cards. At 203 inboxes it was 203 of the front page's 243 links, and with the inbox `ItemList` in its JSON-LD (which moves to `/inboxes/` too) about 60% of its 115 KB (measured 2026-11-26). Busiest this month shows 8 inboxes instead of 6, laid out one, two or four to a row by width (four from 1024px), so they always fill whole rows; before, a 1024px to 1535px window showed six as 3+3. `/inboxes/` is in `/meta-sitemap.xml`. `inboxes` is now a reserved root name, so an inbox can no longer be called that (#1267).
 

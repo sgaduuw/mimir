@@ -222,3 +222,57 @@ def test_front_merge_window_converts_offset_walk_time_to_utc(
     updated = page.find("time", cls="front-merge-window-updated")
     assert updated.text() == "09:07 UTC"
     assert updated.attrs["datetime"] == "2026-11-26T09:07:00+00:00"
+
+
+def _warm_fast_tier():
+    from mimir.broker.handlers import dispatch
+    from mimir.broker.protocol import WarmGlobalRequest
+    from mimir.cli.cache import _build_fast_global_targets
+
+    labels = [label for label, _ in _build_fast_global_targets("")]
+    request = WarmGlobalRequest(rpc_id=1, targets=labels, priority=0)
+    reply = dispatch(request.model_dump_json().encode())
+    assert reply.ok, reply.error
+    assert reply.result["errors"] == []
+
+
+def test_the_fast_tier_fills_the_figures_without_a_merge_window_visit(
+    client, monkeypatch
+):
+    window, requests = _snapshots()
+    monkeypatch.setattr(window_module, "_compute", lambda s: window)
+    monkeypatch.setattr(pulls_module, "_compute", lambda s: requests)
+    page = parse(client.get("/").get_data(as_text=True))
+    assert not [e for e in page.find_all() if e.attrs.get("data-figure") in FIGURES]
+    _warm_fast_tier()
+    page = parse(client.get("/").get_data(as_text=True))
+    figures = {
+        e.attrs["data-figure"]: e.text()
+        for e in page.find_all()
+        if e.attrs.get("data-figure") in FIGURES
+    }
+    assert figures == {
+        "queued-patches": "12,345",
+        "queued-subsystems": "5",
+        "pulls-merged": "3",
+        "pulls-waiting": "2",
+    }
+
+
+def test_a_warm_row_is_not_recomputed_by_the_next_fast_tick(monkeypatch):
+    window, requests = _snapshots()
+    calls = []
+
+    def counting(value):
+        def compute(session):
+            calls.append(1)
+            return value
+
+        return compute
+
+    monkeypatch.setattr(window_module, "_compute", counting(window))
+    monkeypatch.setattr(pulls_module, "_compute", counting(requests))
+    _warm_fast_tier()
+    assert len(calls) == 2  # one per module: precondition
+    _warm_fast_tier()
+    assert len(calls) == 2
