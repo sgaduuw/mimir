@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.9.0], 2026-11-26
+
 ### Changed
 
 - The front page shows cached Linux merge-window status, queued patches and subsystem totals, merged and waiting pull requests to Linus, and linux-next freshness. Cold cache rows omit their figures without running computations on a request; a per-minute background step fills them within a minute of each tree walk or new pull-request mail (#1266, #1270).
@@ -6975,7 +6977,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.8.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.9.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
