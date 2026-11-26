@@ -2,9 +2,8 @@
 
 Cached surfaces feeding `/sitemap.xml`,
 `/meta-sitemap.xml`, `/sitemap-maintainers.xml`,
-`/sitemap-series-diffs-<h>.xml`, `/<inbox>/sitemap.xml` and the archive
-pages. Cache keys are stable; bumping `cache.NAMESPACE_VERSION`
-invalidates everything if a payload shape changes, so per-route expiry
+`/<inbox>/sitemap.xml` and the archive pages. Cache keys are stable;
+bumping `cache.NAMESPACE_VERSION` invalidates everything if a payload shape changes, so per-route expiry
 is purely about freshness.
 
 Each archive year or month file lists `/t` URLs, and `/sitemap.xml`
@@ -45,8 +44,6 @@ from mimir.maintainer_directory import (
     maintainer_path,
 )
 from mimir.models import Article, ArticleList, Inbox
-from mimir.patch_series import adjacent_versions, series_head, slot_rank
-from mimir.patches import article_has_files
 from mimir.subsystems import (
     is_addressable_subsystem_name,
     subsystem_index_path,
@@ -887,7 +884,7 @@ def sitemap_index_xml(
 
     `/sitemap.xml` lists `/meta-sitemap.xml`, one `/<inbox>/sitemap.xml`
     per configured inbox with its archive `/t` files,
-    `/sitemap-maintainers.xml`, and the sixteen series diff pages.
+    and `/sitemap-maintainers.xml`.
     Cached under `sitemap:index:<render-cap>`, the key `warm-cache`
     pre-populates. The `last_modified` field is the global-max article date, retained for
     content metadata. The route derives its HTTP ETag from the XML bytes
@@ -906,11 +903,6 @@ def sitemap_index_xml(
             # "maintainer-relevant activity changed" without an extra
             # per-maintainer date query.
             (f"{base}/sitemap-maintainers.xml", global_latest),
-            # No lastmod: dating a page would mean building it.
-            *(
-                (f"{base}/sitemap-series-diffs-{b}.xml", None)
-                for b in SERIES_DIFF_BUCKETS
-            ),
         ]
         hubs: list[tuple[str, str | None]] = []
         this_year = datetime.now(UTC).year
@@ -1093,121 +1085,6 @@ def maintainers_sitemap_xml(
     return cache.get_or_compute(
         session,
         "sitemap:maintainers",
-        SITEMAP_TTL_SEC,
-        compute,
-        force=force,
-    )
-
-
-# One urlset per first hex character of `patch_series_key` (a SHA-1 hex
-# digest). Measured read-only on production 2026-10-24: 193,557 adjacent
-# cover diffs, the largest bucket 12,478, so sixteen pages stay well under
-# the 50,000 cap. A bucket is a range on `ix_articles_patch_series_key`,
-# about 0.13 s warm (cold unmeasured), so pages are built on request and
-# cached, like the archive pages, with no warm target.
-SERIES_DIFF_BUCKETS = "0123456789abcdef"
-
-
-def series_diff_sitemap_xml(
-    session: Session, bucket: str, base: str, *, force: bool = False
-) -> SitemapPayload:
-    """Cached body of `/sitemap-series-diffs-<bucket>.xml` (#846): the
-    cover-letter diff between each pair of adjacent revisions of every
-    series whose key starts with `bucket`.
-
-    Adjacent is `patch_series.adjacent_versions`, which the revisions
-    fold links through too (#844): a series' covers oldest first, undated
-    last, a resend folded into the first appearance of its version (an
-    unversioned one is dropped).
-    Covers only, because both covers must exist for the route to serve
-    the diff, and per-position diffs would be 1.47M URLs (measured
-    2026-10-24). `<lastmod>` is the newest cover in either slot: the
-    mails are immutable, so only a resend moves it.
-    """
-
-    def compute() -> SitemapPayload:
-        # Late import: a module-level one closes the `mimir.seo` <->
-        # `mimir.web` cycle (see the package docstring and
-        # `tests/test_import_graph.py`).
-        from mimir.web.urls import _canonical_inbox_names_for, _spell_series_diff_url
-
-        rows = session.execute(
-            select(
-                Article.id,
-                Article.patch_series_key,
-                series_head(),
-                Article.patch_series_version,
-                Article.date,
-                article_has_files(),
-            ).where(
-                Article.patch_series_key >= bucket,
-                Article.patch_series_key < chr(ord(bucket) + 1),
-                func.coalesce(Article.patch_series_position, 0) == 0,
-                # An unversioned `[PATCH RESEND 0/N]` copies a revision
-                # already listed. Dropped rather than merged into v1: the
-                # route's slots match the version string exactly, so its
-                # date would move a lastmod the page's slots do not see.
-                # SQL `!=` is never true for NULL, so this also drops covers
-                # with no version, which the route cannot serve.
-                Article.patch_series_version != "resend",
-            )
-        ).all()
-        series: dict[tuple[str, int], list] = {}
-        for art_id, key, head, version, date, diff in rows:
-            series.setdefault((key, head), []).append((date, art_id, version, diff))
-
-        pairs = []
-        for (key, head), covers in sorted(series.items()):
-            slot_dates: dict[str, list] = {}
-            slot_ids: dict[str, list[tuple[int, bool]]] = {}
-            for date, art_id, version, diff in covers:
-                slot_dates.setdefault(version, []).append(date)
-                slot_ids.setdefault(version, []).append((art_id, diff))
-            # A version with no cover is absent here, so v1, v2 (no cover),
-            # v3 pairs v1 with v3: adjacent among the revisions the route
-            # can diff, and that page exists.
-            for older, newer in adjacent_versions(covers):
-                dates = [d for v in (older, newer) for d in slot_dates[v] if d]
-                lastmod = max(dates).strftime("%Y-%m-%d") if dates else None
-                to_id = min(slot_ids[newer], key=lambda r: slot_rank(*r))[0]
-                pairs.append((key, head, older, newer, to_id, lastmod))
-
-        # The page nominates the canonical inbox of the patch of its `to`
-        # slot (`slot_rank`); this resolves the same rule for the whole
-        # bucket.
-        to_ids = [p[4] for p in pairs]
-        inbox_of: dict[int, str] = {}
-        for offset in range(0, len(to_ids), SITEMAP_URLS_PER_PAGE):
-            inbox_of.update(
-                _canonical_inbox_names_for(
-                    session, to_ids[offset : offset + SITEMAP_URLS_PER_PAGE]
-                )
-            )
-        entries = [
-            SitemapEntry(
-                _spell_series_diff_url(
-                    inbox_of[to_id],
-                    key,
-                    older,
-                    newer,
-                    0,
-                    head_id=head or None,
-                    base=base,
-                ),
-                lastmod,
-                PRIORITY_PAGE,
-            )
-            for key, head, older, newer, to_id, lastmod in pairs
-            if to_id in inbox_of
-        ]
-        return SitemapPayload(
-            body=_build_sitemap_xml(entries),
-            last_modified=max((e.lastmod for e in entries if e.lastmod), default=None),
-        )
-
-    return cache.get_or_compute(
-        session,
-        f"sitemap:series-diffs:{bucket}",
         SITEMAP_TTL_SEC,
         compute,
         force=force,

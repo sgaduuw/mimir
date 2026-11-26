@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Removed
+
+- `/sitemap.xml` no longer lists the sixteen `/sitemap-series-diffs-<h>.xml` urlsets (#846), and those URLs return 404. About 200,000 generated diff pages were competing with thread pages for crawl attention. The diff pages themselves are unchanged: still served, self-canonical and linked from the revisions fold (#1260).
+
 ## [5.7.0], 2026-11-24
 
 ### Added

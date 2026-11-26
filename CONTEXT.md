@@ -2009,12 +2009,12 @@ afterthought:
   via `cache.get_or_compute`. The index is a single-level
   `<sitemapindex>` referencing urlsets only: `/meta-sitemap.xml`,
   the per-inbox `/<inbox>/sitemap.xml`, `/sitemap-maintainers.xml`
-  (one urlset of every `/maintainers/<address>` page), and sixteen
-  `/sitemap-series-diffs-<h>.xml` (#846). Those list the cover-letter
-  diff between adjacent revisions only, paged by the key's first hex
-  character: 193,557 such diffs and 12,478 in the largest page, where
-  every position would be 1.47M (production, 2026-10-24). The
-  maintainers layer is deliberately ONE urlset, not a nested index
+  (one urlset of every `/maintainers/<address>` page). The series
+  diff pages (#846) are in no sitemap (#1260): about 200,000 generated
+  pages with query strings would outweigh the thread pages the index
+  exists to promote. They stay served, self-canonical and linked from
+  the revisions fold, and `/sitemap-series-diffs-<h>.xml` is a 404.
+  The maintainers layer is deliberately ONE urlset, not a nested index
   and not per-maintainer files: Google rejects a nested sitemap index
   ("Incorrect sitemap index format: Nested sitemap indexes"), so the
   "group inboxes vs maintainers" tree can't be expressed as nested
