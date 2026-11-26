@@ -56,7 +56,7 @@ command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 The slow tier warms the per-inbox 30-day volumes used by the front page.
 Those rows survive for two hours past their refresh deadline so the page
 can show the previous counts during a refresh. An inbox without a retained
-value stays in the inbox list and enters the busiest-inbox ranking once
+value stays in the `/inboxes/` list and enters the busiest-inbox ranking once
 it has a warmed count and recent activity.
 
 The container scheduler runs fast warming every minute and slow warming hourly.

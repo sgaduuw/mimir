@@ -98,8 +98,8 @@ def test_llms_txt_urls_use_the_configured_site_base_verbatim(client, monkeypatch
     assert body.startswith("# Lists & <Co>\n"), body[:40]
     urls = re.findall(r"https?://[^\s)`]+", body)
     # Three shapes in two forms, the subsystem, maintainer and feed shapes, two
-    # inboxes, home, merge window, the sitemap and privacy.
-    assert len(urls) == 6 + 3 + 2 + 1 + 1 + 1 + 1, urls
+    # inboxes, home, inboxes page, merge window, the sitemap and privacy.
+    assert len(urls) == 6 + 3 + 2 + 1 + 1 + 1 + 1 + 1, urls
     assert all(u.startswith("https://lists.example.org/a&b/") for u in urls), urls
     assert "localhost" not in body and "&amp;" not in body
 
@@ -209,7 +209,7 @@ def test_llms_txt_page_links_answer_200_and_shapes_have_routes(client):
     body = client.get("/llms.txt").get_data(as_text=True)
     lines = _section(body, "Pages mimir adds over lore")
     links = _links([line for line in lines if line.startswith("- [")])
-    assert [t for t, _, _ in links] == ["Home", "Merge window"]
+    assert [t for t, _, _ in links] == ["Home", "Inboxes", "Merge window"]
     for _, url, _ in links:
         assert client.get(url.removeprefix("http://localhost")).status_code == 200, url
     shapes = [
@@ -280,3 +280,12 @@ def test_llms_txt_has_no_lists_heading_before_any_inbox_has_messages(client):
     body = client.get("/llms.txt").get_data(as_text=True)
     headings = re.findall(r"^## (.+)$", body, re.MULTILINE)
     assert headings == ["URL shapes", "Pages mimir adds over lore", "Optional"]
+
+
+def test_llms_txt_names_the_page_that_lists_every_inbox(client):
+    """llms.txt tells agents where every list is. After #1267 that is
+    /inboxes/, not the front page."""
+    body = client.get("/llms.txt").get_data(as_text=True)
+    home = [line for line in body.splitlines() if line.startswith("- [Home]")]
+    assert home and "every list" not in home[0], home
+    assert "/inboxes/" in body
