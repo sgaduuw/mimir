@@ -310,9 +310,8 @@ def _spell_series_diff_url(
     head_id: int | None,
     base: str = "",
 ) -> str:
-    """The spelling half of `_series_diff_url`, for the diff sitemap,
-    which picks the inbox in bulk with `_canonical_inbox_names_for` (the
-    same rule) instead of loading every slot's `.lists`."""
+    """The spelling half of `_series_diff_url`, for callers that already
+    know the inbox and head."""
     params = {
         "from": from_version,
         "to": to_version,

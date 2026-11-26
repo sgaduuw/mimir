@@ -243,38 +243,17 @@ def test_redirect_uses_canonical_crosspost_and_page_holding_later_cover(
     assert "second cover" in final.get_data(as_text=True)
 
 
-def test_real_sitemap_comparisons_remain_allowed_including_split_heads(client):
-    from datetime import UTC, datetime
+def test_complete_comparisons_remain_allowed_including_split_heads():
     from urllib.parse import urlsplit
-    from xml.etree import ElementTree
 
     from mimir import robots
-    from mimir.seo.sitemaps import series_diff_sitemap_xml
+    from mimir.web.urls import _spell_series_diff_url
     from tests.test_robots import _blocked
-    from tests.test_routes.test_series_diff_sitemap import _seed_covers
 
-    key = "a" * 40
-    _seed_covers(
-        key,
-        [
-            ("v1", datetime(2024, 1, 1, tzinfo=UTC)),
-            ("v2", datetime(2024, 1, 2, tzinfo=UTC)),
-            ("v1", datetime(2024, 2, 1, tzinfo=UTC)),
-            ("v2", datetime(2024, 2, 2, tzinfo=UTC)),
-        ],
-    )
-    with SessionLocal() as session:
-        rows = session.scalars(
-            select(Article).where(Article.patch_series_key == key).order_by(Article.id)
-        ).all()
-        for article in rows[2:]:
-            article.patch_series_head_id = rows[2].id
-        session.commit()
-        xml = series_diff_sitemap_xml(
-            session, "a", "https://example.com", force=True
-        ).body
-    urls = [node.text for node in ElementTree.fromstring(xml).findall("{*}url/{*}loc")]
-    assert len(urls) == 2
+    urls = [
+        _spell_series_diff_url("alpha", "a" * 40, "v1", "v2", 0, head_id=head)
+        for head in (None, 7)
+    ]
     assert any("&s=" in url for url in urls)
     assert any("&s=" not in url for url in urls)
     for url in urls:

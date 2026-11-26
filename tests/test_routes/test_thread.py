@@ -2364,14 +2364,13 @@ def _fold(html):
     return html.split('class="revisions-fold"')[1].split("</details>")[0]
 
 
-def test_fold_diff_links_are_the_sitemap_s_urls_byte_for_byte(client, tmp_path):
+def test_fold_diff_links_are_each_pages_own_canonical(client, tmp_path):
     """#844: the fold links each revision's diff against the previous
-    one, which is exactly the set of URLs the series diff sitemap
-    advertises (#846). Both come from `adjacent_versions`, and a link
-    and a sitemap entry must be the same bytes, not equivalent ones."""
+    one. A link must be the same bytes as the canonical the page it
+    leads to names for itself, not an equivalent spelling."""
     import html as htmllib
 
-    from tests.test_routes._helpers import _clear_sitemap_cache
+    from tests.test_routes.test_series_diff import _canonical
 
     key = "b" * 40
     seeded = _seed_cover_series(tmp_path, key, ["v1", "v2", "v3"])
@@ -2381,17 +2380,13 @@ def test_fold_diff_links_are_the_sitemap_s_urls_byte_for_byte(client, tmp_path):
         for h in re.findall(r'href="([^"]*/series/[^"]*)"', _fold(page))
     ]
 
-    _clear_sitemap_cache()
-    xml = client.get("/sitemap-series-diffs-b.xml").get_data(as_text=True)
-    # Absolute in the sitemap, site-relative on the page: compare what
-    # follows the origin, which both build through `_spell_series_diff_url`.
-    locs = [htmllib.unescape(loc) for loc in re.findall(r"<loc>([^<]+)</loc>", xml)]
-    sitemap_paths = [
-        re.sub(r"^https?://[^/]+", "", loc) for loc in locs if f"/series/{key}/" in loc
-    ]
-
-    assert len(sitemap_paths) == 2, sitemap_paths  # precondition: v1-v2, v2-v3
-    assert sorted(links) == sorted(sitemap_paths)
+    assert len(links) == 2, links  # precondition: v1-v2, v2-v3
+    for link in links:
+        diff = client.get(link)
+        assert diff.status_code == 200, link
+        # Absolute canonical, site-relative link: compare past the origin.
+        canonical = _canonical(diff.get_data(as_text=True))
+        assert re.sub(r"^https?://[^/]+", "", canonical) == link
 
 
 def test_fold_links_each_revision_to_its_previous_and_a_resend_to_nothing(

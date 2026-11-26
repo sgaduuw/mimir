@@ -1,5 +1,5 @@
 """#844: with the `to` cover cross-posted and canonical in another inbox,
-the fold link and the sitemap entry still agree, and the link is served."""
+the fold link still names the canonical inbox, and the link is served."""
 
 import html as htmllib
 import re
@@ -7,11 +7,13 @@ import re
 from sqlalchemy import select
 
 from mimir.models import Article, ArticleList, Inbox
-from tests.test_routes._helpers import _clear_sitemap_cache
+from tests.test_routes.test_series_diff import _canonical
 from tests.test_routes.test_thread import _fold, _seed_cover_series
 
 
-def test_fold_link_matches_sitemap_for_a_cross_posted_to_cover(client, tmp_path):
+def test_fold_link_names_the_canonical_inbox_for_a_cross_posted_to_cover(
+    client, tmp_path
+):
     from mimir.extensions import SessionLocal
 
     key = "f" * 40
@@ -42,15 +44,10 @@ def test_fold_link_matches_sitemap_for_a_cross_posted_to_cover(client, tmp_path)
             r'href="([^"]*/series/[^"]*)"', _fold(page.get_data(as_text=True))
         )
     ]
-    _clear_sitemap_cache()
-    xml = client.get("/sitemap-series-diffs-f.xml").get_data(as_text=True)
-    paths = [
-        re.sub(r"^https?://[^/]+", "", htmllib.unescape(loc))
-        for loc in re.findall(r"<loc>([^<]+)</loc>", xml)
-        if f"/series/{key}/" in loc
-    ]
     assert links and links[0].startswith("/beta/"), (
         links
     )  # precondition: cross-post won
-    assert links == paths
-    assert client.get(links[0]).status_code == 200
+    diff = client.get(links[0])
+    assert diff.status_code == 200
+    canonical = _canonical(diff.get_data(as_text=True))
+    assert re.sub(r"^https?://[^/]+", "", canonical) == links[0]
