@@ -13,6 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
+- The crawler budget now gates a User-Agent that carries a contact URL (`+http://` or `+https://`), that has a product token ending in `search` or `crawl` (`Epochal-Search/1.0`), or that has a bare `bot`, `crawl` or `search` and does not start with `Mozilla/`. A Chrome-looking crawler with `+https://crawler.epochal.com` sent about 52,000 requests a day, all answered, and was missed before. Each gets its own bucket in the default share and the unlisted pool; browsers, `CUBOT X30` included, stay ungated, and `CRAWLER_UA_EXEMPT` still wins. Client-triggered fetchers such as `Claude-User` and `ChatGPT-User` are gated now too, well below one share at today's volume (#1263).
 - `/merge-window` lists a larger subsystem's newest 10 postings, and a smaller subsystem's disclosure holds only a link; both link to the subsystem's new page, `/merge-window/subsystems/<anchor>` (noindex), which lists every posting. With JavaScript the links load the rows in place instead. The page measured 1.28 MB of HTML at v7.4-rc4, close to the 2 MB Googlebot reads; the same data comes to about 650 KB. The counting note now comes before the list, and the front page has a described link to the merge window (#1259).
 
 ### Removed
