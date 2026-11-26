@@ -18,13 +18,14 @@ too, on purpose. The slash is required so a browser on a device called
 `CUBOT X30` is never gated. Script tools are markers, so an operator's
 curl smoke check is a crawler once the global budget is set.
 
-Two more signs of a crawler apply when no listed name or token matched
-(#1263), the last two being how a UA like `Epochal-Search/1.0; +https://
-crawler.epochal.com` (a Chrome string with a contact URL) was missed:
-the default markers include `search` and `crawl`, and
+#1263 adds three signs of a crawler: `search` and `crawl` join the default
+markers, and, when no listed name or token matched:
  * a contact URL, `+http://` or `+https://`, is how a crawler declares
    itself and a browser never sends one. The key is the nearest
-   `Name/version` token before the `+`, lowercased (`epochal-search`).
+   `Name/version` token before the `+`, lowercased (`epochal-search`, for
+   a Chrome string ending `Epochal-Search/1.0; +https://crawler.epochal.com`).
+   The name is any run of letters, digits, `_`, `.` and `-`, so `008/0.83`
+   keys as `008`; each such key lands in the default share like any other.
  * a bare `bot`, `crawl` or `search` anywhere in a UA that does not start
    with `Mozilla/` (`Brightbot 1.0`, `research-client`). The key is the
    first token, lowercased, without a `/version`. The `Mozilla/` exclusion
@@ -41,10 +42,11 @@ the default markers include `search` and `crawl`, and
    "research"; in access logs that was only scripts. A misclassified
    client gets a 429 only above its bucket's rate, while a miss can take
    the site's capacity, so these lean broad.
-Every rule scans attacker-chosen text, so none may backtrack: the new
-rules use `str.find` and a backwards walk, the product-token match cuts
-out one run of name characters per slash before it applies the regex,
-and only the first `UA_CLASSIFY_MAX` (512) characters are classified.
+Every rule scans attacker-chosen text, so none may take more than linear
+time: the new rules use one fixed regex search, `in` and a backwards walk,
+the product-token match cuts out one run of name characters per slash
+before it applies the regex, and only the first `UA_CLASSIFY_MAX` (512)
+characters are classified.
 
 `CRAWLER_UA_EXEMPT` takes precedence over all of those UA checks, defaulting to
 `The Lounge IRC Client`, whose user-triggered link previews include Facebook
@@ -204,16 +206,19 @@ REFUSALS = ("own", "global", "pool")
 
 def _self_described_key(ua: str) -> str | None:
     """The key for a UA that names itself without a marker token (#1263),
-    given the lowercased UA. Built from str.find and a backwards walk, not
-    a regex, so attacker-chosen text cannot cause backtracking."""
+    given the lowercased UA. Built from one fixed regex search and a
+    backwards walk, with no regex that can backtrack, so attacker-chosen
+    text cannot make it slow."""
     contact = _CONTACT_URL.search(ua)
     if contact:
-        # The nearest Name/version token before the `+`.
+        # The nearest Name/version token before the `+`: a non-empty run of
+        # letters, digits, `_`, `.` and `-`, so it can never equal a reserved
+        # key (those hold spaces and brackets) and a digit-led name keys too.
         slash = ua.rfind("/", 0, contact.start())
         end = start = slash
         while start > 0 and (ua[start - 1].isalnum() or ua[start - 1] in "_.-"):
             start -= 1
-        if slash > 0 and start < end and ua[start].isalpha():
+        if slash > 0 and start < end:
             return ua[start:end]
     # Every browser UA starts with Mozilla/, `CUBOT X30` included, so
     # the bare words only count outside that prefix.
@@ -540,17 +545,17 @@ class CrawlerBudget:
         regex on that one window. Runs never overlap, so the total is linear."""
         if not self._token:
             return None
-        lower = user_agent.lower()
-        slash = lower.find("/")
+        slash = user_agent.find("/")
         while slash != -1:
             # A marker may hold any character, but the name before it is
             # word characters, dots and hyphens.
             start = slash
             for marker in self._markers:
-                if lower.endswith(marker, 0, slash):
-                    begin = slash - len(marker)
+                begin = slash - len(marker)
+                if begin >= 0 and user_agent[begin:slash].lower() == marker:
                     while begin > 0 and (
-                        lower[begin - 1].isalnum() or lower[begin - 1] in "_.-"
+                        user_agent[begin - 1].isalnum()
+                        or user_agent[begin - 1] in "_.-"
                     ):
                         begin -= 1
                     start = min(start, begin)
@@ -558,7 +563,7 @@ class CrawlerBudget:
                 match = self._token.search(user_agent[start : slash + 1])
                 if match:
                     return match.group(1).lower()
-            slash = lower.find("/", slash + 1)
+            slash = user_agent.find("/", slash + 1)
         return None
 
     def check(
