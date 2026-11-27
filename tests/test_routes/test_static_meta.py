@@ -167,7 +167,10 @@ def test_twitter_card_tags_match_og_pair(client, inbox_name):
     assert _meta_value(html, "twitter:description") == _meta_value(
         html, "og:description"
     )
-    assert _meta_value(html, "twitter:title") == f"{inbox_name} | mimir"
+    assert (
+        _meta_value(html, "twitter:title")
+        == f"{inbox_name} mailing list archive | mimir"
+    )
     # Image mirrors og:image; the asset itself is a 1200x630 PNG.
     assert _meta_value(html, "twitter:image") == _meta_value(html, "og:image")
     assert _meta_value(html, "og:image").endswith("/og-image.png")

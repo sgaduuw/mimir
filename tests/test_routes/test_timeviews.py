@@ -77,8 +77,7 @@ def test_inbox_since_future_date_404(client, inbox_name, frozen_clock):
 
 def test_inbox_year_archive_renders_year_label(client, inbox_name):
     body = client.get(f"/{inbox_name}/2024/").data.decode()
-    # Page title block lifts the year into <title>.
-    assert "<title>2024 | " in body
+    assert _title_of(body) == f"{inbox_name} archive, 2024 | mimir"
     assert "<h1>2024</h1>" in body
 
 
@@ -179,15 +178,12 @@ def test_month_out_of_range_404(client, inbox_name):
 
 def test_year_archive_title(client, inbox_name):
     title = _title_of(client.get(f"/{inbox_name}/2024/").data.decode())
-    assert title == f"2024 | {inbox_name} | mimir"
+    assert title == f"{inbox_name} archive, 2024 | mimir"
 
 
 def test_month_archive_title(client, inbox_name):
-    # Month label format is "Month YYYY", just sanity-check the
-    # separator + scope tokens are present.
     title = _title_of(client.get(f"/{inbox_name}/2024/05/").data.decode())
-    assert title.endswith(f" | {inbox_name} | mimir")
-    assert "2024" in title
+    assert title == f"{inbox_name} archive, May 2024 | mimir"
 
 
 def test_daily_today_title(client, inbox_name):
@@ -647,3 +643,28 @@ def test_empty_daily_page_does_not_claim_a_showing_range(
 ):
     body = client.get(f"/{inbox_name}/today").get_data(as_text=True)
     assert "Showing 0" not in body
+
+
+@pytest.mark.parametrize("inbox", ["alpha", "beta"])
+@pytest.mark.parametrize(
+    "suffix,label",
+    [
+        ("/", "mailing list archive"),
+        ("/2024/", "archive, 2024"),
+        ("/2024/05/", "archive, May 2024"),
+    ],
+)
+def test_archive_social_titles_match_page_title(
+    client, monkeypatch, inbox, suffix, label
+):
+    from mimir.config import settings
+    from tests._dom import parse
+
+    monkeypatch.setattr(settings, "site_name", "Archive & research")
+    response = client.get(f"/{inbox}{suffix}")
+    assert response.status_code == 200
+    page = parse(response.get_data(as_text=True)).find("head")
+    expected = f"{inbox} {label} | Archive & research"
+    assert page.find("title").text() == expected
+    assert page.find("meta", property="og:title").attrs["content"] == expected
+    assert page.find("meta", name="twitter:title").attrs["content"] == expected

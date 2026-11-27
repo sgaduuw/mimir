@@ -11,6 +11,12 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.11.0], 2026-11-27
+
+### Changed
+
+- Inbox page titles now say "mailing list archive". Year and month titles put the list name first. Open Graph and Twitter titles use the same wording (#1276).
+
 ## [5.10.0], 2026-11-27
 
 ### Changed
@@ -6984,7 +6990,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.10.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.11.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1
