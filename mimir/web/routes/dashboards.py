@@ -38,6 +38,7 @@ from mimir.maintainer_directory import (
 )
 from mimir.merge_window import merge_window
 from mimir.models import Inbox, Subsystem
+from mimir.release_history import front_releases, release_history_path
 from mimir.seo import _json_ld_inbox, _json_ld_inboxes, _json_ld_index
 from mimir.subsystems import (
     is_addressable_subsystem_name,
@@ -185,6 +186,8 @@ def index():
     base = _site_base()
     return render_template(
         "index.html",
+        latest_releases=front_releases(),
+        release_path=release_history_path,
         inbox_summaries=inbox_summaries,
         busiest=busiest,
         active_24h=sum(1 for s in inbox_summaries if s["active_24h"]),

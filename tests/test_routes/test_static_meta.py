@@ -131,7 +131,9 @@ def test_og_tags_on_index_match_expected_values(client):
         "cross-list deduplication, subsystem dashboards, patch-series "
         "timelines, and reviewer activity surfaces."
     )
-    assert _meta_value(html, "og:title") == "indexed mailing list archives | mimir"
+    assert _meta_value(html, "og:title") == (
+        "Linux kernel mailing list archives, subsystems and merge window | mimir"
+    )
     assert _meta_value(html, "og:type") == "website"
     assert _meta_value(html, "og:site_name") == "mimir"
     assert _meta_value(html, "og:url") == "http://localhost/"

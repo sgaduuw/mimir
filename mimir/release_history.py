@@ -341,6 +341,48 @@ def _cached_git(release: Release) -> tuple[ReleaseFacts, list[str] | None] | Non
     return None
 
 
+# The front page strip, one row the fast tier fills: the newest releases the
+# history index lists (`recorded_history`), as `[tag, "YYYY-MM-DD"]`.
+# `/` reads this row alone, so a request never opens the Linus repository, and
+# the strip never links a release the index and the sitemap leave out.
+FRONT_RELEASES_KEY = "release_history:front_releases"
+FRONT_RELEASES_TTL_SEC = 3600
+FRONT_RELEASES_LIMIT = 5
+
+
+class _NothingListed(Exception):
+    """No release is listed yet, so there is no row worth caching."""
+
+
+def _front_releases_row() -> list[list[str]]:
+    """Refs and cached rows only; never `git_facts`, which can walk."""
+    listed = recorded_history(release_catalog()).listed[:FRONT_RELEASES_LIMIT]
+    if not listed:
+        raise _NothingListed
+    return [
+        # A listed release has a Git range, so its tag has a date.
+        [release.tag, facts.release_date.strftime("%Y-%m-%d")]
+        for release, facts, _links in listed
+    ]
+
+
+def warm_front_releases(session: Session) -> None:
+    """Fast-tier target. Called without `force`: a warm row costs one read.
+    An empty result is not cached: a fresh host would hide the strip for the
+    whole TTL after its first real warm."""
+    try:
+        cache.get_or_compute(
+            session, FRONT_RELEASES_KEY, FRONT_RELEASES_TTL_SEC, _front_releases_row
+        )
+    except _NothingListed:
+        pass
+
+
+def front_releases() -> list[list[str]]:
+    """The strip's row, empty while cold. A cache read, nothing else."""
+    return cache.get(FRONT_RELEASES_KEY) or []
+
+
 def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     """Keep membership separate so an index cache hit decodes only facts.
 
