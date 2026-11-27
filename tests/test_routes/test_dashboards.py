@@ -195,7 +195,7 @@ def test_meta_index_title_follows_page_then_site_pattern(client):
 
 def test_inbox_dashboard_title(client, inbox_name):
     title = _title_of(client.get(f"/{inbox_name}/").data.decode())
-    assert title == f"{inbox_name} | mimir"
+    assert title == f"{inbox_name} mailing list archive | mimir"
 
 
 def test_meta_index_emits_default_description(client):

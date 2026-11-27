@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% from "_search_field.html" import search_field %}
-{% block title %}{{ inbox_name }} | {{ site_name }}{% endblock %}
+{% block title %}{{ inbox_name }} mailing list archive | {{ site_name }}{% endblock %}
 {% block meta_description %}
 {%- if stats and stats.total -%}
 {{ inbox_name }} archive: {{ stats.total|format_count }} message{{ '' if stats.total == 1 else 's' }}{% if stats.first_date and stats.last_date %} from {{ stats.first_date.strftime('%Y-%m-%d') }} to {{ stats.last_date.strftime('%Y-%m-%d') }}{% endif %}, indexed and searchable.
