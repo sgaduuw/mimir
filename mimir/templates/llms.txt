@@ -24,7 +24,7 @@ Every message and thread page has a Markdown version at the same URL plus `.md`,
 {% endif %}
 ## Pages mimir adds over lore
 
-- [Home]({{ site_base }}/): the busiest lists this month, the merge window's figures and this week's active subsystems and maintainers.
+- [Home]({{ site_base }}/): the busiest lists this month, the merge window's figures, the latest mainline releases and this week's active subsystems and maintainers.
 - [Inboxes]({{ site_base }}/inboxes/): every list, with its size and latest activity.
 - [Merge window]({{ site_base }}{{ merge_window_path }}): patches in linux-next that Linus's tree does not have yet, grouped by subsystem.
 - `{{ site_base }}{{ subsystem_index_shape }}`: the subsystems active in one list, each with its own dashboard of recent patches, threads and reviewers.

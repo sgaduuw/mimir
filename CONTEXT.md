@@ -1346,8 +1346,9 @@ env; `bootstrap_inboxes()` reconciles the env to the DB on startup
 as `/<inbox_name>/…`; every dashboard / search / archive query joins
 through `article_lists` to filter to the inbox in scope.
 
-`/` is the meta-index: lists every configured inbox with per-inbox
-stats (total messages, date span, epoch count). `/<inbox_name>/` is
+`/` is the front page: the busiest inboxes, the merge window's figures,
+the latest mainline releases and this week's activity; `/inboxes/` lists
+every configured inbox. `/<inbox_name>/` is
 the per-inbox dashboard. Threads, subject grouping, and Message-ID
 linkification are all scoped within an inbox, references that reach
 into another inbox render as plain text rather than producing
