@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- Inbox, year and month page titles name the mailing-list archive explicitly and put the list name first. Open Graph and Twitter titles follow the same wording (#1276).
+
 ## [5.10.0], 2026-11-27
 
 ### Changed
