@@ -11,6 +11,8 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+## [5.10.0], 2026-11-27
+
 ### Changed
 
 - The front page title now reads "Linux kernel mailing list archives, subsystems and merge window" (the social-card title follows). The merge-window section ends in a "Full merge-window view" link, and a "Latest mainline releases" list shows the five newest releases with their dates and an "All releases" link. The list comes from one cache row the per-minute warm step fills, so a request never opens the Linux repository, and the list is absent until the first warm run. It lists the releases the release history page lists, so a new release appears once its history is recorded, within about an hour (#1273).
@@ -6982,7 +6984,7 @@ indexer line (post-rewrite from the early NNTP/mongo prototype).
 - `git clone` argv hardened against manifest-driven injection.
 - Pinned CDN assets with SRI hashes.
 
-[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.9.0...HEAD
+[Unreleased]: https://github.com/sgaduuw/mimir/compare/v5.10.0...HEAD
 [3.11.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.1
 [3.11.0]: https://github.com/sgaduuw/mimir/releases/tag/v3.11.0
 [3.10.1]: https://github.com/sgaduuw/mimir/releases/tag/v3.10.1

@@ -162,7 +162,7 @@ its canonical message URL; a wrong date or an unknown list still returns 404.
 
 | Path | Purpose |
 | --- | --- |
-| `/` | Header figures, a Message-ID lookup form, the eight busiest inboxes this month, active subsystems and maintainer activity this week, and a link to every inbox |
+| `/` | Header figures, a Message-ID lookup form, the merge window's figures, the five latest mainline releases, the eight busiest inboxes this month, active subsystems and maintainer activity this week, and a link to every inbox |
 | `/inboxes/` | Every inbox on one line, pinned inboxes first (filter and sort need JavaScript) |
 | `/<inbox>/` | Inbox dashboard |
 | `/<inbox>/today`, `/<inbox>/yesterday` | UTC daily views, 100 threads per page (`?page=2`) |

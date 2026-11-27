@@ -60,8 +60,7 @@
   {% if merge_window_updated %}<p class="muted">linux-next as of <time class="front-merge-window-updated" datetime="{{ merge_window_updated.isoformat() }}">{{ merge_window_updated.strftime('%H:%M') }} UTC</time>.</p>{% endif %}
   <p class="directory-more"><a href="{{ url_for('web.merge_window_page') }}">Full merge-window view</a></p>
 
-  {# One cache read (`front_releases`): absent while the row is cold, and a
-     tag without a date when its date was cold as the row was built. #}
+  {# One cache read (`front_releases`): absent while the row is cold. #}
   {% if latest_releases %}
   <h2 id="releases">Latest mainline releases</h2>
   <ul class="divided front-releases">
