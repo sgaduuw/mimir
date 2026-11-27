@@ -242,9 +242,15 @@ def _build_fast_global_targets(
     """Fast tier global warm targets: the front page's 30-day message
     total (6 ms warm on production, 2026-11-03; #994), the two
     `/merge-window` rows the front page's figures read (#1266, #1270),
-    then `sitemap:index`, which builds `/sitemap.xml`.
-    The total and the merge-window rows need no `SITE_BASE_URL`; the
-    sitemap does.
+    the front page's newest-releases row (#1273), then `sitemap:index`,
+    which builds `/sitemap.xml`. The total, the merge-window rows and the
+    releases row need no `SITE_BASE_URL`; the sitemap does.
+
+    The releases row is the newest five tags with their cached release dates,
+    one hour TTL, refreshed inside the usual window. It is built here, not on
+    the slow tier, so the strip is there within a minute of boot rather than
+    after the hourly fill; a new release shows within the hour. It reads refs
+    and cached facts and never walks Git; `/` reads only the row.
 
     The merge-window rows are keyed by state: each Linus or linux-next
     walk (about every 25 minutes) makes a new key, and so does each new
@@ -270,11 +276,13 @@ def _build_fast_global_targets(
     # Function-local: both modules reach the web layer, which imports this one.
     from mimir.linus_pulls import linus_pulls
     from mimir.merge_window import merge_window
+    from mimir.release_history import warm_front_releases
 
     targets: list[tuple[str, object]] = [
         ("recent_message_total (30d)", recent_message_total),
         ("merge_window", merge_window),
         ("linus_pulls", linus_pulls),
+        ("front_releases", warm_front_releases),
     ]
     if sitemap_base:
         targets.append(

@@ -48,8 +48,11 @@ The fast tier covers cheap per-inbox helpers, the front page's 30-day message
 total (a count of `articles`, so a cross-post counts once; refreshed hourly), the
 `/merge-window` data and pull-request rows behind the front page's merge-window
 figures (refilled within a minute of each walk, about every 25 minutes, and of each new
-pull-request mail) and the sitemap index,
-`/sitemap.xml`. The front page leaves that total out until the first warm run fills it. The slow
+pull-request mail), the front page's newest-releases row (the five newest
+releases the history page lists, with their dates, rebuilt hourly) and the
+sitemap index, `/sitemap.xml`. The front page leaves the 30-day total, the
+merge-window figures and the releases list out until the first warm run fills
+them. The slow
 tier covers the other sitemaps, subsystem dashboards, trackers, release history, and other expensive queries. The unqualified
 command runs both. Use `--workers 1` to debug serially and `-v` for more output.
 

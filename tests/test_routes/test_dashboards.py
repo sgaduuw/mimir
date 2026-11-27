@@ -16,6 +16,8 @@ from tests.test_routes._helpers import (
     _title_of,
 )
 
+FRONT_TITLE = "Linux kernel mailing list archives, subsystems and merge window | mimir"
+
 
 def _warm_active_subsystems(inbox_name: str | None = None) -> None:
     """Pre-warm the `most_active_subsystems_*` cache so the meta-
@@ -188,7 +190,7 @@ def test_meta_index_title_follows_page_then_site_pattern(client):
     # External review 2026-05-16 flagged the prior bare-site-name
     # title as too short to be useful in SERPs.
     title = _title_of(client.get("/").data.decode())
-    assert title == "indexed mailing list archives | mimir"
+    assert title == FRONT_TITLE
 
 
 def test_inbox_dashboard_title(client, inbox_name):
