@@ -1425,3 +1425,18 @@ def test_fast_tier_fills_the_row_and_a_warm_row_is_not_recomputed(
     monkeypatch.setattr(history, "release_catalog", unexpected)
     with cache.warm_window(7200):
         dict(_build_fast_global_targets(""))["front_releases"](session)
+
+
+def test_front_strip_lists_the_newest_listed_release_first(
+    releases, session, monkeypatch
+):
+    from mimir import release_history as history
+    from mimir.extensions import SessionLocal
+
+    path, _baseline, _patch, _rc, final = releases
+    with Repo(str(path)) as repo:
+        later = add_commit(repo, b"Linus <linus@x>", [final], b"7.1", when=500000).id
+        repo.refs[b"refs/tags/v7.1"] = later
+    _record(SessionLocal, later, "art71@example.com")
+    _warm_front(session, releases, monkeypatch)
+    assert [tag for tag, _ in history.front_releases()] == ["v7.1", "v7.0"]
