@@ -1984,7 +1984,9 @@ afterthought:
   in `base.html` so the same string flows through `<title>`,
   description, OG, and Twitter Card tags without per-template
   duplication. Title pattern is `<page-specific> | <inbox> | <site>`,
-  except the message page, which is `<subject>(truncate 50) | <site>`
+  except the list landing page (`<inbox> mailing list archive | <site>`),
+  year and month pages (`<inbox> archive, <period> | <site>`, #1276),
+  and the message page, which is `<subject>(truncate 50) | <site>`
   (the inbox segment was dropped in 3.6.3 to keep message titles under
   the ~65-char SERP budget; Bing "title too long"). Every content page
   leads with exactly one `<h1>` (the page's primary heading, e.g. the
