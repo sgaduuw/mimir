@@ -38,7 +38,7 @@ from mimir.maintainer_directory import (
 )
 from mimir.merge_window import merge_window
 from mimir.models import Inbox, Subsystem
-from mimir.release_history import latest_releases, release_history_path
+from mimir.release_history import front_releases, release_history_path
 from mimir.seo import _json_ld_inbox, _json_ld_inboxes, _json_ld_index
 from mimir.subsystems import (
     is_addressable_subsystem_name,
@@ -86,7 +86,6 @@ def _fetch_recent(session: Session, inbox: Inbox, offset: int, limit: int):
 # Inboxes shown as "Busiest this month", by messages in the last 30 days.
 # Eight: two rows of four cards, the grid's column cap (#1267).
 FRONT_PAGE_BUSIEST = 8
-FRONT_PAGE_RELEASES = 5
 
 
 def _inbox_summaries(session: Session) -> list[dict]:
@@ -187,7 +186,7 @@ def index():
     base = _site_base()
     return render_template(
         "index.html",
-        latest_releases=latest_releases(FRONT_PAGE_RELEASES),
+        latest_releases=front_releases(),
         release_path=release_history_path,
         inbox_summaries=inbox_summaries,
         busiest=busiest,

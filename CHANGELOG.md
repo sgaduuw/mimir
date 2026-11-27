@@ -13,7 +13,7 @@ changes, not internal refactors. Categories: **Added**,
 
 ### Changed
 
-- The front page title now reads "Linux kernel mailing list archives, subsystems and merge window" (the social-card title follows). The merge-window section ends in a "Full merge-window view" link, and a "Latest mainline releases" list shows the five newest releases with their dates and an "All releases" link. Dates come from cached release facts, so a release not yet calculated shows without a date and the page never walks Git (#1273).
+- The front page title now reads "Linux kernel mailing list archives, subsystems and merge window" (the social-card title follows). The merge-window section ends in a "Full merge-window view" link, and a "Latest mainline releases" list shows the five newest releases with their dates and an "All releases" link. The list comes from one cache row the per-minute warm step fills (about an hour to show a new release), so a request never opens the Linux repository, and the list is absent until the first warm run. A release whose date was not yet calculated shows without one (#1273).
 
 ## [5.9.0], 2026-11-26
 

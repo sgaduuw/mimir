@@ -636,6 +636,7 @@ def test_sitemap_index_is_fast_tier_other_sitemap_globals_slow(seeded_db):
         "recent_message_total (30d)",
         "merge_window",
         "linus_pulls",
+        "front_releases",
         "sitemap:index",
     ], fast
     # The total and the merge-window rows need no SITE_BASE_URL.
@@ -643,6 +644,7 @@ def test_sitemap_index_is_fast_tier_other_sitemap_globals_slow(seeded_db):
         "recent_message_total (30d)",
         "merge_window",
         "linus_pulls",
+        "front_releases",
     ]
 
     slow = [label for label, _fn in _build_slow_global_targets(sitemap_base=base)]
@@ -776,6 +778,7 @@ def test_warm_cache_command_tier_fast_dispatches_fast_targets_only(
             "recent_message_total (30d)",
             "merge_window",
             "linus_pulls",
+            "front_releases",
             "sitemap:index",
         ]
     ]

@@ -1316,13 +1316,6 @@ def test_release_pages_carry_the_section_tabs(client, releases, monkeypatch):
     ]
 
 
-def _front(client, releases, monkeypatch):
-    from mimir import release_history as history
-
-    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
-    return history, client.get("/")
-
-
 def test_front_page_links_full_merge_window_view(client):
     from mimir.merge_window import MERGE_WINDOW_PATH
 
@@ -1333,12 +1326,26 @@ def test_front_page_links_full_merge_window_view(client):
     ) in body
 
 
+def _warm_front(session, releases, monkeypatch, *, with_facts=True):
+    """Point at the fixture repo, optionally warm the facts, fill the row the
+    way the fast tier does."""
+    from mimir import cache
+    from mimir import release_history as history
+    from mimir.cli.cache import _build_fast_global_targets
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    if with_facts:
+        for release in history.release_catalog():
+            history.release_data(release)
+    with cache.warm_window(7200):
+        dict(_build_fast_global_targets(""))["front_releases"](session)
+    return history
+
+
 def test_front_page_strip_lists_newest_first_with_dates_and_canonical_links(
-    client, releases, seeded_db, monkeypatch
+    client, releases, session, monkeypatch
 ):
-    history, _ = _front(client, releases, monkeypatch)
-    for release in history.release_catalog():
-        history.release_data(release)
+    history = _warm_front(session, releases, monkeypatch)
     body = client.get("/").get_data(as_text=True)
     strip = body[body.index('id="releases"') :]
     assert strip.index("v7.0") < strip.index("v6.19"), "newest release first"
@@ -1351,18 +1358,44 @@ def test_front_page_strip_lists_newest_first_with_dates_and_canonical_links(
     assert f'href="{history.release_history_path()}">All releases</a>' in strip
 
 
-def test_front_page_strip_with_cold_cache_is_200_and_calculates_nothing(
+def test_front_page_with_a_cold_row_is_200_without_strip_or_repo_open(
     client, releases, monkeypatch
 ):
-    history, _ = _front(client, releases, monkeypatch)
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
 
     def unexpected(*args, **kwargs):
-        pytest.fail("the front page must never calculate release facts")
+        pytest.fail("the front page must read one cache row, nothing else")
 
-    monkeypatch.setattr(history, "calculate_git", unexpected)
-    monkeypatch.setattr(history, "git_facts", unexpected)
+    for name in ("release_catalog", "calculate_git", "git_facts"):
+        monkeypatch.setattr(history, name, unexpected)
     response = client.get("/")
     assert response.status_code == 200
-    body = response.get_data(as_text=True)
+    assert 'id="releases"' not in response.get_data(as_text=True)
+
+
+def test_front_page_row_built_before_the_dates_were_warm_shows_tags_only(
+    client, releases, session, monkeypatch
+):
+    history = _warm_front(session, releases, monkeypatch, with_facts=False)
+    body = client.get("/").get_data(as_text=True)
     assert f'href="{history.release_history_path("v7.0")}"' in body
     assert "1970-01-05" not in body
+
+
+def test_fast_tier_fills_the_row_and_a_warm_row_is_not_recomputed(
+    releases, session, monkeypatch
+):
+    from mimir import cache
+    from mimir.cli.cache import _build_fast_global_targets
+
+    history = _warm_front(session, releases, monkeypatch)
+    assert [tag for tag, _ in history.front_releases()] == ["v7.0", "v6.19"]
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("a warm row must not be recomputed")
+
+    monkeypatch.setattr(history, "release_catalog", unexpected)
+    with cache.warm_window(7200):
+        dict(_build_fast_global_targets(""))["front_releases"](session)

@@ -341,22 +341,37 @@ def _cached_git(release: Release) -> tuple[ReleaseFacts, list[str] | None] | Non
     return None
 
 
-def latest_releases(limit: int) -> list[tuple[Release, datetime | None]]:
-    """The newest releases with their cached release date, for the front page.
+# The front page strip, one row the fast tier fills: the newest releases as
+# `[tag, "YYYY-MM-DD" or None]`. `/` reads this row alone, so a request never
+# opens the Linus repository. A date that was cold when the row was built is
+# None until the row is rebuilt, within the TTL.
+FRONT_RELEASES_KEY = "release_history:front_releases"
+FRONT_RELEASES_TTL_SEC = 3600
+FRONT_RELEASES_LIMIT = 5
 
-    Refs and cached `:facts` rows only: a cold row gives a None date and
-    never starts a walk, unlike `git_facts`."""
-    newest = release_catalog()[:limit]
+
+def _front_releases_row() -> list[list[str | None]]:
+    """Refs and cached `:facts` only; never `git_facts`, which can walk."""
+    newest = release_catalog()[:FRONT_RELEASES_LIMIT]
     values = cache.get_many([r.key + ":facts" for r in newest])
-    return [
-        (
-            r,
-            ReleaseFacts.model_validate(values[r.key + ":facts"]).release_date
-            if r.key + ":facts" in values
-            else None,
-        )
-        for r in newest
-    ]
+    row: list[list[str | None]] = []
+    for r in newest:
+        raw = values.get(r.key + ":facts")
+        released = ReleaseFacts.model_validate(raw).release_date if raw else None
+        row.append([r.tag, released.strftime("%Y-%m-%d") if released else None])
+    return row
+
+
+def warm_front_releases(session: Session) -> None:
+    """Fast-tier target. Called without `force`: a warm row costs one read."""
+    cache.get_or_compute(
+        session, FRONT_RELEASES_KEY, FRONT_RELEASES_TTL_SEC, _front_releases_row
+    )
+
+
+def front_releases() -> list[list[str | None]]:
+    """The strip's row, empty while cold. A cache read, nothing else."""
+    return cache.get(FRONT_RELEASES_KEY) or []
 
 
 def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:

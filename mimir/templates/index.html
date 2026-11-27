@@ -60,13 +60,13 @@
   {% if merge_window_updated %}<p class="muted">linux-next as of <time class="front-merge-window-updated" datetime="{{ merge_window_updated.isoformat() }}">{{ merge_window_updated.strftime('%H:%M') }} UTC</time>.</p>{% endif %}
   <p class="directory-more"><a href="{{ url_for('web.merge_window_page') }}">Full merge-window view</a></p>
 
-  {# Cached release dates only (`latest_releases`): a cold row shows the
-     tag without a date, and the section is absent without a catalog. #}
+  {# One cache read (`front_releases`): absent while the row is cold, and a
+     tag without a date when its date was cold as the row was built. #}
   {% if latest_releases %}
   <h2 id="releases">Latest mainline releases</h2>
   <ul class="divided front-releases">
-    {% for release, released in latest_releases %}
-    <li><a href="{{ release_path(release.tag) }}">{{ release.tag }}</a>{% if released %} <time class="muted" datetime="{{ released.isoformat() }}">{{ released.strftime('%Y-%m-%d') }}</time>{% endif %}</li>
+    {% for tag, released in latest_releases %}
+    <li><a href="{{ release_path(tag) }}">{{ tag }}</a>{% if released %} <time class="muted" datetime="{{ released }}">{{ released }}</time>{% endif %}</li>
     {% endfor %}
   </ul>
   <p class="directory-more"><a href="{{ release_path() }}">All releases</a></p>
