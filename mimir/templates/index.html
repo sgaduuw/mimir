@@ -66,7 +66,7 @@
   <h2 id="releases">Latest mainline releases</h2>
   <ul class="divided front-releases">
     {% for tag, released in latest_releases %}
-    <li><a href="{{ release_path(tag) }}">{{ tag }}</a>{% if released %} <time class="muted" datetime="{{ released }}">{{ released }}</time>{% endif %}</li>
+    <li><a href="{{ release_path(tag) }}">{{ tag }}</a> <time class="muted" datetime="{{ released }}">{{ released }}</time></li>
     {% endfor %}
   </ul>
   <p class="directory-more"><a href="{{ release_path() }}">All releases</a></p>
