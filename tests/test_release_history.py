@@ -1314,3 +1314,55 @@ def test_release_pages_carry_the_section_tabs(client, releases, monkeypatch):
         'href="/merge-window"',
         f'href="{history_url}" class="release-tab-section"',
     ]
+
+
+def _front(client, releases, monkeypatch):
+    from mimir import release_history as history
+
+    monkeypatch.setattr(history, "_linus_path", lambda: releases[0])
+    return history, client.get("/")
+
+
+def test_front_page_links_full_merge_window_view(client):
+    from mimir.merge_window import MERGE_WINDOW_PATH
+
+    body = client.get("/").get_data(as_text=True)
+    assert (
+        f'<p class="directory-more"><a href="{MERGE_WINDOW_PATH}">'
+        "Full merge-window view</a></p>"
+    ) in body
+
+
+def test_front_page_strip_lists_newest_first_with_dates_and_canonical_links(
+    client, releases, seeded_db, monkeypatch
+):
+    history, _ = _front(client, releases, monkeypatch)
+    for release in history.release_catalog():
+        history.release_data(release)
+    body = client.get("/").get_data(as_text=True)
+    strip = body[body.index('id="releases"') :]
+    assert strip.index("v7.0") < strip.index("v6.19"), "newest release first"
+    assert "1970-01-05" in strip  # v7.0 tagger date 400000
+    for tag in ("v7.0", "v6.19"):
+        path = history.release_history_path(tag)
+        assert f'href="{path}"' in strip
+        # A link equals what its page declares as canonical, byte for byte.
+        assert _canonical(client.get(path).get_data(as_text=True)).endswith(path)
+    assert f'href="{history.release_history_path()}">All releases</a>' in strip
+
+
+def test_front_page_strip_with_cold_cache_is_200_and_calculates_nothing(
+    client, releases, monkeypatch
+):
+    history, _ = _front(client, releases, monkeypatch)
+
+    def unexpected(*args, **kwargs):
+        pytest.fail("the front page must never calculate release facts")
+
+    monkeypatch.setattr(history, "calculate_git", unexpected)
+    monkeypatch.setattr(history, "git_facts", unexpected)
+    response = client.get("/")
+    assert response.status_code == 200
+    body = response.get_data(as_text=True)
+    assert f'href="{history.release_history_path("v7.0")}"' in body
+    assert "1970-01-05" not in body

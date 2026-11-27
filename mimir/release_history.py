@@ -341,6 +341,24 @@ def _cached_git(release: Release) -> tuple[ReleaseFacts, list[str] | None] | Non
     return None
 
 
+def latest_releases(limit: int) -> list[tuple[Release, datetime | None]]:
+    """The newest releases with their cached release date, for the front page.
+
+    Refs and cached `:facts` rows only: a cold row gives a None date and
+    never starts a walk, unlike `git_facts`."""
+    newest = release_catalog()[:limit]
+    values = cache.get_many([r.key + ":facts" for r in newest])
+    return [
+        (
+            r,
+            ReleaseFacts.model_validate(values[r.key + ":facts"]).release_date
+            if r.key + ":facts" in values
+            else None,
+        )
+        for r in newest
+    ]
+
+
 def git_facts(release: Release) -> tuple[ReleaseFacts, list[str] | None]:
     """Keep membership separate so an index cache hit decodes only facts.
 

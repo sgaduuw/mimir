@@ -11,6 +11,10 @@ changes, not internal refactors. Categories: **Added**,
 
 ## [Unreleased]
 
+### Changed
+
+- The front page title now reads "Linux kernel mailing list archives, subsystems and merge window" (the social-card title follows). The merge-window section ends in a "Full merge-window view" link, and a "Latest mainline releases" list shows the five newest releases with their dates and an "All releases" link. Dates come from cached release facts, so a release not yet calculated shows without a date and the page never walks Git (#1273).
+
 ## [5.9.0], 2026-11-26
 
 ### Changed

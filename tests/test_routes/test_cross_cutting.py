@@ -913,9 +913,10 @@ def test_nav_links_the_merge_window_from_every_page(client, tmp_path, inbox_name
     # The nav link, then the front page's described heading link: #891
     # dropped a bare prose line as redundant with the nav; #1259 brought
     # back a link that says what the page holds, since the nav label
-    # ("Releases") does not.
-    assert labels["/"] == ["Releases", "Linux merge window"]
-    assert len(re.findall(r'href="/merge-window"', bodies["/"])) == 2
+    # ("Releases") does not. #1273 ends the section with a "Full merge-window
+    # view" line like the other sections' "All ..." links.
+    assert labels["/"] == ["Releases", "Linux merge window", "Full merge-window view"]
+    assert len(re.findall(r'href="/merge-window"', bodies["/"])) == 3
 
 
 def test_keyboard_nav_data_nav_up_meta_index_has_no_parent(client):

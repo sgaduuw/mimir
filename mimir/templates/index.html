@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}indexed mailing list archives | {{ site_name }}{% endblock %}
+{% block title %}Linux kernel mailing list archives, subsystems and merge window | {{ site_name }}{% endblock %}
 {% block content %}
 {% from "_sparkline.html" import spark_bars %}
 {% from "_activity_rows.html" import subsystem_row, maintainer_row %}
@@ -58,6 +58,19 @@
   </dl>
   {% endif %}
   {% if merge_window_updated %}<p class="muted">linux-next as of <time class="front-merge-window-updated" datetime="{{ merge_window_updated.isoformat() }}">{{ merge_window_updated.strftime('%H:%M') }} UTC</time>.</p>{% endif %}
+  <p class="directory-more"><a href="{{ url_for('web.merge_window_page') }}">Full merge-window view</a></p>
+
+  {# Cached release dates only (`latest_releases`): a cold row shows the
+     tag without a date, and the section is absent without a catalog. #}
+  {% if latest_releases %}
+  <h2 id="releases">Latest mainline releases</h2>
+  <ul class="divided front-releases">
+    {% for release, released in latest_releases %}
+    <li><a href="{{ release_path(release.tag) }}">{{ release.tag }}</a>{% if released %} <time class="muted" datetime="{{ released.isoformat() }}">{{ released.strftime('%Y-%m-%d') }}</time>{% endif %}</li>
+    {% endfor %}
+  </ul>
+  <p class="directory-more"><a href="{{ release_path() }}">All releases</a></p>
+  {% endif %}
 
   {% if busiest %}
   <h2 id="busiest">Busiest this month</h2>
